@@ -142,6 +142,8 @@ def dashboard():
 # Entry point
 # ---------------------------------------------------------------------------
 
+# Run at startup regardless of how the app is launched (gunicorn or direct)
+init_db()
+
 if __name__ == "__main__":
-    init_db()
     app.run(debug=True)
