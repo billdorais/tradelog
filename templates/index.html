@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trade Log</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    header {
+      max-width: 1100px;
+      margin: 0 auto 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    h1 { font-size: 1.6rem; color: #fff; }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status {
+      font-size: 0.85rem;
+      color: #888;
+    }
+
+    button {
+      padding: 8px 16px;
+      background: #2962ff;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+
+    button:hover { background: #1a4fd8; }
+
+    .stats {
+      max-width: 1100px;
+      margin: 0 auto 24px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .stat-card {
+      background: #1c1f2e;
+      border-radius: 8px;
+      padding: 16px 24px;
+      flex: 1;
+      min-width: 140px;
+    }
+
+    .stat-card .label { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .stat-card .value { font-size: 1.5rem; font-weight: bold; color: #fff; }
+
+    .table-wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      overflow-x: auto;
+      border-radius: 8px;
+      border: 1px solid #2a2d3e;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    thead th {
+      background: #1c1f2e;
+      color: #aaa;
+      text-align: left;
+      padding: 12px 16px;
+      font-weight: normal;
+      border-bottom: 1px solid #2a2d3e;
+      white-space: nowrap;
+    }
+
+    tbody tr { border-bottom: 1px solid #1e2130; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #1a1d2a; }
+
+    td { padding: 11px 16px; vertical-align: middle; white-space: nowrap; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+
+    .badge-buy  { background: rgba(38, 166, 91, 0.2); color: #26a65b; }
+    .badge-sell { background: rgba(239, 83, 80, 0.2); color: #ef5350; }
+
+    .badge-long  { background: rgba(38, 166, 91, 0.1); color: #26a65b; }
+    .badge-short { background: rgba(239, 83, 80, 0.1); color: #ef5350; }
+    .badge-flat  { background: rgba(150, 150, 150, 0.1); color: #aaa; }
+
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Trade Log</h1>
+    <div class="controls">
+      <span class="status" id="status">Loading...</span>
+      <button onclick="loadTrades()">Refresh</button>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="label">Total Trades</div>
+      <div class="value" id="statTotal">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Buy Orders</div>
+      <div class="value" id="statBuys" style="color:#26a65b">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Sell Orders</div>
+      <div class="value" id="statSells" style="color:#ef5350">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Tickers</div>
+      <div class="value" id="statTickers">—</div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Received (UTC)</th>
+          <th>Ticker</th>
+          <th>Action</th>
+          <th>Sentiment</th>
+          <th>Quantity</th>
+          <th>Price</th>
+          <th>Interval</th>
+          <th>TV Time</th>
+        </tr>
+      </thead>
+      <tbody id="tradeBody">
+        <tr><td colspan="9" class="empty">Loading trades...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    function badge(value, type) {
+      if (!value) return '—';
+      const v = value.toLowerCase();
+      return `<span class="badge badge-${type === 'action' ? v : v}">${value}</span>`;
+    }
+
+    async function loadTrades() {
+      const status = document.getElementById('status');
+      status.textContent = 'Refreshing...';
+      try {
+        const res = await fetch('/api/trades');
+        const trades = await res.json();
+
+        const body = document.getElementById('tradeBody');
+
+        if (trades.length === 0) {
+          body.innerHTML = '<tr><td colspan="9" class="empty">No trades yet. Waiting for webhook signals...</td></tr>';
+        } else {
+          body.innerHTML = trades.map(t => `
+            <tr>
+              <td style="color:#555">${t.id}</td>
+              <td>${t.received_at ?? '—'}</td>
+              <td><strong>${t.ticker ?? '—'}</strong></td>
+              <td>${badge(t.action, 'action')}</td>
+              <td>${badge(t.sentiment, 'sentiment')}</td>
+              <td>${t.quantity ?? '—'}</td>
+              <td>${t.price ?? '—'}</td>
+              <td>${t.interval ?? '—'}</td>
+              <td style="color:#666;font-size:0.8rem">${t.tv_time ?? '—'}</td>
+            </tr>
+          `).join('');
+        }
+
+        // Stats
+        document.getElementById('statTotal').textContent = trades.length;
+        document.getElementById('statBuys').textContent  = trades.filter(t => t.action?.toLowerCase() === 'buy').length;
+        document.getElementById('statSells').textContent = trades.filter(t => t.action?.toLowerCase() === 'sell').length;
+        const tickers = new Set(trades.map(t => t.ticker).filter(Boolean));
+        document.getElementById('statTickers').textContent = tickers.size;
+
+        const now = new Date().toLocaleTimeString();
+        status.textContent = `Last updated: ${now}`;
+      } catch (e) {
+        status.textContent = 'Error loading trades';
+        console.error(e);
+      }
+    }
+
+    // Load on page open, then auto-refresh every 30 seconds
+    loadTrades();
+    setInterval(loadTrades, 30000);
+  </script>
+</body>
+</html>
