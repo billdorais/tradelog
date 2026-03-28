@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Trade Log</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -120,6 +121,33 @@
       padding: 40px;
       color: #555;
     }
+
+    .section-label {
+      max-width: 1100px;
+      margin: 0 auto 10px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #555;
+    }
+
+    .stat-card.positive .value { color: #26a65b; }
+    .stat-card.negative .value { color: #ef5350; }
+    .stat-card.neutral  .value { color: #fff; }
+
+    .chart-wrap {
+      max-width: 1100px;
+      margin: 24px auto 0;
+      background: #1c1f2e;
+      border-radius: 8px;
+      padding: 20px 24px;
+    }
+
+    .chart-wrap .chart-title {
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 12px;
+    }
   </style>
 </head>
 <body>
@@ -131,9 +159,10 @@
     </div>
   </header>
 
+  <div class="section-label">Signals</div>
   <div class="stats">
     <div class="stat-card">
-      <div class="label">Total Trades</div>
+      <div class="label">Total Signals</div>
       <div class="value" id="statTotal">—</div>
     </div>
     <div class="stat-card">
@@ -148,6 +177,39 @@
       <div class="label">Tickers</div>
       <div class="value" id="statTickers">—</div>
     </div>
+  </div>
+
+  <div class="section-label" style="margin-top:24px">Performance (closed trades)</div>
+  <div class="stats">
+    <div class="stat-card neutral">
+      <div class="label">Closed Trades</div>
+      <div class="value" id="perfClosed">—</div>
+    </div>
+    <div class="stat-card neutral">
+      <div class="label">Win Rate</div>
+      <div class="value" id="perfWinRate">—</div>
+    </div>
+    <div class="stat-card positive">
+      <div class="label">Avg Win</div>
+      <div class="value" id="perfAvgWin">—</div>
+    </div>
+    <div class="stat-card negative">
+      <div class="label">Avg Loss</div>
+      <div class="value" id="perfAvgLoss">—</div>
+    </div>
+    <div class="stat-card neutral">
+      <div class="label">Profit Factor</div>
+      <div class="value" id="perfPF">—</div>
+    </div>
+    <div class="stat-card negative">
+      <div class="label">Max Drawdown</div>
+      <div class="value" id="perfDD">—</div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <div class="chart-title">Equity Curve (cumulative P&amp;L)</div>
+    <canvas id="equityChart" height="100"></canvas>
   </div>
 
   <div class="table-wrap">
@@ -172,21 +234,33 @@
   </div>
 
   <script>
+    let equityChartInstance = null;
+
     function badge(value, type) {
       if (!value) return '—';
       const v = value.toLowerCase();
       return `<span class="badge badge-${type === 'action' ? v : v}">${value}</span>`;
     }
 
+    function fmt(n, prefix = '') {
+      if (n === null || n === undefined) return '—';
+      const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return (n < 0 ? '-' : '') + prefix + s;
+    }
+
     async function loadTrades() {
       const status = document.getElementById('status');
       status.textContent = 'Refreshing...';
       try {
-        const res = await fetch('/api/trades');
-        const trades = await res.json();
+        const [tradesRes, statsRes] = await Promise.all([
+          fetch('/api/trades'),
+          fetch('/api/stats'),
+        ]);
+        const trades = await tradesRes.json();
+        const stats  = await statsRes.json();
 
+        // --- Signal table ---
         const body = document.getElementById('tradeBody');
-
         if (trades.length === 0) {
           body.innerHTML = '<tr><td colspan="9" class="empty">No trades yet. Waiting for webhook signals...</td></tr>';
         } else {
@@ -205,22 +279,72 @@
           `).join('');
         }
 
-        // Stats
-        document.getElementById('statTotal').textContent = trades.length;
-        document.getElementById('statBuys').textContent  = trades.filter(t => t.action?.toLowerCase() === 'buy').length;
-        document.getElementById('statSells').textContent = trades.filter(t => t.action?.toLowerCase() === 'sell').length;
+        // --- Signal stats ---
+        document.getElementById('statTotal').textContent  = trades.length;
+        document.getElementById('statBuys').textContent   = trades.filter(t => t.action?.toLowerCase() === 'buy').length;
+        document.getElementById('statSells').textContent  = trades.filter(t => t.action?.toLowerCase() === 'sell').length;
         const tickers = new Set(trades.map(t => t.ticker).filter(Boolean));
         document.getElementById('statTickers').textContent = tickers.size;
+
+        // --- Performance stats ---
+        const noData = stats.completed_trades === 0;
+        document.getElementById('perfClosed').textContent  = noData ? '—' : stats.completed_trades;
+        document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
+        document.getElementById('perfAvgWin').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
+        document.getElementById('perfAvgLoss').textContent = noData ? '—' : fmt(stats.avg_loss, '$');
+        document.getElementById('perfPF').textContent      = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
+        document.getElementById('perfDD').textContent      = noData ? '—' : fmt(-stats.max_drawdown, '$');
+
+        // Colour win rate card dynamically
+        const wrCard = document.getElementById('perfWinRate').closest('.stat-card');
+        if (!noData) {
+          wrCard.classList.toggle('positive', stats.win_rate >= 50);
+          wrCard.classList.toggle('negative', stats.win_rate < 50);
+        }
+
+        // --- Equity curve ---
+        const labels = stats.equity_curve.map(p => p.time);
+        const values = stats.equity_curve.map(p => p.value);
+        const finalVal = values.length ? values[values.length - 1] : 0;
+        const lineColor = finalVal >= 0 ? '#26a65b' : '#ef5350';
+
+        if (equityChartInstance) equityChartInstance.destroy();
+        const ctx = document.getElementById('equityChart').getContext('2d');
+        equityChartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              data: values,
+              borderColor: lineColor,
+              backgroundColor: lineColor + '22',
+              borderWidth: 2,
+              pointRadius: values.length > 50 ? 0 : 3,
+              fill: true,
+              tension: 0.2,
+            }],
+          },
+          options: {
+            animation: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { display: false },
+              y: {
+                grid:  { color: '#2a2d3e' },
+                ticks: { color: '#888', callback: v => '$' + v.toLocaleString() },
+              },
+            },
+          },
+        });
 
         const now = new Date().toLocaleTimeString();
         status.textContent = `Last updated: ${now}`;
       } catch (e) {
-        status.textContent = 'Error loading trades';
+        document.getElementById('status').textContent = 'Error loading trades';
         console.error(e);
       }
     }
 
-    // Load on page open, then auto-refresh every 30 seconds
     loadTrades();
     setInterval(loadTrades, 30000);
   </script>
