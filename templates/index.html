@@ -276,7 +276,12 @@
 
   <!-- Equity curve -->
   <div class="chart-wrap">
-    <div class="chart-title">Equity Curve (cumulative P&amp;L from closed trades)</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div class="chart-title" style="margin-bottom:0">Equity Curve (cumulative P&amp;L from closed trades)</div>
+      <select id="equityStrategyFilter" onchange="applyEquityFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
+        <option value="">All Strategies</option>
+      </select>
+    </div>
     <canvas id="equityChart" height="90"></canvas>
   </div>
 
@@ -435,8 +440,16 @@
     async function applyFilter() {
       selectedStrategy = document.getElementById('strategyFilter').value;
       renderTable(allTrades, selectedStrategy);
-      // Re-fetch performance stats filtered by strategy
+      // Sync equity curve dropdown to match
+      document.getElementById('equityStrategyFilter').value = selectedStrategy;
       const url = selectedStrategy ? `/api/stats?strategy=${encodeURIComponent(selectedStrategy)}` : '/api/stats';
+      const stats = await fetch(url).then(r => r.json());
+      renderStats(stats);
+    }
+
+    async function applyEquityFilter() {
+      const strategy = document.getElementById('equityStrategyFilter').value;
+      const url = strategy ? `/api/stats?strategy=${encodeURIComponent(strategy)}` : '/api/stats';
       const stats = await fetch(url).then(r => r.json());
       renderStats(stats);
     }
@@ -458,21 +471,30 @@
           ? '<span class="mode-pill paper"><span class="mode-dot"></span>PAPER</span>'
           : '<span class="mode-pill live"><span class="mode-dot"></span>LIVE</span>';
 
-        // --- Populate strategy filter dropdown ---
+        // --- Populate strategy filter dropdowns (table + equity curve) ---
         const strategies = [...new Set(trades.map(t => t.strategy).filter(Boolean))].sort();
+        const options = '<option value="">All Strategies</option>' +
+          strategies.map(s => `<option value="${s}">${s}</option>`).join('');
+
         const sel = document.getElementById('strategyFilter');
-        const prev = sel.value;
-        sel.innerHTML = '<option value="">All Strategies</option>' +
-          strategies.map(s => `<option value="${s}"${s === prev ? ' selected' : ''}>${s}</option>`).join('');
+        const prevTable = sel.value;
+        sel.innerHTML = options;
+        sel.value = prevTable;
         selectedStrategy = sel.value;
+
+        const equitySel = document.getElementById('equityStrategyFilter');
+        const prevEquity = equitySel.value;
+        equitySel.innerHTML = options;
+        equitySel.value = prevEquity;
 
         renderTable(trades, selectedStrategy);
 
-        // Fetch stats respecting active strategy filter
-        const statsUrl = selectedStrategy
-          ? `/api/stats?strategy=${encodeURIComponent(selectedStrategy)}`
+        // Fetch stats respecting the equity curve's own filter
+        const equityStrategy = document.getElementById('equityStrategyFilter').value;
+        const statsUrl = equityStrategy
+          ? `/api/stats?strategy=${encodeURIComponent(equityStrategy)}`
           : '/api/stats';
-        const filteredStats = selectedStrategy ? await fetch(statsUrl).then(r => r.json()) : stats;
+        const filteredStats = equityStrategy ? await fetch(statsUrl).then(r => r.json()) : stats;
         renderStats(filteredStats);
 
         document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
