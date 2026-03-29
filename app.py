@@ -45,7 +45,8 @@ def init_db():
             price       TEXT,
             tv_time     TEXT,
             interval    TEXT,
-            received_at TEXT
+            received_at TEXT,
+            strategy    TEXT
         )
     """ if DATABASE_URL else """
         CREATE TABLE IF NOT EXISTS trades (
@@ -57,9 +58,16 @@ def init_db():
             price       TEXT,
             tv_time     TEXT,
             interval    TEXT,
-            received_at TEXT
+            received_at TEXT,
+            strategy    TEXT
         )
     """)
+    # Migration: add strategy column to existing databases
+    try:
+        cur.execute("ALTER TABLE trades ADD COLUMN strategy TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
     conn.commit()
     conn.close()
 
@@ -94,8 +102,8 @@ def webhook():
     cur = conn.cursor()
     cur.execute(
         f"""
-        INSERT INTO trades (ticker, action, sentiment, quantity, price, tv_time, interval, received_at)
-        VALUES ({p},{p},{p},{p},{p},{p},{p},{p})
+        INSERT INTO trades (ticker, action, sentiment, quantity, price, tv_time, interval, received_at, strategy)
+        VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})
         """,
         (
             data.get("ticker"),
@@ -106,6 +114,7 @@ def webhook():
             data.get("time"),
             data.get("interval"),
             received_at,
+            data.get("strategy"),
         ),
     )
     conn.commit()
@@ -144,9 +153,14 @@ def api_stats():
     Compute performance stats by pairing BUY/SELL signals per ticker (FIFO).
     Returns win rate, avg win/loss, profit factor, max drawdown, equity curve.
     """
+    strategy_filter = request.args.get("strategy")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM trades ORDER BY id ASC")
+    p = placeholder()
+    if strategy_filter:
+        cur.execute(f"SELECT * FROM trades WHERE strategy = {p} ORDER BY id ASC", (strategy_filter,))
+    else:
+        cur.execute("SELECT * FROM trades ORDER BY id ASC")
     rows = cur.fetchall()
 
     if DATABASE_URL:

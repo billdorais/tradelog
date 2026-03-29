@@ -166,6 +166,38 @@
     .exec-error  { background: rgba(239,83,80,0.15);  color: #ef5350; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
     .exec-none   { color: #444; font-size: 0.75rem; }
 
+    .strategy-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      background: rgba(100, 120, 255, 0.15);
+      color: #8899ff;
+      white-space: nowrap;
+    }
+
+    .filter-bar {
+      max-width: 1200px;
+      margin: 0 auto 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .filter-bar label { font-size: 0.8rem; color: #888; }
+
+    .filter-bar select {
+      background: #1c1f2e;
+      color: #e0e0e0;
+      border: 1px solid #2a2d3e;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    .filter-bar select:focus { outline: none; border-color: #2962ff; }
+
     .empty {
       text-align: center;
       padding: 40px;
@@ -250,12 +282,19 @@
 
   <!-- Trade table -->
   <div class="section-label">Signal Feed</div>
+  <div class="filter-bar">
+    <label for="strategyFilter">Strategy</label>
+    <select id="strategyFilter" onchange="applyFilter()">
+      <option value="">All Strategies</option>
+    </select>
+  </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
           <th>#</th>
           <th>Received (UTC)</th>
+          <th>Strategy</th>
           <th>Ticker</th>
           <th>Action</th>
           <th>Sentiment</th>
@@ -267,13 +306,15 @@
         </tr>
       </thead>
       <tbody id="tradeBody">
-        <tr><td colspan="10" class="empty">Loading trades...</td></tr>
+        <tr><td colspan="11" class="empty">Loading trades...</td></tr>
       </tbody>
     </table>
   </div>
 
   <script>
     let equityChartInstance = null;
+    let allTrades = [];
+    let selectedStrategy = '';
 
     function execBadge(status) {
       if (!status) return '<span class="exec-none">—</span>';
@@ -303,6 +344,103 @@
       return (n < 0 ? '-' : '') + prefix + s;
     }
 
+    function renderTable(trades, strategyFilter) {
+      const visible = strategyFilter
+        ? trades.filter(t => t.strategy === strategyFilter)
+        : trades;
+      const body = document.getElementById('tradeBody');
+      if (!visible.length) {
+        body.innerHTML = '<tr><td colspan="11" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
+      } else {
+        body.innerHTML = visible.map(t => `
+          <tr>
+            <td style="color:#555">${t.id}</td>
+            <td>${t.received_at ?? '—'}</td>
+            <td>${t.strategy ? `<span class="strategy-tag">${t.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+            <td><strong>${t.ticker ?? '—'}</strong></td>
+            <td>${actionBadge(t.action)}</td>
+            <td>${sentimentBadge(t.sentiment)}</td>
+            <td>${t.quantity ?? '—'}</td>
+            <td>${t.price ?? '—'}</td>
+            <td>${t.interval ?? '—'}</td>
+            <td>${execBadge(t.exec_status)}</td>
+            <td style="color:#555;font-size:0.8rem">${t.tv_time ?? '—'}</td>
+          </tr>
+        `).join('');
+      }
+      document.getElementById('statTotal').textContent    = visible.length;
+      document.getElementById('statBuys').textContent     = visible.filter(t => t.action?.toLowerCase() === 'buy').length;
+      document.getElementById('statSells').textContent    = visible.filter(t => t.action?.toLowerCase() === 'sell').length;
+      document.getElementById('statTickers').textContent  = new Set(visible.map(t => t.ticker).filter(Boolean)).size;
+      document.getElementById('statExecuted').textContent = visible.filter(t => t.exec_status === 'ok').length;
+      document.getElementById('statErrors').textContent   = visible.filter(t => t.exec_status === 'error').length;
+    }
+
+    function renderStats(stats) {
+      const noData = !stats.completed_trades;
+      document.getElementById('perfClosed').textContent  = noData ? '—' : stats.completed_trades;
+      document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
+      document.getElementById('perfAvgWin').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
+      document.getElementById('perfAvgLoss').textContent = noData ? '—' : fmt(stats.avg_loss, '$');
+      document.getElementById('perfPF').textContent      = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
+      document.getElementById('perfDD').textContent      = noData ? '—' : fmt(-stats.max_drawdown, '$');
+
+      document.getElementById('winRateCard').className =
+        'stat-card ' + (noData ? 'neutral' : stats.win_rate >= 50 ? 'positive' : 'negative');
+
+      const labels    = (stats.equity_curve || []).map(p => p.time);
+      const values    = (stats.equity_curve || []).map(p => p.value);
+      const finalVal  = values.length ? values[values.length - 1] : 0;
+      const lineColor = finalVal >= 0 ? '#26a65b' : '#ef5350';
+
+      if (equityChartInstance) equityChartInstance.destroy();
+      const ctx = document.getElementById('equityChart').getContext('2d');
+      equityChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: lineColor,
+            backgroundColor: lineColor + '22',
+            borderWidth: 2,
+            pointRadius: values.length > 50 ? 0 : 3,
+            fill: true,
+            tension: 0.2,
+          }],
+        },
+        options: {
+          animation: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { display: false },
+            y: {
+              grid:  { color: '#2a2d3e' },
+              ticks: { color: '#888', callback: v => '$' + v.toLocaleString() },
+            },
+          },
+        },
+      });
+
+      if (!values.length) {
+        const chartCanvas = document.getElementById('equityChart');
+        const c = chartCanvas.getContext('2d');
+        c.fillStyle = '#444';
+        c.font = '14px Arial';
+        c.textAlign = 'center';
+        c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
+      }
+    }
+
+    async function applyFilter() {
+      selectedStrategy = document.getElementById('strategyFilter').value;
+      renderTable(allTrades, selectedStrategy);
+      // Re-fetch performance stats filtered by strategy
+      const url = selectedStrategy ? `/api/stats?strategy=${encodeURIComponent(selectedStrategy)}` : '/api/stats';
+      const stats = await fetch(url).then(r => r.json());
+      renderStats(stats);
+    }
+
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing...';
       try {
@@ -312,6 +450,7 @@
         ]);
         const trades = await tradesRes.json();
         const stats  = await statsRes.json();
+        allTrades = trades;
 
         // Mode pill (paper vs live)
         const isPaper = stats.paper_trading !== false;
@@ -319,91 +458,22 @@
           ? '<span class="mode-pill paper"><span class="mode-dot"></span>PAPER</span>'
           : '<span class="mode-pill live"><span class="mode-dot"></span>LIVE</span>';
 
-        // --- Signal table ---
-        const body = document.getElementById('tradeBody');
-        if (!trades.length) {
-          body.innerHTML = '<tr><td colspan="10" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
-        } else {
-          body.innerHTML = trades.map(t => `
-            <tr>
-              <td style="color:#555">${t.id}</td>
-              <td>${t.received_at ?? '—'}</td>
-              <td><strong>${t.ticker ?? '—'}</strong></td>
-              <td>${actionBadge(t.action)}</td>
-              <td>${sentimentBadge(t.sentiment)}</td>
-              <td>${t.quantity ?? '—'}</td>
-              <td>${t.price ?? '—'}</td>
-              <td>${t.interval ?? '—'}</td>
-              <td>${execBadge(t.exec_status)}</td>
-              <td style="color:#555;font-size:0.8rem">${t.tv_time ?? '—'}</td>
-            </tr>
-          `).join('');
-        }
+        // --- Populate strategy filter dropdown ---
+        const strategies = [...new Set(trades.map(t => t.strategy).filter(Boolean))].sort();
+        const sel = document.getElementById('strategyFilter');
+        const prev = sel.value;
+        sel.innerHTML = '<option value="">All Strategies</option>' +
+          strategies.map(s => `<option value="${s}"${s === prev ? ' selected' : ''}>${s}</option>`).join('');
+        selectedStrategy = sel.value;
 
-        // --- Signal stats ---
-        document.getElementById('statTotal').textContent   = trades.length;
-        document.getElementById('statBuys').textContent    = trades.filter(t => t.action?.toLowerCase() === 'buy').length;
-        document.getElementById('statSells').textContent   = trades.filter(t => t.action?.toLowerCase() === 'sell').length;
-        document.getElementById('statTickers').textContent = new Set(trades.map(t => t.ticker).filter(Boolean)).size;
-        document.getElementById('statExecuted').textContent = trades.filter(t => t.exec_status === 'ok').length;
-        document.getElementById('statErrors').textContent   = trades.filter(t => t.exec_status === 'error').length;
+        renderTable(trades, selectedStrategy);
 
-        // --- Performance stats ---
-        const noData = !stats.completed_trades;
-        document.getElementById('perfClosed').textContent  = noData ? '—' : stats.completed_trades;
-        document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
-        document.getElementById('perfAvgWin').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
-        document.getElementById('perfAvgLoss').textContent = noData ? '—' : fmt(stats.avg_loss, '$');
-        document.getElementById('perfPF').textContent      = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
-        document.getElementById('perfDD').textContent      = noData ? '—' : fmt(-stats.max_drawdown, '$');
-
-        const wrCard = document.getElementById('winRateCard');
-        wrCard.className = 'stat-card ' + (noData ? 'neutral' : stats.win_rate >= 50 ? 'positive' : 'negative');
-
-        // --- Equity curve ---
-        const labels   = (stats.equity_curve || []).map(p => p.time);
-        const values   = (stats.equity_curve || []).map(p => p.value);
-        const finalVal = values.length ? values[values.length - 1] : 0;
-        const lineColor = finalVal >= 0 ? '#26a65b' : '#ef5350';
-
-        if (equityChartInstance) equityChartInstance.destroy();
-        const ctx = document.getElementById('equityChart').getContext('2d');
-        equityChartInstance = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels,
-            datasets: [{
-              data: values,
-              borderColor: lineColor,
-              backgroundColor: lineColor + '22',
-              borderWidth: 2,
-              pointRadius: values.length > 50 ? 0 : 3,
-              fill: true,
-              tension: 0.2,
-            }],
-          },
-          options: {
-            animation: false,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { display: false },
-              y: {
-                grid:  { color: '#2a2d3e' },
-                ticks: { color: '#888', callback: v => '$' + v.toLocaleString() },
-              },
-            },
-          },
-        });
-
-        if (!values.length) {
-          // Show placeholder text when no closed trades yet
-          const chartCanvas = document.getElementById('equityChart');
-          const c = chartCanvas.getContext('2d');
-          c.fillStyle = '#444';
-          c.font = '14px Arial';
-          c.textAlign = 'center';
-          c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
-        }
+        // Fetch stats respecting active strategy filter
+        const statsUrl = selectedStrategy
+          ? `/api/stats?strategy=${encodeURIComponent(selectedStrategy)}`
+          : '/api/stats';
+        const filteredStats = selectedStrategy ? await fetch(statsUrl).then(r => r.json()) : stats;
+        renderStats(filteredStats);
 
         document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 
