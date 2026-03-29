@@ -1,15 +1,36 @@
+import json
+import logging
 import os
 import sqlite3
-from datetime import datetime
-from flask import Flask, request, jsonify, render_template, abort
+from datetime import datetime, timezone
+
 from dotenv import load_dotenv
+from flask import Flask, abort, jsonify, render_template, request
 
 load_dotenv()
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "change-me")
-DATABASE_URL = os.environ.get("DATABASE_URL")  # Set automatically by Railway Postgres plugin
+DATABASE_URL  = os.environ.get("DATABASE_URL")
+
+# ---------------------------------------------------------------------------
+# Broker initialisation — only if IB_HOST is configured
+# ---------------------------------------------------------------------------
+
+ib_broker = None
+
+if os.environ.get("IB_HOST"):
+    try:
+        from brokers.ib_broker import IBBroker
+        ib_broker = IBBroker()
+        ib_broker.connect()
+        log.info("IB Gateway connected at startup")
+    except Exception as e:
+        log.warning("IB Gateway not available at startup: %s", e)
+        # ib_broker stays None — orders will be skipped, not crash the app
 
 # ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
@@ -19,22 +40,19 @@ def get_db():
     if DATABASE_URL:
         import psycopg2
         import psycopg2.extras
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
-    else:
-        conn = sqlite3.connect("trades.db")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return psycopg2.connect(DATABASE_URL)
+    conn = sqlite3.connect("trades.db")
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def placeholder():
-    """SQL placeholder: %s for Postgres, ? for SQLite."""
     return "%s" if DATABASE_URL else "?"
 
 
 def init_db():
     conn = get_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id          SERIAL PRIMARY KEY,
@@ -46,7 +64,10 @@ def init_db():
             tv_time     TEXT,
             interval    TEXT,
             received_at TEXT,
-            strategy    TEXT
+            strategy    TEXT,
+            broker      TEXT,
+            exec_status TEXT,
+            exec_detail TEXT
         )
     """ if DATABASE_URL else """
         CREATE TABLE IF NOT EXISTS trades (
@@ -59,26 +80,46 @@ def init_db():
             tv_time     TEXT,
             interval    TEXT,
             received_at TEXT,
-            strategy    TEXT
+            strategy    TEXT,
+            broker      TEXT,
+            exec_status TEXT,
+            exec_detail TEXT
         )
     """)
-    # Migration: add strategy column to existing databases
-    try:
-        cur.execute("ALTER TABLE trades ADD COLUMN strategy TEXT")
-        conn.commit()
-    except Exception:
-        conn.rollback()
     conn.commit()
+
+    # Migrations for existing databases
+    for col in ("strategy TEXT", "broker TEXT", "exec_status TEXT", "exec_detail TEXT"):
+        try:
+            cur.execute(f"ALTER TABLE trades ADD COLUMN {col}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
     conn.close()
 
 
-def rows_to_dicts(rows):
-    """Normalize rows from either psycopg2 or sqlite3 into plain dicts."""
+def _insert_trade(cur, row):
+    """Insert a trade row and return the new id."""
+    p   = placeholder()
+    phs = ",".join([p] * len(row))
+    cols = ("ticker,action,sentiment,quantity,price,tv_time,"
+            "interval,received_at,strategy,broker")
     if DATABASE_URL:
-        # psycopg2 returns tuples; we need column names from the cursor
-        # (handled in callers that pass cursor description)
-        return rows
-    return [dict(r) for r in rows]
+        cur.execute(
+            f"INSERT INTO trades ({cols}) VALUES ({phs}) RETURNING id", row
+        )
+        return cur.fetchone()[0]
+    cur.execute(f"INSERT INTO trades ({cols}) VALUES ({phs})", row)
+    return cur.lastrowid
+
+
+def _update_exec(cur, trade_id, exec_status, exec_detail):
+    p = placeholder()
+    cur.execute(
+        f"UPDATE trades SET exec_status={p}, exec_detail={p} WHERE id={p}",
+        (exec_status, exec_detail, trade_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,49 +136,71 @@ def webhook():
     if not data:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    received_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    p = placeholder()
+    received_at  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    broker_name  = (data.get("broker") or "").strip().lower()
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        f"""
-        INSERT INTO trades (ticker, action, sentiment, quantity, price, tv_time, interval, received_at, strategy)
-        VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})
-        """,
-        (
-            data.get("ticker"),
-            data.get("action"),
-            data.get("sentiment"),
-            data.get("quantity"),
-            data.get("price"),
-            data.get("time"),
-            data.get("interval"),
-            received_at,
-            data.get("strategy"),
-        ),
-    )
-    conn.commit()
-    conn.close()
+    cur  = conn.cursor()
 
-    return jsonify({"status": "ok"}), 200
+    # 1. Log the signal immediately
+    trade_id = _insert_trade(cur, (
+        data.get("ticker"),
+        data.get("action"),
+        data.get("sentiment"),
+        data.get("quantity"),
+        data.get("price"),
+        data.get("time"),
+        data.get("interval"),
+        received_at,
+        data.get("strategy"),
+        broker_name or None,
+    ))
+    conn.commit()
+
+    # 2. Route to broker
+    exec_status = None
+    exec_detail = None
+
+    if broker_name == "ib":
+        if ib_broker is None:
+            exec_status = "error"
+            exec_detail = "IB broker not initialised — check IB_HOST env var"
+            log.warning("IB order skipped: broker not initialised")
+        else:
+            result = ib_broker.place_order(
+                ticker   = data.get("ticker"),
+                action   = data.get("action"),
+                quantity = data.get("quantity", 1),
+                price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                sec_type = data.get("sec_type", "STK"),
+                currency = data.get("currency", "USD"),
+            )
+            exec_status = "ok"    if result.get("success") else "error"
+            exec_detail = json.dumps(result)
+            log.info("IB order result: %s", result)
+
+    # 3. Write execution result back to the row
+    if exec_status:
+        _update_exec(cur, trade_id, exec_status, exec_detail)
+        conn.commit()
+
+    conn.close()
+    return jsonify({"status": "ok", "id": trade_id}), 200
 
 
 @app.route("/api/trades")
 def api_trades():
     limit = min(int(request.args.get("limit", 200)), 1000)
-    p = placeholder()
-    conn = get_db()
-    cur = conn.cursor()
+    p     = placeholder()
+    conn  = get_db()
+    cur   = conn.cursor()
     cur.execute(f"SELECT * FROM trades ORDER BY id DESC LIMIT {p}", (limit,))
-    rows = cur.fetchall()
-
+    rows  = cur.fetchall()
     if DATABASE_URL:
-        cols = [desc[0] for desc in cur.description]
-        result = [dict(zip(cols, row)) for row in rows]
+        cols   = [d[0] for d in cur.description]
+        result = [dict(zip(cols, r)) for r in rows]
     else:
         result = [dict(r) for r in rows]
-
     conn.close()
     return jsonify(result)
 
@@ -148,11 +211,22 @@ def clear_trades():
     if token != WEBHOOK_TOKEN:
         abort(401)
     conn = get_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     cur.execute("DELETE FROM trades")
     conn.commit()
     conn.close()
     return jsonify({"status": "cleared"}), 200
+
+
+@app.route("/api/broker/status")
+def broker_status():
+    brokers = {}
+    if ib_broker is not None:
+        brokers["IB"] = ib_broker.status()
+    else:
+        brokers["IB"] = {"connected": False, "broker": "IB",
+                         "note": "IB_HOST not set"}
+    return jsonify(brokers)
 
 
 @app.route("/")
@@ -162,88 +236,66 @@ def dashboard():
 
 @app.route("/api/stats")
 def api_stats():
-    """
-    Compute performance stats by pairing BUY/SELL signals per ticker (FIFO).
-    Returns win rate, avg win/loss, profit factor, max drawdown, equity curve.
-    """
     strategy_filter = request.args.get("strategy")
     conn = get_db()
-    cur = conn.cursor()
-    p = placeholder()
+    cur  = conn.cursor()
+    p    = placeholder()
     if strategy_filter:
-        cur.execute(f"SELECT * FROM trades WHERE strategy = {p} ORDER BY id ASC", (strategy_filter,))
+        cur.execute(
+            f"SELECT * FROM trades WHERE strategy = {p} ORDER BY id ASC",
+            (strategy_filter,),
+        )
     else:
         cur.execute("SELECT * FROM trades ORDER BY id ASC")
     rows = cur.fetchall()
-
     if DATABASE_URL:
-        cols = [desc[0] for desc in cur.description]
-        trades = [dict(zip(cols, row)) for row in rows]
+        cols   = [d[0] for d in cur.description]
+        trades = [dict(zip(cols, r)) for r in rows]
     else:
         trades = [dict(r) for r in rows]
-
     conn.close()
 
-    # ------------------------------------------------------------------
-    # Pair BUY -> SELL per ticker using FIFO to compute closed trade P&L
-    # ------------------------------------------------------------------
-    open_trades = {}   # ticker -> list of (price, quantity, time)
-    closed = []        # list of {"pnl": float, "time": str}
+    open_trades = {}
+    closed      = []
 
     for t in trades:
-        action = (t.get("action") or "").strip().upper()
-        ticker = (t.get("ticker") or "").strip().upper()
+        action   = (t.get("action") or "").strip().upper()
+        ticker   = (t.get("ticker") or "").strip().upper()
         received = t.get("received_at") or ""
-
         try:
             price = float(t.get("price") or 0)
             qty   = float(t.get("quantity") or 1)
         except (ValueError, TypeError):
             continue
-
         if not ticker or price == 0:
             continue
-
         if action == "BUY":
             open_trades.setdefault(ticker, []).append((price, qty, received))
-
         elif action == "SELL":
             queue = open_trades.get(ticker, [])
             if queue:
                 buy_price, buy_qty, _ = queue.pop(0)
-                fill_qty = min(qty, buy_qty)
-                pnl = (price - buy_price) * fill_qty
+                pnl = (price - buy_price) * min(qty, buy_qty)
                 closed.append({"pnl": pnl, "time": received})
 
-    # ------------------------------------------------------------------
-    # Compute stats from closed list
-    # ------------------------------------------------------------------
     if not closed:
         return jsonify({
-            "completed_trades": 0,
-            "win_rate":         0,
-            "avg_win":          0,
-            "avg_loss":         0,
-            "profit_factor":    None,
-            "max_drawdown":     0,
-            "equity_curve":     [],
+            "completed_trades": 0, "win_rate": 0, "avg_win": 0,
+            "avg_loss": 0, "profit_factor": None, "max_drawdown": 0,
+            "equity_curve": [],
         })
 
     wins   = [c["pnl"] for c in closed if c["pnl"] > 0]
     losses = [c["pnl"] for c in closed if c["pnl"] <= 0]
 
     win_rate      = round(len(wins) / len(closed) * 100, 1)
-    avg_win       = round(sum(wins) / len(wins), 2) if wins else 0
+    avg_win       = round(sum(wins)   / len(wins),   2) if wins   else 0
     avg_loss      = round(sum(losses) / len(losses), 2) if losses else 0
     gross_loss    = abs(sum(losses))
     profit_factor = round(sum(wins) / gross_loss, 2) if gross_loss > 0 else None
 
-    # Equity curve & max drawdown
     equity_curve = []
-    cumulative   = 0
-    peak         = 0
-    max_dd       = 0
-
+    cumulative = peak = max_dd = 0
     for c in closed:
         cumulative += c["pnl"]
         equity_curve.append({"time": c["time"], "value": round(cumulative, 2)})
@@ -268,7 +320,6 @@ def api_stats():
 # Entry point
 # ---------------------------------------------------------------------------
 
-# Run at startup regardless of how the app is launched (gunicorn or direct)
 init_db()
 
 if __name__ == "__main__":

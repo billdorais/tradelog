@@ -52,6 +52,8 @@
     .mode-dot { width: 7px; height: 7px; border-radius: 50%; }
     .mode-pill.paper .mode-dot { background: #ffc107; }
     .mode-pill.live  .mode-dot { background: #26a65b; animation: pulse 1.5s infinite; }
+    .mode-pill.ib-connected    { background: rgba(38,166,91,0.15);  color: #26a65b; border: 1px solid rgba(38,166,91,0.3); }
+    .mode-pill.ib-disconnected { background: rgba(239,83,80,0.15);  color: #ef5350; border: 1px solid rgba(239,83,80,0.3); }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -213,6 +215,7 @@
     <h1>Trade Log</h1>
     <div class="controls">
       <span id="modePill"></span>
+      <span id="ibPill"></span>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
@@ -460,12 +463,20 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing...';
       try {
-        const [tradesRes, statsRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
+          fetch('/api/broker/status'),
         ]);
-        const trades = await tradesRes.json();
-        const stats  = await statsRes.json();
+        const trades  = await tradesRes.json();
+        const stats   = await statsRes.json();
+        const brokers = await brokerRes.json();
+
+        // IB connection pill
+        const ib = brokers.IB || {};
+        document.getElementById('ibPill').innerHTML = ib.connected
+          ? `<span class="mode-pill ib-connected"><span class="mode-dot" style="width:7px;height:7px;border-radius:50%;background:#26a65b;animation:pulse 1.5s infinite;display:inline-block"></span>IB ${(ib.accounts||[]).join(', ')}</span>`
+          : `<span class="mode-pill ib-disconnected">IB Disconnected</span>`;
         allTrades = trades;
 
         // Mode pill (paper vs live)
