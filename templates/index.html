@@ -17,7 +17,7 @@
     }
 
     header {
-      max-width: 1100px;
+      max-width: 1200px;
       margin: 0 auto 24px;
       display: flex;
       align-items: center;
@@ -34,9 +34,28 @@
       gap: 12px;
     }
 
-    .status {
-      font-size: 0.85rem;
-      color: #888;
+    .status { font-size: 0.85rem; color: #888; }
+
+    /* PAPER / LIVE mode pill */
+    .mode-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      letter-spacing: 0.04em;
+    }
+    .mode-pill.paper { background: rgba(255,193,7,0.15); color: #ffc107; border: 1px solid rgba(255,193,7,0.3); }
+    .mode-pill.live  { background: rgba(38,166,91,0.15);  color: #26a65b; border: 1px solid rgba(38,166,91,0.3); }
+    .mode-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .mode-pill.paper .mode-dot { background: #ffc107; }
+    .mode-pill.live  .mode-dot { background: #26a65b; animation: pulse 1.5s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
     }
 
     button {
@@ -48,11 +67,11 @@
       cursor: pointer;
       font-size: 0.9rem;
     }
-
     button:hover { background: #1a4fd8; }
 
+    /* Stat cards */
     .stats {
-      max-width: 1100px;
+      max-width: 1200px;
       margin: 0 auto 24px;
       display: flex;
       gap: 16px;
@@ -64,14 +83,41 @@
       border-radius: 8px;
       padding: 16px 24px;
       flex: 1;
-      min-width: 140px;
+      min-width: 130px;
     }
 
     .stat-card .label { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
     .stat-card .value { font-size: 1.5rem; font-weight: bold; color: #fff; }
+    .stat-card.positive .value { color: #26a65b; }
+    .stat-card.negative .value { color: #ef5350; }
+    .stat-card.neutral  .value { color: #fff; }
+
+    /* Chart */
+    .chart-wrap {
+      max-width: 1200px;
+      margin: 0 auto 24px;
+      background: #1c1f2e;
+      border-radius: 8px;
+      padding: 20px 24px;
+    }
+    .chart-wrap .chart-title {
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    /* Table */
+    .section-label {
+      max-width: 1200px;
+      margin: 0 auto 10px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #555;
+    }
 
     .table-wrap {
-      max-width: 1100px;
+      max-width: 1200px;
       margin: 0 auto;
       overflow-x: auto;
       border-radius: 8px;
@@ -97,9 +143,9 @@
     tbody tr { border-bottom: 1px solid #1e2130; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #1a1d2a; }
-
     td { padding: 11px 16px; vertical-align: middle; white-space: nowrap; }
 
+    /* Badges */
     .badge {
       display: inline-block;
       padding: 3px 10px;
@@ -108,57 +154,37 @@
       font-weight: bold;
       text-transform: uppercase;
     }
+    .badge-buy    { background: rgba(38,166,91,0.2);  color: #26a65b; }
+    .badge-sell   { background: rgba(239,83,80,0.2);  color: #ef5350; }
+    .badge-long   { background: rgba(38,166,91,0.1);  color: #26a65b; }
+    .badge-short  { background: rgba(239,83,80,0.1);  color: #ef5350; }
+    .badge-flat   { background: rgba(150,150,150,0.1); color: #aaa; }
 
-    .badge-buy  { background: rgba(38, 166, 91, 0.2); color: #26a65b; }
-    .badge-sell { background: rgba(239, 83, 80, 0.2); color: #ef5350; }
-
-    .badge-long  { background: rgba(38, 166, 91, 0.1); color: #26a65b; }
-    .badge-short { background: rgba(239, 83, 80, 0.1); color: #ef5350; }
-    .badge-flat  { background: rgba(150, 150, 150, 0.1); color: #aaa; }
+    /* Exec status badges */
+    .exec-ok     { background: rgba(38,166,91,0.15);  color: #26a65b; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
+    .exec-paper  { background: rgba(255,193,7,0.15);  color: #ffc107; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
+    .exec-error  { background: rgba(239,83,80,0.15);  color: #ef5350; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
+    .exec-none   { color: #444; font-size: 0.75rem; }
 
     .empty {
       text-align: center;
       padding: 40px;
       color: #555;
     }
-
-    .section-label {
-      max-width: 1100px;
-      margin: 0 auto 10px;
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #555;
-    }
-
-    .stat-card.positive .value { color: #26a65b; }
-    .stat-card.negative .value { color: #ef5350; }
-    .stat-card.neutral  .value { color: #fff; }
-
-    .chart-wrap {
-      max-width: 1100px;
-      margin: 24px auto 0;
-      background: #1c1f2e;
-      border-radius: 8px;
-      padding: 20px 24px;
-    }
-
-    .chart-wrap .chart-title {
-      font-size: 0.8rem;
-      color: #888;
-      margin-bottom: 12px;
-    }
   </style>
 </head>
 <body>
+
   <header>
     <h1>Trade Log</h1>
     <div class="controls">
+      <span id="modePill"></span>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
     </div>
   </header>
 
+  <!-- Signal stats -->
   <div class="section-label">Signals</div>
   <div class="stats">
     <div class="stat-card">
@@ -166,26 +192,35 @@
       <div class="value" id="statTotal">—</div>
     </div>
     <div class="stat-card">
-      <div class="label">Buy Orders</div>
-      <div class="value" id="statBuys" style="color:#26a65b">—</div>
+      <div class="label">Buy Signals</div>
+      <div class="value" style="color:#26a65b" id="statBuys">—</div>
     </div>
     <div class="stat-card">
-      <div class="label">Sell Orders</div>
-      <div class="value" id="statSells" style="color:#ef5350">—</div>
+      <div class="label">Sell Signals</div>
+      <div class="value" style="color:#ef5350" id="statSells">—</div>
     </div>
     <div class="stat-card">
       <div class="label">Tickers</div>
       <div class="value" id="statTickers">—</div>
     </div>
+    <div class="stat-card">
+      <div class="label">Executed</div>
+      <div class="value" id="statExecuted">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Errors</div>
+      <div class="value" style="color:#ef5350" id="statErrors">—</div>
+    </div>
   </div>
 
-  <div class="section-label" style="margin-top:24px">Performance (closed trades)</div>
+  <!-- Performance stats -->
+  <div class="section-label" style="margin-top:8px">Performance (closed trades)</div>
   <div class="stats">
     <div class="stat-card neutral">
       <div class="label">Closed Trades</div>
       <div class="value" id="perfClosed">—</div>
     </div>
-    <div class="stat-card neutral">
+    <div class="stat-card neutral" id="winRateCard">
       <div class="label">Win Rate</div>
       <div class="value" id="perfWinRate">—</div>
     </div>
@@ -207,11 +242,14 @@
     </div>
   </div>
 
+  <!-- Equity curve -->
   <div class="chart-wrap">
-    <div class="chart-title">Equity Curve (cumulative P&amp;L)</div>
-    <canvas id="equityChart" height="100"></canvas>
+    <div class="chart-title">Equity Curve (cumulative P&amp;L from closed trades)</div>
+    <canvas id="equityChart" height="90"></canvas>
   </div>
 
+  <!-- Trade table -->
+  <div class="section-label">Signal Feed</div>
   <div class="table-wrap">
     <table>
       <thead>
@@ -221,14 +259,15 @@
           <th>Ticker</th>
           <th>Action</th>
           <th>Sentiment</th>
-          <th>Quantity</th>
+          <th>Qty</th>
           <th>Price</th>
           <th>Interval</th>
+          <th>Execution</th>
           <th>TV Time</th>
         </tr>
       </thead>
       <tbody id="tradeBody">
-        <tr><td colspan="9" class="empty">Loading trades...</td></tr>
+        <tr><td colspan="10" class="empty">Loading trades...</td></tr>
       </tbody>
     </table>
   </div>
@@ -236,10 +275,26 @@
   <script>
     let equityChartInstance = null;
 
-    function badge(value, type) {
+    function execBadge(status) {
+      if (!status) return '<span class="exec-none">—</span>';
+      const s = status.toLowerCase();
+      if (s === 'ok')    return '<span class="exec-ok">✓ Filled</span>';
+      if (s === 'paper') return '<span class="exec-paper">Paper</span>';
+      if (s === 'error') return '<span class="exec-error">✗ Error</span>';
+      return `<span class="exec-none">${status}</span>`;
+    }
+
+    function actionBadge(value) {
       if (!value) return '—';
       const v = value.toLowerCase();
-      return `<span class="badge badge-${type === 'action' ? v : v}">${value}</span>`;
+      return `<span class="badge badge-${v}">${value}</span>`;
+    }
+
+    function sentimentBadge(value) {
+      if (!value) return '—';
+      const v = value.toLowerCase();
+      const cls = v === 'long' ? 'badge-long' : v === 'short' ? 'badge-short' : 'badge-flat';
+      return `<span class="badge ${cls}">${value}</span>`;
     }
 
     function fmt(n, prefix = '') {
@@ -249,8 +304,7 @@
     }
 
     async function loadTrades() {
-      const status = document.getElementById('status');
-      status.textContent = 'Refreshing...';
+      document.getElementById('status').textContent = 'Refreshing...';
       try {
         const [tradesRes, statsRes] = await Promise.all([
           fetch('/api/trades'),
@@ -259,35 +313,43 @@
         const trades = await tradesRes.json();
         const stats  = await statsRes.json();
 
+        // Mode pill (paper vs live)
+        const isPaper = stats.paper_trading !== false;
+        document.getElementById('modePill').innerHTML = isPaper
+          ? '<span class="mode-pill paper"><span class="mode-dot"></span>PAPER</span>'
+          : '<span class="mode-pill live"><span class="mode-dot"></span>LIVE</span>';
+
         // --- Signal table ---
         const body = document.getElementById('tradeBody');
-        if (trades.length === 0) {
-          body.innerHTML = '<tr><td colspan="9" class="empty">No trades yet. Waiting for webhook signals...</td></tr>';
+        if (!trades.length) {
+          body.innerHTML = '<tr><td colspan="10" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
         } else {
           body.innerHTML = trades.map(t => `
             <tr>
               <td style="color:#555">${t.id}</td>
               <td>${t.received_at ?? '—'}</td>
               <td><strong>${t.ticker ?? '—'}</strong></td>
-              <td>${badge(t.action, 'action')}</td>
-              <td>${badge(t.sentiment, 'sentiment')}</td>
+              <td>${actionBadge(t.action)}</td>
+              <td>${sentimentBadge(t.sentiment)}</td>
               <td>${t.quantity ?? '—'}</td>
               <td>${t.price ?? '—'}</td>
               <td>${t.interval ?? '—'}</td>
-              <td style="color:#666;font-size:0.8rem">${t.tv_time ?? '—'}</td>
+              <td>${execBadge(t.exec_status)}</td>
+              <td style="color:#555;font-size:0.8rem">${t.tv_time ?? '—'}</td>
             </tr>
           `).join('');
         }
 
         // --- Signal stats ---
-        document.getElementById('statTotal').textContent  = trades.length;
-        document.getElementById('statBuys').textContent   = trades.filter(t => t.action?.toLowerCase() === 'buy').length;
-        document.getElementById('statSells').textContent  = trades.filter(t => t.action?.toLowerCase() === 'sell').length;
-        const tickers = new Set(trades.map(t => t.ticker).filter(Boolean));
-        document.getElementById('statTickers').textContent = tickers.size;
+        document.getElementById('statTotal').textContent   = trades.length;
+        document.getElementById('statBuys').textContent    = trades.filter(t => t.action?.toLowerCase() === 'buy').length;
+        document.getElementById('statSells').textContent   = trades.filter(t => t.action?.toLowerCase() === 'sell').length;
+        document.getElementById('statTickers').textContent = new Set(trades.map(t => t.ticker).filter(Boolean)).size;
+        document.getElementById('statExecuted').textContent = trades.filter(t => t.exec_status === 'ok').length;
+        document.getElementById('statErrors').textContent   = trades.filter(t => t.exec_status === 'error').length;
 
         // --- Performance stats ---
-        const noData = stats.completed_trades === 0;
+        const noData = !stats.completed_trades;
         document.getElementById('perfClosed').textContent  = noData ? '—' : stats.completed_trades;
         document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
         document.getElementById('perfAvgWin').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
@@ -295,16 +357,12 @@
         document.getElementById('perfPF').textContent      = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
         document.getElementById('perfDD').textContent      = noData ? '—' : fmt(-stats.max_drawdown, '$');
 
-        // Colour win rate card dynamically
-        const wrCard = document.getElementById('perfWinRate').closest('.stat-card');
-        if (!noData) {
-          wrCard.classList.toggle('positive', stats.win_rate >= 50);
-          wrCard.classList.toggle('negative', stats.win_rate < 50);
-        }
+        const wrCard = document.getElementById('winRateCard');
+        wrCard.className = 'stat-card ' + (noData ? 'neutral' : stats.win_rate >= 50 ? 'positive' : 'negative');
 
         // --- Equity curve ---
-        const labels = stats.equity_curve.map(p => p.time);
-        const values = stats.equity_curve.map(p => p.value);
+        const labels   = (stats.equity_curve || []).map(p => p.time);
+        const values   = (stats.equity_curve || []).map(p => p.value);
         const finalVal = values.length ? values[values.length - 1] : 0;
         const lineColor = finalVal >= 0 ? '#26a65b' : '#ef5350';
 
@@ -337,10 +395,20 @@
           },
         });
 
-        const now = new Date().toLocaleTimeString();
-        status.textContent = `Last updated: ${now}`;
+        if (!values.length) {
+          // Show placeholder text when no closed trades yet
+          const chartCanvas = document.getElementById('equityChart');
+          const c = chartCanvas.getContext('2d');
+          c.fillStyle = '#444';
+          c.font = '14px Arial';
+          c.textAlign = 'center';
+          c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
+        }
+
+        document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+
       } catch (e) {
-        document.getElementById('status').textContent = 'Error loading trades';
+        document.getElementById('status').textContent = 'Error loading data';
         console.error(e);
       }
     }

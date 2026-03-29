@@ -133,91 +133,108 @@ def api_trades():
     return jsonify(result)
 
 
+@app.route("/")
+def dashboard():
+    return render_template("index.html")
+
+
 @app.route("/api/stats")
 def api_stats():
+    """
+    Compute performance stats by pairing BUY/SELL signals per ticker (FIFO).
+    Returns win rate, avg win/loss, profit factor, max drawdown, equity curve.
+    """
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT ticker, action, price, quantity, received_at FROM trades ORDER BY received_at ASC"
-    )
+    cur.execute("SELECT * FROM trades ORDER BY id ASC")
     rows = cur.fetchall()
+
     if DATABASE_URL:
         cols = [desc[0] for desc in cur.description]
         trades = [dict(zip(cols, row)) for row in rows]
     else:
         trades = [dict(r) for r in rows]
+
     conn.close()
 
-    # FIFO pairing of buy → sell per ticker
-    open_positions = {}  # ticker -> [(price, qty)]
-    completed = []       # [(pnl, received_at)]
+    # ------------------------------------------------------------------
+    # Pair BUY -> SELL per ticker using FIFO to compute closed trade P&L
+    # ------------------------------------------------------------------
+    open_trades = {}   # ticker -> list of (price, quantity, time)
+    closed = []        # list of {"pnl": float, "time": str}
 
     for t in trades:
-        ticker = t.get("ticker")
-        action = (t.get("action") or "").lower()
+        action = (t.get("action") or "").strip().upper()
+        ticker = (t.get("ticker") or "").strip().upper()
+        received = t.get("received_at") or ""
+
         try:
             price = float(t.get("price") or 0)
-            qty   = float(t.get("quantity") or 0)
-        except (TypeError, ValueError):
-            continue
-        if price == 0 or qty == 0:
+            qty   = float(t.get("quantity") or 1)
+        except (ValueError, TypeError):
             continue
 
-        if action == "buy":
-            open_positions.setdefault(ticker, []).append((price, qty))
-        elif action == "sell":
-            queue = open_positions.get(ticker, [])
+        if not ticker or price == 0:
+            continue
+
+        if action == "BUY":
+            open_trades.setdefault(ticker, []).append((price, qty, received))
+
+        elif action == "SELL":
+            queue = open_trades.get(ticker, [])
             if queue:
-                entry_price, entry_qty = queue.pop(0)
-                pnl = (price - entry_price) * min(qty, entry_qty)
-                completed.append((pnl, t["received_at"]))
+                buy_price, buy_qty, _ = queue.pop(0)
+                fill_qty = min(qty, buy_qty)
+                pnl = (price - buy_price) * fill_qty
+                closed.append({"pnl": pnl, "time": received})
 
-    if not completed:
+    # ------------------------------------------------------------------
+    # Compute stats from closed list
+    # ------------------------------------------------------------------
+    if not closed:
         return jsonify({
             "completed_trades": 0,
-            "win_rate": None,
-            "avg_win": None,
-            "avg_loss": None,
-            "profit_factor": None,
-            "max_drawdown": None,
-            "equity_curve": [],
+            "win_rate":         0,
+            "avg_win":          0,
+            "avg_loss":         0,
+            "profit_factor":    None,
+            "max_drawdown":     0,
+            "equity_curve":     [],
         })
 
-    wins   = [p for p, _ in completed if p > 0]
-    losses = [p for p, _ in completed if p < 0]
+    wins   = [c["pnl"] for c in closed if c["pnl"] > 0]
+    losses = [c["pnl"] for c in closed if c["pnl"] <= 0]
 
-    win_rate      = round(len(wins) / len(completed) * 100, 1)
-    avg_win       = round(sum(wins)   / len(wins),   2) if wins   else 0
+    win_rate      = round(len(wins) / len(closed) * 100, 1)
+    avg_win       = round(sum(wins) / len(wins), 2) if wins else 0
     avg_loss      = round(sum(losses) / len(losses), 2) if losses else 0
-    profit_factor = round(sum(wins) / abs(sum(losses)), 2) if losses else None
+    gross_loss    = abs(sum(losses))
+    profit_factor = round(sum(wins) / gross_loss, 2) if gross_loss > 0 else None
 
-    running = 0
-    peak    = 0
-    max_dd  = 0
+    # Equity curve & max drawdown
     equity_curve = []
-    for pnl, ts in completed:
-        running += pnl
-        if running > peak:
-            peak = running
-        dd = peak - running
+    cumulative   = 0
+    peak         = 0
+    max_dd       = 0
+
+    for c in closed:
+        cumulative += c["pnl"]
+        equity_curve.append({"time": c["time"], "value": round(cumulative, 2)})
+        if cumulative > peak:
+            peak = cumulative
+        dd = peak - cumulative
         if dd > max_dd:
             max_dd = dd
-        equity_curve.append({"time": ts, "value": round(running, 2)})
 
     return jsonify({
-        "completed_trades": len(completed),
-        "win_rate":      win_rate,
-        "avg_win":       avg_win,
-        "avg_loss":      avg_loss,
-        "profit_factor": profit_factor,
-        "max_drawdown":  round(max_dd, 2),
-        "equity_curve":  equity_curve,
+        "completed_trades": len(closed),
+        "win_rate":         win_rate,
+        "avg_win":          avg_win,
+        "avg_loss":         avg_loss,
+        "profit_factor":    profit_factor,
+        "max_drawdown":     round(max_dd, 2),
+        "equity_curve":     equity_curve,
     })
-
-
-@app.route("/")
-def dashboard():
-    return render_template("index.html")
 
 
 # ---------------------------------------------------------------------------
