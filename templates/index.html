@@ -68,6 +68,8 @@
       font-size: 0.9rem;
     }
     button:hover { background: #1a4fd8; }
+    button.danger { background: transparent; color: #ef5350; border: 1px solid rgba(239,83,80,0.4); }
+    button.danger:hover { background: rgba(239,83,80,0.1); border-color: #ef5350; }
 
     /* Stat cards */
     .stats {
@@ -213,6 +215,7 @@
       <span id="modePill"></span>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
+      <button class="danger" onclick="clearDatabase()">Clear DB</button>
     </div>
   </header>
 
@@ -501,6 +504,23 @@
 
       } catch (e) {
         document.getElementById('status').textContent = 'Error loading data';
+        console.error(e);
+      }
+    }
+
+    async function clearDatabase() {
+      if (!confirm('Delete all trades from the database? This cannot be undone.')) return;
+      const token = prompt('Enter your webhook token to confirm:');
+      if (!token) return;
+      try {
+        const res = await fetch(`/api/trades/clear?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        if (res.ok) {
+          await loadTrades();
+        } else {
+          alert(res.status === 401 ? 'Invalid token.' : 'Clear failed.');
+        }
+      } catch (e) {
+        alert('Error clearing database.');
         console.error(e);
       }
     }

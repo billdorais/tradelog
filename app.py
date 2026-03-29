@@ -142,6 +142,19 @@ def api_trades():
     return jsonify(result)
 
 
+@app.route("/api/trades/clear", methods=["POST"])
+def clear_trades():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM trades")
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "cleared"}), 200
+
+
 @app.route("/")
 def dashboard():
     return render_template("index.html")
