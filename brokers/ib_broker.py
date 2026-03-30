@@ -1,3 +1,4 @@
+import asyncio
 import os
 import threading
 import logging
@@ -21,6 +22,14 @@ class IBBroker:
     # ------------------------------------------------------------------
 
     def connect(self):
+        # ib_insync uses asyncio internally — ensure the calling thread has an event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("closed")
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         self._ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=15, readonly=False)
         log.info("IB connected — accounts: %s", self._ib.managedAccounts())
 
