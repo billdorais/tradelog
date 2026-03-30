@@ -5,9 +5,10 @@ from ib_insync import IB, Stock, Forex, MarketOrder, LimitOrder
 
 log = logging.getLogger(__name__)
 
-IB_HOST      = os.environ.get("IB_HOST", "127.0.0.1")
-IB_PORT      = int(os.environ.get("IB_PORT", 4002))
-IB_CLIENT_ID = int(os.environ.get("IB_CLIENT_ID", 1))
+IB_HOST = os.environ.get("IB_HOST", "127.0.0.1")
+IB_PORT = int(os.environ.get("IB_PORT", 4002))
+# Use PID-based client ID so gunicorn master + worker don't collide
+IB_CLIENT_ID = int(os.environ.get("IB_CLIENT_ID", 1)) + (os.getpid() % 10)
 
 
 class IBBroker:

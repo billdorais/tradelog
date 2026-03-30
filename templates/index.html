@@ -216,6 +216,7 @@
     <div class="controls">
       <span id="modePill"></span>
       <span id="ibPill"></span>
+      <button id="ibReconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
@@ -477,6 +478,7 @@
         document.getElementById('ibPill').innerHTML = ib.connected
           ? `<span class="mode-pill ib-connected"><span class="mode-dot" style="width:7px;height:7px;border-radius:50%;background:#26a65b;animation:pulse 1.5s infinite;display:inline-block"></span>IB ${(ib.accounts||[]).join(', ')}</span>`
           : `<span class="mode-pill ib-disconnected">IB Disconnected</span>`;
+        document.getElementById('ibReconnectBtn').style.display = ib.connected ? 'none' : 'inline-block';
         allTrades = trades;
 
         // Mode pill (paper vs live)
@@ -516,6 +518,25 @@
       } catch (e) {
         document.getElementById('status').textContent = 'Error loading data';
         console.error(e);
+      }
+    }
+
+    async function reconnectIB() {
+      const token = prompt('Enter webhook token to reconnect IB:');
+      if (!token) return;
+      document.getElementById('ibReconnectBtn').textContent = 'Connecting...';
+      try {
+        const res = await fetch(`/api/broker/reconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.connected) {
+          await loadTrades();
+        } else {
+          alert('Reconnect failed: ' + (data.error || 'unknown error'));
+          document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+        }
+      } catch (e) {
+        alert('Reconnect error');
+        document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
       }
     }
 

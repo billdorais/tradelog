@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -17,20 +19,30 @@ WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "change-me")
 DATABASE_URL  = os.environ.get("DATABASE_URL")
 
 # ---------------------------------------------------------------------------
-# Broker initialisation — only if IB_HOST is configured
+# Broker initialisation — connect in background so app starts immediately
 # ---------------------------------------------------------------------------
 
 ib_broker = None
 
 if os.environ.get("IB_HOST"):
-    try:
-        from brokers.ib_broker import IBBroker
-        ib_broker = IBBroker()
-        ib_broker.connect()
-        log.info("IB Gateway connected at startup")
-    except Exception as e:
-        log.warning("IB Gateway not available at startup: %s", e)
-        # ib_broker stays None — orders will be skipped, not crash the app
+    from brokers.ib_broker import IBBroker
+    ib_broker = IBBroker()
+
+    def _connect_ib_background():
+        """Try to connect to IB Gateway, retrying every 30s on failure."""
+        time.sleep(3)  # let gunicorn finish forking before we open a socket
+        while True:
+            if not ib_broker.is_connected():
+                try:
+                    ib_broker.connect()
+                    log.info("IB Gateway connected (pid=%s)", os.getpid())
+                except Exception as e:
+                    log.warning("IB connect failed, retrying in 30s: %s", e)
+                    time.sleep(30)
+                    continue
+            time.sleep(10)  # check every 10s and reconnect if dropped
+
+    threading.Thread(target=_connect_ib_background, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
@@ -220,13 +232,28 @@ def clear_trades():
 
 @app.route("/api/broker/status")
 def broker_status():
-    brokers = {}
     if ib_broker is not None:
-        brokers["IB"] = ib_broker.status()
+        brokers = {"IB": ib_broker.status()}
     else:
-        brokers["IB"] = {"connected": False, "broker": "IB",
-                         "note": "IB_HOST not set"}
+        brokers = {"IB": {"connected": False, "broker": "IB",
+                          "note": "IB_HOST not set"}}
     return jsonify(brokers)
+
+
+@app.route("/api/broker/reconnect", methods=["POST"])
+def broker_reconnect():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    if ib_broker is None:
+        return jsonify({"error": "IB_HOST not configured"}), 400
+    try:
+        if ib_broker.is_connected():
+            ib_broker.disconnect()
+        ib_broker.connect()
+        return jsonify(ib_broker.status())
+    except Exception as e:
+        return jsonify({"connected": False, "error": str(e)}), 500
 
 
 @app.route("/")
