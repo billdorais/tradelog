@@ -3,25 +3,18 @@ set -e
 
 echo "=== ib-gateway-start.sh: patching TrustedIPs ==="
 
-# Show all .ini files BEFORE run.sh touches them (helps debug source of 127.0.0.1)
-echo "--- ini files found at startup ---"
-find /home/ibgateway -name "*.ini" 2>/dev/null | while read f; do
-    echo "=== $f ==="
-    cat "$f"
-done
+IBC_CONFIG=/home/ibgateway/ibc/config.ini
 
-# Patch TrustedIPs=127.0.0.1 → TrustedIPs=* in ALL files (ini, sh, conf)
-PATCHED=$(find /home/ibgateway -type f \( -name "*.ini" -o -name "*.sh" -o -name "*.conf" \) \
-    -exec grep -l "TrustedIPs=127\.0\.0\.1" {} \; 2>/dev/null)
-
-if [ -n "$PATCHED" ]; then
-    echo "$PATCHED" | xargs sed -i 's/TrustedIPs=127\.0\.0\.1/TrustedIPs=*/g'
-    echo "Patched TrustedIPs in: $PATCHED"
+# Patch IBC's own config so it writes TrustedIPs=* into jts.ini
+if grep -q "^TrustedTwsApiClientIPs=" "$IBC_CONFIG" 2>/dev/null; then
+    sed -i 's/^TrustedTwsApiClientIPs=.*/TrustedTwsApiClientIPs=*/' "$IBC_CONFIG"
+    echo "Patched TrustedTwsApiClientIPs=* in $IBC_CONFIG"
 else
-    echo "TrustedIPs=127.0.0.1 not found in any file — may be generated at runtime"
+    echo "TrustedTwsApiClientIPs line not found — appending to $IBC_CONFIG"
+    echo "TrustedTwsApiClientIPs=*" >> "$IBC_CONFIG"
 fi
 
-# Also pre-write jts.ini as a fallback
+# Also pre-write jts.ini as belt-and-suspenders
 mkdir -p /home/ibgateway/Jts
 cat > /home/ibgateway/Jts/jts.ini << 'EOF'
 [Logon]
