@@ -1,8 +1,15 @@
 FROM ghcr.io/gnzsnz/ib-gateway:stable
 
 USER root
-COPY ib-gateway-start.sh /home/ibgateway/scripts/ib-gateway-start.sh
-RUN chmod +x /home/ibgateway/scripts/ib-gateway-start.sh
+
+# Patch IBC config.ini so it writes TrustedIPs=* into jts.ini instead of 127.0.0.1
+RUN grep -q "^TrustedTwsApiClientIPs=" /home/ibgateway/ibc/config.ini \
+    && sed -i 's/^TrustedTwsApiClientIPs=.*/TrustedTwsApiClientIPs=*/' /home/ibgateway/ibc/config.ini \
+    || echo "TrustedTwsApiClientIPs=*" >> /home/ibgateway/ibc/config.ini
+
+# Pre-write jts.ini with TrustedIPs=* as belt-and-suspenders
+RUN mkdir -p /home/ibgateway/Jts && \
+    printf '[Logon]\nLocale=en\nUseSSL=true\n\n[IBGateway]\nApiOnly=true\nTrustedIPs=*\n' \
+    > /home/ibgateway/Jts/jts.ini
 
 USER ibgateway
-CMD ["/home/ibgateway/scripts/ib-gateway-start.sh"]
