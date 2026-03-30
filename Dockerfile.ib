@@ -1,0 +1,8 @@
+FROM ghcr.io/gnzsnz/ib-gateway:stable
+
+USER root
+COPY ib-gateway-start.sh /home/ibgateway/scripts/ib-gateway-start.sh
+RUN chmod +x /home/ibgateway/scripts/ib-gateway-start.sh
+
+USER ibgateway
+CMD ["/home/ibgateway/scripts/ib-gateway-start.sh"]
