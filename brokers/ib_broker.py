@@ -2,7 +2,7 @@ import asyncio
 import os
 import threading
 import logging
-from ib_insync import IB, Stock, Forex, MarketOrder, LimitOrder
+from ib_async import IB, Stock, Forex, MarketOrder, LimitOrder
 
 log = logging.getLogger(__name__)
 
