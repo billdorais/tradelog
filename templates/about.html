@@ -162,7 +162,7 @@
     <h2>Webhook Payload</h2>
     <p>TradingView alerts POST the following JSON to trigger a trade:</p>
     <div class="flow">
-      {<br>
+      {% raw %}{<br>
       &nbsp;&nbsp;"ticker": "{{ticker}}",<br>
       &nbsp;&nbsp;"action": "{{strategy.order.action}}",<br>
       &nbsp;&nbsp;"sentiment": "{{strategy.market_position}}",<br>
@@ -172,7 +172,7 @@
       &nbsp;&nbsp;"strategy": "STRATEGY_NAME",<br>
       &nbsp;&nbsp;"interval": "{{interval}}",<br>
       &nbsp;&nbsp;"broker": "ib"<br>
-      }
+      }{% endraw %}
     </div>
 
   </div>
