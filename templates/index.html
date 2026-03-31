@@ -313,13 +313,14 @@
           <th>Sentiment</th>
           <th>Qty</th>
           <th>Price</th>
+          <th>P&amp;L</th>
           <th>Interval</th>
           <th>Execution</th>
           <th>TV Time</th>
         </tr>
       </thead>
       <tbody id="tradeBody">
-        <tr><td colspan="11" class="empty">Loading trades...</td></tr>
+        <tr><td colspan="12" class="empty">Loading trades...</td></tr>
       </tbody>
     </table>
   </div>
@@ -357,13 +358,46 @@
       return (n < 0 ? '-' : '') + prefix + s;
     }
 
+    function computePnL(trades) {
+      // Process in chronological order to match BUY→SELL pairs per ticker
+      const sorted = [...trades].sort((a, b) => a.id - b.id);
+      const openBuys = {}; // ticker → [{price, qty}]
+      const pnlMap = {};   // trade id → pnl value
+      for (const t of sorted) {
+        const ticker = (t.ticker || '').toUpperCase();
+        const action = (t.action || '').toUpperCase();
+        const price  = parseFloat(t.price);
+        const qty    = parseFloat(t.quantity);
+        if (!ticker || isNaN(price) || isNaN(qty)) continue;
+        if (action === 'BUY') {
+          if (!openBuys[ticker]) openBuys[ticker] = [];
+          openBuys[ticker].push({ price, qty });
+        } else if (action === 'SELL') {
+          const queue = openBuys[ticker];
+          if (queue && queue.length) {
+            const buy = queue.shift();
+            pnlMap[t.id] = (price - buy.price) * Math.min(qty, buy.qty);
+          }
+        }
+      }
+      return pnlMap;
+    }
+
+    function pnlCell(pnl) {
+      if (pnl === undefined) return '<td style="color:#555">—</td>';
+      const color = pnl > 0 ? '#26a65b' : pnl < 0 ? '#ef5350' : '#888';
+      const sign  = pnl > 0 ? '+' : '';
+      return `<td style="color:${color};font-weight:600">${sign}$${pnl.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
+    }
+
     function renderTable(trades, strategyFilter) {
       const visible = strategyFilter
         ? trades.filter(t => t.strategy === strategyFilter)
         : trades;
+      const pnlMap = computePnL(visible);
       const body = document.getElementById('tradeBody');
       if (!visible.length) {
-        body.innerHTML = '<tr><td colspan="11" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
+        body.innerHTML = '<tr><td colspan="12" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
       } else {
         body.innerHTML = visible.map(t => `
           <tr>
@@ -375,6 +409,7 @@
             <td>${sentimentBadge(t.sentiment)}</td>
             <td>${t.quantity ?? '—'}</td>
             <td>${t.price ?? '—'}</td>
+            ${pnlCell(pnlMap[t.id])}
             <td>${t.interval ?? '—'}</td>
             <td>${execBadge(t.exec_status)}</td>
             <td style="color:#555;font-size:0.8rem">${t.tv_time ?? '—'}</td>
