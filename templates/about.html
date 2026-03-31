@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About — Kairos Automata</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    header {
+      max-width: 900px;
+      margin: 0 auto 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    h1 { font-size: 1.6rem; color: #fff; }
+
+    a.nav-link {
+      color: #888;
+      text-decoration: none;
+      font-size: 0.9rem;
+      border: 1px solid #2a2d3e;
+      padding: 5px 12px;
+      border-radius: 4px;
+    }
+
+    a.nav-link:hover { color: #e0e0e0; border-color: #555; }
+
+    .content {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    h2 {
+      font-size: 1.2rem;
+      color: #fff;
+      margin: 28px 0 10px;
+      border-bottom: 1px solid #2a2d3e;
+      padding-bottom: 6px;
+    }
+
+    p {
+      line-height: 1.7;
+      color: #b0b0b0;
+      margin-bottom: 12px;
+    }
+
+    .flow {
+      background: #1a1d2e;
+      border: 1px solid #2a2d3e;
+      border-radius: 6px;
+      padding: 20px 24px;
+      margin: 16px 0;
+      font-family: monospace;
+      font-size: 0.85rem;
+      line-height: 2;
+      color: #b0b0b0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 0.9rem;
+    }
+
+    th {
+      text-align: left;
+      color: #888;
+      font-weight: normal;
+      padding: 8px 12px;
+      border-bottom: 1px solid #2a2d3e;
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #1e2130;
+      color: #b0b0b0;
+      vertical-align: top;
+    }
+
+    td:first-child {
+      color: #e0e0e0;
+      font-family: monospace;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Kairos Automata</h1>
+    <a href="/" class="nav-link">← Dashboard</a>
+  </header>
+
+  <div class="content">
+
+    <h2>Overview</h2>
+    <p>
+      Kairos Automata is an automated trade execution and logging system.
+      TradingView sends trade signals as webhooks, the app logs them and
+      forwards orders to Interactive Brokers for execution, and results
+      are displayed on the dashboard.
+    </p>
+
+    <h2>Trade Flow</h2>
+    <div class="flow">
+      TradingView Alert<br>
+      &nbsp;&nbsp;│&nbsp; POST /webhook?token=... with JSON payload<br>
+      &nbsp;&nbsp;▼<br>
+      Web Service (app.py)<br>
+      &nbsp;&nbsp;│&nbsp; 1. Validates webhook token<br>
+      &nbsp;&nbsp;│&nbsp; 2. Logs trade to PostgreSQL<br>
+      &nbsp;&nbsp;│&nbsp; 3. Routes to IB broker (when broker="ib")<br>
+      &nbsp;&nbsp;▼<br>
+      IB Broker (ib_broker.py)<br>
+      &nbsp;&nbsp;│&nbsp; Connects to IB Gateway via internal network<br>
+      &nbsp;&nbsp;│&nbsp; Places market or limit order via ib_async<br>
+      &nbsp;&nbsp;▼<br>
+      IB Gateway Service<br>
+      &nbsp;&nbsp;│&nbsp; Forwards order to Interactive Brokers servers<br>
+      &nbsp;&nbsp;▼<br>
+      Order Executed → Result logged → Visible on dashboard
+    </div>
+
+    <h2>Railway Services</h2>
+    <table>
+      <tr><th>Service</th><th>Description</th></tr>
+      <tr>
+        <td>web</td>
+        <td>Runs the Flask/Gunicorn app. Handles incoming webhook signals from TradingView, maintains a PostgreSQL database of all trades, and serves the dashboard UI. Connects to IB Gateway via the internal Railway network.</td>
+      </tr>
+      <tr>
+        <td>ib-gateway</td>
+        <td>Runs the IB Gateway application inside Docker. IBC (IB Controller) automates the login process. Exposes the IB API internally on port 4002, proxied to port 4004 via socat. Configured to trade in paper (simulation) mode.</td>
+      </tr>
+    </table>
+
+    <h2>Key Files</h2>
+    <table>
+      <tr><th>File</th><th>Purpose</th></tr>
+      <tr><td>app.py</td><td>Main Flask app — webhook handler, API routes, database logic</td></tr>
+      <tr><td>brokers/ib_broker.py</td><td>IB connection and order placement via ib_async</td></tr>
+      <tr><td>templates/index.html</td><td>Dashboard UI — trade table, equity curve, performance stats</td></tr>
+      <tr><td>Dockerfile.ib</td><td>Builds the IB Gateway Docker image</td></tr>
+      <tr><td>ib-gateway-start.sh</td><td>Startup script that patches config before launching IB Gateway</td></tr>
+      <tr><td>Procfile</td><td>Tells Railway how to start the web service</td></tr>
+    </table>
+
+    <h2>Webhook Payload</h2>
+    <p>TradingView alerts POST the following JSON to trigger a trade:</p>
+    <div class="flow">
+      {<br>
+      &nbsp;&nbsp;"ticker": "{{ticker}}",<br>
+      &nbsp;&nbsp;"action": "{{strategy.order.action}}",<br>
+      &nbsp;&nbsp;"sentiment": "{{strategy.market_position}}",<br>
+      &nbsp;&nbsp;"quantity": "100",<br>
+      &nbsp;&nbsp;"price": "{{close}}",<br>
+      &nbsp;&nbsp;"time": "{{timenow}}",<br>
+      &nbsp;&nbsp;"strategy": "STRATEGY_NAME",<br>
+      &nbsp;&nbsp;"interval": "{{interval}}",<br>
+      &nbsp;&nbsp;"broker": "ib"<br>
+      }
+    </div>
+
+  </div>
+
+</body>
+</html>

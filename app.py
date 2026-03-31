@@ -261,6 +261,11 @@ def dashboard():
     return render_template("index.html")
 
 
+@app.route("/about")
+def about():
+    return render_template("about.html")
+
+
 @app.route("/api/stats")
 def api_stats():
     strategy_filter = request.args.get("strategy")
