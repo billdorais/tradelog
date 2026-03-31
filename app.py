@@ -50,9 +50,8 @@ if os.environ.get("IB_HOST"):
 
 def get_db():
     if DATABASE_URL:
-        import psycopg2
-        import psycopg2.extras
-        return psycopg2.connect(DATABASE_URL)
+        import psycopg
+        return psycopg.connect(DATABASE_URL)
     conn = sqlite3.connect("trades.db")
     conn.row_factory = sqlite3.Row
     return conn
