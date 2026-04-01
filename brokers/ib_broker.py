@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import threading
 import logging
 from ib_async import IB, Stock, Forex, MarketOrder, LimitOrder
@@ -8,8 +9,7 @@ log = logging.getLogger(__name__)
 
 IB_HOST = os.environ.get("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.environ.get("IB_PORT", 4002))
-# Use PID-based client ID so gunicorn master + worker don't collide
-IB_CLIENT_ID = int(os.environ.get("IB_CLIENT_ID", 1)) + (os.getpid() % 10)
+_IB_CLIENT_ID_BASE = int(os.environ.get("IB_CLIENT_ID", 0))
 
 
 class IBBroker:
@@ -30,7 +30,11 @@ class IBBroker:
         except RuntimeError:
             asyncio.set_event_loop(asyncio.new_event_loop())
 
-        self._ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=15, readonly=False)
+        # Pick a unique client ID each attempt to avoid "already in use" errors
+        # across gunicorn workers and restarts. Use env override if set, else random.
+        client_id = _IB_CLIENT_ID_BASE if _IB_CLIENT_ID_BASE else random.randint(10, 999)
+        log.info("IB connecting with clientId %s", client_id)
+        self._ib.connect(IB_HOST, IB_PORT, clientId=client_id, timeout=15, readonly=False)
         log.info("IB connected — accounts: %s", self._ib.managedAccounts())
 
     def disconnect(self):
