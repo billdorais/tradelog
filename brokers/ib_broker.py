@@ -81,6 +81,14 @@ class IBBroker:
             }
 
     # ------------------------------------------------------------------
+    # Fill event subscription
+    # ------------------------------------------------------------------
+
+    def register_fill_callback(self, callback):
+        """Register a callback(trade, fill) fired on every new fill."""
+        self._ib.fillEvent += callback
+
+    # ------------------------------------------------------------------
     # Executions
     # ------------------------------------------------------------------
 

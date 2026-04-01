@@ -28,6 +28,55 @@ if os.environ.get("IB_HOST"):
     from brokers.ib_broker import IBBroker
     ib_broker = IBBroker()
 
+    def _on_fill(_trade, fill):
+        """Called by ib_async whenever a fill arrives — persists to DB."""
+        try:
+            exec_id = fill.execution.execId
+            pnl     = None
+            if fill.commissionReport and fill.commissionReport.realizedPNL == fill.commissionReport.realizedPNL:
+                pnl = round(float(fill.commissionReport.realizedPNL), 2)
+            conn = get_db()
+            cur  = conn.cursor()
+            p    = placeholder()
+            cur.execute(
+                f"INSERT INTO ib_executions "
+                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
+                f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
+                (exec_id,
+                 str(fill.execution.time),
+                 fill.contract.symbol,
+                 fill.contract.secType,
+                 fill.execution.side,
+                 float(fill.execution.shares),
+                 float(fill.execution.price),
+                 fill.execution.orderId,
+                 fill.execution.acctNumber,
+                 fill.execution.exchange,
+                 pnl,
+                 pnl),
+            ) if DATABASE_URL else cur.execute(
+                f"INSERT OR REPLACE INTO ib_executions "
+                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                (exec_id,
+                 str(fill.execution.time),
+                 fill.contract.symbol,
+                 fill.contract.secType,
+                 fill.execution.side,
+                 float(fill.execution.shares),
+                 float(fill.execution.price),
+                 fill.execution.orderId,
+                 fill.execution.acctNumber,
+                 fill.execution.exchange,
+                 pnl),
+            )
+            conn.commit()
+            conn.close()
+            log.info("IB fill saved: %s %s %s @ %s", fill.execution.side, fill.execution.shares, fill.contract.symbol, fill.execution.price)
+        except Exception as e:
+            log.error("Error saving IB fill: %s", e)
+
     def _connect_ib_background():
         """Try to connect to IB Gateway, retrying every 30s on failure."""
         time.sleep(3)  # let gunicorn finish forking before we open a socket
@@ -35,6 +84,7 @@ if os.environ.get("IB_HOST"):
             if not ib_broker.is_connected():
                 try:
                     ib_broker.connect()
+                    ib_broker.register_fill_callback(_on_fill)
                     log.info("IB Gateway connected (pid=%s)", os.getpid())
                 except Exception as e:
                     log.warning("IB connect failed, retrying in 30s: %s", e)
@@ -123,6 +173,24 @@ def init_db():
             broker      TEXT,
             exec_status TEXT,
             exec_detail TEXT
+        )
+    """)
+    conn.commit()
+
+    # IB executions table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ib_executions (
+            exec_id     TEXT PRIMARY KEY,
+            ts          TEXT,
+            symbol      TEXT,
+            sec_type    TEXT,
+            side        TEXT,
+            shares      REAL,
+            price       REAL,
+            order_id    INTEGER,
+            account     TEXT,
+            exchange    TEXT,
+            pnl         REAL
         )
     """)
     conn.commit()
@@ -320,13 +388,17 @@ def strategies():
 
 @app.route("/api/ib/trades")
 def ib_trades():
-    if ib_broker is None or not ib_broker.is_connected():
-        return jsonify([])
-    try:
-        return jsonify(ib_broker.executions())
-    except Exception as e:
-        log.error("ib_trades error: %s", e)
-        return jsonify([])
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT * FROM ib_executions ORDER BY ts DESC")
+    rows = cur.fetchall()
+    if DATABASE_URL:
+        cols   = [d[0] for d in cur.description]
+        result = [dict(zip(cols, r)) for r in rows]
+    else:
+        result = [dict(r) for r in rows]
+    conn.close()
+    return jsonify(result)
 
 
 @app.route("/api/ib/equity")
