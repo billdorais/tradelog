@@ -84,18 +84,105 @@
     }
 
     .stat-card {
-      background: #1c1f2e;
-      border-radius: 8px;
-      padding: 16px 24px;
+      background: #111;
+      border: 1px solid #1e2130;
+      border-radius: 10px;
+      padding: 18px 20px;
       flex: 1;
       min-width: 130px;
     }
 
-    .stat-card .label { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .stat-card .label { font-size: 0.72rem; color: #666; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
     .stat-card .value { font-size: 1.5rem; font-weight: bold; color: #fff; }
     .stat-card.positive .value { color: #26a65b; }
     .stat-card.negative .value { color: #ef5350; }
     .stat-card.neutral  .value { color: #fff; }
+
+    /* Perf cards — taller to hold gauges */
+    .perf-cards {
+      max-width: 1200px;
+      margin: 0 auto 24px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .perf-card {
+      background: #111;
+      border: 1px solid #1e2130;
+      border-radius: 10px;
+      padding: 18px 20px 14px;
+      flex: 1;
+      min-width: 160px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .perf-card .pc-label {
+      font-size: 0.72rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .perf-card .pc-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 10px;
+    }
+
+    .perf-card .pc-value.negative { color: #ef5350; }
+    .perf-card .pc-value.positive { color: #26a65b; }
+
+    /* Semicircle gauge */
+    .gauge-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 130px;
+      margin: 0 auto;
+    }
+
+    .gauge-wrap canvas { display: block; width: 100% !important; }
+
+    .gauge-counts {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      margin-top: 2px;
+      padding: 0 2px;
+    }
+
+    .gauge-counts .wins  { color: #26a65b; }
+    .gauge-counts .mid   { color: #555; }
+    .gauge-counts .losses{ color: #ef5350; }
+
+    /* Avg win/loss bar */
+    .winloss-bar-wrap { margin-top: 6px; }
+
+    .winloss-bar {
+      height: 5px;
+      border-radius: 3px;
+      display: flex;
+      overflow: hidden;
+      margin-bottom: 6px;
+    }
+
+    .winloss-bar .win-seg  { background: #26a65b; }
+    .winloss-bar .loss-seg { background: #ef5350; }
+
+    .winloss-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+    }
+
+    .winloss-labels .wl-win  { color: #26a65b; }
+    .winloss-labels .wl-loss { color: #ef5350; }
 
     /* Chart */
     .chart-wrap {
@@ -260,35 +347,56 @@
 
   <!-- Performance stats -->
   <div class="section-label" style="margin-top:8px">Performance (closed trades)</div>
-  <div class="stats">
-    <div class="stat-card neutral">
-      <div class="label">Closed Trades</div>
-      <div class="value" id="perfClosed">—</div>
+  <div class="perf-cards">
+
+    <!-- Net P&L -->
+    <div class="perf-card">
+      <div class="pc-label">Net P&amp;L <span style="color:#444;font-size:0.65rem" id="perfClosedCount"></span></div>
+      <div class="pc-value" id="perfTotalPnl">—</div>
     </div>
-    <div class="stat-card neutral" id="winRateCard">
-      <div class="label">Win Rate</div>
-      <div class="value" id="perfWinRate">—</div>
+
+    <!-- Trade Win % with gauge -->
+    <div class="perf-card">
+      <div class="pc-label">Trade Win %</div>
+      <div class="pc-value" id="perfWinRate">—</div>
+      <div class="gauge-wrap">
+        <canvas id="winRateGauge" height="70"></canvas>
+        <div class="gauge-counts">
+          <span class="wins" id="gaugeWins">—</span>
+          <span class="mid">0</span>
+          <span class="losses" id="gaugeLosses">—</span>
+        </div>
+      </div>
     </div>
-    <div class="stat-card positive">
-      <div class="label">Avg Win</div>
-      <div class="value" id="perfAvgWin">—</div>
+
+    <!-- Profit Factor -->
+    <div class="perf-card">
+      <div class="pc-label">Profit Factor</div>
+      <div class="pc-value" id="perfPF">—</div>
     </div>
-    <div class="stat-card negative">
-      <div class="label">Avg Loss</div>
-      <div class="value" id="perfAvgLoss">—</div>
+
+    <!-- Max Drawdown -->
+    <div class="perf-card">
+      <div class="pc-label">Max Drawdown</div>
+      <div class="pc-value negative" id="perfDD">—</div>
     </div>
-    <div class="stat-card neutral">
-      <div class="label">Profit Factor</div>
-      <div class="value" id="perfPF">—</div>
+
+    <!-- Avg Win / Loss bar -->
+    <div class="perf-card">
+      <div class="pc-label">Avg Win / Loss</div>
+      <div class="pc-value" id="perfAvgWin">—</div>
+      <div class="winloss-bar-wrap">
+        <div class="winloss-bar">
+          <div class="win-seg"  id="wlWinSeg"  style="width:50%"></div>
+          <div class="loss-seg" id="wlLossSeg" style="width:50%"></div>
+        </div>
+        <div class="winloss-labels">
+          <span class="wl-win"  id="wlWinLabel">—</span>
+          <span class="wl-loss" id="wlLossLabel">—</span>
+        </div>
+      </div>
     </div>
-    <div class="stat-card negative">
-      <div class="label">Max Drawdown</div>
-      <div class="value" id="perfDD">—</div>
-    </div>
-    <div class="stat-card neutral" id="totalPnlCard">
-      <div class="label">Total P&amp;L</div>
-      <div class="value" id="perfTotalPnl">—</div>
-    </div>
+
   </div>
 
   <!-- Equity curve -->
@@ -489,23 +597,67 @@
       document.getElementById('statErrors').textContent   = visible.filter(t => t.exec_status === 'error').length;
     }
 
+    let winRateGaugeInstance = null;
+
+    function drawGauge(canvasId, pct) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      if (winRateGaugeInstance) { winRateGaugeInstance.destroy(); winRateGaugeInstance = null; }
+      const wins   = Math.round(pct);
+      const losses = 100 - wins;
+      winRateGaugeInstance = new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          datasets: [{
+            data: [wins, losses],
+            backgroundColor: ['#26a65b', '#ef5350'],
+            borderWidth: 0,
+            circumference: 180,
+            rotation: 270,
+          }],
+        },
+        options: {
+          animation: false,
+          cutout: '72%',
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        },
+      });
+    }
+
     function renderStats(stats) {
       const noData = !stats.completed_trades;
-      document.getElementById('perfClosed').textContent  = noData ? '—' : stats.completed_trades;
-      document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
-      document.getElementById('perfAvgWin').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
-      document.getElementById('perfAvgLoss').textContent = noData ? '—' : fmt(stats.avg_loss, '$');
-      document.getElementById('perfPF').textContent      = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
-      document.getElementById('perfDD').textContent      = noData ? '—' : fmt(-stats.max_drawdown, '$');
 
-      const curve   = stats.equity_curve || [];
+      // Net P&L
+      const curve    = stats.equity_curve || [];
       const totalPnl = curve.length ? curve[curve.length - 1].value : 0;
-      document.getElementById('perfTotalPnl').textContent = noData ? '—' : fmt(totalPnl, '$');
-      document.getElementById('totalPnlCard').className =
-        'stat-card ' + (noData ? 'neutral' : totalPnl >= 0 ? 'positive' : 'negative');
+      const pnlEl    = document.getElementById('perfTotalPnl');
+      pnlEl.textContent = noData ? '—' : fmt(totalPnl, '$');
+      pnlEl.className   = 'pc-value' + (noData ? '' : totalPnl >= 0 ? ' positive' : ' negative');
+      document.getElementById('perfClosedCount').textContent = noData ? '' : stats.completed_trades + ' trades';
 
-      document.getElementById('winRateCard').className =
-        'stat-card ' + (noData ? 'neutral' : stats.win_rate >= 50 ? 'positive' : 'negative');
+      // Win rate + gauge
+      document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
+      const wins   = noData ? 0 : Math.round(stats.completed_trades * stats.win_rate / 100);
+      const losses = noData ? 0 : stats.completed_trades - wins;
+      document.getElementById('gaugeWins').textContent   = noData ? '—' : wins;
+      document.getElementById('gaugeLosses').textContent = noData ? '—' : losses;
+      drawGauge('winRateGauge', noData ? 50 : stats.win_rate);
+
+      // Profit factor
+      document.getElementById('perfPF').textContent = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
+
+      // Max drawdown
+      document.getElementById('perfDD').textContent = noData ? '—' : fmt(-stats.max_drawdown, '$');
+
+      // Avg win / loss bar
+      const avgWin  = noData ? 0 : Math.abs(stats.avg_win  || 0);
+      const avgLoss = noData ? 0 : Math.abs(stats.avg_loss || 0);
+      document.getElementById('perfAvgWin').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
+      document.getElementById('wlWinLabel').textContent  = noData ? '—' : fmt(stats.avg_win, '$');
+      document.getElementById('wlLossLabel').textContent = noData ? '—' : fmt(stats.avg_loss, '$');
+      const total = avgWin + avgLoss || 1;
+      document.getElementById('wlWinSeg').style.width  = (avgWin  / total * 100) + '%';
+      document.getElementById('wlLossSeg').style.width = (avgLoss / total * 100) + '%';
 
       if (activeTab === 'signals') {
         const labels    = (stats.equity_curve || []).map(p => p.time);
