@@ -45,24 +45,27 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_connect_ib_background, daemon=True).start()
 
     def _poll_account_snapshot():
-        """Poll IB account values every 60s and store in account_snapshots."""
+        """Poll IB account values every 60s, store only when net_liq changes."""
         time.sleep(15)  # wait for connection to establish
+        last_net_liq = None
         while True:
             if ib_broker.is_connected():
                 try:
                     snap = ib_broker.account_snapshot()
-                    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                    conn = get_db()
-                    cur  = conn.cursor()
-                    p    = placeholder()
-                    cur.execute(
-                        f"INSERT INTO account_snapshots (ts, net_liq, realized_pnl, unrealized_pnl)"
-                        f" VALUES ({p},{p},{p},{p})",
-                        (ts, snap["net_liq"], snap["realized_pnl"], snap["unrealized_pnl"]),
-                    )
-                    conn.commit()
-                    conn.close()
-                    log.debug("Account snapshot: %s", snap)
+                    if snap["net_liq"] != last_net_liq:
+                        ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        conn = get_db()
+                        cur  = conn.cursor()
+                        p    = placeholder()
+                        cur.execute(
+                            f"INSERT INTO account_snapshots (ts, net_liq, realized_pnl, unrealized_pnl)"
+                            f" VALUES ({p},{p},{p},{p})",
+                            (ts, snap["net_liq"], snap["realized_pnl"], snap["unrealized_pnl"]),
+                        )
+                        conn.commit()
+                        conn.close()
+                        last_net_liq = snap["net_liq"]
+                        log.debug("Account snapshot stored: %s", snap)
                 except Exception as e:
                     log.warning("Account snapshot failed: %s", e)
             time.sleep(60)
