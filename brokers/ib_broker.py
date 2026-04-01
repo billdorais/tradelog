@@ -81,6 +81,34 @@ class IBBroker:
             }
 
     # ------------------------------------------------------------------
+    # Executions
+    # ------------------------------------------------------------------
+
+    def executions(self):
+        """Return list of filled executions from IB for the current session."""
+        with self._lock:
+            self._ensure_connected()
+            fills = self._ib.fills()
+            result = []
+            for f in fills:
+                result.append({
+                    "exec_id":   f.execution.execId,
+                    "time":      f.execution.time,
+                    "symbol":    f.contract.symbol,
+                    "sec_type":  f.contract.secType,
+                    "side":      f.execution.side,       # BOT / SLD
+                    "shares":    f.execution.shares,
+                    "price":     f.execution.price,
+                    "order_id":  f.execution.orderId,
+                    "account":   f.execution.acctNumber,
+                    "exchange":  f.execution.exchange,
+                    "pnl":       round(f.commissionReport.realizedPNL, 2)
+                                 if f.commissionReport and f.commissionReport.realizedPNL == f.commissionReport.realizedPNL
+                                 else None,
+                })
+            return result
+
+    # ------------------------------------------------------------------
     # Order placement
     # ------------------------------------------------------------------
 

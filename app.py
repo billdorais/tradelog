@@ -318,6 +318,17 @@ def strategies():
     return render_template("strategies.html")
 
 
+@app.route("/api/ib/trades")
+def ib_trades():
+    if ib_broker is None or not ib_broker.is_connected():
+        return jsonify([])
+    try:
+        return jsonify(ib_broker.executions())
+    except Exception as e:
+        log.error("ib_trades error: %s", e)
+        return jsonify([])
+
+
 @app.route("/api/ib/equity")
 def ib_equity():
     conn = get_db()

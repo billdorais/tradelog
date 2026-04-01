@@ -502,6 +502,29 @@
     </table>
   </div>
 
+  <!-- IB Executions feed -->
+  <div class="section-label" style="margin-top:28px">IB Executions</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th>Qty</th>
+          <th>Price</th>
+          <th>Realized P&amp;L</th>
+          <th>Exchange</th>
+          <th>Account</th>
+          <th>Order ID</th>
+        </tr>
+      </thead>
+      <tbody id="ibExecBody">
+        <tr><td colspan="9" class="empty">Loading IB executions...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <script>
     let equityChartInstance  = null;
     let dailyChartInstance   = null;
@@ -978,8 +1001,46 @@
       }
     }
 
+    function renderIBExecs(execs) {
+      const body = document.getElementById('ibExecBody');
+      if (!execs.length) {
+        body.innerHTML = '<tr><td colspan="9" class="empty">No IB executions this session — executions appear after orders are filled.</td></tr>';
+        return;
+      }
+      body.innerHTML = [...execs].reverse().map(e => {
+        const side      = e.side === 'BOT' ? 'BUY' : e.side === 'SLD' ? 'SELL' : e.side;
+        const sideColor = side === 'BUY' ? '#26a65b' : '#ef5350';
+        const pnlHtml   = e.pnl == null
+          ? '<td style="color:#555">—</td>'
+          : `<td style="color:${e.pnl >= 0 ? '#26a65b' : '#ef5350'};font-weight:600">${e.pnl >= 0 ? '+' : ''}$${Math.abs(e.pnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
+        return `<tr>
+          <td style="color:#888;font-size:0.85rem">${e.time ?? '—'}</td>
+          <td><strong>${e.symbol ?? '—'}</strong></td>
+          <td><span class="badge" style="background:${sideColor}22;color:${sideColor}">${side}</span></td>
+          <td>${e.shares ?? '—'}</td>
+          <td>${e.price != null ? '$' + Number(e.price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
+          ${pnlHtml}
+          <td style="color:#888">${e.exchange ?? '—'}</td>
+          <td style="color:#555;font-size:0.8rem">${e.account ?? '—'}</td>
+          <td style="color:#555;font-size:0.8rem">${e.order_id ?? '—'}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function loadIBExecs() {
+      try {
+        const execs = await fetch('/api/ib/trades').then(r => r.json());
+        renderIBExecs(execs);
+      } catch {
+        document.getElementById('ibExecBody').innerHTML =
+          '<tr><td colspan="9" class="empty">Could not load IB executions.</td></tr>';
+      }
+    }
+
     loadTrades();
+    loadIBExecs();
     setInterval(loadTrades, 30000);
+    setInterval(loadIBExecs, 30000);
   </script>
 </body>
 </html>
