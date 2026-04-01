@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategies — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #000;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    header {
+      max-width: 900px;
+      margin: 0 auto 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    h1 { font-size: 1.6rem; color: #fff; }
+
+    .nav-links { display: flex; gap: 8px; }
+
+    a.nav-link {
+      color: #888;
+      text-decoration: none;
+      font-size: 0.9rem;
+      border: 1px solid #2a2d3e;
+      padding: 5px 12px;
+      border-radius: 4px;
+    }
+    a.nav-link:hover { color: #e0e0e0; border-color: #555; }
+
+    .content {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    /* Strategy card */
+    .strategy-card {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 28px 32px;
+      margin-bottom: 32px;
+    }
+
+    .strategy-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+
+    .strategy-subtitle {
+      font-size: 0.85rem;
+      color: #666;
+      margin-bottom: 24px;
+    }
+
+    h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin: 24px 0 10px;
+      border-bottom: 1px solid #1e2130;
+      padding-bottom: 6px;
+    }
+
+    h2:first-of-type { margin-top: 0; }
+
+    p {
+      line-height: 1.7;
+      color: #b0b0b0;
+      margin-bottom: 12px;
+    }
+
+    /* Signal condition blocks */
+    .signal-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 12px 0;
+    }
+
+    @media (max-width: 600px) {
+      .signal-grid { grid-template-columns: 1fr; }
+    }
+
+    .signal-block {
+      border-radius: 6px;
+      padding: 16px 18px;
+    }
+
+    .signal-block.long {
+      background: rgba(38,166,91,0.07);
+      border: 1px solid rgba(38,166,91,0.25);
+    }
+
+    .signal-block.short {
+      background: rgba(239,83,80,0.07);
+      border: 1px solid rgba(239,83,80,0.25);
+    }
+
+    .signal-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .signal-block.long  .signal-label { color: #26a65b; }
+    .signal-block.short .signal-label { color: #ef5350; }
+
+    .condition-list {
+      list-style: none;
+      font-family: monospace;
+      font-size: 0.82rem;
+      line-height: 1.9;
+      color: #c0c0c0;
+    }
+
+    .condition-list li::before {
+      content: "✓ ";
+      color: #555;
+    }
+
+    .condition-comment {
+      color: #555;
+      font-style: italic;
+    }
+
+    /* Exit / params table */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 0.88rem;
+    }
+
+    th {
+      text-align: left;
+      color: #666;
+      font-weight: 500;
+      padding: 8px 12px;
+      border-bottom: 1px solid #1e2130;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #111;
+      color: #b0b0b0;
+      vertical-align: top;
+    }
+
+    td:first-child {
+      color: #e0e0e0;
+      font-weight: 600;
+      white-space: nowrap;
+      width: 40%;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <img src="/static/kariosLogo_128.png" alt="Kairos Automata" style="height:48px;width:48px;image-rendering:pixelated">
+      <h1>Kairos Automata</h1>
+    </div>
+    <div class="nav-links">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/about" class="nav-link">About</a>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <div class="strategy-card">
+      <div class="strategy-title">Camarilla Strategy</div>
+      <div class="strategy-subtitle">Pivot level breakout with EMA trend filter — Intraday</div>
+
+      <h2>Core Idea</h2>
+      <p>
+        Uses Camarilla pivot levels calculated from the previous day's High, Low, and Close.
+        <strong style="color:#e0e0e0">H4</strong> and <strong style="color:#e0e0e0">L4</strong> are the key breakout levels.
+        EMA 8 is used as a trend filter — entries are only taken when price is aligned with momentum.
+      </p>
+
+      <h2>Entry Conditions</h2>
+      <div class="signal-grid">
+
+        <div class="signal-block long">
+          <div class="signal-label">Long — Breakout above H4</div>
+          <ul class="condition-list">
+            <li>close &gt; dtime_h4 <span class="condition-comment">// closed above H4</span></li>
+            <li>open &lt; dtime_h4 <span class="condition-comment">// opened below H4</span></li>
+            <li>ema8 &lt; close <span class="condition-comment">// price above 8 EMA</span></li>
+          </ul>
+        </div>
+
+        <div class="signal-block short">
+          <div class="signal-label">Short — Breakdown below L4</div>
+          <ul class="condition-list">
+            <li>close &lt; dtime_l4 <span class="condition-comment">// closed below L4</span></li>
+            <li>open &gt; dtime_l4 <span class="condition-comment">// opened above L4</span></li>
+            <li>ema8 &gt; close <span class="condition-comment">// price below 8 EMA</span></li>
+          </ul>
+        </div>
+
+      </div>
+      <p style="font-size:0.85rem;color:#666;margin-top:8px">
+        All three conditions must be true on the same candle. Entry is at the open of the following candle.
+      </p>
+
+      <h2>Exit Rules</h2>
+      <table>
+        <tr><th></th><th>Long</th><th>Short</th></tr>
+        <tr>
+          <td>Trailing stop activates</td>
+          <td>+40 points profit</td>
+          <td>+10 points profit</td>
+        </tr>
+        <tr>
+          <td>Trail distance</td>
+          <td>1 point</td>
+          <td>1 point</td>
+        </tr>
+        <tr>
+          <td>Hard stop loss</td>
+          <td>70 points</td>
+          <td>20 points</td>
+        </tr>
+      </table>
+
+    </div>
+
+  </div>
+
+</body>
+</html>

@@ -265,6 +265,11 @@ def about():
     return render_template("about.html")
 
 
+@app.route("/strategies")
+def strategies():
+    return render_template("strategies.html")
+
+
 @app.route("/api/stats")
 def api_stats():
     strategy_filter = request.args.get("strategy")
