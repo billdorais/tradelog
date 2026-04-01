@@ -778,11 +778,24 @@
           datasets: [{
             data: values,
             borderColor: lineColor,
-            backgroundColor: lineColor + '22',
             borderWidth: 2,
             pointRadius: values.length > 50 ? 0 : 3,
             fill: true,
             tension: 0.2,
+            backgroundColor: function(context) {
+              const chart = context.chart;
+              if (!chart.chartArea) return 'transparent';
+              const { top, bottom } = chart.chartArea;
+              const yScale  = chart.scales.y;
+              const zeroY   = yScale.getPixelForValue(0);
+              const grad    = ctx.createLinearGradient(0, top, 0, bottom);
+              const zeroFrac = Math.min(Math.max((zeroY - top) / (bottom - top), 0), 1);
+              grad.addColorStop(0,          'rgba(38,166,91,0.45)');
+              grad.addColorStop(zeroFrac,   'rgba(38,166,91,0.05)');
+              grad.addColorStop(zeroFrac,   'rgba(239,83,80,0.05)');
+              grad.addColorStop(1,          'rgba(239,83,80,0.45)');
+              return grad;
+            },
           }],
         },
         options: {
