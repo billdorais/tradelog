@@ -293,13 +293,28 @@
 
   <!-- Equity curve -->
   <div class="chart-wrap">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div class="chart-title" style="margin-bottom:0">Equity Curve (cumulative P&amp;L from closed trades)</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;gap:4px">
+        <button id="tabSignals" onclick="switchTab('signals')"
+          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer">
+          Signals P&amp;L
+        </button>
+        <button id="tabIB" onclick="switchTab('ib')"
+          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
+          IB Account
+        </button>
+      </div>
+      <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
+        Cumulative P&amp;L from closed trades
+      </div>
       <select id="equityStrategyFilter" onchange="applyEquityFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
         <option value="">All Strategies</option>
       </select>
     </div>
     <canvas id="equityChart" height="90"></canvas>
+    <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555;margin-top:6px">
+      NAV delta from session start — includes open positions &amp; unrealized P&amp;L. Polled every 60s.
+    </div>
   </div>
 
   <!-- Trade table -->
@@ -338,6 +353,47 @@
     let equityChartInstance = null;
     let allTrades = [];
     let selectedStrategy = '';
+    let activeTab = 'signals';
+
+    function switchTab(tab) {
+      activeTab = tab;
+      const signalsBtn = document.getElementById('tabSignals');
+      const ibBtn      = document.getElementById('tabIB');
+      const filter     = document.getElementById('equityStrategyFilter');
+      const note       = document.getElementById('ibEquityNote');
+      const label      = document.getElementById('equityChartLabel');
+
+      if (tab === 'signals') {
+        signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer';
+        ibBtn.style.cssText      = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
+        filter.style.display = '';
+        note.style.display   = 'none';
+        label.textContent    = 'Cumulative P&L from closed trades';
+        applyEquityFilter();
+      } else {
+        ibBtn.style.cssText      = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2962ff;background:rgba(41,98,255,0.15);color:#2962ff;cursor:pointer';
+        signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
+        filter.style.display = 'none';
+        note.style.display   = '';
+        label.textContent    = 'IB Account NAV delta from session start';
+        loadIBEquity();
+      }
+    }
+
+    async function loadIBEquity() {
+      const data = await fetch('/api/ib/equity').then(r => r.json());
+      const labels = data.map(p => p.time);
+      const values = data.map(p => p.value);
+      const finalVal  = values.length ? values[values.length - 1] : 0;
+      const lineColor = finalVal >= 0 ? '#2962ff' : '#ef5350';
+      drawChart(labels, values, lineColor);
+
+      if (!values.length) {
+        const c = document.getElementById('equityChart').getContext('2d');
+        c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
+        c.fillText('No IB account snapshots yet — data appears ~60s after connection', document.getElementById('equityChart').width / 2, 60);
+      }
+    }
 
     function execBadge(status) {
       if (!status) return '<span class="exec-none">—</span>';
@@ -451,11 +507,23 @@
       document.getElementById('winRateCard').className =
         'stat-card ' + (noData ? 'neutral' : stats.win_rate >= 50 ? 'positive' : 'negative');
 
-      const labels    = (stats.equity_curve || []).map(p => p.time);
-      const values    = (stats.equity_curve || []).map(p => p.value);
-      const finalVal  = values.length ? values[values.length - 1] : 0;
-      const lineColor = finalVal >= 0 ? '#26a65b' : '#ef5350';
+      if (activeTab === 'signals') {
+        const labels    = (stats.equity_curve || []).map(p => p.time);
+        const values    = (stats.equity_curve || []).map(p => p.value);
+        const finalVal  = values.length ? values[values.length - 1] : 0;
+        const lineColor = finalVal >= 0 ? '#26a65b' : '#ef5350';
+        drawChart(labels, values, lineColor);
 
+        if (!values.length) {
+          const chartCanvas = document.getElementById('equityChart');
+          const c = chartCanvas.getContext('2d');
+          c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
+          c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
+        }
+      }
+    }
+
+    function drawChart(labels, values, lineColor) {
       if (equityChartInstance) equityChartInstance.destroy();
       const ctx = document.getElementById('equityChart').getContext('2d');
       equityChartInstance = new Chart(ctx, {
@@ -484,15 +552,6 @@
           },
         },
       });
-
-      if (!values.length) {
-        const chartCanvas = document.getElementById('equityChart');
-        const c = chartCanvas.getContext('2d');
-        c.fillStyle = '#444';
-        c.font = '14px Arial';
-        c.textAlign = 'center';
-        c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
-      }
     }
 
     async function applyFilter() {

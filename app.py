@@ -44,6 +44,31 @@ if os.environ.get("IB_HOST"):
 
     threading.Thread(target=_connect_ib_background, daemon=True).start()
 
+    def _poll_account_snapshot():
+        """Poll IB account values every 60s and store in account_snapshots."""
+        time.sleep(15)  # wait for connection to establish
+        while True:
+            if ib_broker.is_connected():
+                try:
+                    snap = ib_broker.account_snapshot()
+                    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    conn = get_db()
+                    cur  = conn.cursor()
+                    p    = placeholder()
+                    cur.execute(
+                        f"INSERT INTO account_snapshots (ts, net_liq, realized_pnl, unrealized_pnl)"
+                        f" VALUES ({p},{p},{p},{p})",
+                        (ts, snap["net_liq"], snap["realized_pnl"], snap["unrealized_pnl"]),
+                    )
+                    conn.commit()
+                    conn.close()
+                    log.debug("Account snapshot: %s", snap)
+                except Exception as e:
+                    log.warning("Account snapshot failed: %s", e)
+            time.sleep(60)
+
+    threading.Thread(target=_poll_account_snapshot, daemon=True).start()
+
 # ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
 # ---------------------------------------------------------------------------
@@ -95,6 +120,26 @@ def init_db():
             broker      TEXT,
             exec_status TEXT,
             exec_detail TEXT
+        )
+    """)
+    conn.commit()
+
+    # Account snapshots table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS account_snapshots (
+            id             SERIAL PRIMARY KEY,
+            ts             TEXT,
+            net_liq        REAL,
+            realized_pnl   REAL,
+            unrealized_pnl REAL
+        )
+    """ if DATABASE_URL else """
+        CREATE TABLE IF NOT EXISTS account_snapshots (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts             TEXT,
+            net_liq        REAL,
+            realized_pnl   REAL,
+            unrealized_pnl REAL
         )
     """)
     conn.commit()
@@ -268,6 +313,27 @@ def about():
 @app.route("/strategies")
 def strategies():
     return render_template("strategies.html")
+
+
+@app.route("/api/ib/equity")
+def ib_equity():
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT ts, net_liq FROM account_snapshots ORDER BY id ASC")
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        return jsonify([])
+    if DATABASE_URL:
+        cols = [d[0] for d in cur.description]
+        snaps = [dict(zip(cols, r)) for r in rows]
+    else:
+        snaps = [dict(r) for r in rows]
+    baseline = snaps[0]["net_liq"]
+    return jsonify([
+        {"time": s["ts"], "value": round(s["net_liq"] - baseline, 2)}
+        for s in snaps
+    ])
 
 
 @app.route("/api/stats")

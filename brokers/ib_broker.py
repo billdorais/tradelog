@@ -62,6 +62,25 @@ class IBBroker:
         }
 
     # ------------------------------------------------------------------
+    # Account snapshot (for equity curve polling)
+    # ------------------------------------------------------------------
+
+    def account_snapshot(self):
+        """
+        Return current account values as a dict.
+        Fetches NetLiquidation, RealizedPnL, UnrealizedPnL.
+        """
+        with self._lock:
+            self._ensure_connected()
+            vals = {v.tag: v.value for v in self._ib.accountValues()
+                    if v.currency in ("USD", "")}
+            return {
+                "net_liq":       float(vals.get("NetLiquidation", 0) or 0),
+                "realized_pnl":  float(vals.get("RealizedPnL",    0) or 0),
+                "unrealized_pnl": float(vals.get("UnrealizedPnL",  0) or 0),
+            }
+
+    # ------------------------------------------------------------------
     # Order placement
     # ------------------------------------------------------------------
 
