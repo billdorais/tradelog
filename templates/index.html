@@ -425,6 +425,17 @@
     </div>
   </div>
 
+  <!-- Daily cumulative P&L chart -->
+  <div class="chart-wrap">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div class="chart-title" style="margin-bottom:0">Daily Net Cumulative P&amp;L</div>
+      <select id="dailyStrategyFilter" onchange="applyDailyFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
+        <option value="">All Strategies</option>
+      </select>
+    </div>
+    <canvas id="dailyPnlChart" height="90"></canvas>
+  </div>
+
   <!-- Trade table -->
   <div class="section-label">Signal Feed</div>
   <div class="filter-bar">
@@ -458,7 +469,8 @@
   </div>
 
   <script>
-    let equityChartInstance = null;
+    let equityChartInstance  = null;
+    let dailyChartInstance   = null;
     let allTrades = [];
     let selectedStrategy = '';
     let activeTab = 'signals';
@@ -673,6 +685,87 @@
           c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
         }
       }
+
+      drawDailyChart(stats.equity_curve || []);
+    }
+
+    function drawDailyChart(equityCurve) {
+      // Bucket the equity curve into daily values (last point per day)
+      const dayMap = {};
+      for (const p of equityCurve) {
+        const day = p.time.slice(0, 10); // "YYYY-MM-DD"
+        dayMap[day] = p.value;
+      }
+      const labels = Object.keys(dayMap).sort();
+      const values = labels.map(d => dayMap[d]);
+
+      if (dailyChartInstance) { dailyChartInstance.destroy(); dailyChartInstance = null; }
+
+      if (!values.length) return;
+
+      const canvas = document.getElementById('dailyPnlChart');
+      const ctx    = canvas.getContext('2d');
+
+      // Build a gradient that splits at the zero line: green above, red below
+      function makeGradient(chart) {
+        const { top, bottom } = chart.chartArea;
+        const yScale = chart.scales.y;
+        const zeroY  = yScale.getPixelForValue(0);
+        const grad   = ctx.createLinearGradient(0, top, 0, bottom);
+        const zeroFrac = Math.min(Math.max((zeroY - top) / (bottom - top), 0), 1);
+        grad.addColorStop(0,            'rgba(38,166,91,0.45)');
+        grad.addColorStop(zeroFrac,     'rgba(38,166,91,0.05)');
+        grad.addColorStop(zeroFrac,     'rgba(239,83,80,0.05)');
+        grad.addColorStop(1,            'rgba(239,83,80,0.45)');
+        return grad;
+      }
+
+      dailyChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: '#7c8cf8',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.1,
+            backgroundColor: function(context) {
+              const chart = context.chart;
+              if (!chart.chartArea) return 'transparent';
+              return makeGradient(chart);
+            },
+          }],
+        },
+        options: {
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => '$' + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
+              },
+            },
+          },
+          scales: {
+            x: {
+              ticks: {
+                color: '#666',
+                maxTicksLimit: 8,
+                callback: function(val, i) {
+                  return this.getLabelForValue(val);
+                },
+              },
+              grid: { color: '#1a1d2a' },
+            },
+            y: {
+              grid: { color: '#1a1d2a', borderDash: [4,4] },
+              ticks: { color: '#666', callback: v => '$' + v.toLocaleString() },
+            },
+          },
+        },
+      });
     }
 
     function drawChart(labels, values, lineColor) {
@@ -723,6 +816,13 @@
       renderStats(stats);
     }
 
+    async function applyDailyFilter() {
+      const strategy = document.getElementById('dailyStrategyFilter').value;
+      const url = strategy ? `/api/stats?strategy=${encodeURIComponent(strategy)}` : '/api/stats';
+      const stats = await fetch(url).then(r => r.json());
+      drawDailyChart(stats.equity_curve || []);
+    }
+
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing...';
       try {
@@ -764,6 +864,11 @@
         const prevEquity = equitySel.value;
         equitySel.innerHTML = options;
         equitySel.value = prevEquity;
+
+        const dailySel = document.getElementById('dailyStrategyFilter');
+        const prevDaily = dailySel.value;
+        dailySel.innerHTML = options;
+        dailySel.value = prevDaily;
 
         renderTable(trades, selectedStrategy);
 
