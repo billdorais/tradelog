@@ -372,9 +372,6 @@
         <div class="pc-value" id="perfTotalPnl">—</div>
         <div style="color:#444;font-size:0.65rem;margin-top:2px" id="perfClosedCount"></div>
       </div>
-      <div class="pc-right">
-        <div class="ring-wrap"><canvas id="pnlRing"></canvas></div>
-      </div>
     </div>
 
     <!-- Trade Win % -->
@@ -411,9 +408,6 @@
       <div class="pc-left">
         <div class="pc-label">Max Drawdown</div>
         <div class="pc-value negative" id="perfDD">—</div>
-      </div>
-      <div class="pc-right">
-        <div class="ring-wrap"><canvas id="ddRing"></canvas></div>
       </div>
     </div>
 
@@ -692,10 +686,6 @@
       pnlEl.className   = 'pc-value' + (noData ? '' : totalPnl >= 0 ? ' positive' : ' negative');
       document.getElementById('perfClosedCount').textContent = noData ? '' : stats.completed_trades + ' trades';
 
-      // Net P&L ring — green fill proportional to how positive vs max possible
-      drawRing('pnlRing', noData ? 0 : Math.max(totalPnl, 0) > 0 ? Math.min(totalPnl / Math.max(totalPnl, 1) * 100, 100) : 0,
-        totalPnl >= 0 ? '#26a65b' : '#ef5350');
-
       // Win rate + semicircle gauge
       document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
       const wins   = noData ? 0 : Math.round(stats.completed_trades * stats.win_rate / 100);
@@ -707,13 +697,12 @@
       // Profit factor ring — cap at 3x for visual scale (3+ = full ring)
       const pf = noData ? null : stats.profit_factor;
       document.getElementById('perfPF').textContent = noData ? '—' : (pf === null ? '∞' : pf);
-      drawRing('pfRing', noData ? 0 : pf === null ? 100 : Math.min(pf / 3 * 100, 100),
+      // Profit factor ring: 1.0 = 50% fill (break-even), 2.0 = 100% fill
+      drawRing('pfRing', noData ? 0 : pf === null ? 100 : Math.min(pf / 2 * 100, 100),
         pf >= 1 ? '#26a65b' : '#ef5350');
 
-      // Max drawdown ring — shows drawdown as proportion of peak equity (capped at 50%)
+      // Max drawdown — no graphic
       document.getElementById('perfDD').textContent = noData ? '—' : fmt(-stats.max_drawdown, '$');
-      const ddPct = noData || !totalPnl ? 0 : Math.min(stats.max_drawdown / Math.max(Math.abs(totalPnl), stats.max_drawdown) * 100, 100);
-      drawRing('ddRing', ddPct, '#ef5350');
 
       // Avg win / loss bar
       const avgWin  = noData ? 0 : Math.abs(stats.avg_win  || 0);
