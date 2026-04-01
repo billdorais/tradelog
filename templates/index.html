@@ -285,6 +285,10 @@
       <div class="label">Max Drawdown</div>
       <div class="value" id="perfDD">—</div>
     </div>
+    <div class="stat-card neutral" id="totalPnlCard">
+      <div class="label">Total P&amp;L</div>
+      <div class="value" id="perfTotalPnl">—</div>
+    </div>
   </div>
 
   <!-- Equity curve -->
@@ -437,6 +441,12 @@
       document.getElementById('perfAvgLoss').textContent = noData ? '—' : fmt(stats.avg_loss, '$');
       document.getElementById('perfPF').textContent      = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
       document.getElementById('perfDD').textContent      = noData ? '—' : fmt(-stats.max_drawdown, '$');
+
+      const curve   = stats.equity_curve || [];
+      const totalPnl = curve.length ? curve[curve.length - 1].value : 0;
+      document.getElementById('perfTotalPnl').textContent = noData ? '—' : fmt(totalPnl, '$');
+      document.getElementById('totalPnlCard').className =
+        'stat-card ' + (noData ? 'neutral' : totalPnl >= 0 ? 'positive' : 'negative');
 
       document.getElementById('winRateCard').className =
         'stat-card ' + (noData ? 'neutral' : stats.win_rate >= 50 ? 'positive' : 'negative');
