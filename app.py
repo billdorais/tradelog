@@ -74,8 +74,37 @@ if os.environ.get("IB_HOST"):
             conn.commit()
             conn.close()
             log.info("IB fill saved: %s %s %s @ %s", fill.execution.side, fill.execution.shares, fill.contract.symbol, fill.execution.price)
+            # Snapshot account 3s after fill so IB has time to update NAV
+            def _delayed_snapshot():
+                time.sleep(3)
+                _store_account_snapshot()
+            threading.Thread(target=_delayed_snapshot, daemon=True).start()
         except Exception as e:
             log.error("Error saving IB fill: %s", e)
+
+    def _store_account_snapshot():
+        """Take one account snapshot and persist it if net_liq changed."""
+        try:
+            snap = ib_broker.account_snapshot()
+            ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            conn = get_db()
+            cur  = conn.cursor()
+            p    = placeholder()
+            # Check last stored value to avoid duplicates
+            cur.execute("SELECT net_liq FROM account_snapshots ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            last = row[0] if row else None
+            if snap["net_liq"] != last:
+                cur.execute(
+                    f"INSERT INTO account_snapshots (ts, net_liq, realized_pnl, unrealized_pnl)"
+                    f" VALUES ({p},{p},{p},{p})",
+                    (ts, snap["net_liq"], snap["realized_pnl"], snap["unrealized_pnl"]),
+                )
+                conn.commit()
+                log.debug("Account snapshot stored after fill: %s", snap)
+            conn.close()
+        except Exception as e:
+            log.warning("Account snapshot (fill-triggered) failed: %s", e)
 
     def _connect_ib_background():
         """Try to connect to IB Gateway, retrying every 30s on failure."""
@@ -95,29 +124,11 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_connect_ib_background, daemon=True).start()
 
     def _poll_account_snapshot():
-        """Poll IB account values every 60s, store only when net_liq changes."""
+        """Fallback poll every 60s for unrealized P&L drift between fills."""
         time.sleep(15)  # wait for connection to establish
-        last_net_liq = None
         while True:
             if ib_broker.is_connected():
-                try:
-                    snap = ib_broker.account_snapshot()
-                    if snap["net_liq"] != last_net_liq:
-                        ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                        conn = get_db()
-                        cur  = conn.cursor()
-                        p    = placeholder()
-                        cur.execute(
-                            f"INSERT INTO account_snapshots (ts, net_liq, realized_pnl, unrealized_pnl)"
-                            f" VALUES ({p},{p},{p},{p})",
-                            (ts, snap["net_liq"], snap["realized_pnl"], snap["unrealized_pnl"]),
-                        )
-                        conn.commit()
-                        conn.close()
-                        last_net_liq = snap["net_liq"]
-                        log.debug("Account snapshot stored: %s", snap)
-                except Exception as e:
-                    log.warning("Account snapshot failed: %s", e)
+                _store_account_snapshot()
             time.sleep(60)
 
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
