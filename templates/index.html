@@ -98,7 +98,7 @@
     .stat-card.negative .value { color: #ef5350; }
     .stat-card.neutral  .value { color: #fff; }
 
-    /* Perf cards — taller to hold gauges */
+    /* Perf cards — horizontal layout */
     .perf-cards {
       max-width: 1200px;
       margin: 0 auto 24px;
@@ -111,40 +111,51 @@
       background: #111;
       border: 1px solid #1e2130;
       border-radius: 10px;
-      padding: 18px 20px 14px;
+      padding: 14px 18px;
       flex: 1;
-      min-width: 160px;
+      min-width: 180px;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .pc-left {
       display: flex;
       flex-direction: column;
+      min-width: 0;
     }
 
     .perf-card .pc-label {
-      font-size: 0.72rem;
+      font-size: 0.7rem;
       color: #666;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
+      white-space: nowrap;
     }
 
     .perf-card .pc-value {
-      font-size: 1.6rem;
+      font-size: 1.5rem;
       font-weight: 700;
       color: #fff;
-      margin-bottom: 10px;
+      white-space: nowrap;
     }
 
     .perf-card .pc-value.negative { color: #ef5350; }
     .perf-card .pc-value.positive { color: #26a65b; }
 
+    .pc-right {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
     /* Semicircle gauge */
     .gauge-wrap {
-      position: relative;
-      width: 100%;
-      max-width: 130px;
-      margin: 0 auto;
+      width: 100px;
     }
 
     .gauge-wrap canvas { display: block; width: 100% !important; }
@@ -152,24 +163,29 @@
     .gauge-counts {
       display: flex;
       justify-content: space-between;
-      font-size: 0.72rem;
-      margin-top: 2px;
+      font-size: 0.68rem;
+      margin-top: 1px;
       padding: 0 2px;
+      width: 100%;
     }
 
     .gauge-counts .wins  { color: #26a65b; }
     .gauge-counts .mid   { color: #555; }
     .gauge-counts .losses{ color: #ef5350; }
 
+    /* Ring gauge (profit factor / drawdown) */
+    .ring-wrap { width: 64px; height: 64px; }
+    .ring-wrap canvas { width: 100% !important; height: 100% !important; }
+
     /* Avg win/loss bar */
-    .winloss-bar-wrap { margin-top: 6px; }
+    .winloss-bar-wrap { width: 110px; }
 
     .winloss-bar {
-      height: 5px;
+      height: 6px;
       border-radius: 3px;
       display: flex;
       overflow: hidden;
-      margin-bottom: 6px;
+      margin-bottom: 5px;
     }
 
     .winloss-bar .win-seg  { background: #26a65b; }
@@ -178,7 +194,7 @@
     .winloss-labels {
       display: flex;
       justify-content: space-between;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
     }
 
     .winloss-labels .wl-win  { color: #26a65b; }
@@ -351,48 +367,72 @@
 
     <!-- Net P&L -->
     <div class="perf-card">
-      <div class="pc-label">Net P&amp;L <span style="color:#444;font-size:0.65rem" id="perfClosedCount"></span></div>
-      <div class="pc-value" id="perfTotalPnl">—</div>
+      <div class="pc-left">
+        <div class="pc-label">Net P&amp;L</div>
+        <div class="pc-value" id="perfTotalPnl">—</div>
+        <div style="color:#444;font-size:0.65rem;margin-top:2px" id="perfClosedCount"></div>
+      </div>
+      <div class="pc-right">
+        <div class="ring-wrap"><canvas id="pnlRing"></canvas></div>
+      </div>
     </div>
 
-    <!-- Trade Win % with gauge -->
+    <!-- Trade Win % -->
     <div class="perf-card">
-      <div class="pc-label">Trade Win %</div>
-      <div class="pc-value" id="perfWinRate">—</div>
-      <div class="gauge-wrap">
-        <canvas id="winRateGauge" height="70"></canvas>
-        <div class="gauge-counts">
-          <span class="wins" id="gaugeWins">—</span>
-          <span class="mid">0</span>
-          <span class="losses" id="gaugeLosses">—</span>
+      <div class="pc-left">
+        <div class="pc-label">Trade Win %</div>
+        <div class="pc-value" id="perfWinRate">—</div>
+      </div>
+      <div class="pc-right">
+        <div class="gauge-wrap">
+          <canvas id="winRateGauge" height="56"></canvas>
+          <div class="gauge-counts">
+            <span class="wins" id="gaugeWins">—</span>
+            <span class="mid">0</span>
+            <span class="losses" id="gaugeLosses">—</span>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- Profit Factor -->
     <div class="perf-card">
-      <div class="pc-label">Profit Factor</div>
-      <div class="pc-value" id="perfPF">—</div>
+      <div class="pc-left">
+        <div class="pc-label">Profit Factor</div>
+        <div class="pc-value" id="perfPF">—</div>
+      </div>
+      <div class="pc-right">
+        <div class="ring-wrap"><canvas id="pfRing"></canvas></div>
+      </div>
     </div>
 
     <!-- Max Drawdown -->
     <div class="perf-card">
-      <div class="pc-label">Max Drawdown</div>
-      <div class="pc-value negative" id="perfDD">—</div>
+      <div class="pc-left">
+        <div class="pc-label">Max Drawdown</div>
+        <div class="pc-value negative" id="perfDD">—</div>
+      </div>
+      <div class="pc-right">
+        <div class="ring-wrap"><canvas id="ddRing"></canvas></div>
+      </div>
     </div>
 
-    <!-- Avg Win / Loss bar -->
+    <!-- Avg Win / Loss -->
     <div class="perf-card">
-      <div class="pc-label">Avg Win / Loss</div>
-      <div class="pc-value" id="perfAvgWin">—</div>
-      <div class="winloss-bar-wrap">
-        <div class="winloss-bar">
-          <div class="win-seg"  id="wlWinSeg"  style="width:50%"></div>
-          <div class="loss-seg" id="wlLossSeg" style="width:50%"></div>
-        </div>
-        <div class="winloss-labels">
-          <span class="wl-win"  id="wlWinLabel">—</span>
-          <span class="wl-loss" id="wlLossLabel">—</span>
+      <div class="pc-left">
+        <div class="pc-label">Avg Win / Loss</div>
+        <div class="pc-value" id="perfAvgWin">—</div>
+      </div>
+      <div class="pc-right">
+        <div class="winloss-bar-wrap">
+          <div class="winloss-bar">
+            <div class="win-seg"  id="wlWinSeg"  style="width:50%"></div>
+            <div class="loss-seg" id="wlLossSeg" style="width:50%"></div>
+          </div>
+          <div class="winloss-labels">
+            <span class="wl-win"  id="wlWinLabel">—</span>
+            <span class="wl-loss" id="wlLossLabel">—</span>
+          </div>
         </div>
       </div>
     </div>
@@ -609,30 +649,35 @@
       document.getElementById('statErrors').textContent   = visible.filter(t => t.exec_status === 'error').length;
     }
 
-    let winRateGaugeInstance = null;
+    const _chartInstances = {};
 
-    function drawGauge(canvasId, pct) {
+    function destroyChart(id) {
+      if (_chartInstances[id]) { _chartInstances[id].destroy(); delete _chartInstances[id]; }
+    }
+
+    // Semicircle gauge (win rate)
+    function drawSemiGauge(canvasId, pct) {
+      destroyChart(canvasId);
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
-      if (winRateGaugeInstance) { winRateGaugeInstance.destroy(); winRateGaugeInstance = null; }
-      const wins   = Math.round(pct);
-      const losses = 100 - wins;
-      winRateGaugeInstance = new Chart(canvas.getContext('2d'), {
+      const wins = Math.round(pct), losses = 100 - wins;
+      _chartInstances[canvasId] = new Chart(canvas.getContext('2d'), {
         type: 'doughnut',
-        data: {
-          datasets: [{
-            data: [wins, losses],
-            backgroundColor: ['#26a65b', '#ef5350'],
-            borderWidth: 0,
-            circumference: 180,
-            rotation: 270,
-          }],
-        },
-        options: {
-          animation: false,
-          cutout: '72%',
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-        },
+        data: { datasets: [{ data: [wins, losses], backgroundColor: ['#26a65b', '#ef5350'], borderWidth: 0, circumference: 180, rotation: 270 }] },
+        options: { animation: false, cutout: '72%', plugins: { legend: { display: false }, tooltip: { enabled: false } } },
+      });
+    }
+
+    // Full ring gauge — fills proportion of ring in fillColor, remainder in track color
+    function drawRing(canvasId, fillPct, fillColor, trackColor) {
+      destroyChart(canvasId);
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const fill = Math.min(Math.max(fillPct, 0), 100);
+      _chartInstances[canvasId] = new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: { datasets: [{ data: [fill, 100 - fill], backgroundColor: [fillColor, trackColor || '#1e2130'], borderWidth: 0 }] },
+        options: { animation: false, cutout: '75%', plugins: { legend: { display: false }, tooltip: { enabled: false } } },
       });
     }
 
@@ -647,19 +692,28 @@
       pnlEl.className   = 'pc-value' + (noData ? '' : totalPnl >= 0 ? ' positive' : ' negative');
       document.getElementById('perfClosedCount').textContent = noData ? '' : stats.completed_trades + ' trades';
 
-      // Win rate + gauge
+      // Net P&L ring — green fill proportional to how positive vs max possible
+      drawRing('pnlRing', noData ? 0 : Math.max(totalPnl, 0) > 0 ? Math.min(totalPnl / Math.max(totalPnl, 1) * 100, 100) : 0,
+        totalPnl >= 0 ? '#26a65b' : '#ef5350');
+
+      // Win rate + semicircle gauge
       document.getElementById('perfWinRate').textContent = noData ? '—' : stats.win_rate + '%';
       const wins   = noData ? 0 : Math.round(stats.completed_trades * stats.win_rate / 100);
       const losses = noData ? 0 : stats.completed_trades - wins;
       document.getElementById('gaugeWins').textContent   = noData ? '—' : wins;
       document.getElementById('gaugeLosses').textContent = noData ? '—' : losses;
-      drawGauge('winRateGauge', noData ? 50 : stats.win_rate);
+      drawSemiGauge('winRateGauge', noData ? 50 : stats.win_rate);
 
-      // Profit factor
-      document.getElementById('perfPF').textContent = noData ? '—' : (stats.profit_factor === null ? '∞' : stats.profit_factor);
+      // Profit factor ring — cap at 3x for visual scale (3+ = full ring)
+      const pf = noData ? null : stats.profit_factor;
+      document.getElementById('perfPF').textContent = noData ? '—' : (pf === null ? '∞' : pf);
+      drawRing('pfRing', noData ? 0 : pf === null ? 100 : Math.min(pf / 3 * 100, 100),
+        pf >= 1 ? '#26a65b' : '#ef5350');
 
-      // Max drawdown
+      // Max drawdown ring — shows drawdown as proportion of peak equity (capped at 50%)
       document.getElementById('perfDD').textContent = noData ? '—' : fmt(-stats.max_drawdown, '$');
+      const ddPct = noData || !totalPnl ? 0 : Math.min(stats.max_drawdown / Math.max(Math.abs(totalPnl), stats.max_drawdown) * 100, 100);
+      drawRing('ddRing', ddPct, '#ef5350');
 
       // Avg win / loss bar
       const avgWin  = noData ? 0 : Math.abs(stats.avg_win  || 0);
