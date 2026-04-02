@@ -612,29 +612,50 @@
       return `<td style="color:${color};font-weight:600">${sign}$${pnl.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
     }
 
-    // Pair TV signals: BUY+SELL → one {entry, exit} object per trade
+    // Format a UTC timestamp string for display in Eastern time
+    function fmtET(ts) {
+      if (!ts) return null;
+      const d = new Date(ts.includes('T') || ts.endsWith('Z') ? ts : ts + 'Z');
+      if (isNaN(d)) return ts;
+      return d.toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      }) + ' ET';
+    }
+
+    // Pair TV signals: handles both LONG (BUY→SELL) and SHORT (SELL→BUY)
     function pairSignals(trades) {
       const sorted = [...trades].sort((a, b) => a.id - b.id);
-      const openByTicker = {};
-      const pairs = [];
+      const longs  = {};  // open long positions waiting for SELL
+      const shorts = {};  // open short positions waiting for BUY
+      const pairs  = [];
       for (const t of sorted) {
         const ticker = (t.ticker || '').toUpperCase();
         const action = (t.action || '').toUpperCase();
         if (action === 'BUY') {
-          if (!openByTicker[ticker]) openByTicker[ticker] = [];
-          openByTicker[ticker].push(t);
-        } else if (action === 'SELL') {
-          const queue = openByTicker[ticker];
-          if (queue && queue.length) {
-            pairs.push({ entry: queue.shift(), exit: t });
+          // Closes an open short first; otherwise opens a new long
+          if (shorts[ticker] && shorts[ticker].length) {
+            pairs.push({ entry: shorts[ticker].shift(), exit: t, direction: 'short' });
           } else {
-            pairs.push({ entry: null, exit: t });
+            if (!longs[ticker]) longs[ticker] = [];
+            longs[ticker].push(t);
+          }
+        } else if (action === 'SELL') {
+          // Closes an open long first; otherwise opens a new short
+          if (longs[ticker] && longs[ticker].length) {
+            pairs.push({ entry: longs[ticker].shift(), exit: t, direction: 'long' });
+          } else {
+            if (!shorts[ticker]) shorts[ticker] = [];
+            shorts[ticker].push(t);
           }
         }
       }
-      for (const entries of Object.values(openByTicker)) {
-        for (const e of entries) pairs.push({ entry: e, exit: null });
-      }
+      for (const entries of Object.values(longs))
+        for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'long' });
+      for (const entries of Object.values(shorts))
+        for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'short' });
       return pairs.sort((a, b) => (b.entry || b.exit).id - (a.entry || a.exit).id);
     }
 
@@ -735,13 +756,17 @@
             const entryPrice = en ? en.price : null;
             const exitPrice  = ex ? ex.price : null;
             const qty        = ref.quantity;
-            const pnl        = (entryPrice != null && exitPrice != null) ? (exitPrice - entryPrice) * qty : undefined;
+            const pnl        = (entryPrice != null && exitPrice != null)
+              ? tv.direction === 'short'
+                ? (entryPrice - exitPrice) * qty
+                : (exitPrice - entryPrice) * qty
+              : undefined;
             const dur        = en ? tradeDuration(en.received_at, ex?.received_at) : '—';
             const status     = ex ? ex.exec_status : en?.exec_status;
             rows.push(`<tr class="group-first">
               <td style="color:#aaa;font-size:0.8rem">Trading View</td>
-              <td style="font-size:0.85rem">${en?.received_at ?? '—'}</td>
-              <td style="font-size:0.85rem;color:#888">${ex?.received_at ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
+              <td style="font-size:0.85rem">${fmtET(en?.received_at) ?? '—'}</td>
+              <td style="font-size:0.85rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
               <td style="color:#888;font-size:0.85rem">${dur}</td>
               <td>${sentimentBadge(ref.sentiment)}</td>
               <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
