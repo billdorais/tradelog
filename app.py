@@ -28,13 +28,10 @@ if os.environ.get("IB_HOST"):
     from brokers.ib_broker import IBBroker
     ib_broker = IBBroker()
 
-    def _on_fill(_trade, fill):
-        """Called by ib_async whenever a fill arrives — persists to DB."""
+    def _on_fill(_reqId, contract, execution):
+        """Called by ib_async execDetailsEvent — persists execution to DB."""
         try:
-            exec_id = fill.execution.execId
-            pnl     = None
-            if fill.commissionReport and fill.commissionReport.realizedPNL == fill.commissionReport.realizedPNL:
-                pnl = round(float(fill.commissionReport.realizedPNL), 2)
+            exec_id = execution.execId
             conn = get_db()
             cur  = conn.cursor()
             p    = placeholder()
@@ -42,43 +39,38 @@ if os.environ.get("IB_HOST"):
                 f"INSERT INTO ib_executions "
                 f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
                 f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
-                f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
+                f" ON CONFLICT (exec_id) DO NOTHING",
                 (exec_id,
-                 str(fill.execution.time),
-                 fill.contract.symbol,
-                 fill.contract.secType,
-                 fill.execution.side,
-                 float(fill.execution.shares),
-                 float(fill.execution.price),
-                 fill.execution.orderId,
-                 fill.execution.acctNumber,
-                 fill.execution.exchange,
-                 pnl,
-                 pnl),
+                 str(execution.time),
+                 contract.symbol,
+                 contract.secType,
+                 execution.side,
+                 float(execution.shares),
+                 float(execution.price),
+                 execution.orderId,
+                 execution.acctNumber,
+                 execution.exchange,
+                 None),
             ) if DATABASE_URL else cur.execute(
-                f"INSERT OR REPLACE INTO ib_executions "
+                f"INSERT OR IGNORE INTO ib_executions "
                 f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
                 f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
                 (exec_id,
-                 str(fill.execution.time),
-                 fill.contract.symbol,
-                 fill.contract.secType,
-                 fill.execution.side,
-                 float(fill.execution.shares),
-                 float(fill.execution.price),
-                 fill.execution.orderId,
-                 fill.execution.acctNumber,
-                 fill.execution.exchange,
-                 pnl),
+                 str(execution.time),
+                 contract.symbol,
+                 contract.secType,
+                 execution.side,
+                 float(execution.shares),
+                 float(execution.price),
+                 execution.orderId,
+                 execution.acctNumber,
+                 execution.exchange,
+                 None),
             )
             conn.commit()
             conn.close()
-            log.info("IB fill saved: %s %s %s @ %s", fill.execution.side, fill.execution.shares, fill.contract.symbol, fill.execution.price)
-            # Snapshot account 3s after fill so IB has time to update NAV
-            def _delayed_snapshot():
-                time.sleep(3)
-                _store_account_snapshot()
-            threading.Thread(target=_delayed_snapshot, daemon=True).start()
+            log.info("IB fill saved: %s %s %s @ %s", execution.side, execution.shares, contract.symbol, execution.price)
+            threading.Thread(target=_store_account_snapshot, daemon=True).start()
         except Exception as e:
             log.error("Error saving IB fill: %s", e)
 
