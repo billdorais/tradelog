@@ -117,6 +117,35 @@ class IBBroker:
             return result
 
     # ------------------------------------------------------------------
+    # EOD — close all open positions
+    # ------------------------------------------------------------------
+
+    def close_all_positions(self):
+        """Place market orders to flatten all open positions. Returns list of actions taken."""
+        with self._lock:
+            self._ensure_connected()
+            positions = self._ib.positions()
+            closed = []
+            for pos in positions:
+                qty = pos.position
+                if qty == 0:
+                    continue
+                action   = "SELL" if qty > 0 else "BUY"
+                abs_qty  = abs(qty)
+                contract = pos.contract
+                order    = MarketOrder(action, abs_qty)
+                trade    = self._ib.placeOrder(contract, order)
+                self._ib.sleep(2)
+                log.info("EOD close: %s %s %s — %s", action, abs_qty, contract.symbol, trade.orderStatus.status)
+                closed.append({
+                    "symbol":   contract.symbol,
+                    "action":   action,
+                    "qty":      abs_qty,
+                    "status":   trade.orderStatus.status,
+                })
+            return closed
+
+    # ------------------------------------------------------------------
     # Order placement
     # ------------------------------------------------------------------
 

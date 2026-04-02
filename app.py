@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 import threading
+from zoneinfo import ZoneInfo
 import time
 from datetime import datetime, timezone
 
@@ -156,6 +157,30 @@ if os.environ.get("IB_HOST"):
             time.sleep(60)
 
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
+
+    def _eod_close_scheduler():
+        """Close all open IB positions at 3:59 PM ET on weekdays."""
+        ET = ZoneInfo("America/New_York")
+        triggered_date = None
+        while True:
+            now = datetime.now(ET)
+            today = now.date()
+            if (now.weekday() < 5                          # Mon–Fri
+                    and now.hour == 15 and now.minute == 59
+                    and triggered_date != today):
+                triggered_date = today
+                log.info("EOD scheduler: closing all positions at 3:59 PM ET")
+                try:
+                    if ib_broker and ib_broker.is_connected():
+                        result = ib_broker.close_all_positions()
+                        log.info("EOD close result: %s", result)
+                    else:
+                        log.warning("EOD scheduler: IB not connected, skipping close")
+                except Exception as e:
+                    log.error("EOD close failed: %s", e)
+            time.sleep(30)
+
+    threading.Thread(target=_eod_close_scheduler, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
@@ -404,6 +429,20 @@ def broker_reconnect():
         return jsonify(ib_broker.status())
     except Exception as e:
         return jsonify({"connected": False, "error": str(e)}), 500
+
+
+@app.route("/api/broker/close-all", methods=["POST"])
+def broker_close_all():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    if ib_broker is None:
+        return jsonify({"error": "IB_HOST not configured"}), 400
+    try:
+        result = ib_broker.close_all_positions()
+        return jsonify({"closed": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/")
