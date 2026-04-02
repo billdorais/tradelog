@@ -460,7 +460,8 @@ def api_stats():
         trades = [dict(r) for r in rows]
     conn.close()
 
-    open_trades = {}
+    open_longs  = {}  # ticker → [(price, qty, time)]
+    open_shorts = {}  # ticker → [(price, qty, time)]
     closed      = []
 
     for t in trades:
@@ -475,13 +476,23 @@ def api_stats():
         if not ticker or price == 0:
             continue
         if action == "BUY":
-            open_trades.setdefault(ticker, []).append((price, qty, received))
-        elif action == "SELL":
-            queue = open_trades.get(ticker, [])
+            # Closes an open short; otherwise opens a new long
+            queue = open_shorts.get(ticker, [])
             if queue:
-                buy_price, buy_qty, _ = queue.pop(0)
-                pnl = (price - buy_price) * min(qty, buy_qty)
+                entry_price, entry_qty, _ = queue.pop(0)
+                pnl = (entry_price - price) * min(qty, entry_qty)
                 closed.append({"pnl": pnl, "time": received})
+            else:
+                open_longs.setdefault(ticker, []).append((price, qty, received))
+        elif action == "SELL":
+            # Closes an open long; otherwise opens a new short
+            queue = open_longs.get(ticker, [])
+            if queue:
+                entry_price, entry_qty, _ = queue.pop(0)
+                pnl = (price - entry_price) * min(qty, entry_qty)
+                closed.append({"pnl": pnl, "time": received})
+            else:
+                open_shorts.setdefault(ticker, []).append((price, qty, received))
 
     if not closed:
         return jsonify({
