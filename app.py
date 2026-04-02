@@ -412,6 +412,19 @@ def ib_trades():
     return jsonify(result)
 
 
+@app.route("/api/ib/equity/reset", methods=["POST"])
+def ib_equity_reset():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("DELETE FROM account_snapshots")
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "reset"}), 200
+
+
 @app.route("/api/ib/equity")
 def ib_equity():
     conn = get_db()
