@@ -252,6 +252,8 @@
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #1a1d2a; }
     td { padding: 11px 16px; vertical-align: middle; white-space: nowrap; }
+    tr.group-first  { border-top: 2px solid #2a2d3e; }
+    tr.group-second { border-bottom: 1px solid #1e2130; background: rgba(255,255,255,0.015); }
 
     /* Badges */
     .badge {
@@ -470,8 +472,8 @@
     <canvas id="dailyPnlChart" height="90"></canvas>
   </div>
 
-  <!-- Trade table -->
-  <div class="section-label">Signal Feed</div>
+  <!-- Combined trade table -->
+  <div class="section-label">Trade Feed</div>
   <div class="filter-bar">
     <label for="strategyFilter">Strategy</label>
     <select id="strategyFilter" onchange="applyFilter()">
@@ -482,18 +484,18 @@
     <table>
       <thead>
         <tr>
-          <th>#</th>
-          <th>Received (UTC)</th>
+          <th>Source</th>
+          <th>Entry</th>
+          <th>Exit</th>
+          <th>Duration</th>
+          <th>Direction</th>
           <th>Strategy</th>
           <th>Ticker</th>
-          <th>Action</th>
-          <th>Sentiment</th>
           <th>Qty</th>
-          <th>Price</th>
+          <th>Entry Price</th>
+          <th>Exit Price</th>
           <th>P&amp;L</th>
-          <th>Interval</th>
-          <th>Execution</th>
-          <th>TV Time</th>
+          <th>Status</th>
         </tr>
       </thead>
       <tbody id="tradeBody">
@@ -502,33 +504,11 @@
     </table>
   </div>
 
-  <!-- IB Executions feed -->
-  <div class="section-label" style="margin-top:28px">IB Executions</div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Symbol</th>
-          <th>Side</th>
-          <th>Qty</th>
-          <th>Price</th>
-          <th>Realized P&amp;L</th>
-          <th>Exchange</th>
-          <th>Account</th>
-          <th>Order ID</th>
-        </tr>
-      </thead>
-      <tbody id="ibExecBody">
-        <tr><td colspan="9" class="empty">Loading IB executions...</td></tr>
-      </tbody>
-    </table>
-  </div>
-
   <script>
     let equityChartInstance  = null;
     let dailyChartInstance   = null;
-    let allTrades = [];
+    let allTrades   = [];
+    let allIBExecs  = [];
     let selectedStrategy = '';
     let activeTab = 'signals';
 
@@ -632,38 +612,182 @@
       return `<td style="color:${color};font-weight:600">${sign}$${pnl.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
     }
 
+    // Pair TV signals: BUY+SELL → one {entry, exit} object per trade
+    function pairSignals(trades) {
+      const sorted = [...trades].sort((a, b) => a.id - b.id);
+      const openByTicker = {};
+      const pairs = [];
+      for (const t of sorted) {
+        const ticker = (t.ticker || '').toUpperCase();
+        const action = (t.action || '').toUpperCase();
+        if (action === 'BUY') {
+          if (!openByTicker[ticker]) openByTicker[ticker] = [];
+          openByTicker[ticker].push(t);
+        } else if (action === 'SELL') {
+          const queue = openByTicker[ticker];
+          if (queue && queue.length) {
+            pairs.push({ entry: queue.shift(), exit: t });
+          } else {
+            pairs.push({ entry: null, exit: t });
+          }
+        }
+      }
+      for (const entries of Object.values(openByTicker)) {
+        for (const e of entries) pairs.push({ entry: e, exit: null });
+      }
+      return pairs.sort((a, b) => (b.entry || b.exit).id - (a.entry || a.exit).id);
+    }
+
+    // Pair IB executions: BOT+SLD → one {entry, exit} object per trade
+    function pairIBExecs(execs) {
+      const sorted = [...execs].sort((a, b) => new Date(a.time) - new Date(b.time));
+      const openBySymbol = {};
+      const pairs = [];
+      for (const e of sorted) {
+        const symbol = (e.symbol || '').toUpperCase();
+        if (e.side === 'BOT') {
+          if (!openBySymbol[symbol]) openBySymbol[symbol] = [];
+          openBySymbol[symbol].push(e);
+        } else if (e.side === 'SLD') {
+          const queue = openBySymbol[symbol];
+          if (queue && queue.length) {
+            pairs.push({ entry: queue.shift(), exit: e });
+          } else {
+            pairs.push({ entry: null, exit: e });
+          }
+        }
+      }
+      for (const entries of Object.values(openBySymbol)) {
+        for (const e of entries) pairs.push({ entry: e, exit: null });
+      }
+      return pairs.sort((a, b) => new Date((b.entry || b.exit).time) - new Date((a.entry || a.exit).time));
+    }
+
+    // Match TV pairs with IB pairs by ticker, chronologically
+    function matchPairs(tvPairs, ibPairs) {
+      const ibByTicker = {};
+      for (const p of ibPairs) {
+        const sym = ((p.entry || p.exit).symbol || '').toUpperCase();
+        if (!ibByTicker[sym]) ibByTicker[sym] = [];
+        ibByTicker[sym].push(p);
+      }
+      const usedIB = new Set();
+      const groups = [];
+      for (const tvP of tvPairs) {
+        const ticker = ((tvP.entry || tvP.exit).ticker || '').toUpperCase();
+        const candidates = ibByTicker[ticker] || [];
+        let ibMatch = null;
+        for (let i = 0; i < candidates.length; i++) {
+          if (!usedIB.has(i + '|' + ticker)) {
+            ibMatch = candidates[i];
+            usedIB.add(i + '|' + ticker);
+            break;
+          }
+        }
+        groups.push({ tv: tvP, ib: ibMatch });
+      }
+      // Unmatched IB pairs
+      for (const [ticker, list] of Object.entries(ibByTicker)) {
+        for (let i = 0; i < list.length; i++) {
+          if (!usedIB.has(i + '|' + ticker)) {
+            groups.push({ tv: null, ib: list[i] });
+          }
+        }
+      }
+      return groups;
+    }
+
+    function tradeDuration(t1, t2) {
+      if (!t1) return '—';
+      const ms = (t2 ? new Date(t2) : new Date()) - new Date(t1);
+      if (isNaN(ms) || ms < 0) return '—';
+      const s = Math.floor(ms / 1000);
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+      if (h > 0) return `${h}h ${m}m ${sec}s`;
+      if (m > 0) return `${m}m ${sec}s`;
+      return `${sec}s`;
+    }
+
+    function priceCell(p) {
+      return p != null ? '$' + Number(p).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    }
+
     function renderTable(trades, strategyFilter) {
-      const visible = strategyFilter
+      const filtered = strategyFilter
         ? trades.filter(t => t.strategy === strategyFilter)
         : trades;
-      const pnlMap = computePnL(visible);
-      const body = document.getElementById('tradeBody');
-      if (!visible.length) {
+
+      const tvPairs  = pairSignals(filtered);
+      const ibPairs  = pairIBExecs(allIBExecs);
+      const groups   = matchPairs(tvPairs, ibPairs);
+      const body     = document.getElementById('tradeBody');
+
+      if (!groups.length) {
         body.innerHTML = '<tr><td colspan="12" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
       } else {
-        body.innerHTML = visible.map(t => `
-          <tr>
-            <td style="color:#555">${t.id}</td>
-            <td>${t.received_at ?? '—'}</td>
-            <td>${t.strategy ? `<span class="strategy-tag">${t.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
-            <td><strong>${t.ticker ?? '—'}</strong></td>
-            <td>${actionBadge(t.action)}</td>
-            <td>${sentimentBadge(t.sentiment)}</td>
-            <td>${t.quantity ?? '—'}</td>
-            <td>${t.price ?? '—'}</td>
-            ${pnlCell(pnlMap[t.id])}
-            <td>${t.interval ?? '—'}</td>
-            <td>${execBadge(t.exec_status)}</td>
-            <td style="color:#555;font-size:0.8rem">${t.tv_time ?? '—'}</td>
-          </tr>
-        `).join('');
+        const rows = [];
+        for (const g of groups) {
+          const { tv, ib } = g;
+
+          if (tv) {
+            const en = tv.entry, ex = tv.exit;
+            const ref        = en || ex;
+            const entryPrice = en ? en.price : null;
+            const exitPrice  = ex ? ex.price : null;
+            const qty        = ref.quantity;
+            const pnl        = (entryPrice != null && exitPrice != null) ? (exitPrice - entryPrice) * qty : undefined;
+            const dur        = en ? tradeDuration(en.received_at, ex?.received_at) : '—';
+            const status     = ex ? ex.exec_status : en?.exec_status;
+            rows.push(`<tr class="group-first">
+              <td style="color:#aaa;font-size:0.8rem">Trading View</td>
+              <td style="font-size:0.85rem">${en?.received_at ?? '—'}</td>
+              <td style="font-size:0.85rem;color:#888">${ex?.received_at ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
+              <td style="color:#888;font-size:0.85rem">${dur}</td>
+              <td>${sentimentBadge(ref.sentiment)}</td>
+              <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+              <td><strong>${ref.ticker ?? '—'}</strong></td>
+              <td>${qty ?? '—'}</td>
+              <td>${priceCell(entryPrice)}</td>
+              <td>${priceCell(exitPrice)}</td>
+              ${pnlCell(pnl)}
+              <td>${execBadge(status)}</td>
+            </tr>`);
+          }
+
+          if (ib) {
+            const en = ib.entry, ex = ib.exit;
+            const ref        = en || ex;
+            const entryPrice = en ? en.price : null;
+            const exitPrice  = ex ? ex.price : null;
+            const qty        = ref.shares;
+            const pnl        = ex?.pnl != null ? ex.pnl : undefined;
+            const sentiment  = (en?.side === 'BOT' || (!en && ex?.side === 'SLD')) ? 'Long' : 'Short';
+            const dur        = en ? tradeDuration(en.time, ex?.time) : '—';
+            rows.push(`<tr class="group-second">
+              <td style="color:#4a90d9;font-size:0.8rem">IB</td>
+              <td style="font-size:0.85rem;color:#aaa">${en?.time ?? '—'}</td>
+              <td style="font-size:0.85rem;color:#888">${ex?.time ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
+              <td style="color:#888;font-size:0.85rem">${dur}</td>
+              <td>${sentimentBadge(sentiment)}</td>
+              <td><span style="color:#444">—</span></td>
+              <td><strong>${ref.symbol ?? '—'}</strong></td>
+              <td>${qty ?? '—'}</td>
+              <td>${priceCell(entryPrice)}</td>
+              <td>${priceCell(exitPrice)}</td>
+              ${pnlCell(pnl)}
+              <td><span class="exec-ok">✓ Filled</span></td>
+            </tr>`);
+          }
+        }
+        body.innerHTML = rows.join('');
       }
-      document.getElementById('statTotal').textContent    = visible.length;
-      document.getElementById('statBuys').textContent     = visible.filter(t => t.action?.toLowerCase() === 'buy').length;
-      document.getElementById('statSells').textContent    = visible.filter(t => t.action?.toLowerCase() === 'sell').length;
-      document.getElementById('statTickers').textContent  = new Set(visible.map(t => t.ticker).filter(Boolean)).size;
-      document.getElementById('statExecuted').textContent = visible.filter(t => t.exec_status === 'ok').length;
-      document.getElementById('statErrors').textContent   = visible.filter(t => t.exec_status === 'error').length;
+
+      document.getElementById('statTotal').textContent    = filtered.length;
+      document.getElementById('statBuys').textContent     = filtered.filter(t => t.action?.toLowerCase() === 'buy').length;
+      document.getElementById('statSells').textContent    = filtered.filter(t => t.action?.toLowerCase() === 'sell').length;
+      document.getElementById('statTickers').textContent  = new Set(filtered.map(t => t.ticker).filter(Boolean)).size;
+      document.getElementById('statExecuted').textContent = filtered.filter(t => t.exec_status === 'ok').length;
+      document.getElementById('statErrors').textContent   = filtered.filter(t => t.exec_status === 'error').length;
     }
 
     const _chartInstances = {};
@@ -903,14 +1027,16 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing...';
       try {
-        const [tradesRes, statsRes, brokerRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
+          fetch('/api/ib/trades').catch(() => ({ json: () => [] })),
         ]);
         const trades  = await tradesRes.json();
         const stats   = await statsRes.json();
         const brokers = await brokerRes.json();
+        allIBExecs = await ibExecsRes.json().catch(() => []);
 
         // IB connection pill
         const ib = brokers.IB || {};
@@ -1001,46 +1127,8 @@
       }
     }
 
-    function renderIBExecs(execs) {
-      const body = document.getElementById('ibExecBody');
-      if (!execs.length) {
-        body.innerHTML = '<tr><td colspan="9" class="empty">No IB executions this session — executions appear after orders are filled.</td></tr>';
-        return;
-      }
-      body.innerHTML = [...execs].reverse().map(e => {
-        const side      = e.side === 'BOT' ? 'BUY' : e.side === 'SLD' ? 'SELL' : e.side;
-        const sideColor = side === 'BUY' ? '#26a65b' : '#ef5350';
-        const pnlHtml   = e.pnl == null
-          ? '<td style="color:#555">—</td>'
-          : `<td style="color:${e.pnl >= 0 ? '#26a65b' : '#ef5350'};font-weight:600">${e.pnl >= 0 ? '+' : ''}$${Math.abs(e.pnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
-        return `<tr>
-          <td style="color:#888;font-size:0.85rem">${e.time ?? '—'}</td>
-          <td><strong>${e.symbol ?? '—'}</strong></td>
-          <td><span class="badge" style="background:${sideColor}22;color:${sideColor}">${side}</span></td>
-          <td>${e.shares ?? '—'}</td>
-          <td>${e.price != null ? '$' + Number(e.price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
-          ${pnlHtml}
-          <td style="color:#888">${e.exchange ?? '—'}</td>
-          <td style="color:#555;font-size:0.8rem">${e.account ?? '—'}</td>
-          <td style="color:#555;font-size:0.8rem">${e.order_id ?? '—'}</td>
-        </tr>`;
-      }).join('');
-    }
-
-    async function loadIBExecs() {
-      try {
-        const execs = await fetch('/api/ib/trades').then(r => r.json());
-        renderIBExecs(execs);
-      } catch {
-        document.getElementById('ibExecBody').innerHTML =
-          '<tr><td colspan="9" class="empty">Could not load IB executions.</td></tr>';
-      }
-    }
-
     loadTrades();
-    loadIBExecs();
     setInterval(loadTrades, 30000);
-    setInterval(loadIBExecs, 30000);
   </script>
 </body>
 </html>
