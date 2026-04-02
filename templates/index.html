@@ -659,28 +659,36 @@
       return pairs.sort((a, b) => (b.entry || b.exit).id - (a.entry || a.exit).id);
     }
 
-    // Pair IB executions: BOT+SLD → one {entry, exit} object per trade
+    // Pair IB executions: handles both LONG (BOT→SLD) and SHORT (SLD→BOT)
     function pairIBExecs(execs) {
       const sorted = [...execs].sort((a, b) => new Date(a.time) - new Date(b.time));
-      const openBySymbol = {};
-      const pairs = [];
+      const longs  = {};  // open long positions waiting for SLD
+      const shorts = {};  // open short positions waiting for BOT
+      const pairs  = [];
       for (const e of sorted) {
         const symbol = (e.symbol || '').toUpperCase();
         if (e.side === 'BOT') {
-          if (!openBySymbol[symbol]) openBySymbol[symbol] = [];
-          openBySymbol[symbol].push(e);
-        } else if (e.side === 'SLD') {
-          const queue = openBySymbol[symbol];
-          if (queue && queue.length) {
-            pairs.push({ entry: queue.shift(), exit: e });
+          // Closes an open short first; otherwise opens a new long
+          if (shorts[symbol] && shorts[symbol].length) {
+            pairs.push({ entry: shorts[symbol].shift(), exit: e, direction: 'short' });
           } else {
-            pairs.push({ entry: null, exit: e });
+            if (!longs[symbol]) longs[symbol] = [];
+            longs[symbol].push(e);
+          }
+        } else if (e.side === 'SLD') {
+          // Closes an open long first; otherwise opens a new short
+          if (longs[symbol] && longs[symbol].length) {
+            pairs.push({ entry: longs[symbol].shift(), exit: e, direction: 'long' });
+          } else {
+            if (!shorts[symbol]) shorts[symbol] = [];
+            shorts[symbol].push(e);
           }
         }
       }
-      for (const entries of Object.values(openBySymbol)) {
-        for (const e of entries) pairs.push({ entry: e, exit: null });
-      }
+      for (const entries of Object.values(longs))
+        for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'long' });
+      for (const entries of Object.values(shorts))
+        for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'short' });
       return pairs.sort((a, b) => new Date((b.entry || b.exit).time) - new Date((a.entry || a.exit).time));
     }
 
@@ -786,7 +794,7 @@
             const exitPrice  = ex ? ex.price : null;
             const qty        = ref.shares;
             const pnl        = ex?.pnl != null ? ex.pnl : undefined;
-            const sentiment  = (en?.side === 'BOT' || (!en && ex?.side === 'SLD')) ? 'Long' : 'Short';
+            const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
             const dur        = en ? tradeDuration(en.time, ex?.time) : '—';
             rows.push(`<tr class="group-second">
               <td style="color:#4a90d9;font-size:0.8rem">IB</td>
