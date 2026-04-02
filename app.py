@@ -106,6 +106,37 @@ if os.environ.get("IB_HOST"):
         except Exception as e:
             log.warning("Account snapshot (fill-triggered) failed: %s", e)
 
+    def _sync_fills_on_connect():
+        """Persist any fills already in the current IB session after connecting."""
+        try:
+            for fill in ib_broker.executions():
+                exec_id = fill["exec_id"]
+                pnl     = fill.get("pnl")
+                conn = get_db()
+                cur  = conn.cursor()
+                p    = placeholder()
+                cur.execute(
+                    f"INSERT INTO ib_executions "
+                    f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                    f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
+                    f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
+                    (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
+                     fill["side"], fill["shares"], fill["price"],
+                     fill["order_id"], fill["account"], fill["exchange"], pnl, pnl),
+                ) if DATABASE_URL else cur.execute(
+                    f"INSERT OR REPLACE INTO ib_executions "
+                    f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                    f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                    (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
+                     fill["side"], fill["shares"], fill["price"],
+                     fill["order_id"], fill["account"], fill["exchange"], pnl),
+                )
+                conn.commit()
+                conn.close()
+            log.info("IB fill sync complete")
+        except Exception as e:
+            log.warning("IB fill sync failed: %s", e)
+
     def _connect_ib_background():
         """Try to connect to IB Gateway, retrying every 30s on failure."""
         time.sleep(3)  # let gunicorn finish forking before we open a socket
@@ -114,6 +145,7 @@ if os.environ.get("IB_HOST"):
                 try:
                     ib_broker.connect()
                     ib_broker.register_fill_callback(_on_fill)
+                    _sync_fills_on_connect()
                     log.info("IB Gateway connected (pid=%s)", os.getpid())
                 except Exception as e:
                     log.warning("IB connect failed, retrying in 30s: %s", e)
