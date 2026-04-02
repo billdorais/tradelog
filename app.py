@@ -412,38 +412,31 @@ def ib_trades():
     return jsonify(result)
 
 
-@app.route("/api/ib/equity/reset", methods=["POST"])
-def ib_equity_reset():
-    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
-    if token != WEBHOOK_TOKEN:
-        abort(401)
-    conn = get_db()
-    cur  = conn.cursor()
-    cur.execute("DELETE FROM account_snapshots")
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "reset"}), 200
-
-
 @app.route("/api/ib/equity")
 def ib_equity():
+    """Cumulative realized P&L from IB fill data (SLD executions with pnl)."""
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT ts, net_liq FROM account_snapshots ORDER BY id ASC")
+    cur.execute(
+        "SELECT ts, pnl FROM ib_executions "
+        "WHERE side = 'SLD' AND pnl IS NOT NULL "
+        "ORDER BY ts ASC"
+    )
     rows = cur.fetchall()
     conn.close()
     if not rows:
         return jsonify([])
     if DATABASE_URL:
-        cols = [d[0] for d in cur.description]
-        snaps = [dict(zip(cols, r)) for r in rows]
+        cols  = [d[0] for d in cur.description]
+        fills = [dict(zip(cols, r)) for r in rows]
     else:
-        snaps = [dict(r) for r in rows]
-    baseline = snaps[0]["net_liq"]
-    return jsonify([
-        {"time": s["ts"], "value": round(s["net_liq"] - baseline, 2)}
-        for s in snaps
-    ])
+        fills = [dict(r) for r in rows]
+    cumulative = 0
+    result = []
+    for f in fills:
+        cumulative += f["pnl"]
+        result.append({"time": f["ts"], "value": round(cumulative, 2)})
+    return jsonify(result)
 
 
 @app.route("/api/stats")

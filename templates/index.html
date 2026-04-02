@@ -456,9 +456,8 @@
       </select>
     </div>
     <canvas id="equityChart" height="90"></canvas>
-    <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555;margin-top:6px;display:none;align-items:center;justify-content:space-between">
-      <span>NAV delta from session start — includes open positions &amp; unrealized P&amp;L. Polled every 60s.</span>
-      <button onclick="resetIBEquity()" style="padding:3px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e;border-radius:4px;cursor:pointer">Reset chart</button>
+    <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555;margin-top:6px">
+      Cumulative realized P&amp;L from IB fills.
     </div>
   </div>
 
@@ -533,16 +532,9 @@
         signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
         filter.style.display = 'none';
         note.style.display   = 'flex';
-        label.textContent    = 'IB Account NAV delta from session start';
+        label.textContent    = 'Cumulative realized P&L from IB fills';
         loadIBEquity();
       }
-    }
-
-    async function resetIBEquity() {
-      const token = prompt('Enter webhook token to reset IB chart:');
-      if (!token) return;
-      await fetch(`/api/ib/equity/reset?token=${encodeURIComponent(token)}`, { method: 'POST' });
-      loadIBEquity();
     }
 
     async function loadIBEquity() {
@@ -556,7 +548,7 @@
       if (!values.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
-        c.fillText('No IB account snapshots yet — data appears ~60s after connection', document.getElementById('equityChart').width / 2, 60);
+        c.fillText('No IB fills yet — chart updates after trades are closed', document.getElementById('equityChart').width / 2, 60);
       }
     }
 
