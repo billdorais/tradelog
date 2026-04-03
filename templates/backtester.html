@@ -699,57 +699,86 @@ function togglePinePanel() {
 }
 
 function parsePineParams(src) {
-  // Match: varname = input.float(DEFAULT, ...) or input.int(DEFAULT, ...)
-  // Also handles: varname = input(DEFAULT, ...)
-  const inputRe = /(\w+)\s*=\s*input(?:\.float|\.int)?\s*\(\s*([\d.]+)/g;
-  const found   = {};
-  let m;
-  while ((m = inputRe.exec(src)) !== null) {
-    found[m[1].toLowerCase()] = parseFloat(m[2]);
-  }
-
-  // Map known Pine variable names → form field IDs
-  const mapping = {
-    // long trail activation variants
-    long_trail_activation:  ['lta', 'lta_min', 'lta_max'],
-    longtrailactivation:    ['lta', 'lta_min', 'lta_max'],
-    long_trail:             ['lta', 'lta_min', 'lta_max'],
-    // short trail activation variants
-    short_trail_activation: ['sta', 'sta_min', 'sta_max'],
-    shorttrailactivation:   ['sta', 'sta_min', 'sta_max'],
-    short_trail:            ['sta', 'sta_min', 'sta_max'],
-    // long hard stop variants
-    long_hard_stop:         ['lhs', 'lhs_min', 'lhs_max'],
-    longhardstop:           ['lhs', 'lhs_min', 'lhs_max'],
-    long_stop:              ['lhs', 'lhs_min', 'lhs_max'],
-    // short hard stop variants
-    short_hard_stop:        ['shs', 'shs_min', 'shs_max'],
-    shorthardstop:          ['shs', 'shs_min', 'shs_max'],
-    short_stop:             ['shs', 'shs_min', 'shs_max'],
-    // trail distance
-    trail_distance:         ['trd_single', 'trd_opt'],
-    traildistance:          ['trd_single', 'trd_opt'],
-    trail_dist:             ['trd_single', 'trd_opt'],
-  };
-
+  const nameEl = document.getElementById('pineFileName');
   let filled = 0;
-  for (const [varName, val] of Object.entries(found)) {
-    const ids = mapping[varName];
-    if (!ids) continue;
+
+  function fill(ids, val) {
     for (const id of ids) {
       const el = document.getElementById(id);
       if (el) { el.value = val; filled++; }
     }
   }
 
-  // Show feedback
-  const nameEl = document.getElementById('pineFileName');
+  // ── 1. Parse input.float() / input.int() variable defaults ───────────────
+  const inputRe = /(\w+)\s*=\s*input(?:\.float|\.int)?\s*\(\s*([\d.]+)/g;
+  const inputVars = {};
+  let m;
+  while ((m = inputRe.exec(src)) !== null) inputVars[m[1].toLowerCase()] = parseFloat(m[2]);
+
+  const inputMapping = {
+    long_trail_activation:  ['lta', 'lta_min', 'lta_max'],
+    longtrailactivation:    ['lta', 'lta_min', 'lta_max'],
+    long_trail:             ['lta', 'lta_min', 'lta_max'],
+    short_trail_activation: ['sta', 'sta_min', 'sta_max'],
+    shorttrailactivation:   ['sta', 'sta_min', 'sta_max'],
+    short_trail:            ['sta', 'sta_min', 'sta_max'],
+    long_hard_stop:         ['lhs', 'lhs_min', 'lhs_max'],
+    longhardstop:           ['lhs', 'lhs_min', 'lhs_max'],
+    long_stop:              ['lhs', 'lhs_min', 'lhs_max'],
+    short_hard_stop:        ['shs', 'shs_min', 'shs_max'],
+    shorthardstop:          ['shs', 'shs_min', 'shs_max'],
+    short_stop:             ['shs', 'shs_min', 'shs_max'],
+    trail_distance:         ['trd_single', 'trd_opt'],
+    traildistance:          ['trd_single', 'trd_opt'],
+    trail_dist:             ['trd_single', 'trd_opt'],
+  };
+
+  for (const [name, val] of Object.entries(inputVars)) {
+    if (inputMapping[name]) fill(inputMapping[name], val);
+  }
+
+  // ── 2. Parse strategy.exit() blocks ──────────────────────────────────────
+  // In Pine Script strategy.exit():
+  //   trail_points = N  →  points of profit before trail activates (= our trail activation)
+  //   trail_offset = N  →  how far the trail follows price         (= our trail distance)
+  //   loss         = N  →  hard stop in points                     (= our hard stop)
+  const exitRe = /strategy\.exit\s*\(/g;
+  let exm;
+  while ((exm = exitRe.exec(src)) !== null) {
+    // Grab enough chars to cover the full call (up to closing paren)
+    const block = src.slice(exm.index, exm.index + 500);
+
+    // Determine direction from first two string args
+    const isLong  = /['"][^'"]*[Ll]ong/.test(block.slice(0, 80));
+    const isShort = /['"][^'"]*[Ss]hort/.test(block.slice(0, 80));
+
+    const tpMatch   = /trail_points\s*=\s*([\d.]+)/.exec(block);
+    const toMatch   = /trail_offset\s*=\s*([\d.]+)/.exec(block);
+    const lossMatch = /\bloss\s*=\s*([\d.]+)/.exec(block);
+
+    if (tpMatch) {
+      const v = parseFloat(tpMatch[1]);
+      if (isLong)       fill(['lta', 'lta_min', 'lta_max'], v);
+      else if (isShort) fill(['sta', 'sta_min', 'sta_max'], v);
+      else              fill(['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'], v);
+    }
+    if (toMatch) {
+      fill(['trd_single', 'trd_opt'], parseFloat(toMatch[1]));
+    }
+    if (lossMatch) {
+      const v = parseFloat(lossMatch[1]);
+      if (isLong)       fill(['lhs', 'lhs_min', 'lhs_max'], v);
+      else if (isShort) fill(['shs', 'shs_min', 'shs_max'], v);
+      else              fill(['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'], v);
+    }
+  }
+
   if (filled > 0) {
     nameEl.style.color = '#26a65b';
-    nameEl.textContent = `✓ ${filled} parameters loaded from Pine Script`;
+    nameEl.textContent = `✓ ${filled} parameters loaded`;
   } else {
     nameEl.style.color = '#ef5350';
-    nameEl.textContent = '✗ No matching parameters found — check variable names';
+    nameEl.textContent = '✗ No matching parameters found';
   }
 }
 
