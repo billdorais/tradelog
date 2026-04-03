@@ -460,6 +460,80 @@ def strategies():
     return render_template("strategies.html")
 
 
+@app.route("/backtester")
+def backtester():
+    return render_template("backtester.html")
+
+
+@app.route("/api/backtest/run", methods=["POST"])
+def backtest_run():
+    from strategies.camarilla import parse_bars, run_backtest, optimise
+
+    if "csv_file" not in request.files:
+        return jsonify({"error": "No CSV file uploaded"}), 400
+
+    file = request.files["csv_file"]
+    if not file.filename:
+        return jsonify({"error": "Empty filename"}), 400
+
+    try:
+        bars = parse_bars(file.read())
+    except Exception as e:
+        return jsonify({"error": f"CSV parse error: {e}"}), 400
+
+    if len(bars) < 10:
+        return jsonify({"error": "Not enough bars in CSV (need at least 10)"}), 400
+
+    mode = request.form.get("mode", "single")
+
+    if mode == "optimize":
+        try:
+            opt_params = {
+                "long_trail_activation_range":  [
+                    float(request.form.get("lta_min", 20)),
+                    float(request.form.get("lta_max", 60)),
+                    float(request.form.get("lta_step", 10)),
+                ],
+                "short_trail_activation_range": [
+                    float(request.form.get("sta_min", 5)),
+                    float(request.form.get("sta_max", 20)),
+                    float(request.form.get("sta_step", 5)),
+                ],
+                "long_hard_stop_range": [
+                    float(request.form.get("lhs_min", 50)),
+                    float(request.form.get("lhs_max", 100)),
+                    float(request.form.get("lhs_step", 10)),
+                ],
+                "short_hard_stop_range": [
+                    float(request.form.get("shs_min", 10)),
+                    float(request.form.get("shs_max", 30)),
+                    float(request.form.get("shs_step", 5)),
+                ],
+                "trail_distance": float(request.form.get("trail_distance", 1)),
+            }
+            grid = optimise(bars, opt_params)
+            return jsonify({"mode": "optimize", "bars_loaded": len(bars), "grid": grid})
+        except Exception as e:
+            log.exception("Backtest optimize error")
+            return jsonify({"error": str(e)}), 500
+    else:
+        try:
+            params = {
+                "long_trail_activation":  float(request.form.get("lta", 40)),
+                "short_trail_activation": float(request.form.get("sta", 10)),
+                "long_hard_stop":         float(request.form.get("lhs", 70)),
+                "short_hard_stop":        float(request.form.get("shs", 20)),
+                "trail_distance":         float(request.form.get("trail_distance", 1)),
+            }
+            result = run_backtest(bars, params)
+            result["mode"] = "single"
+            result["bars_loaded"] = len(bars)
+            return jsonify(result)
+        except Exception as e:
+            log.exception("Backtest single error")
+            return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/ib/trades")
 def ib_trades():
     conn = get_db()

@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BackTester — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #000;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    header {
+      max-width: 1100px;
+      margin: 0 auto 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    h1 { font-size: 1.6rem; color: #fff; }
+
+    .nav-links { display: flex; gap: 8px; }
+    a.nav-link {
+      color: #888;
+      text-decoration: none;
+      font-size: 0.9rem;
+      border: 1px solid #2a2d3e;
+      padding: 5px 12px;
+      border-radius: 4px;
+    }
+    a.nav-link:hover { color: #e0e0e0; border-color: #555; }
+
+    .page { max-width: 1100px; margin: 0 auto; }
+
+    /* ── Layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 800px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    /* ── Panels ── */
+    .panel {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 24px;
+    }
+
+    .panel-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #888;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #1e2130;
+      padding-bottom: 8px;
+    }
+
+    /* ── Upload area ── */
+    .upload-area {
+      border: 2px dashed #2a2d3e;
+      border-radius: 6px;
+      padding: 28px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 20px;
+    }
+    .upload-area:hover, .upload-area.dragover {
+      border-color: #a78bfa;
+      background: rgba(167,139,250,0.04);
+    }
+    .upload-area input { display: none; }
+    .upload-icon { font-size: 1.8rem; margin-bottom: 8px; color: #555; }
+    .upload-label { font-size: 0.85rem; color: #888; }
+    .upload-label span { color: #a78bfa; }
+    .file-name {
+      margin-top: 10px;
+      font-size: 0.8rem;
+      color: #a78bfa;
+      min-height: 1.2em;
+    }
+
+    /* ── Mode toggle ── */
+    .mode-toggle {
+      display: flex;
+      background: #111;
+      border: 1px solid #2a2d3e;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 8px;
+      background: none;
+      border: none;
+      color: #666;
+      font-family: inherit;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mode-btn.active {
+      background: #1e1e3e;
+      color: #a78bfa;
+      font-weight: 600;
+    }
+
+    /* ── Form fields ── */
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block;
+      font-size: 0.75rem;
+      color: #888;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .field input[type="number"] {
+      width: 100%;
+      background: #111;
+      border: 1px solid #2a2d3e;
+      border-radius: 4px;
+      color: #e0e0e0;
+      padding: 7px 10px;
+      font-family: inherit;
+      font-size: 0.9rem;
+    }
+    .field input[type="number"]:focus {
+      outline: none;
+      border-color: #a78bfa;
+    }
+
+    .range-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+    }
+    .range-row input { text-align: center; }
+
+    .field-group {
+      background: #0a0a0a;
+      border: 1px solid #1e2130;
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .field-group-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #555;
+      margin-bottom: 10px;
+    }
+
+    /* ── Run button ── */
+    .run-btn {
+      width: 100%;
+      padding: 11px;
+      background: #a78bfa;
+      border: none;
+      border-radius: 6px;
+      color: #000;
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.03em;
+      transition: background 0.15s, opacity 0.15s;
+      margin-top: 6px;
+    }
+    .run-btn:hover { background: #c4b5fd; }
+    .run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ── Results column ── */
+    .results-col { display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── Stats row ── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 12px;
+    }
+    .stat-card {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .stat-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #666;
+      margin-bottom: 6px;
+    }
+    .stat-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .stat-value.green { color: #26a65b; }
+    .stat-value.red   { color: #ef5350; }
+
+    /* ── Chart ── */
+    .chart-wrap {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 20px 20px 12px;
+    }
+    .chart-wrap canvas { max-height: 260px; }
+
+    /* ── Trade log ── */
+    .table-wrap {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .table-header {
+      padding: 12px 16px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #666;
+      border-bottom: 1px solid #2a2d3e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .table-scroll { overflow-x: auto; max-height: 340px; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th {
+      text-align: left;
+      padding: 9px 12px;
+      color: #555;
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid #1e2130;
+      position: sticky;
+      top: 0;
+      background: #0d0d0d;
+    }
+    td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #111;
+      color: #b0b0b0;
+      font-family: monospace;
+      font-size: 0.82rem;
+    }
+    tr:last-child td { border-bottom: none; }
+    .pnl-pos { color: #26a65b; }
+    .pnl-neg { color: #ef5350; }
+    .dir-long  { color: #26a65b; font-weight: 600; }
+    .dir-short { color: #ef5350; font-weight: 600; }
+
+    /* ── Optimize table ── */
+    .opt-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      background: rgba(167,139,250,0.15);
+      color: #a78bfa;
+    }
+
+    /* ── Empty / loading state ── */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #444;
+      font-size: 0.9rem;
+    }
+    .empty-state .icon { font-size: 2.5rem; margin-bottom: 12px; }
+
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 2px solid #333;
+      border-top-color: #a78bfa;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg {
+      background: rgba(239,83,80,0.1);
+      border: 1px solid rgba(239,83,80,0.3);
+      border-radius: 6px;
+      padding: 12px 16px;
+      color: #ef5350;
+      font-size: 0.88rem;
+    }
+
+    .bars-info {
+      font-size: 0.75rem;
+      color: #555;
+      margin-top: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div style="display:flex;align-items:center;gap:10px">
+    <img src="/static/kariosLogo_128.png" alt="Kairos Automata"
+         style="height:48px;width:48px;image-rendering:pixelated">
+    <h1>BackTester</h1>
+  </div>
+  <div class="nav-links">
+    <a href="/" class="nav-link">Dashboard</a>
+    <a href="/strategies" class="nav-link">Strategies</a>
+    <a href="/about" class="nav-link">About</a>
+  </div>
+</header>
+
+<div class="page">
+  <div class="layout">
+
+    <!-- ── Left: config panel ── -->
+    <div>
+      <div class="panel">
+        <div class="panel-title">Configuration</div>
+
+        <!-- File upload -->
+        <div class="upload-area" id="uploadArea">
+          <input type="file" id="csvInput" accept=".csv">
+          <div class="upload-icon">📂</div>
+          <div class="upload-label">
+            <span>Choose CSV</span> or drag &amp; drop<br>
+            <span style="color:#555;font-size:0.78rem">TradingView OHLCV export</span>
+          </div>
+          <div class="file-name" id="fileName"></div>
+        </div>
+
+        <!-- Strategy selector (future-proof) -->
+        <div class="field">
+          <label>Strategy</label>
+          <select id="strategySelect" style="width:100%;background:#111;border:1px solid #2a2d3e;
+            border-radius:4px;color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+            <option value="camarilla">Camarilla Pivot Breakout</option>
+          </select>
+        </div>
+
+        <!-- Mode toggle -->
+        <div class="mode-toggle">
+          <button class="mode-btn active" id="btnSingle" onclick="setMode('single')">Single Run</button>
+          <button class="mode-btn" id="btnOptimize" onclick="setMode('optimize')">Optimize</button>
+        </div>
+
+        <!-- Single run params -->
+        <div id="singleParams">
+          <div class="field-group">
+            <div class="field-group-title">Long Trade</div>
+            <div class="field">
+              <label>Trail Activation (pts profit)</label>
+              <input type="number" id="lta" value="40" min="1" step="1">
+            </div>
+            <div class="field">
+              <label>Hard Stop (pts)</label>
+              <input type="number" id="lhs" value="70" min="1" step="1">
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-group-title">Short Trade</div>
+            <div class="field">
+              <label>Trail Activation (pts profit)</label>
+              <input type="number" id="sta" value="10" min="1" step="1">
+            </div>
+            <div class="field">
+              <label>Hard Stop (pts)</label>
+              <input type="number" id="shs" value="20" min="1" step="1">
+            </div>
+          </div>
+          <div class="field">
+            <label>Trail Distance (pts)</label>
+            <input type="number" id="trd_single" value="1" min="0.25" step="0.25">
+          </div>
+        </div>
+
+        <!-- Optimize params -->
+        <div id="optimizeParams" style="display:none">
+          <p style="font-size:0.78rem;color:#555;margin-bottom:14px">
+            Enter min / max / step for each parameter. Combos are scored by Profit Factor.
+          </p>
+          <div class="field-group">
+            <div class="field-group-title">Long Trail Activation (pts)</div>
+            <div class="range-row">
+              <div class="field">
+                <label>Min</label>
+                <input type="number" id="lta_min" value="20" step="1">
+              </div>
+              <div class="field">
+                <label>Max</label>
+                <input type="number" id="lta_max" value="60" step="1">
+              </div>
+              <div class="field">
+                <label>Step</label>
+                <input type="number" id="lta_step" value="10" step="1" min="1">
+              </div>
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-group-title">Short Trail Activation (pts)</div>
+            <div class="range-row">
+              <div class="field">
+                <label>Min</label>
+                <input type="number" id="sta_min" value="5" step="1">
+              </div>
+              <div class="field">
+                <label>Max</label>
+                <input type="number" id="sta_max" value="20" step="1">
+              </div>
+              <div class="field">
+                <label>Step</label>
+                <input type="number" id="sta_step" value="5" step="1" min="1">
+              </div>
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-group-title">Long Hard Stop (pts)</div>
+            <div class="range-row">
+              <div class="field">
+                <label>Min</label>
+                <input type="number" id="lhs_min" value="50" step="5">
+              </div>
+              <div class="field">
+                <label>Max</label>
+                <input type="number" id="lhs_max" value="100" step="5">
+              </div>
+              <div class="field">
+                <label>Step</label>
+                <input type="number" id="lhs_step" value="10" step="1" min="1">
+              </div>
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-group-title">Short Hard Stop (pts)</div>
+            <div class="range-row">
+              <div class="field">
+                <label>Min</label>
+                <input type="number" id="shs_min" value="10" step="5">
+              </div>
+              <div class="field">
+                <label>Max</label>
+                <input type="number" id="shs_max" value="30" step="5">
+              </div>
+              <div class="field">
+                <label>Step</label>
+                <input type="number" id="shs_step" value="5" step="1" min="1">
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <label>Trail Distance (pts, fixed)</label>
+            <input type="number" id="trd_opt" value="1" min="0.25" step="0.25">
+          </div>
+        </div>
+
+        <button class="run-btn" id="runBtn" onclick="runBacktest()" disabled>
+          Run Backtest
+        </button>
+        <div class="bars-info" id="barsInfo"></div>
+      </div>
+    </div>
+
+    <!-- ── Right: results column ── -->
+    <div class="results-col" id="resultsCol">
+      <div class="empty-state">
+        <div class="icon">📈</div>
+        Upload a TradingView CSV and run a backtest to see results here.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let currentMode = 'single';
+let csvFile     = null;
+let equityChart = null;
+
+// ── File upload ────────────────────────────────────────────────────────────
+const uploadArea = document.getElementById('uploadArea');
+const csvInput   = document.getElementById('csvInput');
+
+uploadArea.addEventListener('click', () => csvInput.click());
+csvInput.addEventListener('change', e => {
+  if (e.target.files[0]) setFile(e.target.files[0]);
+});
+uploadArea.addEventListener('dragover', e => {
+  e.preventDefault();
+  uploadArea.classList.add('dragover');
+});
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+});
+
+function setFile(f) {
+  csvFile = f;
+  document.getElementById('fileName').textContent = f.name;
+  document.getElementById('runBtn').disabled = false;
+}
+
+// ── Mode toggle ────────────────────────────────────────────────────────────
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('btnSingle').classList.toggle('active', mode === 'single');
+  document.getElementById('btnOptimize').classList.toggle('active', mode === 'optimize');
+  document.getElementById('singleParams').style.display   = mode === 'single'   ? '' : 'none';
+  document.getElementById('optimizeParams').style.display = mode === 'optimize' ? '' : 'none';
+}
+
+// ── Run ────────────────────────────────────────────────────────────────────
+async function runBacktest() {
+  if (!csvFile) return;
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Running…';
+
+  showLoading();
+
+  const fd = new FormData();
+  fd.append('csv_file', csvFile);
+  fd.append('mode', currentMode);
+
+  if (currentMode === 'single') {
+    fd.append('lta',           document.getElementById('lta').value);
+    fd.append('sta',           document.getElementById('sta').value);
+    fd.append('lhs',           document.getElementById('lhs').value);
+    fd.append('shs',           document.getElementById('shs').value);
+    fd.append('trail_distance', document.getElementById('trd_single').value);
+  } else {
+    for (const id of ['lta_min','lta_max','lta_step',
+                       'sta_min','sta_max','sta_step',
+                       'lhs_min','lhs_max','lhs_step',
+                       'shs_min','shs_max','shs_step']) {
+      fd.append(id, document.getElementById(id).value);
+    }
+    fd.append('trail_distance', document.getElementById('trd_opt').value);
+  }
+
+  try {
+    const res  = await fetch('/api/backtest/run', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (data.error) {
+      showError(data.error);
+    } else {
+      if (data.bars_loaded) {
+        document.getElementById('barsInfo').textContent =
+          `${data.bars_loaded.toLocaleString()} bars loaded`;
+      }
+      if (data.mode === 'optimize') {
+        renderOptimize(data);
+      } else {
+        renderSingle(data);
+      }
+    }
+  } catch (err) {
+    showError('Network error: ' + err.message);
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = 'Run Backtest';
+}
+
+// ── Render helpers ─────────────────────────────────────────────────────────
+function showLoading() {
+  document.getElementById('resultsCol').innerHTML =
+    '<div class="empty-state"><span class="spinner"></span> Running backtest…</div>';
+  equityChart = null;
+}
+
+function showError(msg) {
+  document.getElementById('resultsCol').innerHTML =
+    `<div class="error-msg">Error: ${msg}</div>`;
+}
+
+function renderSingle(data) {
+  const s  = data.stats;
+  const rc = document.getElementById('resultsCol');
+  rc.innerHTML = '';
+
+  // Stats row
+  const pnlCls    = s.total_pnl  >= 0 ? 'green' : 'red';
+  const ddCls     = 'red';
+  const statsHTML = `
+    <div class="stats-row">
+      ${statCard('Total P&L',      fmt(s.total_pnl),      pnlCls)}
+      ${statCard('Win Rate',       s.win_rate + '%',      s.win_rate >= 50 ? 'green' : 'red')}
+      ${statCard('Profit Factor',  s.profit_factor ?? '—', s.profit_factor >= 1 ? 'green' : 'red')}
+      ${statCard('Max Drawdown',   fmt(s.max_drawdown),   ddCls)}
+      ${statCard('Avg Win',        fmt(s.avg_win),        'green')}
+      ${statCard('Avg Loss',       fmt(s.avg_loss),       'red')}
+      ${statCard('Trades',         s.total_trades,        '')}
+      ${statCard('Wins / Losses',  s.wins + ' / ' + s.losses, '')}
+    </div>`;
+
+  const statsEl = document.createElement('div');
+  statsEl.innerHTML = statsHTML;
+  rc.appendChild(statsEl);
+
+  // Equity curve
+  if (s.equity_curve && s.equity_curve.length) {
+    const chartWrap = document.createElement('div');
+    chartWrap.className = 'chart-wrap';
+    chartWrap.innerHTML = `
+      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:12px">
+        Equity Curve
+      </div>
+      <canvas id="eqCanvas"></canvas>`;
+    rc.appendChild(chartWrap);
+    drawEquityChart(s.equity_curve);
+  }
+
+  // Trade log
+  if (data.trades && data.trades.length) {
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'table-wrap';
+    tableWrap.innerHTML = `
+      <div class="table-header">
+        <span>Trade Log</span>
+        <span style="color:#555">${data.trades.length} trades</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Dir</th>
+              <th>Entry Time</th>
+              <th>Exit Time</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>P&amp;L</th>
+              <th>Exit Reason</th>
+            </tr>
+          </thead>
+          <tbody id="tradeBody"></tbody>
+        </table>
+      </div>`;
+    rc.appendChild(tableWrap);
+
+    const tbody = document.getElementById('tradeBody');
+    data.trades.forEach((t, i) => {
+      const pnlCls = t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+      const dirCls = t.direction === 'LONG' ? 'dir-long' : 'dir-short';
+      const reason = t.exit_reason === 'hard_stop'  ? '🛑 Hard Stop' :
+                     t.exit_reason === 'trail_stop' ? '🔔 Trail Stop' :
+                                                      '🔒 EOD';
+      tbody.innerHTML += `<tr>
+        <td style="color:#555">${i + 1}</td>
+        <td class="${dirCls}">${t.direction}</td>
+        <td>${t.entry_time}</td>
+        <td>${t.exit_time}</td>
+        <td>${t.entry_price}</td>
+        <td>${t.exit_price}</td>
+        <td class="${pnlCls}">${fmt(t.pnl)}</td>
+        <td style="color:#666;font-family:inherit">${reason}</td>
+      </tr>`;
+    });
+  }
+}
+
+function renderOptimize(data) {
+  const rc = document.getElementById('resultsCol');
+  rc.innerHTML = '';
+
+  if (!data.grid || !data.grid.length) {
+    rc.innerHTML = '<div class="empty-state">No results — check your parameter ranges.</div>';
+    return;
+  }
+
+  const best = data.grid[0];
+
+  // Best result highlight
+  const bestEl = document.createElement('div');
+  bestEl.innerHTML = `
+    <div class="stats-row">
+      <div class="stat-card" style="border-color:#a78bfa44">
+        <div class="stat-label">Best Profit Factor</div>
+        <div class="stat-value green">${best.profit_factor ?? '—'}</div>
+      </div>
+      <div class="stat-card" style="border-color:#a78bfa44">
+        <div class="stat-label">Best Win Rate</div>
+        <div class="stat-value">${best.win_rate}%</div>
+      </div>
+      <div class="stat-card" style="border-color:#a78bfa44">
+        <div class="stat-label">Total P&L</div>
+        <div class="stat-value ${best.total_pnl >= 0 ? 'green' : 'red'}">${fmt(best.total_pnl)}</div>
+      </div>
+      <div class="stat-card" style="border-color:#a78bfa44">
+        <div class="stat-label">Combos Tested</div>
+        <div class="stat-value">${data.grid.length}</div>
+      </div>
+    </div>
+    <div style="font-size:0.78rem;color:#555;margin-top:6px">
+      Best params — Long trail: ${best.long_trail_activation}pts &nbsp;|&nbsp;
+      Short trail: ${best.short_trail_activation}pts &nbsp;|&nbsp;
+      Long stop: ${best.long_hard_stop}pts &nbsp;|&nbsp;
+      Short stop: ${best.short_hard_stop}pts
+    </div>`;
+  rc.appendChild(bestEl);
+
+  // Full grid table
+  const tableWrap = document.createElement('div');
+  tableWrap.className = 'table-wrap';
+  tableWrap.innerHTML = `
+    <div class="table-header">
+      <span>Optimization Grid — Top ${data.grid.length} by Profit Factor</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>L Trail</th>
+            <th>S Trail</th>
+            <th>L Stop</th>
+            <th>S Stop</th>
+            <th>Trades</th>
+            <th>Win %</th>
+            <th>PF</th>
+            <th>Total P&L</th>
+            <th>Max DD</th>
+          </tr>
+        </thead>
+        <tbody id="gridBody"></tbody>
+      </table>
+    </div>`;
+  rc.appendChild(tableWrap);
+
+  const tbody = document.getElementById('gridBody');
+  data.grid.forEach((row, i) => {
+    const pfCls  = (row.profit_factor || 0) >= 1 ? 'pnl-pos' : 'pnl-neg';
+    const pnlCls = row.total_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    const badge  = i === 0 ? '<span class="opt-badge">BEST</span>' : '';
+    tbody.innerHTML += `<tr>
+      <td style="color:#555">${i + 1} ${badge}</td>
+      <td>${row.long_trail_activation}</td>
+      <td>${row.short_trail_activation}</td>
+      <td>${row.long_hard_stop}</td>
+      <td>${row.short_hard_stop}</td>
+      <td>${row.total_trades}</td>
+      <td>${row.win_rate}%</td>
+      <td class="${pfCls}">${row.profit_factor ?? '—'}</td>
+      <td class="${pnlCls}">${fmt(row.total_pnl)}</td>
+      <td class="pnl-neg">${fmt(row.max_drawdown)}</td>
+    </tr>`;
+  });
+}
+
+function statCard(label, value, cls) {
+  return `<div class="stat-card">
+    <div class="stat-label">${label}</div>
+    <div class="stat-value ${cls}">${value}</div>
+  </div>`;
+}
+
+function fmt(v) {
+  if (v == null) return '—';
+  const n = parseFloat(v);
+  return (n >= 0 ? '+' : '') + n.toFixed(2);
+}
+
+// ── Equity chart ───────────────────────────────────────────────────────────
+function drawEquityChart(curve) {
+  const canvas = document.getElementById('eqCanvas');
+  if (!canvas) return;
+  if (equityChart) { equityChart.destroy(); equityChart = null; }
+
+  const labels = curve.map(p => p.time);
+  const values = curve.map(p => p.value);
+
+  const ctx = canvas.getContext('2d');
+  const h   = canvas.offsetHeight || 200;
+
+  // Green/red gradient split at zero
+  const min  = Math.min(0, ...values);
+  const max  = Math.max(0, ...values);
+  const range = max - min || 1;
+  const zeroFrac = 1 - (0 - min) / range;
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  if (max > 0 && min < 0) {
+    grad.addColorStop(0,          'rgba(38,166,91,0.35)');
+    grad.addColorStop(zeroFrac,   'rgba(38,166,91,0.0)');
+    grad.addColorStop(zeroFrac,   'rgba(239,83,80,0.0)');
+    grad.addColorStop(1,          'rgba(239,83,80,0.35)');
+  } else if (max <= 0) {
+    grad.addColorStop(0, 'rgba(239,83,80,0.35)');
+    grad.addColorStop(1, 'rgba(239,83,80,0.05)');
+  } else {
+    grad.addColorStop(0, 'rgba(38,166,91,0.35)');
+    grad.addColorStop(1, 'rgba(38,166,91,0.05)');
+  }
+
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: '#a78bfa',
+        borderWidth: 2,
+        pointRadius: values.length > 100 ? 0 : 3,
+        pointHoverRadius: 5,
+        fill: true,
+        backgroundColor: grad,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: { legend: { display: false },
+                 tooltip: { callbacks: { label: ctx => ' ' + fmt(ctx.parsed.y) } } },
+      scales: {
+        x: {
+          ticks: {
+            color: '#555',
+            maxTicksLimit: 8,
+            maxRotation: 0,
+          },
+          grid: { color: '#1a1a1a' },
+        },
+        y: {
+          ticks: { color: '#555' },
+          grid: { color: '#1a1a1a' },
+        }
+      }
+    }
+  });
+}
+</script>
+
+</body>
+</html>
