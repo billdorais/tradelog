@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context
 
 load_dotenv()
 
@@ -560,6 +560,77 @@ def backtest_run():
         except Exception as e:
             log.exception("Backtest single error")
             return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/backtest/analyse", methods=["POST"])
+def backtest_analyse():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured on this server"}), 503
+
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    data = request.get_json(silent=True) or {}
+    grid = data.get("grid", [])
+    if not grid:
+        return jsonify({"error": "No grid data to analyse"}), 400
+
+    top = grid[:20]
+    rows = "\n".join(
+        f"#{i+1}: long_trail={r['long_trail_activation']} short_trail={r['short_trail_activation']} "
+        f"long_stop={r['long_hard_stop']} short_stop={r['short_hard_stop']} | "
+        f"PF={r['profit_factor']} win={r['win_rate']}% trades={r['total_trades']} "
+        f"pnl={r['total_pnl']} maxDD={r['max_drawdown']}"
+        for i, r in enumerate(top)
+    )
+
+    prompt = (
+        f"I ran a parameter grid search on the Camarilla pivot breakout strategy.\n\n"
+        f"Strategy: enters long when price breaks above H4 (Camarilla level) with EMA8 below "
+        f"close; enters short when price breaks below L4 with EMA8 above close. "
+        f"Tested on QQQ 5-minute bars.\n\n"
+        f"Exit parameters optimised:\n"
+        f"  long_trail  — profit points before the long trailing stop activates\n"
+        f"  short_trail — profit points before the short trailing stop activates\n"
+        f"  long_stop   — hard stop loss in points for longs\n"
+        f"  short_stop  — hard stop loss in points for shorts\n\n"
+        f"Top {len(top)} combinations by profit factor:\n{rows}\n\n"
+        f"Please provide:\n"
+        f"1. Key patterns — which parameters consistently appear in top results?\n"
+        f"2. Recommended parameter set for live trading and why\n"
+        f"3. Any concerns (overfitting, trade count, long/short asymmetry, etc.)\n"
+        f"4. Suggested ranges to explore in a follow-up optimisation"
+    )
+
+    client = _anthropic.Anthropic(api_key=api_key)
+
+    @stream_with_context
+    def generate():
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=1200,
+                system=(
+                    "You are a quantitative trading analyst. Be concise and actionable. "
+                    "Use markdown: ## for section headings, **bold** for key values, "
+                    "bullet points for lists."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/api/ib/trades")

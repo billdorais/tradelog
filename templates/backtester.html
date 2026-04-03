@@ -321,6 +321,63 @@
       margin-top: 8px;
       text-align: center;
     }
+
+    /* ── Claude analysis ── */
+    .claude-btn {
+      width: 100%;
+      padding: 10px;
+      background: transparent;
+      border: 1px solid #a78bfa55;
+      border-radius: 6px;
+      color: #a78bfa;
+      font-family: inherit;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.03em;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .claude-btn:hover { background: rgba(167,139,250,0.08); border-color: #a78bfa; }
+    .claude-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .claude-panel {
+      background: #080810;
+      border: 1px solid #a78bfa33;
+      border-radius: 8px;
+      padding: 20px 22px;
+      font-size: 0.88rem;
+      line-height: 1.75;
+      color: #c0c0c0;
+    }
+    .claude-panel .cp-header {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #a78bfa;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .claude-panel .cp-body h2 {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #e0e0e0;
+      margin: 16px 0 6px;
+    }
+    .claude-panel .cp-body h2:first-child { margin-top: 0; }
+    .claude-panel .cp-body .md-li {
+      padding-left: 14px;
+      position: relative;
+      margin-bottom: 3px;
+    }
+    .claude-panel .cp-body .md-li::before {
+      content: "›";
+      position: absolute;
+      left: 2px;
+      color: #a78bfa;
+    }
+    .claude-panel .cp-body p { margin-bottom: 8px; }
   </style>
 </head>
 <body>
@@ -779,6 +836,17 @@ function renderOptimize(data) {
       <td class="pnl-neg">${fmt(row.max_drawdown)}</td>
     </tr>`;
   });
+
+  // Claude analysis button + panel
+  const analyseBtn = document.createElement('button');
+  analyseBtn.className = 'claude-btn';
+  analyseBtn.textContent = '✦ Analyse with Claude';
+  analyseBtn.onclick = () => analyseWithClaude(data.grid, analyseBtn);
+  rc.appendChild(analyseBtn);
+
+  const claudePanel = document.createElement('div');
+  claudePanel.id = 'claudePanel';
+  rc.appendChild(claudePanel);
 }
 
 function statCard(label, value, cls) {
@@ -825,6 +893,84 @@ function drawEquityChart(curve) {
     grad.addColorStop(0, 'rgba(38,166,91,0.35)');
     grad.addColorStop(1, 'rgba(38,166,91,0.05)');
   }
+
+// ── Claude analysis ────────────────────────────────────────────────────────
+async function analyseWithClaude(grid, btn) {
+  const panel = document.getElementById('claudePanel');
+  btn.disabled = true;
+  btn.textContent = '⟳ Analysing…';
+
+  panel.innerHTML = `
+    <div class="claude-panel">
+      <div class="cp-header"><span class="spinner"></span> Claude is reading the results…</div>
+      <div class="cp-body" id="cpBody"></div>
+    </div>`;
+
+  let accumulated = '';
+
+  try {
+    const resp = await fetch('/api/backtest/analyse', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({grid}),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.error || resp.statusText);
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let   buffer  = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') break;
+        try {
+          const obj = JSON.parse(payload);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.text) {
+            accumulated += obj.text;
+            document.getElementById('cpBody').innerHTML = renderMarkdown(accumulated);
+          }
+        } catch (e) {
+          if (e.message !== 'Unexpected end of JSON input') throw e;
+        }
+      }
+    }
+
+    // Final render
+    document.getElementById('cpBody').innerHTML = renderMarkdown(accumulated);
+    panel.querySelector('.cp-header').innerHTML = '✦ Claude\'s Analysis';
+
+  } catch (err) {
+    panel.innerHTML = `<div class="error-msg">Analysis failed: ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✦ Re-analyse with Claude';
+  }
+}
+
+function renderMarkdown(md) {
+  return md
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^### (.+)$/gm, '<h2 style="font-size:0.82rem">$1</h2>')
+    .replace(/^[-*] (.+)$/gm, '<div class="md-li">$1</div>')
+    .replace(/^\d+\. (.+)$/gm, '<div class="md-li">$1</div>')
+    .replace(/\n\n/g, '<p style="margin:0">')
+    .replace(/\n/g, '<br>');
+}
 
   equityChart = new Chart(ctx, {
     type: 'line',
