@@ -905,91 +905,6 @@ function drawEquityChart(curve) {
     grad.addColorStop(1, 'rgba(38,166,91,0.05)');
   }
 
-// ── Claude analysis ────────────────────────────────────────────────────────
-async function analyseWithClaude(payload, btn) {
-  const panel = document.getElementById('claudePanel');
-  if (!panel) { console.error('claudePanel not found'); return; }
-
-  btn.disabled = true;
-  btn.textContent = '⟳ Analysing…';
-
-  panel.innerHTML = `
-    <div class="claude-panel">
-      <div class="cp-header" id="cpHeader"><span class="spinner"></span> Claude is reading the results…</div>
-      <div class="cp-body" id="cpBody"></div>
-    </div>`;
-  panel.scrollIntoView({behavior: 'smooth', block: 'start'});
-
-  let accumulated = '';
-
-  try {
-    const resp = await fetch('/api/backtest/analyse', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
-    });
-
-    if (!resp.ok) {
-      let msg = resp.statusText;
-      try { msg = (await resp.json()).error || msg; } catch (_) {}
-      throw new Error(msg);
-    }
-
-    const reader  = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let   sseBuffer = '';
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      sseBuffer += decoder.decode(value, {stream: true});
-
-      const lines = sseBuffer.split('\n');
-      sseBuffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const chunk = line.slice(6).trim();
-        if (chunk === '[DONE]') break;
-        try {
-          const obj = JSON.parse(chunk);
-          if (obj.error) throw new Error(obj.error);
-          if (obj.text) {
-            accumulated += obj.text;
-            const body = document.getElementById('cpBody');
-            if (body) body.innerHTML = renderMarkdown(accumulated);
-          }
-        } catch (e) {
-          if (e.message !== 'Unexpected end of JSON input') throw e;
-        }
-      }
-    }
-
-    const body   = document.getElementById('cpBody');
-    const header = document.getElementById('cpHeader');
-    if (body)   body.innerHTML   = renderMarkdown(accumulated);
-    if (header) header.innerHTML = '✦ Claude\'s Analysis';
-
-  } catch (err) {
-    panel.innerHTML = `<div class="error-msg" style="margin-top:0">Analysis failed: ${err.message}</div>`;
-    panel.scrollIntoView({behavior: 'smooth', block: 'start'});
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '✦ Re-analyse with Claude';
-  }
-}
-
-function renderMarkdown(md) {
-  return md
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^### (.+)$/gm, '<h2 style="font-size:0.82rem">$1</h2>')
-    .replace(/^[-*] (.+)$/gm, '<div class="md-li">$1</div>')
-    .replace(/^\d+\. (.+)$/gm, '<div class="md-li">$1</div>')
-    .replace(/\n\n/g, '<p style="margin:0">')
-    .replace(/\n/g, '<br>');
-}
-
   equityChart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -1026,6 +941,91 @@ function renderMarkdown(md) {
       }
     }
   });
+}
+
+// ── Claude analysis ────────────────────────────────────────────────────────
+async function analyseWithClaude(payload, btn) {
+  const panel = document.getElementById('claudePanel');
+  if (!panel) { console.error('claudePanel not found'); return; }
+
+  btn.disabled = true;
+  btn.textContent = '⟳ Analysing…';
+
+  panel.innerHTML = `
+    <div class="claude-panel">
+      <div class="cp-header" id="cpHeader"><span class="spinner"></span> Claude is reading the results…</div>
+      <div class="cp-body" id="cpBody"></div>
+    </div>`;
+  panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+
+  let accumulated = '';
+
+  try {
+    const resp = await fetch('/api/backtest/analyse', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) {
+      let msg = resp.statusText;
+      try { msg = (await resp.json()).error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+
+    const reader    = resp.body.getReader();
+    const decoder   = new TextDecoder();
+    let   sseBuffer = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, {stream: true});
+
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const chunk = line.slice(6).trim();
+        if (chunk === '[DONE]') break;
+        try {
+          const obj = JSON.parse(chunk);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.text) {
+            accumulated += obj.text;
+            const body = document.getElementById('cpBody');
+            if (body) body.innerHTML = renderMarkdown(accumulated);
+          }
+        } catch (e) {
+          if (e.message !== 'Unexpected end of JSON input') throw e;
+        }
+      }
+    }
+
+    const body   = document.getElementById('cpBody');
+    const header = document.getElementById('cpHeader');
+    if (body)   body.innerHTML   = renderMarkdown(accumulated);
+    if (header) header.textContent = '✦ Claude\'s Analysis';
+
+  } catch (err) {
+    panel.innerHTML = `<div class="error-msg" style="margin-top:0">Analysis failed: ${err.message}</div>`;
+    panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✦ Re-analyse with Claude';
+  }
+}
+
+function renderMarkdown(md) {
+  return md
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^### (.+)$/gm, '<h2 style="font-size:0.82rem">$1</h2>')
+    .replace(/^[-*] (.+)$/gm, '<div class="md-li">$1</div>')
+    .replace(/^\d+\. (.+)$/gm, '<div class="md-li">$1</div>')
+    .replace(/\n\n/g, '<p style="margin:0">')
+    .replace(/\n/g, '<br>');
 }
 </script>
 
