@@ -672,17 +672,24 @@ def backtest_agent_run():
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
 
     from datetime import date, timedelta
-    body       = request.get_json(silent=True) or {}
-    tickers    = [t.strip().upper() for t in body.get("tickers", []) if t.strip()][:5]
-    interval   = body.get("interval",   "1h")
-    iterations = min(int(body.get("iterations", 2)), 5)
+    body        = request.get_json(silent=True) or {}
+    tickers     = [t.strip().upper() for t in body.get("tickers", []) if t.strip()][:5]
+    interval    = body.get("interval",    "1h")
+    iterations  = min(int(body.get("iterations", 2)), 5)
+    data_source = body.get("data_source", "yfinance")  # "yfinance" or "ib"
 
-    # Enforce Yahoo Finance lookback limits
-    today     = date.today()
-    max_days  = 58 if interval in ("5m", "15m", "30m") else 729
-    earliest  = today - timedelta(days=max_days)
-    start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
-    end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
+    if data_source == "ib":
+        # IB has no strict lookback limit — use whatever the user requests
+        today      = date.today()
+        start_date = body.get("start_date", (today - timedelta(days=365 * 5)).isoformat())
+        end_date   = body.get("end_date",   today.isoformat())
+    else:
+        # Enforce Yahoo Finance lookback limits
+        today     = date.today()
+        max_days  = 58 if interval in ("5m", "15m", "30m") else 729
+        earliest  = today - timedelta(days=max_days)
+        start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
+        end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
 
     if not tickers:
         return jsonify({"error": "No tickers provided"}), 400
@@ -693,18 +700,22 @@ def backtest_agent_run():
     def generate():
         try:
             import anthropic as _anthropic
-            from strategies.data import fetch_bars
+            from strategies.data import fetch_bars, fetch_bars_ib
             from strategies.camarilla import optimise
             from collections import defaultdict
 
             client = _anthropic.Anthropic(api_key=api_key)
 
             # ── Step 1: Fetch bars ────────────────────────────────────────
+            source_label = "IB" if data_source == "ib" else "Yahoo Finance"
             all_bars = {}
             for tkr in tickers:
-                yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars ({start_date} → {end_date})…"})
+                yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars via {source_label} ({start_date} → {end_date})…"})
                 try:
-                    bars = fetch_bars(tkr, start_date, end_date, interval)
+                    if data_source == "ib":
+                        bars = fetch_bars_ib(ib_broker, tkr, start_date, end_date, interval)
+                    else:
+                        bars = fetch_bars(tkr, start_date, end_date, interval)
                     if len(bars) < 50:
                         yield sse({"type": "warning", "msg": f"{tkr}: only {len(bars)} bars — skipping"})
                         continue

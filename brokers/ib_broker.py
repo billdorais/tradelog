@@ -146,6 +146,107 @@ class IBBroker:
             return closed
 
     # ------------------------------------------------------------------
+    # Historical data
+    # ------------------------------------------------------------------
+
+    def fetch_historical_bars(self, ticker, start, end, interval="1h",
+                               what_to_show="TRADES", use_rth=True):
+        """
+        Fetch historical OHLCV bars from IB for a US stock.
+
+        interval: "5m", "15m", "30m", "1h", "1d"
+        start/end: "YYYY-MM-DD" strings
+        Returns list of bar dicts: {time, open, high, low, close}
+        """
+        from datetime import datetime, timedelta
+        from ib_async import Stock
+
+        bar_size_map = {
+            "5m":  "5 mins",
+            "15m": "15 mins",
+            "30m": "30 mins",
+            "1h":  "1 hour",
+            "1d":  "1 day",
+        }
+        bar_size = bar_size_map.get(interval, "1 hour")
+
+        # Chunk sizes per request to stay within IB limits
+        chunk_days_map = {
+            "5m":  5,
+            "15m": 10,
+            "30m": 20,
+            "1h":  180,
+            "1d":  365 * 2,
+        }
+        chunk_days = chunk_days_map.get(interval, 180)
+
+        start_dt = datetime.strptime(start, "%Y-%m-%d")
+        end_dt   = datetime.strptime(end,   "%Y-%m-%d")
+
+        with self._lock:
+            self._ensure_connected()
+            contract = Stock(ticker, "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+
+            all_bars = []
+            cursor   = end_dt
+
+            while cursor > start_dt:
+                chunk_start = max(start_dt, cursor - timedelta(days=chunk_days))
+                duration_days = (cursor - chunk_start).days or 1
+                end_str = cursor.strftime("%Y%m%d %H:%M:%S")
+
+                try:
+                    bars = self._ib.reqHistoricalData(
+                        contract,
+                        endDateTime    = end_str,
+                        durationStr    = f"{duration_days} D",
+                        barSizeSetting = bar_size,
+                        whatToShow     = what_to_show,
+                        useRTH         = use_rth,
+                        formatDate     = 1,
+                        keepUpToDate   = False,
+                    )
+                except Exception as e:
+                    log.warning("IB reqHistoricalData error for %s: %s", ticker, e)
+                    break
+
+                if not bars:
+                    break
+
+                for b in bars:
+                    try:
+                        if hasattr(b.date, "strftime"):
+                            dt = b.date.replace(tzinfo=None)
+                        else:
+                            dt = datetime.strptime(str(b.date)[:19], "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        continue
+                    if dt < start_dt or dt > end_dt:
+                        continue
+                    all_bars.append({
+                        "time":  dt,
+                        "open":  float(b.open),
+                        "high":  float(b.high),
+                        "low":   float(b.low),
+                        "close": float(b.close),
+                    })
+
+                # Move cursor back past the earliest bar in this chunk
+                cursor = chunk_start - timedelta(days=1)
+                self._ib.sleep(0.5)  # IB pacing
+
+        all_bars.sort(key=lambda b: b["time"])
+        # Deduplicate by timestamp
+        seen = set()
+        unique = []
+        for b in all_bars:
+            if b["time"] not in seen:
+                seen.add(b["time"])
+                unique.append(b)
+        return unique
+
+    # ------------------------------------------------------------------
     # Order placement
     # ------------------------------------------------------------------
 

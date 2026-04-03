@@ -1,7 +1,11 @@
 """
-Market data fetcher using yfinance.
+Market data fetchers.
 Returns bars in the same format as parse_bars() — list of dicts with
 time (datetime), open, high, low, close.
+
+Sources:
+  fetch_bars()    — Yahoo Finance (yfinance), free, limited history
+  fetch_bars_ib() — Interactive Brokers, requires connected IBBroker, 10+ years
 """
 
 from datetime import datetime
@@ -67,4 +71,23 @@ def fetch_bars(ticker, start, end, interval="1h"):
 
     log.info(f"{ticker}: parsed {len(bars)} bars")
     bars.sort(key=lambda b: b["time"])
+    return bars
+
+
+def fetch_bars_ib(ib_broker, ticker, start, end, interval="1h"):
+    """
+    Fetch historical bars via Interactive Brokers.
+    ib_broker: connected IBBroker instance (from app.ib_broker)
+    """
+    if ib_broker is None:
+        raise RuntimeError("IB broker is not initialised (IB_HOST env var not set)")
+    if not ib_broker.is_connected():
+        raise RuntimeError("IB is not connected")
+
+    log.info(f"IB fetch: {ticker} {interval} {start}→{end}")
+    bars = ib_broker.fetch_historical_bars(ticker, start, end, interval)
+    log.info(f"IB {ticker}: {len(bars)} bars returned")
+
+    if not bars:
+        raise ValueError(f"No bars returned from IB for {ticker} ({start}→{end}, {interval})")
     return bars
