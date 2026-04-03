@@ -495,17 +495,23 @@
           <div class="file-name" id="fileName"></div>
         </div>
 
-        <!-- Pine Script upload -->
-        <div class="upload-area" id="pineUploadArea" style="padding:14px 20px;margin-bottom:20px">
-          <input type="file" id="pineInput" accept=".pine,.txt">
-          <div style="display:flex;align-items:center;gap:10px;justify-content:center">
-            <span style="font-size:1.2rem;color:#555">📄</span>
-            <div class="upload-label" style="text-align:left;margin:0">
-              <span>Pine Script</span> (optional)<br>
-              <span style="color:#555;font-size:0.78rem">Auto-fills parameters from your strategy</span>
-            </div>
+        <!-- Pine Script paste -->
+        <div style="margin-bottom:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;cursor:pointer"
+               onclick="togglePinePanel()">
+            <label style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:#888;cursor:pointer">
+              Pine Script <span style="color:#555;font-weight:400;text-transform:none">(paste to auto-fill params)</span>
+            </label>
+            <span id="pineChevron" style="color:#555;font-size:0.85rem">▼</span>
           </div>
-          <div class="file-name" id="pineFileName"></div>
+          <div id="pinePanel" style="display:none">
+            <textarea id="pineScript" rows="6" placeholder="Paste your Pine Script v5 here…"
+              style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+                     color:#7dd3fc;font-family:Consolas,monospace;font-size:0.75rem;
+                     padding:10px;resize:vertical;line-height:1.5"
+              oninput="parsePineParams(this.value)"></textarea>
+            <div id="pineFileName" style="font-size:0.75rem;min-height:1.2em;margin-top:5px"></div>
+          </div>
         </div>
 
         <!-- Strategy selector (future-proof) -->
@@ -683,25 +689,13 @@ function setFile(f) {
   document.getElementById('runBtn').disabled = false;
 }
 
-// ── Pine Script upload + param extraction ──────────────────────────────────
-const pineUploadArea = document.getElementById('pineUploadArea');
-const pineInput      = document.getElementById('pineInput');
-
-pineUploadArea.addEventListener('click', () => pineInput.click());
-pineUploadArea.addEventListener('dragover', e => { e.preventDefault(); pineUploadArea.classList.add('dragover'); });
-pineUploadArea.addEventListener('dragleave', () => pineUploadArea.classList.remove('dragover'));
-pineUploadArea.addEventListener('drop', e => {
-  e.preventDefault();
-  pineUploadArea.classList.remove('dragover');
-  if (e.dataTransfer.files[0]) loadPineScript(e.dataTransfer.files[0]);
-});
-pineInput.addEventListener('change', e => { if (e.target.files[0]) loadPineScript(e.target.files[0]); });
-
-function loadPineScript(f) {
-  document.getElementById('pineFileName').textContent = f.name;
-  const reader = new FileReader();
-  reader.onload = e => parsePineParams(e.target.result);
-  reader.readAsText(f);
+// ── Pine Script paste + param extraction ───────────────────────────────────
+function togglePinePanel() {
+  const panel   = document.getElementById('pinePanel');
+  const chevron = document.getElementById('pineChevron');
+  const open    = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  chevron.textContent = open ? '▲' : '▼';
 }
 
 function parsePineParams(src) {
