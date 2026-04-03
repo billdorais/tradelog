@@ -2,62 +2,69 @@
 Market data fetcher using yfinance.
 Returns bars in the same format as parse_bars() — list of dicts with
 time (datetime), open, high, low, close.
-
-Supported intervals:
-  "1h"  — up to ~730 days history
-  "5m"  — up to ~60 days history (recent only)
 """
 
 from datetime import datetime
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def fetch_bars(ticker, start, end, interval="1h"):
-    """
-    Fetch OHLCV bars from Yahoo Finance.
-    Returns list of bar dicts or raises ValueError on failure.
-    Compatible with yfinance >= 0.2.x (handles multi-level column index).
-    """
     try:
         import yfinance as yf
     except ImportError:
         raise RuntimeError("yfinance is not installed")
 
-    df = yf.download(
-        ticker,
-        start=start,
-        end=end,
-        interval=interval,
-        auto_adjust=True,
-        progress=False,
-    )
+    log.info(f"yfinance download: {ticker} {interval} {start}→{end}")
+
+    try:
+        tkr_obj = yf.Ticker(ticker)
+        df = tkr_obj.history(
+            start=start,
+            end=end,
+            interval=interval,
+            auto_adjust=True,
+        )
+    except Exception as e:
+        raise ValueError(f"yfinance download error for {ticker}: {e}")
+
+    log.info(f"{ticker}: df shape={getattr(df, 'shape', '?')} columns={list(getattr(df, 'columns', []))}")
 
     if df is None or df.empty:
         raise ValueError(f"No data returned for {ticker} ({start} → {end}, {interval})")
 
-    # yfinance >= 0.2.38 returns a MultiIndex column when downloading a single
-    # ticker too — flatten it so we always get plain column names.
+    # Flatten MultiIndex columns if present
     if hasattr(df.columns, "levels"):
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+
+    # Normalise column names to title case
+    df.columns = [str(c).strip().title() for c in df.columns]
+    log.info(f"{ticker}: normalised columns={list(df.columns)}")
 
     bars = []
     for ts, row in df.iterrows():
         try:
             dt = ts.to_pydatetime().replace(tzinfo=None)
         except Exception:
-            dt = datetime.utcfromtimestamp(float(ts.value) / 1e9)
+            try:
+                dt = datetime.utcfromtimestamp(float(ts) / 1e9)
+            except Exception:
+                continue
 
         try:
-            o = float(row["Open"])
-            h = float(row["High"])
-            l = float(row["Low"])
-            c = float(row["Close"])
-        except (KeyError, TypeError, ValueError):
+            o = float(row.get("Open",  0) or 0)
+            h = float(row.get("High",  0) or 0)
+            l = float(row.get("Low",   0) or 0)
+            c = float(row.get("Close", 0) or 0)
+        except (TypeError, ValueError):
             continue
 
-        if not (o and h and l and c):
+        if not (o and c):
             continue
 
         bars.append({"time": dt, "open": o, "high": h, "low": l, "close": c})
 
+    log.info(f"{ticker}: parsed {len(bars)} bars")
     bars.sort(key=lambda b: b["time"])
     return bars
