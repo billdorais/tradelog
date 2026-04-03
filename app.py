@@ -658,6 +658,236 @@ def backtest_analyse():
     )
 
 
+@app.route("/api/backtest/agent/run", methods=["POST"])
+def backtest_agent_run():
+    """
+    Autonomous multi-ticker iterative backtesting agent.
+    Streams SSE events as it works through:
+      1. Fetch bars for each ticker via yfinance
+      2. N iterations of: grid search → Claude refines ranges
+      3. Final combined ranking + best params
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+
+    body       = request.get_json(silent=True) or {}
+    tickers    = [t.strip().upper() for t in body.get("tickers", []) if t.strip()][:5]
+    start_date = body.get("start_date", "2023-01-01")
+    end_date   = body.get("end_date",   "2025-12-31")
+    interval   = body.get("interval",   "1h")
+    iterations = min(int(body.get("iterations", 2)), 5)
+
+    if not tickers:
+        return jsonify({"error": "No tickers provided"}), 400
+
+    def sse(obj):
+        return f"data: {json.dumps(obj)}\n\n"
+
+    def generate():
+        try:
+            import anthropic as _anthropic
+            from strategies.data import fetch_bars
+            from strategies.camarilla import optimise
+            from collections import defaultdict
+
+            client = _anthropic.Anthropic(api_key=api_key)
+
+            # ── Step 1: Fetch bars ────────────────────────────────────────
+            all_bars = {}
+            for tkr in tickers:
+                yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars ({start_date} → {end_date})…"})
+                try:
+                    bars = fetch_bars(tkr, start_date, end_date, interval)
+                    if len(bars) < 50:
+                        yield sse({"type": "warning", "msg": f"{tkr}: only {len(bars)} bars — skipping"})
+                        continue
+                    all_bars[tkr] = bars
+                    yield sse({"type": "fetch_ok", "ticker": tkr, "bars": len(bars)})
+                except Exception as e:
+                    yield sse({"type": "warning", "msg": f"{tkr} fetch failed: {e}"})
+
+            if not all_bars:
+                yield sse({"type": "error", "msg": "No bars fetched for any ticker. Try a shorter date range or '1h' interval."})
+                yield sse({"type": "done"})
+                return
+
+            # Starting parameter ranges
+            opt_params = {
+                "long_trail_activation_range":  [10, 60, 10],
+                "short_trail_activation_range": [5,  30, 5],
+                "long_hard_stop_range":         [30, 100, 10],
+                "short_hard_stop_range":        [10, 50,  10],
+                "trail_distance": 1,
+            }
+
+            iteration_results = []
+
+            # ── Step 2: Iterative grid + Claude refine ────────────────────
+            for iteration in range(1, iterations + 1):
+                lta_r  = opt_params["long_trail_activation_range"]
+                sta_r  = opt_params["short_trail_activation_range"]
+                lhs_r  = opt_params["long_hard_stop_range"]
+                shs_r  = opt_params["short_hard_stop_range"]
+                combos = (
+                    len(range(int(lta_r[0]), int(lta_r[1]) + 1, int(lta_r[2]))) *
+                    len(range(int(sta_r[0]), int(sta_r[1]) + 1, int(sta_r[2]))) *
+                    len(range(int(lhs_r[0]), int(lhs_r[1]) + 1, int(lhs_r[2]))) *
+                    len(range(int(shs_r[0]), int(shs_r[1]) + 1, int(shs_r[2])))
+                )
+                yield sse({"type": "iter_start", "iteration": iteration, "of": iterations,
+                           "combos": combos, "tickers": list(all_bars.keys())})
+
+                # Run grid on each ticker
+                ticker_grids = {}
+                for tkr, bars in all_bars.items():
+                    yield sse({"type": "status", "msg": f"  [{tkr}] Testing {combos} parameter combinations…"})
+                    try:
+                        grid = optimise(bars, opt_params)
+                        ticker_grids[tkr] = grid
+                        yield sse({"type": "ticker_done", "ticker": tkr, "top_pf": grid[0]["profit_factor"] if grid else None})
+                    except Exception as e:
+                        yield sse({"type": "warning", "msg": f"  [{tkr}] grid failed: {e}"})
+
+                if not ticker_grids:
+                    yield sse({"type": "warning", "msg": "No grids produced this iteration — check ranges"})
+                    continue
+
+                # Combine: for each param combo score across all tickers
+                combo_scores = defaultdict(lambda: {"pfs": [], "wins": [], "trades": [], "pnls": [], "dds": []})
+                for tkr, grid in ticker_grids.items():
+                    for r in grid:
+                        k = (r["long_trail_activation"], r["short_trail_activation"],
+                             r["long_hard_stop"],        r["short_hard_stop"])
+                        combo_scores[k]["pfs"].append(r["profit_factor"] or 0)
+                        combo_scores[k]["wins"].append(r["win_rate"])
+                        combo_scores[k]["trades"].append(r["total_trades"])
+                        combo_scores[k]["pnls"].append(r["total_pnl"])
+                        combo_scores[k]["dds"].append(r["max_drawdown"])
+
+                combined = []
+                for (lta, sta, lhs, shs), v in combo_scores.items():
+                    n = len(v["pfs"])
+                    combined.append({
+                        "long_trail_activation":  lta,
+                        "short_trail_activation": sta,
+                        "long_hard_stop":         lhs,
+                        "short_hard_stop":        shs,
+                        "trail_distance":         opt_params["trail_distance"],
+                        "avg_profit_factor":  round(sum(v["pfs"]) / n, 2),
+                        "min_profit_factor":  round(min(v["pfs"]), 2),
+                        "avg_win_rate":       round(sum(v["wins"]) / n, 1),
+                        "avg_trades":         round(sum(v["trades"]) / n),
+                        "ticker_count":       n,
+                        "tickers_tested":     list(ticker_grids.keys()),
+                    })
+
+                # Sort by min PF (robustness across tickers) then avg PF
+                combined.sort(key=lambda x: (x["min_profit_factor"], x["avg_profit_factor"]), reverse=True)
+                top20 = combined[:20]
+                iteration_results.append({"iteration": iteration, "combined": top20, "ticker_grids": {
+                    tkr: g[:5] for tkr, g in ticker_grids.items()
+                }})
+
+                yield sse({"type": "iter_result", "iteration": iteration, "combined": top20})
+
+                # Ask Claude to refine ranges (skip on last iteration)
+                if iteration < iterations:
+                    yield sse({"type": "status", "msg": f"  Claude is analysing iteration {iteration} results…"})
+                    top5_rows = "\n".join(
+                        f"#{i+1}: lta={r['long_trail_activation']} sta={r['short_trail_activation']} "
+                        f"lhs={r['long_hard_stop']} shs={r['short_hard_stop']} "
+                        f"avgPF={r['avg_profit_factor']} minPF={r['min_profit_factor']} "
+                        f"win={r['avg_win_rate']}% trades={r['avg_trades']}"
+                        for i, r in enumerate(top20[:10])
+                    )
+                    refine_prompt = (
+                        f"Camarilla pivot strategy grid search iteration {iteration}/{iterations} "
+                        f"on {', '.join(all_bars.keys())} ({interval} bars).\n\n"
+                        f"Top 10 cross-ticker results (scored by min profit factor for robustness):\n{top5_rows}\n\n"
+                        f"Return ONLY a JSON object with tighter search ranges centred on the optimal region. "
+                        f"Make the ranges about 30-40% narrower than the current search. "
+                        f"Use smaller steps to increase precision:\n"
+                        f'{{"lta_min":N,"lta_max":N,"lta_step":N,'
+                        f'"sta_min":N,"sta_max":N,"sta_step":N,'
+                        f'"lhs_min":N,"lhs_max":N,"lhs_step":N,'
+                        f'"shs_min":N,"shs_max":N,"shs_step":N}}'
+                    )
+                    try:
+                        resp = client.messages.create(
+                            model="claude-sonnet-4-6",
+                            max_tokens=300,
+                            system="Return only valid JSON. No markdown. No text outside the JSON object.",
+                            messages=[{"role": "user", "content": refine_prompt}],
+                        )
+                        raw = resp.content[0].text.strip()
+                        if raw.startswith("```"):
+                            raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
+                        p = json.loads(raw)
+                        opt_params = {
+                            "long_trail_activation_range":  [p["lta_min"], p["lta_max"], p["lta_step"]],
+                            "short_trail_activation_range": [p["sta_min"], p["sta_max"], p["sta_step"]],
+                            "long_hard_stop_range":         [p["lhs_min"], p["lhs_max"], p["lhs_step"]],
+                            "short_hard_stop_range":        [p["shs_min"], p["shs_max"], p["shs_step"]],
+                            "trail_distance": opt_params["trail_distance"],
+                        }
+                        yield sse({"type": "refined", "iteration": iteration, "params": opt_params})
+                    except Exception as e:
+                        yield sse({"type": "warning", "msg": f"  Claude refinement failed ({e}) — keeping current ranges"})
+
+            # ── Step 3: Final summary ─────────────────────────────────────
+            if iteration_results:
+                final_combined = iteration_results[-1]["combined"]
+                best = final_combined[0] if final_combined else {}
+
+                yield sse({"type": "status", "msg": "Claude is writing the final analysis…"})
+                rows = "\n".join(
+                    f"#{i+1}: lta={r['long_trail_activation']} sta={r['short_trail_activation']} "
+                    f"lhs={r['long_hard_stop']} shs={r['short_hard_stop']} "
+                    f"avgPF={r['avg_profit_factor']} minPF={r['min_profit_factor']} "
+                    f"win={r['avg_win_rate']}% trades={r['avg_trades']}"
+                    for i, r in enumerate(final_combined[:10])
+                )
+                summary_prompt = (
+                    f"I ran {iterations} iterations of Camarilla pivot strategy optimisation "
+                    f"on {', '.join(all_bars.keys())} using {interval} bars.\n\n"
+                    f"Final top 10 cross-ticker results:\n{rows}\n\n"
+                    f"Provide:\n"
+                    f"1. Recommended parameters for live trading and why\n"
+                    f"2. Robustness assessment — how consistent are results across tickers?\n"
+                    f"3. Any key risks or concerns\n"
+                    f"4. One-line verdict on whether this strategy is ready to trade"
+                )
+                summary_text = ""
+                try:
+                    with client.messages.stream(
+                        model="claude-sonnet-4-6",
+                        max_tokens=800,
+                        system="Quantitative trading analyst. Be concise. Use ## headings and bullet points.",
+                        messages=[{"role": "user", "content": summary_prompt}],
+                    ) as stream:
+                        for text in stream.text_stream:
+                            summary_text += text
+                            yield sse({"type": "summary_chunk", "text": text})
+                except Exception as e:
+                    yield sse({"type": "warning", "msg": f"Summary generation failed: {e}"})
+
+                yield sse({"type": "final", "best": best, "combined": final_combined,
+                           "tickers": list(all_bars.keys()), "iterations": iterations})
+
+        except Exception as e:
+            log.exception("Agent run error")
+            yield sse({"type": "error", "msg": str(e)})
+
+        yield sse({"type": "done"})
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/api/backtest/step2/suggest", methods=["POST"])
 def backtest_step2_suggest():
     """Phase 1 of Step 2: ask Claude for refined parameter ranges + best single set."""

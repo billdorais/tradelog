@@ -403,6 +403,70 @@
     }
     .copy-btn:hover { border-color: #555; color: #e0e0e0; }
 
+    /* ── Agent ── */
+    .agent-log {
+      background: #030308;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .agent-log-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid #2a2d3e;
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666;
+    }
+    .agent-log-body {
+      padding: 12px 16px;
+      font-family: Consolas, monospace;
+      font-size: 0.78rem;
+      max-height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .log-line { color: #555; }
+    .log-line.ok     { color: #26a65b; }
+    .log-line.warn   { color: #f59e0b; }
+    .log-line.error  { color: #ef5350; }
+    .log-line.iter   { color: #a78bfa; font-weight: 600; }
+    .log-line.refine { color: #7dd3fc; }
+
+    .agent-iter-card {
+      background: #0a0a16;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .agent-iter-header {
+      padding: 10px 16px;
+      background: #0d0d20;
+      border-bottom: 1px solid #2a2d3e;
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #a78bfa;
+      display: flex; justify-content: space-between;
+    }
+    .agent-summary {
+      background: #080810;
+      border: 1px solid #a78bfa33;
+      border-radius: 8px;
+      padding: 20px 22px;
+      font-size: 0.88rem;
+      line-height: 1.75;
+      color: #c0c0c0;
+    }
+    .agent-summary h2 {
+      font-size: 0.88rem; font-weight: 700; color: #e0e0e0; margin: 16px 0 6px;
+    }
+    .agent-summary h2:first-child { margin-top: 0; }
+    .best-badge {
+      display: inline-flex; gap: 16px; flex-wrap: wrap;
+      background: #0d1230; border: 1px solid #a78bfa44;
+      border-radius: 6px; padding: 12px 16px; margin-bottom: 14px;
+    }
+    .best-badge span { font-size: 0.82rem; color: #888; }
+    .best-badge strong { color: #a78bfa; font-size: 1rem; }
+
     /* ── Claude analysis ── */
     .claude-btn {
       width: 100%;
@@ -527,6 +591,7 @@
         <div class="mode-toggle">
           <button class="mode-btn active" id="btnSingle" onclick="setMode('single')">Single Run</button>
           <button class="mode-btn" id="btnOptimize" onclick="setMode('optimize')">Optimize</button>
+          <button class="mode-btn" id="btnAgent" onclick="setMode('agent')">⚡ Agent</button>
         </div>
 
         <!-- Single run params -->
@@ -636,6 +701,63 @@
             <label>Trail Distance (pts, fixed)</label>
             <input type="number" id="trd_opt" value="1" min="0.25" step="0.25">
           </div>
+        </div>
+
+        <!-- Agent params -->
+        <div id="agentParams" style="display:none">
+          <p style="font-size:0.78rem;color:#555;margin-bottom:14px">
+            The agent fetches data from Yahoo Finance, runs iterative grid searches,
+            and lets Claude refine the ranges each round.
+          </p>
+          <div class="field">
+            <label>Tickers (comma-separated)</label>
+            <input type="text" id="agentTickers" value="QQQ, MSFT, SPY"
+              placeholder="QQQ, MSFT, SPY"
+              style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+                     color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="field">
+              <label>Start Date</label>
+              <input type="date" id="agentStart" value="2023-01-01"
+                style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+                       color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+            </div>
+            <div class="field">
+              <label>End Date</label>
+              <input type="date" id="agentEnd" value="2025-12-31"
+                style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+                       color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="field">
+              <label>Interval</label>
+              <select id="agentInterval"
+                style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+                       color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+                <option value="1h" selected>1 hour</option>
+                <option value="30m">30 min</option>
+                <option value="15m">15 min</option>
+                <option value="1d">Daily</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Iterations</label>
+              <select id="agentIter"
+                style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+                       color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+                <option value="1">1 — Quick</option>
+                <option value="2" selected>2 — Balanced</option>
+                <option value="3">3 — Thorough</option>
+                <option value="4">4 — Deep</option>
+                <option value="5">5 — Exhaustive</option>
+              </select>
+            </div>
+          </div>
+          <p style="font-size:0.72rem;color:#444;margin-top:-4px">
+            Note: yfinance 1h data covers ~730 days; 30m/15m covers ~60 days only.
+          </p>
         </div>
 
         <button class="run-btn" id="runBtn" onclick="runBacktest()" disabled>
@@ -797,14 +919,25 @@ function parsePineParams(src) {
 // ── Mode toggle ────────────────────────────────────────────────────────────
 function setMode(mode) {
   currentMode = mode;
-  document.getElementById('btnSingle').classList.toggle('active', mode === 'single');
+  document.getElementById('btnSingle').classList.toggle('active',   mode === 'single');
   document.getElementById('btnOptimize').classList.toggle('active', mode === 'optimize');
+  document.getElementById('btnAgent').classList.toggle('active',    mode === 'agent');
   document.getElementById('singleParams').style.display   = mode === 'single'   ? '' : 'none';
   document.getElementById('optimizeParams').style.display = mode === 'optimize' ? '' : 'none';
+  document.getElementById('agentParams').style.display    = mode === 'agent'    ? '' : 'none';
+  // Agent mode doesn't need a CSV — enable run btn always
+  if (mode === 'agent') {
+    document.getElementById('runBtn').disabled = false;
+    document.getElementById('runBtn').textContent = '⚡ Run Agent';
+  } else {
+    document.getElementById('runBtn').textContent = 'Run Backtest';
+    document.getElementById('runBtn').disabled = !csvFile;
+  }
 }
 
 // ── Run ────────────────────────────────────────────────────────────────────
 async function runBacktest() {
+  if (currentMode === 'agent') { runAgent(); return; }
   if (!csvFile) return;
 
   const btn = document.getElementById('runBtn');
@@ -1407,6 +1540,215 @@ function downloadScript() {
     download: 'camarilla_breakout.pine',
   });
   a.click();
+}
+
+// ── Agent ──────────────────────────────────────────────────────────────────
+async function runAgent() {
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Agent running…';
+
+  const tickers    = document.getElementById('agentTickers').value
+                       .split(',').map(t => t.trim()).filter(Boolean);
+  const start_date = document.getElementById('agentStart').value;
+  const end_date   = document.getElementById('agentEnd').value;
+  const interval   = document.getElementById('agentInterval').value;
+  const iterations = parseInt(document.getElementById('agentIter').value);
+
+  const rc = document.getElementById('resultsCol');
+  rc.innerHTML = '';
+
+  // Log panel
+  const logPanel = document.createElement('div');
+  logPanel.className = 'agent-log';
+  logPanel.innerHTML = `
+    <div class="agent-log-header">
+      <span>⚡ Agent Log</span>
+      <span id="agentStatus" style="color:#a78bfa">Starting…</span>
+    </div>
+    <div class="agent-log-body" id="agentLog"></div>`;
+  rc.appendChild(logPanel);
+
+  const resultsArea = document.createElement('div');
+  resultsArea.id = 'agentResults';
+  resultsArea.style.cssText = 'display:flex;flex-direction:column;gap:16px;margin-top:4px';
+  rc.appendChild(resultsArea);
+
+  function addLog(text, cls = '') {
+    const log = document.getElementById('agentLog');
+    if (!log) return;
+    const line = document.createElement('div');
+    line.className = `log-line ${cls}`;
+    line.textContent = text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function setStatus(text) {
+    const el = document.getElementById('agentStatus');
+    if (el) el.textContent = text;
+  }
+
+  try {
+    const resp = await fetch('/api/backtest/agent/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers, start_date, end_date, interval, iterations }),
+    });
+    if (!resp.ok) {
+      const e = await resp.json();
+      throw new Error(e.error || resp.statusText);
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let   buf     = '';
+    let   summaryEl = null;
+    let   summaryText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const chunk = line.slice(6).trim();
+        if (chunk === '[DONE]') break;
+        let ev;
+        try { ev = JSON.parse(chunk); } catch { continue; }
+
+        switch (ev.type) {
+          case 'status':
+            addLog(ev.msg);
+            setStatus('Running…');
+            break;
+
+          case 'warning':
+            addLog('⚠ ' + ev.msg, 'warn');
+            break;
+
+          case 'error':
+            addLog('✗ ' + ev.msg, 'error');
+            setStatus('Error');
+            break;
+
+          case 'fetch_ok':
+            addLog(`✓ ${ev.ticker}: ${ev.bars.toLocaleString()} bars loaded`, 'ok');
+            break;
+
+          case 'iter_start':
+            addLog(`── Iteration ${ev.iteration}/${ev.of}: testing ${ev.combos.toLocaleString()} combos on ${ev.tickers.join(', ')} ──`, 'iter');
+            setStatus(`Iteration ${ev.iteration}/${ev.of}`);
+            break;
+
+          case 'ticker_done':
+            addLog(`  ✓ ${ev.ticker}: best PF = ${ev.top_pf ?? '—'}`, 'ok');
+            break;
+
+          case 'refined':
+            const p = ev.params;
+            addLog(`  ↳ Claude refined ranges: lta=[${p.long_trail_activation_range}] sta=[${p.short_trail_activation_range}] lhs=[${p.long_hard_stop_range}] shs=[${p.short_hard_stop_range}]`, 'refine');
+            break;
+
+          case 'iter_result':
+            renderIterResult(ev.iteration, ev.combined);
+            break;
+
+          case 'summary_chunk':
+            if (!summaryEl) {
+              const wrap = document.createElement('div');
+              wrap.innerHTML = `
+                <div class="agent-summary">
+                  <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;
+                              color:#a78bfa;margin-bottom:12px">✦ Claude's Final Analysis</div>
+                  <div id="agentSummaryBody"></div>
+                </div>`;
+              document.getElementById('agentResults').appendChild(wrap);
+              summaryEl = document.getElementById('agentSummaryBody');
+            }
+            summaryText += ev.text;
+            summaryEl.innerHTML = renderMarkdown(summaryText);
+            break;
+
+          case 'final':
+            const best = ev.best;
+            if (best && best.long_trail_activation !== undefined) {
+              const badge = document.createElement('div');
+              badge.innerHTML = `
+                <div class="best-badge">
+                  <div><span>Best Params (${ev.tickers.join(', ')})</span><br>
+                    <strong>LTA ${best.long_trail_activation} · STA ${best.short_trail_activation} · LHS ${best.long_hard_stop} · SHS ${best.short_hard_stop}</strong>
+                  </div>
+                  <div><span>Avg Profit Factor</span><br><strong style="color:#26a65b">${best.avg_profit_factor}</strong></div>
+                  <div><span>Min PF (worst ticker)</span><br><strong>${best.min_profit_factor}</strong></div>
+                  <div><span>Avg Win Rate</span><br><strong>${best.avg_win_rate}%</strong></div>
+                  <div><span>Iterations</span><br><strong>${ev.iterations}</strong></div>
+                </div>`;
+              document.getElementById('agentResults').prepend(badge);
+            }
+            addLog('✓ Agent complete', 'ok');
+            setStatus('Done');
+            break;
+
+          case 'done':
+            setStatus('Done');
+            break;
+        }
+      }
+    }
+
+  } catch (err) {
+    addLog('✗ ' + err.message, 'error');
+    setStatus('Error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '⚡ Run Agent';
+  }
+}
+
+function renderIterResult(iteration, combined) {
+  if (!combined || !combined.length) return;
+  const area = document.getElementById('agentResults');
+  if (!area) return;
+
+  const card = document.createElement('div');
+  card.className = 'agent-iter-card';
+  const rows = combined.slice(0, 10).map((r, i) => {
+    const pfCls  = r.avg_profit_factor >= 1.5 ? 'pnl-pos' : r.avg_profit_factor >= 1 ? '' : 'pnl-neg';
+    const badge  = i === 0 ? '<span class="opt-badge">BEST</span>' : '';
+    return `<tr>
+      <td style="color:#555">${i + 1} ${badge}</td>
+      <td>${r.long_trail_activation}</td>
+      <td>${r.short_trail_activation}</td>
+      <td>${r.long_hard_stop}</td>
+      <td>${r.short_hard_stop}</td>
+      <td>${r.ticker_count}</td>
+      <td>${r.avg_win_rate}%</td>
+      <td class="${pfCls}">${r.avg_profit_factor}</td>
+      <td>${r.min_profit_factor}</td>
+      <td>${r.avg_trades}</td>
+    </tr>`;
+  }).join('');
+
+  card.innerHTML = `
+    <div class="agent-iter-header">
+      <span>Iteration ${iteration} — Cross-Ticker Results</span>
+      <span style="color:#555">${combined[0]?.tickers_tested?.join(', ')}</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>#</th><th>L Trail</th><th>S Trail</th><th>L Stop</th><th>S Stop</th>
+          <th>Tickers</th><th>Win %</th><th>Avg PF</th><th>Min PF</th><th>Trades</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  area.appendChild(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderMarkdown(md) {
