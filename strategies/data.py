@@ -77,12 +77,10 @@ def fetch_bars(ticker, start, end, interval="1h"):
 def fetch_bars_ib(ib_broker, ticker, start, end, interval="1h"):
     """
     Fetch historical bars via Interactive Brokers.
-    ib_broker: connected IBBroker instance (from app.ib_broker)
+    ib_broker: IBBroker instance (from app.ib_broker). Will reconnect if needed.
     """
     if ib_broker is None:
-        raise RuntimeError("IB broker is not initialised (IB_HOST env var not set)")
-    if not ib_broker.is_connected():
-        raise RuntimeError("IB is not connected")
+        raise RuntimeError("IB broker is not initialised — set IB_HOST env var")
 
     log.info(f"IB fetch: {ticker} {interval} {start}→{end}")
     bars = ib_broker.fetch_historical_bars(ticker, start, end, interval)
