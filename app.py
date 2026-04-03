@@ -632,7 +632,6 @@ def backtest_analyse():
 
     client = _anthropic.Anthropic(api_key=api_key)
 
-    @stream_with_context
     def generate():
         try:
             with client.messages.stream(
@@ -652,7 +651,7 @@ def backtest_analyse():
         yield "data: [DONE]\n\n"
 
     return Response(
-        generate(),
+        stream_with_context(generate()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
