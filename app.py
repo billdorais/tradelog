@@ -573,37 +573,62 @@ def backtest_analyse():
     except ImportError:
         return jsonify({"error": "anthropic package not installed"}), 503
 
-    data = request.get_json(silent=True) or {}
-    grid = data.get("grid", [])
-    if not grid:
-        return jsonify({"error": "No grid data to analyse"}), 400
+    data     = request.get_json(silent=True) or {}
+    analysis_type = data.get("type", "grid")
 
-    top = grid[:20]
-    rows = "\n".join(
-        f"#{i+1}: long_trail={r['long_trail_activation']} short_trail={r['short_trail_activation']} "
-        f"long_stop={r['long_hard_stop']} short_stop={r['short_hard_stop']} | "
-        f"PF={r['profit_factor']} win={r['win_rate']}% trades={r['total_trades']} "
-        f"pnl={r['total_pnl']} maxDD={r['max_drawdown']}"
-        for i, r in enumerate(top)
-    )
-
-    prompt = (
-        f"I ran a parameter grid search on the Camarilla pivot breakout strategy.\n\n"
-        f"Strategy: enters long when price breaks above H4 (Camarilla level) with EMA8 below "
-        f"close; enters short when price breaks below L4 with EMA8 above close. "
-        f"Tested on QQQ 5-minute bars.\n\n"
-        f"Exit parameters optimised:\n"
-        f"  long_trail  — profit points before the long trailing stop activates\n"
-        f"  short_trail — profit points before the short trailing stop activates\n"
-        f"  long_stop   — hard stop loss in points for longs\n"
-        f"  short_stop  — hard stop loss in points for shorts\n\n"
-        f"Top {len(top)} combinations by profit factor:\n{rows}\n\n"
-        f"Please provide:\n"
-        f"1. Key patterns — which parameters consistently appear in top results?\n"
-        f"2. Recommended parameter set for live trading and why\n"
-        f"3. Any concerns (overfitting, trade count, long/short asymmetry, etc.)\n"
-        f"4. Suggested ranges to explore in a follow-up optimisation"
-    )
+    if analysis_type == "stats":
+        s = data.get("stats")
+        if not s:
+            return jsonify({"error": "No stats data to analyse"}), 400
+        source_label = "TradingView Strategy Tester export" if data.get("source") == "trade_list" else "OHLCV backtest simulation"
+        prompt = (
+            f"I ran the Camarilla pivot breakout strategy on QQQ ({source_label}).\n\n"
+            f"Strategy: enters long when price breaks above H4 with EMA8 below close; "
+            f"enters short when price breaks below L4 with EMA8 above close.\n\n"
+            f"Results:\n"
+            f"  Total trades:   {s.get('total_trades')}\n"
+            f"  Win rate:       {s.get('win_rate')}%\n"
+            f"  Profit factor:  {s.get('profit_factor')}\n"
+            f"  Total P&L:      {s.get('total_pnl')} pts\n"
+            f"  Max drawdown:   {s.get('max_drawdown')} pts\n"
+            f"  Avg win:        {s.get('avg_win')} pts\n"
+            f"  Avg loss:       {s.get('avg_loss')} pts\n"
+            f"  Wins / Losses:  {s.get('wins')} / {s.get('losses')}\n\n"
+            f"Please provide:\n"
+            f"1. Overall assessment — is this a viable strategy? What stands out?\n"
+            f"2. Risk/reward analysis — comment on the avg win vs avg loss ratio and drawdown\n"
+            f"3. Any concerns or weaknesses visible in these stats\n"
+            f"4. Specific suggestions to improve performance"
+        )
+    else:
+        grid = data.get("grid", [])
+        if not grid:
+            return jsonify({"error": "No grid data to analyse"}), 400
+        top = grid[:20]
+        rows = "\n".join(
+            f"#{i+1}: long_trail={r['long_trail_activation']} short_trail={r['short_trail_activation']} "
+            f"long_stop={r['long_hard_stop']} short_stop={r['short_hard_stop']} | "
+            f"PF={r['profit_factor']} win={r['win_rate']}% trades={r['total_trades']} "
+            f"pnl={r['total_pnl']} maxDD={r['max_drawdown']}"
+            for i, r in enumerate(top)
+        )
+        prompt = (
+            f"I ran a parameter grid search on the Camarilla pivot breakout strategy.\n\n"
+            f"Strategy: enters long when price breaks above H4 (Camarilla level) with EMA8 below "
+            f"close; enters short when price breaks below L4 with EMA8 above close. "
+            f"Tested on QQQ 5-minute bars.\n\n"
+            f"Exit parameters optimised:\n"
+            f"  long_trail  — profit points before the long trailing stop activates\n"
+            f"  short_trail — profit points before the short trailing stop activates\n"
+            f"  long_stop   — hard stop loss in points for longs\n"
+            f"  short_stop  — hard stop loss in points for shorts\n\n"
+            f"Top {len(top)} combinations by profit factor:\n{rows}\n\n"
+            f"Please provide:\n"
+            f"1. Key patterns — which parameters consistently appear in top results?\n"
+            f"2. Recommended parameter set for live trading and why\n"
+            f"3. Any concerns (overfitting, trade count, long/short asymmetry, etc.)\n"
+            f"4. Suggested ranges to explore in a follow-up optimisation"
+        )
 
     client = _anthropic.Anthropic(api_key=api_key)
 

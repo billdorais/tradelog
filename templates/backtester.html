@@ -748,6 +748,17 @@ function renderSingle(data) {
       </tr>`;
     });
   }
+
+  // Claude analysis button + panel
+  const analyseBtn = document.createElement('button');
+  analyseBtn.className = 'claude-btn';
+  analyseBtn.textContent = '✦ Analyse with Claude';
+  analyseBtn.onclick = () => analyseWithClaude({type: 'stats', stats: data.stats, source: data.source}, analyseBtn);
+  rc.appendChild(analyseBtn);
+
+  const claudePanel = document.createElement('div');
+  claudePanel.id = 'claudePanel';
+  rc.appendChild(claudePanel);
 }
 
 function renderOptimize(data) {
@@ -841,7 +852,7 @@ function renderOptimize(data) {
   const analyseBtn = document.createElement('button');
   analyseBtn.className = 'claude-btn';
   analyseBtn.textContent = '✦ Analyse with Claude';
-  analyseBtn.onclick = () => analyseWithClaude(data.grid, analyseBtn);
+  analyseBtn.onclick = () => analyseWithClaude({type: 'grid', grid: data.grid}, analyseBtn);
   rc.appendChild(analyseBtn);
 
   const claudePanel = document.createElement('div');
@@ -895,7 +906,7 @@ function drawEquityChart(curve) {
   }
 
 // ── Claude analysis ────────────────────────────────────────────────────────
-async function analyseWithClaude(grid, btn) {
+async function analyseWithClaude(payload, btn) {
   const panel = document.getElementById('claudePanel');
   btn.disabled = true;
   btn.textContent = '⟳ Analysing…';
@@ -912,7 +923,7 @@ async function analyseWithClaude(grid, btn) {
     const resp = await fetch('/api/backtest/analyse', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({grid}),
+      body: JSON.stringify(payload),
     });
 
     if (!resp.ok) {
