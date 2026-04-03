@@ -671,12 +671,18 @@ def backtest_agent_run():
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
 
+    from datetime import date, timedelta
     body       = request.get_json(silent=True) or {}
     tickers    = [t.strip().upper() for t in body.get("tickers", []) if t.strip()][:5]
-    start_date = body.get("start_date", "2023-01-01")
-    end_date   = body.get("end_date",   "2025-12-31")
     interval   = body.get("interval",   "1h")
     iterations = min(int(body.get("iterations", 2)), 5)
+
+    # Enforce Yahoo Finance lookback limits
+    today     = date.today()
+    max_days  = 58 if interval in ("5m", "15m", "30m") else 729
+    earliest  = today - timedelta(days=max_days)
+    start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
+    end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
 
     if not tickers:
         return jsonify({"error": "No tickers provided"}), 400
