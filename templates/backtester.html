@@ -322,6 +322,87 @@
       text-align: center;
     }
 
+    /* ── Step 2 ── */
+    .step2-btn {
+      width: 100%;
+      margin-top: 16px;
+      padding: 11px;
+      background: linear-gradient(135deg, #130d2e, #0d1a2e);
+      border: 1px solid #a78bfa44;
+      border-radius: 6px;
+      color: #a78bfa;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.03em;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .step2-btn:hover  { border-color: #a78bfa; background: linear-gradient(135deg, #1c1040, #122040); }
+    .step2-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .step2-panel { display: flex; flex-direction: column; gap: 14px; }
+
+    .s2-status {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: #888; padding: 2px 0;
+    }
+
+    .s2-card {
+      background: #0a0a16;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 16px 18px;
+    }
+    .s2-card-title {
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: #555; margin-bottom: 12px; padding-bottom: 8px;
+      border-bottom: 1px solid #1e2130;
+    }
+    .s2-params-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px;
+    }
+    .s2-param {
+      font-size: 0.85rem; color: #e0e0e0; font-weight: 600;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .s2-param span { color: #555; font-weight: 400; font-size: 0.78rem; }
+    .s2-rationale {
+      margin-top: 12px; font-size: 0.78rem; color: #666; font-style: italic;
+      border-top: 1px solid #1e2130; padding-top: 10px;
+    }
+
+    /* ── Pine Script panel ── */
+    .script-panel {
+      background: #060610;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .script-header {
+      background: #0a0a1a; padding: 10px 16px;
+      display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #2a2d3e;
+    }
+    .script-label {
+      font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #a78bfa; font-weight: 700;
+    }
+    .script-code {
+      padding: 16px 20px;
+      font-family: 'Fira Code', 'Cascadia Code', Consolas, monospace;
+      font-size: 0.78rem; color: #7dd3fc;
+      white-space: pre; overflow-x: auto;
+      line-height: 1.65; max-height: 520px; overflow-y: auto; margin: 0;
+    }
+    .copy-btn {
+      background: transparent; border: 1px solid #2a2d3e; color: #666;
+      padding: 4px 12px; border-radius: 4px; cursor: pointer;
+      font-size: 0.75rem; font-family: inherit;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .copy-btn:hover { border-color: #555; color: #e0e0e0; }
+
     /* ── Claude analysis ── */
     .claude-btn {
       width: 100%;
@@ -558,9 +639,11 @@
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-let currentMode = 'single';
-let csvFile     = null;
-let equityChart = null;
+let currentMode      = 'single';
+let csvFile          = null;
+let equityChart      = null;
+let lastRunData      = null;   // full response from /api/backtest/run
+let lastStep1Analysis = '';    // Claude Step 1 analysis text
 
 // ── File upload ────────────────────────────────────────────────────────────
 const uploadArea = document.getElementById('uploadArea');
@@ -638,6 +721,7 @@ async function runBacktest() {
         document.getElementById('barsInfo').textContent =
           `${data.bars_loaded.toLocaleString()} ${label}`;
       }
+      lastRunData = data;
       if (data.mode === 'optimize') {
         renderOptimize(data);
       } else {
@@ -1005,8 +1089,19 @@ async function analyseWithClaude(payload, btn) {
 
     const body   = document.getElementById('cpBody');
     const header = document.getElementById('cpHeader');
-    if (body)   body.innerHTML   = renderMarkdown(accumulated);
+    if (body)   body.innerHTML    = renderMarkdown(accumulated);
     if (header) header.textContent = '✦ Claude\'s Analysis';
+
+    // Store and show Step 2
+    lastStep1Analysis = accumulated;
+    const s2btn = document.createElement('button');
+    s2btn.className   = 'step2-btn';
+    s2btn.id          = 'step2Btn';
+    s2btn.textContent = '⚡ Step 2: Run Refined Tests & Generate Pine Script';
+    s2btn.onclick     = () => runStep2(s2btn);
+    // Remove any stale Step 2 button before adding
+    document.getElementById('step2Btn')?.remove();
+    panel.appendChild(s2btn);
 
   } catch (err) {
     panel.innerHTML = `<div class="error-msg" style="margin-top:0">Analysis failed: ${err.message}</div>`;
@@ -1015,6 +1110,178 @@ async function analyseWithClaude(payload, btn) {
     btn.disabled = false;
     btn.textContent = '✦ Re-analyse with Claude';
   }
+}
+
+// ── Step 2: Refined tests + Pine Script ────────────────────────────────────
+async function runStep2(btn) {
+  btn.disabled    = true;
+  btn.textContent = '⟳ Running Step 2…';
+
+  // Clear any previous step2 panel
+  document.getElementById('step2Panel')?.remove();
+  const s2 = document.createElement('div');
+  s2.id        = 'step2Panel';
+  s2.className = 'step2-panel';
+  btn.after(s2);
+
+  const setStatus = html =>
+    s2.innerHTML = `<div class="s2-status">${html}</div><div id="s2Content"></div>`;
+  const addCard = html =>
+    document.getElementById('s2Content').insertAdjacentHTML('beforeend', html);
+
+  setStatus('<span class="spinner"></span> Phase 1 — Claude is choosing refined parameter ranges…');
+  s2.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  try {
+    // ── Phase 1: Claude suggests parameter ranges ─────────────────────────
+    const sug = await fetch('/api/backtest/step2/suggest', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        step1_analysis: lastStep1Analysis,
+        grid:  lastRunData?.grid  || [],
+        stats: lastRunData?.stats || {},
+      }),
+    });
+    if (!sug.ok) throw new Error(((await sug.json()).error) || sug.statusText);
+    const { params } = await sug.json();
+
+    addCard(`
+      <div class="s2-card">
+        <div class="s2-card-title">Claude's Recommended Parameters</div>
+        <div class="s2-params-grid">
+          <div class="s2-param"><span>Long Trail</span>${params.long_trail_activation} pts</div>
+          <div class="s2-param"><span>Short Trail</span>${params.short_trail_activation} pts</div>
+          <div class="s2-param"><span>Long Stop</span>${params.long_hard_stop} pts</div>
+          <div class="s2-param"><span>Short Stop</span>${params.short_hard_stop} pts</div>
+          <div class="s2-param"><span>Trail Dist</span>${params.trail_distance} pts</div>
+        </div>
+        ${params.rationale ? `<div class="s2-rationale">${params.rationale}</div>` : ''}
+      </div>`);
+
+    let bestParams = params;
+
+    // ── Phase 2: Run refined grid (OHLCV only) ────────────────────────────
+    if (csvFile && lastRunData?.source !== 'trade_list') {
+      document.querySelector('#step2Panel .s2-status').innerHTML =
+        '<span class="spinner"></span> Phase 2 — Running refined backtest grid…';
+
+      const fd = new FormData();
+      fd.append('csv_file', csvFile);
+      fd.append('mode', 'optimize');
+      for (const [k, v] of Object.entries({
+        lta_min: params.lta_min ?? 20, lta_max: params.lta_max ?? 60, lta_step: params.lta_step ?? 5,
+        sta_min: params.sta_min ??  5, sta_max: params.sta_max ?? 20, sta_step: params.sta_step ?? 2,
+        lhs_min: params.lhs_min ?? 50, lhs_max: params.lhs_max ?? 100, lhs_step: params.lhs_step ?? 5,
+        shs_min: params.shs_min ?? 10, shs_max: params.shs_max ??  30, shs_step: params.shs_step ?? 2,
+      })) fd.append(k, v);
+      fd.append('trail_distance', params.trail_distance ?? 1);
+
+      const gr = await fetch('/api/backtest/run', { method: 'POST', body: fd });
+      const gd = await gr.json();
+      if (gd.error) throw new Error(gd.error);
+
+      const best = gd.grid?.[0];
+      if (best) {
+        bestParams = best;
+        const pfCol = (best.profit_factor || 0) >= 1 ? '#26a65b' : '#ef5350';
+        addCard(`
+          <div class="s2-card">
+            <div class="s2-card-title">Refined Backtest — Best of ${gd.grid.length} combinations</div>
+            <div class="s2-params-grid">
+              <div class="s2-param" style="color:${pfCol}"><span>Profit Factor</span>${best.profit_factor}</div>
+              <div class="s2-param"><span>Win Rate</span>${best.win_rate}%</div>
+              <div class="s2-param"><span>Total P&L</span>${fmt(best.total_pnl)}</div>
+              <div class="s2-param"><span>Trades</span>${best.total_trades}</div>
+              <div class="s2-param"><span>Long Trail</span>${best.long_trail_activation} pts</div>
+              <div class="s2-param"><span>Short Trail</span>${best.short_trail_activation} pts</div>
+              <div class="s2-param"><span>Long Stop</span>${best.long_hard_stop} pts</div>
+              <div class="s2-param"><span>Short Stop</span>${best.short_hard_stop} pts</div>
+            </div>
+          </div>`);
+      }
+    }
+
+    // ── Phase 3: Generate Pine Script ─────────────────────────────────────
+    document.querySelector('#step2Panel .s2-status').innerHTML =
+      '<span class="spinner"></span> Phase 3 — Claude is writing your Pine Script…';
+
+    addCard(`
+      <div class="script-panel">
+        <div class="script-header">
+          <span class="script-label">Pine Script v5</span>
+          <div style="display:flex;gap:8px">
+            <button class="copy-btn" id="copyBtn" onclick="copyScript()">Copy</button>
+            <button class="copy-btn" onclick="downloadScript()">⬇ .pine</button>
+          </div>
+        </div>
+        <pre class="script-code" id="pineCode"></pre>
+      </div>`);
+    s2.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    const sc = await fetch('/api/backtest/step2/script', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ params: bestParams }),
+    });
+    if (!sc.ok) throw new Error(((await sc.json()).error) || sc.statusText);
+
+    const reader  = sc.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', script = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const chunk = line.slice(6).trim();
+        if (chunk === '[DONE]') break;
+        try {
+          const obj = JSON.parse(chunk);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.text) {
+            script += obj.text;
+            const el = document.getElementById('pineCode');
+            if (el) el.textContent = script;
+          }
+        } catch (e) { if (e.message !== 'Unexpected end of JSON input') throw e; }
+      }
+    }
+
+    document.querySelector('#step2Panel .s2-status').textContent = '✦ Step 2 Complete';
+
+  } catch (err) {
+    const content = document.getElementById('s2Content');
+    (content || s2).insertAdjacentHTML('beforeend',
+      `<div class="error-msg">Step 2 failed: ${err.message}</div>`);
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = '⚡ Re-run Step 2';
+    s2.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function copyScript() {
+  const el = document.getElementById('pineCode');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    const btn = document.getElementById('copyBtn');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+  });
+}
+
+function downloadScript() {
+  const el = document.getElementById('pineCode');
+  if (!el) return;
+  const a = Object.assign(document.createElement('a'), {
+    href:     URL.createObjectURL(new Blob([el.textContent], { type: 'text/plain' })),
+    download: 'camarilla_breakout.pine',
+  });
+  a.click();
 }
 
 function renderMarkdown(md) {

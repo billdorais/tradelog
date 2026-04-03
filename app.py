@@ -657,6 +657,161 @@ def backtest_analyse():
     )
 
 
+@app.route("/api/backtest/step2/suggest", methods=["POST"])
+def backtest_step2_suggest():
+    """Phase 1 of Step 2: ask Claude for refined parameter ranges + best single set."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    body  = request.get_json(silent=True) or {}
+    step1 = body.get("step1_analysis", "")
+    grid  = body.get("grid",  [])
+    stats = body.get("stats", {})
+
+    if grid:
+        top  = grid[:15]
+        rows = "\n".join(
+            f"#{i+1}: lta={r['long_trail_activation']} sta={r['short_trail_activation']} "
+            f"lhs={r['long_hard_stop']} shs={r['short_hard_stop']} "
+            f"PF={r['profit_factor']} win={r['win_rate']}% trades={r['total_trades']}"
+            for i, r in enumerate(top)
+        )
+        context = f"Top {len(top)} optimization results:\n{rows}"
+    else:
+        context = (f"Performance: PF={stats.get('profit_factor')}, win={stats.get('win_rate')}%, "
+                   f"avg_win={stats.get('avg_win')}, avg_loss={stats.get('avg_loss')}, "
+                   f"trades={stats.get('total_trades')}")
+
+    prompt = (
+        f"Camarilla strategy analysis:\n{step1}\n\n{context}\n\n"
+        f"Return ONLY a JSON object — no markdown, no text outside the braces. "
+        f"Include the single best parameter set AND a tighter grid range focused on the optimal region:\n"
+        f'{{"long_trail_activation":N,"short_trail_activation":N,'
+        f'"long_hard_stop":N,"short_hard_stop":N,"trail_distance":N,'
+        f'"lta_min":N,"lta_max":N,"lta_step":N,'
+        f'"sta_min":N,"sta_max":N,"sta_step":N,'
+        f'"lhs_min":N,"lhs_max":N,"lhs_step":N,'
+        f'"shs_min":N,"shs_max":N,"shs_step":N,'
+        f'"rationale":"one sentence"}}'
+    )
+
+    client = _anthropic.Anthropic(api_key=api_key)
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            system="Return only valid JSON. No markdown fences. No text outside the JSON object.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = "\n".join(raw.split("\n")[1:])
+            raw = raw.rsplit("```", 1)[0].strip()
+        params = json.loads(raw)
+        return jsonify({"params": params})
+    except Exception as e:
+        log.warning(f"Step2 suggest failed ({e}); using fallback")
+        if grid:
+            b = grid[0]
+            params = {
+                "long_trail_activation":  b["long_trail_activation"],
+                "short_trail_activation": b["short_trail_activation"],
+                "long_hard_stop":         b["long_hard_stop"],
+                "short_hard_stop":        b["short_hard_stop"],
+                "trail_distance":         b.get("trail_distance", 1),
+                "lta_min": max(5,  b["long_trail_activation"]  - 15), "lta_max": b["long_trail_activation"]  + 15, "lta_step": 5,
+                "sta_min": max(2,  b["short_trail_activation"] - 8),  "sta_max": b["short_trail_activation"] + 8,  "sta_step": 2,
+                "lhs_min": max(10, b["long_hard_stop"]         - 20), "lhs_max": b["long_hard_stop"]         + 20, "lhs_step": 5,
+                "shs_min": max(5,  b["short_hard_stop"]        - 10), "shs_max": b["short_hard_stop"]        + 10, "shs_step": 2,
+                "rationale": "Best parameters from the optimization grid",
+            }
+        else:
+            params = {
+                "long_trail_activation": 40, "short_trail_activation": 10,
+                "long_hard_stop": 70,        "short_hard_stop": 20, "trail_distance": 1,
+                "lta_min": 25, "lta_max": 55, "lta_step": 5,
+                "sta_min": 5,  "sta_max": 15, "sta_step": 2,
+                "lhs_min": 50, "lhs_max": 90, "lhs_step": 10,
+                "shs_min": 10, "shs_max": 30, "shs_step": 5,
+                "rationale": "Default parameters — run Optimize with OHLCV data for better suggestions",
+            }
+        return jsonify({"params": params})
+
+
+@app.route("/api/backtest/step2/script", methods=["POST"])
+def backtest_step2_script():
+    """Phase 3 of Step 2: stream a complete Pine Script v5 for the given parameters."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    body   = request.get_json(silent=True) or {}
+    p      = body.get("params", {})
+    lta    = p.get("long_trail_activation",  40)
+    sta    = p.get("short_trail_activation", 10)
+    lhs    = p.get("long_hard_stop",         70)
+    shs    = p.get("short_hard_stop",        20)
+    trd    = p.get("trail_distance",          1)
+
+    prompt = (
+        f"Write a complete TradingView Pine Script v5 for the Camarilla Pivot Breakout strategy.\n\n"
+        f"Use these optimised values as input defaults:\n"
+        f"  long_trail_activation  = {lta}  // price-units profit before long trailing stop activates\n"
+        f"  short_trail_activation = {sta}\n"
+        f"  long_hard_stop         = {lhs}  // hard stop distance in price units (long)\n"
+        f"  short_hard_stop        = {shs}\n"
+        f"  trail_distance         = {trd}  // trailing stop follows by this many price units\n\n"
+        f"Strategy rules:\n"
+        f"  H4 = prev_close + 1.1*(prev_high-prev_low)/2\n"
+        f"  L4 = prev_close - 1.1*(prev_high-prev_low)/2\n"
+        f"  EMA(8) trend filter\n"
+        f"  Long:  close > H4 and open < H4 and ema8 < close\n"
+        f"  Short: close < L4 and open > L4 and ema8 > close\n"
+        f"  Long exit:  stop = avg_price - long_hard_stop; trail activates at avg_price + long_trail_activation, offset = trail_distance\n"
+        f"  Short exit: stop = avg_price + short_hard_stop; trail activates at avg_price - short_trail_activation, offset = trail_distance\n\n"
+        f"Include:\n"
+        f"  //@version=5\n"
+        f"  strategy() with overlay=true\n"
+        f"  input.float() for all 5 parameters\n"
+        f"  request.security() with barmerge.lookahead_on for previous-day OHLC\n"
+        f"  strategy.entry() and strategy.exit() (use trail_offset in ticks = price/syminfo.mintick)\n"
+        f"  plot() for H4 (green) and L4 (red)\n"
+        f"  plotshape() for entry signals\n\n"
+        f"Output ONLY the Pine Script code. No markdown fences. No explanation."
+    )
+
+    client = _anthropic.Anthropic(api_key=api_key)
+
+    def generate():
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=2500,
+                system="You are an expert TradingView Pine Script v5 developer. Output only valid Pine Script v5 code. No markdown. No explanation. No code fences.",
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/api/ib/trades")
 def ib_trades():
     conn = get_db()
