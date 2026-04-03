@@ -12,6 +12,88 @@ from datetime import datetime, date
 # CSV parsing
 # ---------------------------------------------------------------------------
 
+def is_trade_list_csv(file_bytes):
+    """
+    Return True if the CSV looks like a TradingView Strategy Tester trade list
+    (has 'Trade #' or 'Net P&L' in the header row).
+    """
+    if isinstance(file_bytes, bytes):
+        header_line = file_bytes.decode("utf-8", errors="replace").split("\n")[0]
+    else:
+        header_line = file_bytes.split("\n")[0]
+    return "Trade #" in header_line or "Net P&L" in header_line
+
+
+def parse_trade_list(file_bytes):
+    """
+    Parse a TradingView Strategy Tester trade list CSV.
+
+    Expected columns:
+      Trade #, Type, Date and time, Signal, Price USD,
+      Net P&L USD, Cumulative P&L USD
+
+    Returns list of trade dicts compatible with _compute_stats().
+    """
+    if isinstance(file_bytes, bytes):
+        text = file_bytes.decode("utf-8", errors="replace")
+    else:
+        text = file_bytes
+
+    reader = csv.DictReader(io.StringIO(text))
+
+    entries = {}  # trade_num -> entry info
+    trades  = []
+
+    for row in reader:
+        trade_num = row.get("Trade #", "").strip()
+        row_type  = (row.get("Type", "") or "").strip().lower()
+        dt_str    = (row.get("Date and time", "") or "").strip()
+        price_str = (row.get("Price USD", "") or "").strip()
+        pnl_str   = (row.get("Net P&L USD", "") or "").strip()
+
+        if not row_type or not dt_str:
+            continue
+
+        dt = _parse_time(dt_str)
+        if dt is None:
+            continue
+
+        try:
+            price = float(price_str.replace(",", "")) if price_str else 0.0
+        except ValueError:
+            price = 0.0
+
+        if "entry" in row_type:
+            direction = "LONG" if "long" in row_type else "SHORT"
+            entries[trade_num] = {
+                "direction":   direction,
+                "entry_time":  dt.strftime("%Y-%m-%d %H:%M"),
+                "entry_price": price,
+            }
+
+        elif "exit" in row_type:
+            try:
+                pnl = float(pnl_str.replace(",", "")) if pnl_str else 0.0
+            except ValueError:
+                pnl = 0.0
+
+            direction   = "LONG" if "long" in row_type else "SHORT"
+            entry_info  = entries.pop(trade_num, {})
+
+            trades.append({
+                "direction":   direction,
+                "entry_price": entry_info.get("entry_price", 0.0),
+                "exit_price":  price,
+                "entry_time":  entry_info.get("entry_time", dt.strftime("%Y-%m-%d %H:%M")),
+                "exit_time":   dt.strftime("%Y-%m-%d %H:%M"),
+                "pnl":         round(pnl, 4),
+                "exit_reason": "tv_export",
+                "exit_bar":    0,
+            })
+
+    return trades
+
+
 def parse_bars(file_bytes):
     """
     Parse a TradingView OHLCV CSV export.

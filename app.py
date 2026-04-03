@@ -467,7 +467,10 @@ def backtester():
 
 @app.route("/api/backtest/run", methods=["POST"])
 def backtest_run():
-    from strategies.camarilla import parse_bars, run_backtest, optimise
+    from strategies.camarilla import (
+        parse_bars, run_backtest, optimise,
+        is_trade_list_csv, parse_trade_list, _compute_stats,
+    )
 
     if "csv_file" not in request.files:
         return jsonify({"error": "No CSV file uploaded"}), 400
@@ -476,13 +479,38 @@ def backtest_run():
     if not file.filename:
         return jsonify({"error": "Empty filename"}), 400
 
+    file_bytes = file.read()
+
+    # ── Trade-list import (TradingView Strategy Tester export) ────────────
+    if is_trade_list_csv(file_bytes):
+        try:
+            trades = parse_trade_list(file_bytes)
+        except Exception as e:
+            return jsonify({"error": f"CSV parse error: {e}"}), 400
+
+        if not trades:
+            return jsonify({"error": "No valid trades found in CSV"}), 400
+
+        stats = _compute_stats(trades)
+        return jsonify({
+            "mode":         "single",
+            "source":       "trade_list",
+            "bars_loaded":  len(trades),
+            "trades":       trades[:1000],
+            "stats":        stats,
+        })
+
+    # ── OHLCV backtest ────────────────────────────────────────────────────
     try:
-        bars = parse_bars(file.read())
+        bars = parse_bars(file_bytes)
     except Exception as e:
         return jsonify({"error": f"CSV parse error: {e}"}), 400
 
     if len(bars) < 10:
-        return jsonify({"error": "Not enough bars in CSV (need at least 10)"}), 400
+        return jsonify({"error": "Not enough bars in CSV (need at least 10). "
+                                 "Make sure you export OHLCV candle data, not the "
+                                 "Strategy Tester trade list — or upload the trade "
+                                 "list directly (it is also supported)."}), 400
 
     mode = request.form.get("mode", "single")
 

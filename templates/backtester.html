@@ -577,8 +577,9 @@ async function runBacktest() {
       showError(data.error);
     } else {
       if (data.bars_loaded) {
+        const label = data.source === 'trade_list' ? 'trades imported' : 'bars loaded';
         document.getElementById('barsInfo').textContent =
-          `${data.bars_loaded.toLocaleString()} bars loaded`;
+          `${data.bars_loaded.toLocaleString()} ${label}`;
       }
       if (data.mode === 'optimize') {
         renderOptimize(data);
