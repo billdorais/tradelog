@@ -150,7 +150,8 @@ class IBBroker:
     # ------------------------------------------------------------------
 
     def fetch_historical_bars(self, ticker, start, end, interval="1h",
-                               what_to_show="TRADES", use_rth=True):
+                               what_to_show="TRADES", use_rth=True,
+                               on_chunk=None):
         """
         Fetch historical OHLCV bars from IB for a US stock.
 
@@ -175,10 +176,10 @@ class IBBroker:
             "5m":  5,
             "15m": 10,
             "30m": 20,
-            "1h":  180,
-            "1d":  365 * 2,
+            "1h":  365,
+            "1d":  365 * 5,
         }
-        chunk_days = chunk_days_map.get(interval, 180)
+        chunk_days = chunk_days_map.get(interval, 365)
 
         start_dt = datetime.strptime(start, "%Y-%m-%d")
         end_dt   = datetime.strptime(end,   "%Y-%m-%d")
@@ -213,6 +214,9 @@ class IBBroker:
 
                 if not bars:
                     break
+
+                if on_chunk:
+                    on_chunk(chunk_start.strftime("%Y-%m-%d"), cursor.strftime("%Y-%m-%d"), len(bars))
 
                 for b in bars:
                     try:

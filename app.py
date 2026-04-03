@@ -679,9 +679,8 @@ def backtest_agent_run():
     data_source = body.get("data_source", "yfinance")  # "yfinance" or "ib"
 
     if data_source == "ib":
-        # IB has no strict lookback limit — use whatever the user requests
         today      = date.today()
-        start_date = body.get("start_date", (today - timedelta(days=365 * 5)).isoformat())
+        start_date = body.get("start_date", (today - timedelta(days=365 * 2)).isoformat())
         end_date   = body.get("end_date",   today.isoformat())
     else:
         # Enforce Yahoo Finance lookback limits
@@ -713,7 +712,13 @@ def backtest_agent_run():
                 yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars via {source_label} ({start_date} → {end_date})…"})
                 try:
                     if data_source == "ib":
-                        bars = fetch_bars_ib(ib_broker, tkr, start_date, end_date, interval)
+                        chunk_msgs = []
+                        def _on_chunk(cs, ce, n, _tkr=tkr):
+                            chunk_msgs.append(f"  {_tkr}: fetched chunk {cs} → {ce} ({n} bars)")
+                        bars = fetch_bars_ib(ib_broker, tkr, start_date, end_date, interval,
+                                             on_chunk=_on_chunk)
+                        for msg in chunk_msgs:
+                            yield sse({"type": "status", "msg": msg})
                     else:
                         bars = fetch_bars(tkr, start_date, end_date, interval)
                     if len(bars) < 50:

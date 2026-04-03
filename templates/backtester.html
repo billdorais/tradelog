@@ -836,8 +836,11 @@ document.getElementById('agentSource').addEventListener('change', function() {
   const today  = new Date().toISOString().slice(0, 10);
   if (isIB) {
     hint.style.color   = '#26a65b';
-    hint.textContent   = '✓ IB: up to 10+ years of history available. Ensure IB Gateway is connected.';
-    start.value = '2015-01-01';
+    hint.textContent   = '✓ IB: extended history available. Default is 2 years — increase for deeper backtests (slower).';
+    // Default to 2 years — enough for meaningful backtests without long waits
+    const twoYearsAgo = new Date();
+    twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+    start.value = twoYearsAgo.toISOString().slice(0, 10);
     end.value   = today;
   } else {
     hint.style.color   = '#f59e0b';
