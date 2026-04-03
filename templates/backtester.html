@@ -661,8 +661,9 @@
 let currentMode      = 'single';
 let csvFile          = null;
 let equityChart      = null;
-let lastRunData      = null;   // full response from /api/backtest/run
-let lastStep1Analysis = '';    // Claude Step 1 analysis text
+let lastRunData       = null;  // full response from /api/backtest/run
+let lastStep1Analysis = '';   // Claude Step 1 analysis text
+let currentTicker     = '';   // parsed from CSV filename
 
 // ── File upload ────────────────────────────────────────────────────────────
 const uploadArea = document.getElementById('uploadArea');
@@ -687,6 +688,17 @@ function setFile(f) {
   csvFile = f;
   document.getElementById('fileName').textContent = f.name;
   document.getElementById('runBtn').disabled = false;
+  currentTicker = parseTickerFromFilename(f.name);
+}
+
+function parseTickerFromFilename(name) {
+  // Matches exchange_TICKER pattern: e.g. NASDAQ_QQQ, NYSE_MSFT, AMEX_SPY
+  const exRe = /(?:NASDAQ|NYSE|AMEX|BATS|CME|CBOE)_([A-Z0-9]+)/i.exec(name);
+  if (exRe) return exRe[1].toUpperCase();
+  // Fallback: last uppercase word before the date (YYYY-MM-DD)
+  const dateRe = /([A-Z]{1,6})_\d{4}-\d{2}-\d{2}/i.exec(name);
+  if (dateRe) return dateRe[1].toUpperCase();
+  return '';
 }
 
 // ── Pine Script paste + param extraction ───────────────────────────────────
@@ -1160,7 +1172,7 @@ async function analyseWithClaude(payload, btn) {
     const resp = await fetch('/api/backtest/analyse', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({...payload, ticker: currentTicker}),
     });
 
     if (!resp.ok) {
@@ -1251,6 +1263,7 @@ async function runStep2(btn) {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         step1_analysis: lastStep1Analysis,
+        ticker: currentTicker,
         grid:  lastRunData?.grid  || [],
         stats: lastRunData?.stats || {},
       }),
@@ -1334,7 +1347,7 @@ async function runStep2(btn) {
     const sc = await fetch('/api/backtest/step2/script', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ params: bestParams }),
+      body:    JSON.stringify({ params: bestParams, ticker: currentTicker }),
     });
     if (!sc.ok) throw new Error(((await sc.json()).error) || sc.statusText);
 

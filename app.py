@@ -575,6 +575,7 @@ def backtest_analyse():
 
     data     = request.get_json(silent=True) or {}
     analysis_type = data.get("type", "grid")
+    ticker        = data.get("ticker", "").strip().upper() or "the ticker"
 
     if analysis_type == "stats":
         s = data.get("stats")
@@ -582,7 +583,7 @@ def backtest_analyse():
             return jsonify({"error": "No stats data to analyse"}), 400
         source_label = "TradingView Strategy Tester export" if data.get("source") == "trade_list" else "OHLCV backtest simulation"
         prompt = (
-            f"I ran the Camarilla pivot breakout strategy on QQQ ({source_label}).\n\n"
+            f"I ran the Camarilla pivot breakout strategy on {ticker} ({source_label}).\n\n"
             f"Strategy: enters long when price breaks above H4 with EMA8 below close; "
             f"enters short when price breaks below L4 with EMA8 above close.\n\n"
             f"Results:\n"
@@ -616,7 +617,7 @@ def backtest_analyse():
             f"I ran a parameter grid search on the Camarilla pivot breakout strategy.\n\n"
             f"Strategy: enters long when price breaks above H4 (Camarilla level) with EMA8 below "
             f"close; enters short when price breaks below L4 with EMA8 above close. "
-            f"Tested on QQQ 5-minute bars.\n\n"
+            f"Tested on {ticker} 5-minute bars.\n\n"
             f"Exit parameters optimised:\n"
             f"  long_trail  — profit points before the long trailing stop activates\n"
             f"  short_trail — profit points before the short trailing stop activates\n"
@@ -668,10 +669,11 @@ def backtest_step2_suggest():
     except ImportError:
         return jsonify({"error": "anthropic package not installed"}), 503
 
-    body  = request.get_json(silent=True) or {}
-    step1 = body.get("step1_analysis", "")
-    grid  = body.get("grid",  [])
-    stats = body.get("stats", {})
+    body   = request.get_json(silent=True) or {}
+    step1  = body.get("step1_analysis", "")
+    ticker = body.get("ticker", "").strip().upper() or "the ticker"
+    grid   = body.get("grid",  [])
+    stats  = body.get("stats", {})
 
     if grid:
         top  = grid[:15]
@@ -688,7 +690,7 @@ def backtest_step2_suggest():
                    f"trades={stats.get('total_trades')}")
 
     prompt = (
-        f"Camarilla strategy analysis:\n{step1}\n\n{context}\n\n"
+        f"Camarilla strategy analysis on {ticker}:\n{step1}\n\n{context}\n\n"
         f"Return ONLY a JSON object — no markdown, no text outside the braces. "
         f"Include the single best parameter set AND a tighter grid range focused on the optimal region:\n"
         f'{{"long_trail_activation":N,"short_trail_activation":N,'
@@ -756,6 +758,7 @@ def backtest_step2_script():
 
     body   = request.get_json(silent=True) or {}
     p      = body.get("params", {})
+    ticker = body.get("ticker", "").strip().upper() or "the ticker"
     lta    = p.get("long_trail_activation",  40)
     sta    = p.get("short_trail_activation", 10)
     lhs    = p.get("long_hard_stop",         70)
@@ -763,7 +766,7 @@ def backtest_step2_script():
     trd    = p.get("trail_distance",          1)
 
     prompt = (
-        f"Write a complete TradingView Pine Script v5 for the Camarilla Pivot Breakout strategy.\n\n"
+        f"Write a complete TradingView Pine Script v5 for the Camarilla Pivot Breakout strategy optimised for {ticker}.\n\n"
         f"Use these optimised values as input defaults:\n"
         f"  long_trail_activation  = {lta}  // price-units profit before long trailing stop activates\n"
         f"  short_trail_activation = {sta}\n"
