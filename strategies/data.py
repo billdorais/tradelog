@@ -15,6 +15,7 @@ def fetch_bars(ticker, start, end, interval="1h"):
     """
     Fetch OHLCV bars from Yahoo Finance.
     Returns list of bar dicts or raises ValueError on failure.
+    Compatible with yfinance >= 0.2.x (handles multi-level column index).
     """
     try:
         import yfinance as yf
@@ -28,11 +29,15 @@ def fetch_bars(ticker, start, end, interval="1h"):
         interval=interval,
         auto_adjust=True,
         progress=False,
-        multi_level_index=False,
     )
 
     if df is None or df.empty:
         raise ValueError(f"No data returned for {ticker} ({start} → {end}, {interval})")
+
+    # yfinance >= 0.2.38 returns a MultiIndex column when downloading a single
+    # ticker too — flatten it so we always get plain column names.
+    if hasattr(df.columns, "levels"):
+        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
     bars = []
     for ts, row in df.iterrows():
@@ -41,12 +46,15 @@ def fetch_bars(ticker, start, end, interval="1h"):
         except Exception:
             dt = datetime.utcfromtimestamp(float(ts.value) / 1e9)
 
-        o = float(row.get("Open",  row.get("open",  0)) or 0)
-        h = float(row.get("High",  row.get("high",  0)) or 0)
-        l = float(row.get("Low",   row.get("low",   0)) or 0)
-        c = float(row.get("Close", row.get("close", 0)) or 0)
+        try:
+            o = float(row["Open"])
+            h = float(row["High"])
+            l = float(row["Low"])
+            c = float(row["Close"])
+        except (KeyError, TypeError, ValueError):
+            continue
 
-        if o == 0 or c == 0:
+        if not (o and h and l and c):
             continue
 
         bars.append({"time": dt, "open": o, "high": h, "low": l, "close": c})
