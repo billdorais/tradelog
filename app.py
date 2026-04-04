@@ -672,26 +672,44 @@ def backtest_agent_run():
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
 
     from datetime import date, timedelta
-    body        = request.get_json(silent=True) or {}
-    tickers     = [t.strip().upper() for t in body.get("tickers", []) if t.strip()][:5]
-    interval    = body.get("interval",    "1h")
-    iterations  = min(int(body.get("iterations", 2)), 5)
-    data_source = body.get("data_source", "yfinance")  # "yfinance" or "ib"
 
-    today = date.today()
-    if data_source == "ib":
-        # Cap intraday ranges to keep IB chunk count reasonable
-        ib_max_days = {"5m": 30, "15m": 60, "30m": 90, "1h": 365, "1d": 365 * 5}
-        max_days   = ib_max_days.get(interval, 365)
-        earliest   = today - timedelta(days=max_days)
-        start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
-        end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
+    # Accept both multipart/form-data (CSV upload) and application/json
+    if request.content_type and "multipart" in request.content_type:
+        body        = request.form
+        data_source = body.get("data_source", "csv")
+        iterations  = min(int(body.get("iterations", 2)), 5)
+        interval    = body.get("interval", "1h")
+        # CSV bars are pre-loaded; tickers/dates come from the filename field
+        csv_ticker  = (body.get("ticker") or "UPLOADED").strip().upper()
+        tickers     = [csv_ticker]
+        start_date  = end_date = None
     else:
-        # Enforce Yahoo Finance lookback limits
-        max_days  = 58 if interval in ("5m", "15m", "30m") else 729
-        earliest  = today - timedelta(days=max_days)
-        start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
-        end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
+        body        = request.get_json(silent=True) or {}
+        tickers     = [t.strip().upper() for t in body.get("tickers", []) if t.strip()][:5]
+        interval    = body.get("interval",    "1h")
+        iterations  = min(int(body.get("iterations", 2)), 5)
+        data_source = body.get("data_source", "yfinance")
+        today       = date.today()
+        if data_source == "ib":
+            ib_max_days = {"5m": 30, "15m": 60, "30m": 90, "1h": 365, "1d": 365 * 5}
+            max_days   = ib_max_days.get(interval, 365)
+            earliest   = today - timedelta(days=max_days)
+            start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
+            end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
+        else:
+            max_days  = 58 if interval in ("5m", "15m", "30m") else 729
+            earliest  = today - timedelta(days=max_days)
+            start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
+            end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
+
+    # Pre-parse CSV bars before entering the streaming generator
+    csv_bars_by_ticker = {}
+    if data_source == "csv":
+        from strategies.camarilla import parse_bars as _parse_bars
+        f = request.files.get("csv_file")
+        if not f:
+            return jsonify({"error": "No CSV file uploaded"}), 400
+        csv_bars_by_ticker[csv_ticker] = _parse_bars(f.read())
 
     if not tickers:
         return jsonify({"error": "No tickers provided"}), 400
@@ -708,11 +726,15 @@ def backtest_agent_run():
 
             client = _anthropic.Anthropic(api_key=api_key)
 
-            # ── Step 1: Fetch bars ────────────────────────────────────────
-            source_label = "IB" if data_source == "ib" else "Yahoo Finance"
+            # ── Step 1: Fetch / load bars ─────────────────────────────────
+            source_label = {"ib": "IB", "csv": "CSV", "yfinance": "Yahoo Finance"}.get(data_source, "Yahoo Finance")
             all_bars = {}
             for tkr in tickers:
-                yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars via {source_label} ({start_date} → {end_date})…"})
+                if data_source == "csv":
+                    bars = csv_bars_by_ticker.get(tkr, [])
+                    yield sse({"type": "status", "msg": f"Loaded {len(bars)} bars from CSV for {tkr}"})
+                else:
+                    yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars via {source_label} ({start_date} → {end_date})…"})
                 try:
                     if data_source == "ib":
                         import queue as _queue, threading as _threading
@@ -741,7 +763,7 @@ def backtest_agent_run():
                         if error_hold[0]:
                             raise error_hold[0]
                         bars = result_hold[0] or []
-                    else:
+                    elif data_source != "csv":
                         bars = fetch_bars(tkr, start_date, end_date, interval)
                     if len(bars) < 50:
                         yield sse({"type": "warning", "msg": f"{tkr}: only {len(bars)} bars — skipping"})
