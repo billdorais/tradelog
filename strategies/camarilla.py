@@ -35,7 +35,7 @@ def parse_trade_list(file_bytes):
     Returns list of trade dicts compatible with _compute_stats().
     """
     if isinstance(file_bytes, bytes):
-        text = file_bytes.decode("utf-8", errors="replace")
+        text = file_bytes.decode("utf-8-sig", errors="replace")
     else:
         text = file_bytes
 
@@ -101,14 +101,16 @@ def parse_bars(file_bytes):
     Supports both Unix timestamps and ISO datetime strings.
     """
     if isinstance(file_bytes, bytes):
-        text = file_bytes.decode("utf-8", errors="replace")
+        # utf-8-sig strips the BOM that TradingView adds to its CSV exports
+        text = file_bytes.decode("utf-8-sig", errors="replace")
     else:
         text = file_bytes
 
     reader = csv.DictReader(io.StringIO(text))
     bars = []
     for row in reader:
-        # Normalise column names (TradingView may use 'time' or 'Date')
+        # Normalise column names — strip any residual BOM from keys
+        row = {k.lstrip("\ufeff").strip(): v for k, v in row.items()}
         time_val = (row.get("time") or row.get("Time") or row.get("date") or
                     row.get("Date") or "").strip()
         try:
