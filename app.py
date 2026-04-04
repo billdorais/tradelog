@@ -748,6 +748,12 @@ def backtest_agent_run():
                         continue
                     all_bars[tkr] = bars
                     yield sse({"type": "fetch_ok", "ticker": tkr, "bars": len(bars)})
+                    # Warn early if bar count is likely to produce too few trades
+                    if len(bars) < 500 and data_source == "yfinance" and interval in ("5m", "15m", "30m"):
+                        yield sse({"type": "warning", "msg":
+                            f"{tkr}: {len(bars)} bars ({start_date} → {end_date}) — "
+                            f"Yahoo Finance limits {interval} data to ~58 days. "
+                            f"Switch to '1h' for ~2 years of data and far more trades."})
                 except Exception as e:
                     yield sse({"type": "warning", "msg": f"{tkr} fetch failed: {e}"})
 
