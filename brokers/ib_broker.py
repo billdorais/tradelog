@@ -193,9 +193,12 @@ class IBBroker:
             cursor   = end_dt
 
             while cursor > start_dt:
-                chunk_start = max(start_dt, cursor - timedelta(days=chunk_days))
+                if not self._ib.isConnected():
+                    raise RuntimeError("IB disconnected during historical data fetch")
+
+                chunk_start   = max(start_dt, cursor - timedelta(days=chunk_days))
                 duration_days = (cursor - chunk_start).days or 1
-                end_str = cursor.strftime("%Y%m%d %H:%M:%S")
+                end_str       = cursor.strftime("%Y%m%d %H:%M:%S")
 
                 try:
                     bars = self._ib.reqHistoricalData(
@@ -207,12 +210,14 @@ class IBBroker:
                         useRTH         = use_rth,
                         formatDate     = 1,
                         keepUpToDate   = False,
+                        timeout        = 30,   # don't hang forever on a pacing/connection issue
                     )
                 except Exception as e:
                     log.warning("IB reqHistoricalData error for %s: %s", ticker, e)
                     break
 
                 if not bars:
+                    log.warning("IB: empty chunk for %s ending %s — stopping", ticker, end_str)
                     break
 
                 if on_chunk:
@@ -238,7 +243,7 @@ class IBBroker:
 
                 # Move cursor back past the earliest bar in this chunk
                 cursor = chunk_start - timedelta(days=1)
-                self._ib.sleep(0.5)  # IB pacing
+                self._ib.sleep(1)  # IB pacing — 1s between requests
 
         all_bars.sort(key=lambda b: b["time"])
         # Deduplicate by timestamp
