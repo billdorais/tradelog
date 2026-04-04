@@ -702,14 +702,21 @@ def backtest_agent_run():
             start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
             end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
 
-    # Pre-parse CSV bars before entering the streaming generator
-    csv_bars_by_ticker = {}
+    # Pre-parse CSV before entering the streaming generator
+    csv_bars_by_ticker  = {}
+    csv_trades_by_ticker = {}
+    csv_is_trade_list   = False
     if data_source == "csv":
-        from strategies.camarilla import parse_bars as _parse_bars
+        from strategies.camarilla import parse_bars as _parse_bars, parse_trade_list as _parse_trade_list, is_trade_list_csv as _is_trade_list_csv
         f = request.files.get("csv_file")
         if not f:
             return jsonify({"error": "No CSV file uploaded"}), 400
-        csv_bars_by_ticker[csv_ticker] = _parse_bars(f.read())
+        file_bytes = f.read()
+        if _is_trade_list_csv(file_bytes):
+            csv_is_trade_list = True
+            csv_trades_by_ticker[csv_ticker] = _parse_trade_list(file_bytes)
+        else:
+            csv_bars_by_ticker[csv_ticker] = _parse_bars(file_bytes)
 
     if not tickers:
         return jsonify({"error": "No tickers provided"}), 400
@@ -727,6 +734,51 @@ def backtest_agent_run():
             client = _anthropic.Anthropic(api_key=api_key)
 
             # ── Step 1: Fetch / load bars ─────────────────────────────────
+            # Short-circuit: trade list CSV — skip grid search, analyse directly
+            if csv_is_trade_list:
+                from strategies.camarilla import _compute_stats
+                for tkr, trades in csv_trades_by_ticker.items():
+                    stats = _compute_stats(trades)
+                    yield sse({"type": "status", "msg": f"Loaded {len(trades)} trades from TV Strategy Tester CSV for {tkr}"})
+                    yield sse({"type": "status", "msg": "Claude is analysing the trade list…"})
+                    rows = "\n".join(
+                        f"#{i+1}: {t['direction']} entry={t['entry_price']} exit={t['exit_price']} "
+                        f"pnl={t['pnl']} entry={t['entry_time']} exit={t['exit_time']} reason={t['exit_reason']}"
+                        for i, t in enumerate(trades[:50])
+                    )
+                    analysis_prompt = (
+                        f"TradingView Strategy Tester results for {tkr} — {len(trades)} trades.\n\n"
+                        f"Summary stats:\n"
+                        f"  Total trades: {stats['total_trades']}, Win rate: {stats['win_rate']}%\n"
+                        f"  Total P&L: {stats['total_pnl']}, Profit factor: {stats['profit_factor']}\n"
+                        f"  Avg win: {stats['avg_win']}, Avg loss: {stats['avg_loss']}\n"
+                        f"  Max drawdown: {stats['max_drawdown']}\n\n"
+                        f"First {min(50, len(trades))} trades:\n{rows}\n\n"
+                        f"Provide:\n"
+                        f"1. Overall strategy assessment\n"
+                        f"2. Win/loss pattern observations\n"
+                        f"3. Key risks and concerns\n"
+                        f"4. One-line verdict on whether this strategy is ready to trade"
+                    )
+                    summary_text = ""
+                    try:
+                        with client.messages.stream(
+                            model="claude-sonnet-4-6",
+                            max_tokens=800,
+                            system="Quantitative trading analyst. Be concise. Use ## headings and bullet points.",
+                            messages=[{"role": "user", "content": analysis_prompt}],
+                        ) as stream:
+                            for text in stream.text_stream:
+                                summary_text += text
+                                yield sse({"type": "summary_chunk", "text": text})
+                    except Exception as e:
+                        yield sse({"type": "warning", "msg": f"Claude analysis failed: {e}"})
+
+                    yield sse({"type": "final", "best": {}, "combined": [],
+                               "tickers": [tkr], "iterations": 0})
+                yield sse({"type": "done"})
+                return
+
             source_label = {"ib": "IB", "csv": "CSV", "yfinance": "Yahoo Finance"}.get(data_source, "Yahoo Finance")
             all_bars = {}
             for tkr in tickers:
