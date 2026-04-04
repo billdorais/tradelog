@@ -678,13 +678,16 @@ def backtest_agent_run():
     iterations  = min(int(body.get("iterations", 2)), 5)
     data_source = body.get("data_source", "yfinance")  # "yfinance" or "ib"
 
+    today = date.today()
     if data_source == "ib":
-        today      = date.today()
-        start_date = body.get("start_date", (today - timedelta(days=365 * 2)).isoformat())
-        end_date   = body.get("end_date",   today.isoformat())
+        # Cap intraday ranges to keep IB chunk count reasonable
+        ib_max_days = {"5m": 30, "15m": 60, "30m": 90, "1h": 365, "1d": 365 * 5}
+        max_days   = ib_max_days.get(interval, 365)
+        earliest   = today - timedelta(days=max_days)
+        start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
+        end_date   = min(today.isoformat(),    body.get("end_date",   today.isoformat()))
     else:
         # Enforce Yahoo Finance lookback limits
-        today     = date.today()
         max_days  = 58 if interval in ("5m", "15m", "30m") else 729
         earliest  = today - timedelta(days=max_days)
         start_date = max(earliest.isoformat(), body.get("start_date", earliest.isoformat()))
@@ -712,13 +715,32 @@ def backtest_agent_run():
                 yield sse({"type": "status", "msg": f"Fetching {tkr} {interval} bars via {source_label} ({start_date} → {end_date})…"})
                 try:
                     if data_source == "ib":
-                        chunk_msgs = []
+                        import queue as _queue, threading as _threading
+                        progress_q   = _queue.SimpleQueue()
+                        result_hold  = [None]
+                        error_hold   = [None]
+
                         def _on_chunk(cs, ce, n, _tkr=tkr):
-                            chunk_msgs.append(f"  {_tkr}: fetched chunk {cs} → {ce} ({n} bars)")
-                        bars = fetch_bars_ib(ib_broker, tkr, start_date, end_date, interval,
-                                             on_chunk=_on_chunk)
-                        for msg in chunk_msgs:
-                            yield sse({"type": "status", "msg": msg})
+                            progress_q.put({"type": "status", "msg": f"  {_tkr}: chunk {cs} → {ce} ({n} bars)"})
+
+                        def _fetch():
+                            try:
+                                result_hold[0] = fetch_bars_ib(ib_broker, tkr, start_date, end_date,
+                                                                interval, on_chunk=_on_chunk)
+                            except Exception as exc:
+                                error_hold[0] = exc
+                            finally:
+                                progress_q.put(None)  # sentinel
+
+                        _threading.Thread(target=_fetch, daemon=True).start()
+                        while True:
+                            msg = progress_q.get()
+                            if msg is None:
+                                break
+                            yield sse(msg)
+                        if error_hold[0]:
+                            raise error_hold[0]
+                        bars = result_hold[0] or []
                     else:
                         bars = fetch_bars(tkr, start_date, end_date, interval)
                     if len(bars) < 50:
