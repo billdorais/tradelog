@@ -820,11 +820,24 @@ uploadArea.addEventListener('drop', e => {
   if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
 });
 
+function updateAgentCsvNotice() {
+  const nameEl = document.getElementById('agentCsvName');
+  if (!nameEl) return;
+  if (csvFile) {
+    nameEl.textContent = csvFile.name;
+    nameEl.style.color = '#a78bfa';
+  } else {
+    nameEl.textContent = '(no file uploaded yet)';
+    nameEl.style.color = '#ef5350';
+  }
+}
+
 function setFile(f) {
   csvFile = f;
   document.getElementById('fileName').textContent = f.name;
   document.getElementById('runBtn').disabled = false;
   currentTicker = parseTickerFromFilename(f.name);
+  updateAgentCsvNotice();
 }
 
 function parseTickerFromFilename(name) {
@@ -852,8 +865,7 @@ document.getElementById('agentSource').addEventListener('change', function() {
     fetchFields.style.display = 'none';
     csvNotice.style.display   = '';
     hint.style.display        = 'none';
-    csvNameEl.textContent     = csvFile ? csvFile.name : '(no file uploaded yet)';
-    csvNameEl.style.color     = csvFile ? '#a78bfa' : '#ef5350';
+    updateAgentCsvNotice();
   } else {
     fetchFields.style.display = '';
     csvNotice.style.display   = 'none';
@@ -980,6 +992,7 @@ function setMode(mode) {
   if (mode === 'agent') {
     document.getElementById('runBtn').disabled = false;
     document.getElementById('runBtn').textContent = '⚡ Run Agent';
+    updateAgentCsvNotice();
   } else {
     document.getElementById('runBtn').textContent = 'Run Backtest';
     document.getElementById('runBtn').disabled = !csvFile;
