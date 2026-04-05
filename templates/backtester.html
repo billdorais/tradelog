@@ -928,6 +928,18 @@ function parsePineParams(src) {
     trail_distance:         ['trd_single', 'trd_opt'],
     traildistance:          ['trd_single', 'trd_opt'],
     trail_dist:             ['trd_single', 'trd_opt'],
+    // ATR-based naming
+    atrtrailmult:           ['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'],
+    atrtailmult:            ['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'],
+    trailmult:              ['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'],
+    trail_mult:             ['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'],
+    atrstopmult:            ['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'],
+    stopmult:               ['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'],
+    stop_mult:              ['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'],
+    atrtrail:               ['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'],
+    atrtrailpoints:         ['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'],
+    atrStop:                ['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'],
+    atrstoppoints:          ['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'],
   };
 
   for (const [name, val] of Object.entries(inputVars)) {
@@ -949,24 +961,31 @@ function parsePineParams(src) {
     const isLong  = /['"][^'"]*[Ll]ong/.test(block.slice(0, 80));
     const isShort = /['"][^'"]*[Ss]hort/.test(block.slice(0, 80));
 
-    const tpMatch   = /trail_points\s*=\s*([\d.]+)/.exec(block);
-    const toMatch   = /trail_offset\s*=\s*([\d.]+)/.exec(block);
-    const lossMatch = /\bloss\s*=\s*([\d.]+)/.exec(block);
+    // Match literal numbers OR variable names (then resolve via inputVars)
+    function resolveVal(re) {
+      const mx = re.exec(block);
+      if (!mx) return null;
+      const raw = mx[1];
+      if (/^\d/.test(raw)) return parseFloat(raw);
+      // variable reference — look up in inputVars (lowercased)
+      return inputVars[raw.toLowerCase()] ?? null;
+    }
+    const tpMatch   = resolveVal(/trail_points\s*=\s*([\d.]+|\w+)/);
+    const toMatch   = resolveVal(/trail_offset\s*=\s*([\d.]+|\w+)/);
+    const lossMatch = resolveVal(/\bloss\s*=\s*([\d.]+|\w+)/);
 
-    if (tpMatch) {
-      const v = parseFloat(tpMatch[1]);
-      if (isLong)       fill(['lta', 'lta_min', 'lta_max'], v);
-      else if (isShort) fill(['sta', 'sta_min', 'sta_max'], v);
-      else              fill(['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'], v);
+    if (tpMatch != null) {
+      if (isLong)       fill(['lta', 'lta_min', 'lta_max'], tpMatch);
+      else if (isShort) fill(['sta', 'sta_min', 'sta_max'], tpMatch);
+      else              fill(['lta', 'lta_min', 'lta_max', 'sta', 'sta_min', 'sta_max'], tpMatch);
     }
-    if (toMatch) {
-      fill(['trd_single', 'trd_opt'], parseFloat(toMatch[1]));
+    if (toMatch != null) {
+      fill(['trd_single', 'trd_opt'], toMatch);
     }
-    if (lossMatch) {
-      const v = parseFloat(lossMatch[1]);
-      if (isLong)       fill(['lhs', 'lhs_min', 'lhs_max'], v);
-      else if (isShort) fill(['shs', 'shs_min', 'shs_max'], v);
-      else              fill(['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'], v);
+    if (lossMatch != null) {
+      if (isLong)       fill(['lhs', 'lhs_min', 'lhs_max'], lossMatch);
+      else if (isShort) fill(['shs', 'shs_min', 'shs_max'], lossMatch);
+      else              fill(['lhs', 'lhs_min', 'lhs_max', 'shs', 'shs_min', 'shs_max'], lossMatch);
     }
   }
 
