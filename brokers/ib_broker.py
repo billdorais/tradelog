@@ -93,10 +93,16 @@ class IBBroker:
     # ------------------------------------------------------------------
 
     def executions(self):
-        """Return list of filled executions from IB for the current session."""
+        """
+        Return list of filled executions from IB.
+        Uses reqExecutions() to actively request today's fills from IB
+        (unlike fills() which only returns what was seen in the current session).
+        """
+        from ib_async import ExecutionFilter
         with self._lock:
             self._ensure_connected()
-            fills = self._ib.fills()
+            # reqExecutions with an empty filter returns all today's executions
+            fills = self._ib.reqExecutions(ExecutionFilter())
             result = []
             for f in fills:
                 result.append({

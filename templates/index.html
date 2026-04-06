@@ -331,6 +331,7 @@
       <button id="ibReconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
+      <button id="syncIBBtn" onclick="syncIBFills()" style="background:transparent;border:1px solid #4a90d9;color:#4a90d9;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Sync IB Fills</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
     </div>
   </header>
@@ -1141,6 +1142,27 @@
       } catch (e) {
         alert('Reconnect error');
         document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+      }
+    }
+
+    async function syncIBFills() {
+      const btn = document.getElementById('syncIBBtn');
+      btn.textContent = 'Syncing...';
+      btn.disabled = true;
+      try {
+        const res  = await fetch('/api/ib/sync', { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          alert('Sync failed: ' + data.error);
+        } else {
+          btn.textContent = `Synced ${data.synced} fill${data.synced !== 1 ? 's' : ''}`;
+          await loadTrades();
+          setTimeout(() => { btn.textContent = 'Sync IB Fills'; }, 3000);
+        }
+      } catch (e) {
+        alert('Sync error: ' + e);
+      } finally {
+        btn.disabled = false;
       }
     }
 

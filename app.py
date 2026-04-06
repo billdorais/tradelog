@@ -1169,6 +1169,45 @@ def backtest_step2_script():
     )
 
 
+@app.route("/api/ib/sync", methods=["POST"])
+def ib_sync_fills():
+    """Manually trigger a fill sync from IB (reqExecutions for today)."""
+    if not ib_broker:
+        return jsonify({"error": "IB broker not initialised"}), 400
+    try:
+        fills = ib_broker.executions()
+        saved = 0
+        for fill in fills:
+            exec_id = fill["exec_id"]
+            pnl     = fill.get("pnl")
+            conn = get_db()
+            cur  = conn.cursor()
+            p    = placeholder()
+            cur.execute(
+                f"INSERT INTO ib_executions "
+                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
+                f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
+                (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
+                 fill["side"], fill["shares"], fill["price"],
+                 fill["order_id"], fill["account"], fill["exchange"], pnl, pnl),
+            ) if DATABASE_URL else cur.execute(
+                f"INSERT OR REPLACE INTO ib_executions "
+                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
+                 fill["side"], fill["shares"], fill["price"],
+                 fill["order_id"], fill["account"], fill["exchange"], pnl),
+            )
+            conn.commit()
+            conn.close()
+            saved += 1
+        return jsonify({"synced": saved})
+    except Exception as e:
+        log.error("Manual IB fill sync error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/ib/trades")
 def ib_trades():
     conn = get_db()
