@@ -494,10 +494,10 @@
           <th>Direction</th>
           <th>Strategy</th>
           <th>Ticker</th>
+          <th>P&amp;L</th>
           <th>Qty</th>
           <th>Entry Price</th>
           <th>Exit Price</th>
-          <th>P&amp;L</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -782,10 +782,10 @@
               <td>${sentimentBadge(ref.sentiment)}</td>
               <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
               <td><strong>${ref.ticker ?? '—'}</strong></td>
+              ${pnlCell(pnl)}
               <td>${qty ?? '—'}</td>
               <td>${priceCell(entryPrice)}</td>
               <td>${priceCell(exitPrice)}</td>
-              ${pnlCell(pnl)}
               <td>${execBadge(status)}</td>
             </tr>`);
           }
@@ -807,10 +807,10 @@
               <td>${sentimentBadge(sentiment)}</td>
               <td><span style="color:#444">—</span></td>
               <td><strong>${ref.symbol ?? '—'}</strong></td>
+              ${pnlCell(pnl)}
               <td>${qty ?? '—'}</td>
               <td>${priceCell(entryPrice)}</td>
               <td>${priceCell(exitPrice)}</td>
-              ${pnlCell(pnl)}
               <td><span class="exec-ok">✓ Filled</span></td>
             </tr>`);
           }
