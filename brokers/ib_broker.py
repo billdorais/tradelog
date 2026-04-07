@@ -130,15 +130,18 @@ class IBBroker:
             })
         return result
 
-    def executions_from_ib(self):
+    def executions_from_ib(self, days_back=7):
         """
-        Actively request today's fills from IB via reqExecutions().
+        Actively request recent fills from IB via reqExecutions().
         Must be called from the thread that owns the IB event loop (background thread).
+        days_back: how many calendar days back to fetch (default 7 to cover weekends/holidays).
         """
         from ib_async import ExecutionFilter
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y%m%d %H:%M:%S")
         with self._lock:
             self._ensure_connected()
-            fills = self._ib.reqExecutions(ExecutionFilter())
+            fills = self._ib.reqExecutions(ExecutionFilter(time=since))
             result = []
             for f in fills:
                 result.append({
