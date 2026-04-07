@@ -343,16 +343,28 @@ def webhook():
     if not data:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    received_at  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    broker_name  = (data.get("broker") or "").strip().lower()
+    received_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    broker_name = (data.get("broker") or "").strip().lower()
+
+    # Normalise ticker — Pine Script sends "symbol", some strategies send "ticker"
+    ticker = (data.get("ticker") or data.get("symbol") or "").strip().upper() or None
+
+    # Normalise action — map EXIT_LONG → SELL, EXIT_SHORT → BUY
+    raw_action = (data.get("action") or "").strip().upper()
+    action_map = {"EXIT_LONG": "SELL", "EXIT_SHORT": "BUY"}
+    order_action = action_map.get(raw_action, raw_action)  # BUY/SELL pass through unchanged
+
+    # If no broker specified but IB is configured, default to IB
+    if not broker_name and ib_broker is not None:
+        broker_name = "ib"
 
     conn = get_db()
     cur  = conn.cursor()
 
     # 1. Log the signal immediately
     trade_id = _insert_trade(cur, (
-        data.get("ticker"),
-        data.get("action"),
+        ticker,
+        raw_action,
         data.get("sentiment"),
         data.get("quantity"),
         data.get("price"),
@@ -373,18 +385,22 @@ def webhook():
             exec_status = "error"
             exec_detail = "IB broker not initialised — check IB_HOST env var"
             log.warning("IB order skipped: broker not initialised")
+        elif order_action not in ("BUY", "SELL"):
+            exec_status = "skipped"
+            exec_detail = f"No order placed for action '{raw_action}'"
+            log.info("Webhook action '%s' logged but no IB order placed", raw_action)
         else:
             result = ib_broker.place_order(
-                ticker   = data.get("ticker"),
-                action   = data.get("action"),
+                ticker   = ticker,
+                action   = order_action,
                 quantity = data.get("quantity", 1),
                 price    = data.get("price") if data.get("order_type") == "LMT" else None,
                 sec_type = data.get("sec_type", "STK"),
                 currency = data.get("currency", "USD"),
             )
-            exec_status = "ok"    if result.get("success") else "error"
+            exec_status = "ok" if result.get("success") else "error"
             exec_detail = json.dumps(result)
-            log.info("IB order result: %s", result)
+            log.info("IB order result for %s %s %s: %s", order_action, data.get("quantity", 1), ticker, result)
 
     # 3. Write execution result back to the row
     if exec_status:
