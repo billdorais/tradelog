@@ -23,11 +23,16 @@ DATABASE_URL  = os.environ.get("DATABASE_URL")
 # Broker initialisation — connect in background so app starts immediately
 # ---------------------------------------------------------------------------
 
-ib_broker = None
+ib_broker     = None
+_ib_sync_event = None   # set() to request a manual fill sync from the background thread
+_ib_sync_queue = None   # background thread puts result here after sync
 
 if os.environ.get("IB_HOST"):
+    import queue as _ib_queue_mod
     from brokers.ib_broker import IBBroker
-    ib_broker = IBBroker()
+    ib_broker      = IBBroker()
+    _ib_sync_event = threading.Event()
+    _ib_sync_queue = _ib_queue_mod.SimpleQueue()
 
     def _on_fill(_trade, fill):
         """Called by ib_async execDetailsEvent(trade, fill) — persists execution to DB."""
@@ -106,38 +111,39 @@ if os.environ.get("IB_HOST"):
             log.warning("Account snapshot (fill-triggered) failed: %s", e)
 
     def _sync_fills_on_connect():
-        """Persist any fills already in the current IB session after connecting."""
-        try:
-            for fill in ib_broker.executions_from_ib():
-                exec_id = fill["exec_id"]
-                pnl     = fill.get("pnl")
-                conn = get_db()
-                cur  = conn.cursor()
-                p    = placeholder()
-                cur.execute(
-                    f"INSERT INTO ib_executions "
-                    f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
-                    f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
-                    f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
-                    (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
-                     fill["side"], fill["shares"], fill["price"],
-                     fill["order_id"], fill["account"], fill["exchange"], pnl, pnl),
-                ) if DATABASE_URL else cur.execute(
-                    f"INSERT OR REPLACE INTO ib_executions "
-                    f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
-                    f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
-                    (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
-                     fill["side"], fill["shares"], fill["price"],
-                     fill["order_id"], fill["account"], fill["exchange"], pnl),
-                )
-                conn.commit()
-                conn.close()
-            log.info("IB fill sync complete")
-        except Exception as e:
-            log.warning("IB fill sync failed: %s", e)
+        """Persist any fills from IB via reqExecutions. Returns count saved."""
+        saved = 0
+        for fill in ib_broker.executions_from_ib():
+            exec_id = fill["exec_id"]
+            pnl     = fill.get("pnl")
+            conn = get_db()
+            cur  = conn.cursor()
+            p    = placeholder()
+            cur.execute(
+                f"INSERT INTO ib_executions "
+                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
+                f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
+                (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
+                 fill["side"], fill["shares"], fill["price"],
+                 fill["order_id"], fill["account"], fill["exchange"], pnl, pnl),
+            ) if DATABASE_URL else cur.execute(
+                f"INSERT OR REPLACE INTO ib_executions "
+                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
+                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
+                 fill["side"], fill["shares"], fill["price"],
+                 fill["order_id"], fill["account"], fill["exchange"], pnl),
+            )
+            conn.commit()
+            conn.close()
+            saved += 1
+        log.info("IB fill sync complete — %d fills", saved)
+        return saved
 
     def _connect_ib_background():
-        """Try to connect to IB Gateway, retrying every 30s on failure."""
+        """Try to connect to IB Gateway, retrying every 30s on failure.
+        Also handles manual sync requests signalled via _ib_sync_event."""
         time.sleep(3)  # let gunicorn finish forking before we open a socket
         while True:
             if not ib_broker.is_connected():
@@ -150,7 +156,15 @@ if os.environ.get("IB_HOST"):
                     log.warning("IB connect failed, retrying in 30s: %s", e)
                     time.sleep(30)
                     continue
-            time.sleep(10)  # check every 10s and reconnect if dropped
+
+            # Wait up to 10s, or wake immediately on a manual sync request
+            if _ib_sync_event.wait(timeout=10):
+                _ib_sync_event.clear()
+                try:
+                    saved = _sync_fills_on_connect()
+                    _ib_sync_queue.put({"synced": saved})
+                except Exception as e:
+                    _ib_sync_queue.put({"error": str(e)})
 
     threading.Thread(target=_connect_ib_background, daemon=True).start()
 
@@ -1177,41 +1191,20 @@ def backtest_step2_script():
 
 @app.route("/api/ib/sync", methods=["POST"])
 def ib_sync_fills():
-    """Manually trigger a fill sync from IB (reqExecutions for today)."""
+    """Manually trigger a fill sync — signals the background IB thread to run reqExecutions."""
     if not ib_broker:
         return jsonify({"error": "IB broker not initialised"}), 400
+    if not ib_broker.is_connected():
+        return jsonify({"error": "IB not connected"}), 400
+    # Signal the background thread (which owns the IB event loop) to run the sync
+    _ib_sync_event.set()
     try:
-        fills = ib_broker.executions()
-        saved = 0
-        for fill in fills:
-            exec_id = fill["exec_id"]
-            pnl     = fill.get("pnl")
-            conn = get_db()
-            cur  = conn.cursor()
-            p    = placeholder()
-            cur.execute(
-                f"INSERT INTO ib_executions "
-                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
-                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
-                f" ON CONFLICT (exec_id) DO UPDATE SET pnl={p}",
-                (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
-                 fill["side"], fill["shares"], fill["price"],
-                 fill["order_id"], fill["account"], fill["exchange"], pnl, pnl),
-            ) if DATABASE_URL else cur.execute(
-                f"INSERT OR REPLACE INTO ib_executions "
-                f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
-                f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
-                (exec_id, str(fill["time"]), fill["symbol"], fill["sec_type"],
-                 fill["side"], fill["shares"], fill["price"],
-                 fill["order_id"], fill["account"], fill["exchange"], pnl),
-            )
-            conn.commit()
-            conn.close()
-            saved += 1
-        return jsonify({"synced": saved})
-    except Exception as e:
-        log.error("Manual IB fill sync error: %s", e)
-        return jsonify({"error": str(e)}), 500
+        result = _ib_sync_queue.get(timeout=30)
+    except Exception:
+        return jsonify({"error": "Sync timed out — IB may be unresponsive"}), 500
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
 
 
 @app.route("/api/ib/trades")
