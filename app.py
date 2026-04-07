@@ -506,31 +506,116 @@ def backtest_lib():
     return render_template("bt.html")
 
 
+@app.route("/api/bt/strategies")
+def bt_strategies_list():
+    """Return available built-in strategies and their parameter schemas."""
+    from strategies.bt_strategies import STRATEGIES
+    return jsonify({name: params for name, (_, params) in STRATEGIES.items()})
+
+
+@app.route("/api/bt/convert", methods=["POST"])
+def bt_convert():
+    """Stream a Pine Script → backtesting.py Strategy class via Claude."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    body        = request.get_json(silent=True) or {}
+    pine_script = (body.get("pine_script") or "").strip()
+    if not pine_script:
+        return jsonify({"error": "No Pine Script provided"}), 400
+
+    system = (
+        "You are an expert in both TradingView Pine Script and the Python backtesting.py library.\n"
+        "Convert the given Pine Script strategy to a complete, runnable backtesting.py Strategy class.\n\n"
+        "STRICT RULES:\n"
+        "1. Output ONLY valid Python code — no markdown fences, no explanation text\n"
+        "2. Start with: from backtesting import Strategy\\nimport numpy as np\\nimport pandas as pd\n"
+        "3. Do NOT import ta-lib, pandas_ta, or any library not in the standard library / numpy / pandas\n"
+        "4. Implement ALL indicators manually using numpy/pandas rolling/ewm/etc.\n"
+        "5. All indicator arrays must be wrapped in self.I() inside init()\n"
+        "6. All tuneable parameters must be class-level attributes with sensible defaults\n"
+        "7. Entry: self.buy(...) / self.sell(...) with sl= and tp= where applicable\n"
+        "8. Exit: self.position.close()\n"
+        "9. Always guard against NaN at the start of next() before trading\n"
+        "10. The class name must end in 'Strategy'\n"
+        "11. If the Pine Script uses intraday sessions or repainting, simplify to daily bar logic\n"
+        "12. Include a short docstring describing the strategy"
+    )
+
+    def generate():
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=3000,
+                system=system,
+                messages=[{"role": "user", "content":
+                    f"Convert this Pine Script strategy to backtesting.py:\n\n{pine_script}"}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'msg': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.route("/api/bt/run", methods=["POST"])
 def bt_run():
     import tempfile, os as _os, math
     try:
         from backtesting import Backtest
-        from strategies.bt_camarilla import CamarillaBreakoutFailure
+        from strategies.bt_strategies import STRATEGIES
     except ImportError as e:
         return jsonify({"error": f"Missing dependency: {e}"}), 503
 
-    body       = request.get_json(silent=True) or {}
-    ticker     = (body.get("ticker") or "AAPL").strip().upper()
-    start_date = body.get("start_date", "2022-01-01")
-    end_date   = body.get("end_date",   "2024-12-31")
-    cash       = float(body.get("cash", 10000))
-    atr_period = int(body.get("atr_period", 14))
-    trail_mult = float(body.get("trail_mult", 1.5))
-    stop_mult  = float(body.get("stop_mult", 2.0))
+    body           = request.get_json(silent=True) or {}
+    ticker         = (body.get("ticker") or "AAPL").strip().upper()
+    start_date     = body.get("start_date", "2022-01-01")
+    end_date       = body.get("end_date",   "2024-12-31")
+    cash           = float(body.get("cash", 10000))
+    strategy_type  = body.get("strategy_type", "builtin")   # "builtin" | "converted"
+    strategy_name  = body.get("strategy_name", "camarilla")
+    strategy_code  = body.get("strategy_code", "")
+    strategy_params = body.get("params", {})
 
+    # ── Resolve strategy class ────────────────────────────────────────────────
+    strategy_cls = None
+    if strategy_type == "converted" and strategy_code:
+        try:
+            from backtesting import Strategy as _Strategy
+            import numpy as _np, pandas as _pd
+            ns = {"Strategy": _Strategy, "np": _np, "numpy": _np, "pd": _pd, "pandas": _pd}
+            exec(strategy_code, ns)
+            strategy_cls = next(
+                (v for v in ns.values()
+                 if isinstance(v, type) and issubclass(v, _Strategy) and v is not _Strategy),
+                None,
+            )
+            if strategy_cls is None:
+                return jsonify({"error": "No Strategy subclass found in converted code"}), 400
+        except Exception as e:
+            return jsonify({"error": f"Strategy code error: {e}"}), 400
+    else:
+        entry = STRATEGIES.get(strategy_name)
+        if not entry:
+            return jsonify({"error": f"Unknown strategy: {strategy_name}"}), 400
+        strategy_cls = entry[0]
+
+    # ── Fetch data ────────────────────────────────────────────────────────────
     try:
         import yfinance as yf
         raw = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
         if raw.empty:
             return jsonify({"error": f"No data returned for {ticker}"}), 400
-        # Flatten MultiIndex columns (yfinance ≥0.2.x)
-        if isinstance(raw.columns, type(raw.columns)) and hasattr(raw.columns, "levels"):
+        if hasattr(raw.columns, "levels"):
             raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
         df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
         if len(df) < 30:
@@ -538,18 +623,19 @@ def bt_run():
     except Exception as e:
         return jsonify({"error": f"Data fetch failed: {e}"}), 500
 
+    # ── Run backtest ──────────────────────────────────────────────────────────
     try:
-        bt = Backtest(
-            df, CamarillaBreakoutFailure,
-            cash=cash, commission=0.001, exclusive_orders=True,
-        )
-        stats = bt.run(
-            atr_period=atr_period,
-            trail_mult=trail_mult,
-            stop_mult=stop_mult,
-        )
+        bt    = Backtest(df, strategy_cls, cash=cash, commission=0.001, exclusive_orders=True)
+        # Cast params to correct types
+        typed_params = {}
+        for k, v in strategy_params.items():
+            try:
+                default = getattr(strategy_cls, k, v)
+                typed_params[k] = type(default)(v)
+            except Exception:
+                typed_params[k] = v
+        stats = bt.run(**typed_params)
 
-        # Serialise stats — drop non-scalar fields
         def _safe(v):
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 return None
@@ -560,17 +646,15 @@ def bt_run():
             except Exception:
                 pass
             try:
-                json.dumps(v)
-                return v
+                json.dumps(v); return v
             except Exception:
                 return str(v)
 
         stats_dict = {k: _safe(v) for k, v in stats.items()
                       if k not in ("_strategy", "_trades", "_equity_curve")}
 
-        # Trades table
-        trades_df = stats["_trades"] if "_trades" in stats else None
         trades_list = []
+        trades_df = stats.get("_trades")
         if trades_df is not None and not trades_df.empty:
             for _, row in trades_df.iterrows():
                 trades_list.append({
@@ -584,15 +668,12 @@ def bt_run():
                     "return_pct":  round(float(row.get("ReturnPct", 0)) * 100, 2),
                 })
 
-        # Equity curve
         eq_curve = []
         if "_equity_curve" in stats:
-            eq = stats["_equity_curve"]["Equity"]
+            eq   = stats["_equity_curve"]["Equity"]
             step = max(1, len(eq) // 500)
-            eq_curve = [{"t": str(t), "v": round(float(v), 2)}
-                        for t, v in eq.iloc[::step].items()]
+            eq_curve = [{"t": str(t), "v": round(float(v), 2)} for t, v in eq.iloc[::step].items()]
 
-        # Plot — save to temp file, read back, delete
         plot_html = ""
         try:
             with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
@@ -604,13 +685,8 @@ def bt_run():
         except Exception as pe:
             log.warning("bt plot failed: %s", pe)
 
-        return jsonify({
-            "stats":  stats_dict,
-            "trades": trades_list,
-            "equity": eq_curve,
-            "plot":   plot_html,
-            "ticker": ticker,
-        })
+        return jsonify({"stats": stats_dict, "trades": trades_list,
+                        "equity": eq_curve, "plot": plot_html, "ticker": ticker})
 
     except Exception as e:
         log.exception("bt_run error")

@@ -8,7 +8,7 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #13152a; color: #e0e0e0; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
 
-    /* ── Nav ── */
+    /* Nav */
     .nav { display: flex; align-items: center; justify-content: space-between;
            padding: 14px 28px; background: #1c1f2e; border-bottom: 1px solid #2a2d3e; }
     .nav-brand { font-size: 1.15rem; font-weight: 700; color: #fff; text-decoration: none; }
@@ -16,66 +16,108 @@
                    border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; margin-left: 4px; }
     .nav-links a:hover, .nav-links a.active { color: #fff; border-color: #4a90d9; }
 
-    /* ── Layout ── */
     .page { max-width: 1300px; margin: 0 auto; padding: 28px 24px; }
     h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 20px; }
 
-    /* ── Config form ── */
-    .config-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
-                   padding: 20px 24px; margin-bottom: 24px; }
-    .config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
-    .field label { display: block; font-size: 0.75rem; color: #888; margin-bottom: 5px; }
+    /* Mode tabs */
+    .mode-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .mode-tab { padding: 8px 20px; border-radius: 6px; border: 1px solid #2a2d3e;
+                background: transparent; color: #888; font-size: 0.9rem; font-family: inherit;
+                cursor: pointer; font-weight: 600; transition: all 0.15s; }
+    .mode-tab.active { background: #4a90d9; border-color: #4a90d9; color: #fff; }
+    .mode-tab:hover:not(.active) { border-color: #4a90d9; color: #ccc; }
+
+    /* Cards */
+    .card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
+            padding: 20px 24px; margin-bottom: 20px; }
+
+    /* Pine Script section */
+    .pine-label { font-size: 0.8rem; color: #888; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .pine-label span { background: rgba(74,144,217,0.15); color: #4a90d9; padding: 2px 8px;
+                       border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    textarea.pine-input { width: 100%; height: 220px; background: #13152a; border: 1px solid #2a2d3e;
+                          border-radius: 6px; color: #e0e0e0; padding: 12px; font-size: 0.82rem;
+                          font-family: 'Courier New', monospace; resize: vertical; line-height: 1.5; }
+    textarea.pine-input:focus { outline: none; border-color: #4a90d9; }
+    .convert-btn { margin-top: 12px; background: #6c5ce7; color: #fff; border: none; border-radius: 6px;
+                   padding: 9px 22px; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .convert-btn:hover { background: #5a4bd1; }
+    .convert-btn:disabled { background: #2a2d3e; color: #555; cursor: not-allowed; }
+
+    /* Generated code viewer */
+    .code-section { margin-top: 16px; }
+    .code-header { display: flex; align-items: center; justify-content: space-between;
+                   margin-bottom: 6px; }
+    .code-header-label { font-size: 0.8rem; color: #888; font-weight: 600; }
+    .code-actions { display: flex; gap: 6px; }
+    .code-action-btn { background: transparent; border: 1px solid #2a2d3e; color: #888; padding: 3px 10px;
+                       border-radius: 4px; font-size: 0.75rem; cursor: pointer; font-family: inherit; }
+    .code-action-btn:hover { border-color: #4a90d9; color: #ccc; }
+    textarea.code-view { width: 100%; height: 260px; background: #0d0f1e; border: 1px solid #2a2d3e;
+                         border-radius: 6px; color: #a8d8a8; padding: 12px; font-size: 0.8rem;
+                         font-family: 'Courier New', monospace; resize: vertical; line-height: 1.6; }
+    textarea.code-view:focus { outline: none; border-color: #4a90d9; }
+
+    /* Built-in strategy section */
+    .strategy-select-wrap { margin-bottom: 16px; }
+    .strategy-select-wrap label { font-size: 0.75rem; color: #888; display: block; margin-bottom: 5px; }
+    select.strategy-select { width: 280px; background: #13152a; border: 1px solid #2a2d3e; border-radius: 6px;
+                              color: #e0e0e0; padding: 8px 10px; font-size: 0.9rem; font-family: inherit; }
+    select.strategy-select:focus { outline: none; border-color: #4a90d9; }
+
+    /* Params grid */
+    .params-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    .field label { display: block; font-size: 0.73rem; color: #888; margin-bottom: 4px; }
     .field input { width: 100%; background: #13152a; border: 1px solid #2a2d3e; border-radius: 6px;
-                   color: #e0e0e0; padding: 8px 10px; font-size: 0.9rem; font-family: inherit; }
+                   color: #e0e0e0; padding: 7px 10px; font-size: 0.88rem; font-family: inherit; }
     .field input:focus { outline: none; border-color: #4a90d9; }
+
+    /* Common config row */
+    .config-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
+                  padding-top: 16px; border-top: 1px solid #2a2d3e; margin-top: 16px; }
+
+    /* Run button */
     .run-btn { margin-top: 18px; background: #4a90d9; color: #fff; border: none; border-radius: 6px;
                padding: 10px 28px; font-size: 0.95rem; font-weight: 600; cursor: pointer; font-family: inherit; }
     .run-btn:hover { background: #357abd; }
     .run-btn:disabled { background: #2a2d3e; color: #555; cursor: not-allowed; }
 
-    /* ── Stats grid ── */
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-                  gap: 12px; margin-bottom: 24px; }
-    .stat-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 8px; padding: 14px 16px; }
-    .stat-label { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
-    .stat-value { font-size: 1.1rem; font-weight: 700; }
-    .stat-value.pos { color: #26a65b; }
-    .stat-value.neg { color: #ef5350; }
-
-    /* ── Plot iframe ── */
-    .plot-wrap { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
-                 overflow: hidden; margin-bottom: 24px; }
-    .plot-wrap iframe { width: 100%; height: 600px; border: none; background: #fff; display: block; }
-
-    /* ── Trades table ── */
-    .trades-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
-                   overflow: hidden; margin-bottom: 24px; }
-    .trades-card h3 { padding: 14px 18px; font-size: 0.95rem; border-bottom: 1px solid #2a2d3e; }
-    .trades-scroll { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    th { padding: 10px 12px; text-align: left; color: #666; font-weight: 600;
-         font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
-         border-bottom: 1px solid #2a2d3e; white-space: nowrap; }
-    td { padding: 9px 12px; border-bottom: 1px solid #1a1d2e; white-space: nowrap; }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(255,255,255,0.02); }
-    .long-badge  { background: rgba(38,166,91,0.15); color: #26a65b; padding: 2px 8px;
-                   border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-    .short-badge { background: rgba(239,83,80,0.15);  color: #ef5350; padding: 2px 8px;
-                   border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-
-    /* ── Status ── */
-    .status { padding: 12px 16px; border-radius: 6px; font-size: 0.9rem; margin-bottom: 16px; display: none; }
-    .status.info    { background: rgba(74,144,217,0.15); color: #4a90d9; display: block; }
-    .status.error   { background: rgba(239,83,80,0.15);  color: #ef5350; display: block; }
-    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #4a90d9;
+    /* Status */
+    .status { padding: 11px 16px; border-radius: 6px; font-size: 0.88rem; margin-bottom: 16px; display: none; }
+    .status.info  { background: rgba(74,144,217,0.12); color: #4a90d9; border: 1px solid rgba(74,144,217,0.25); display: block; }
+    .status.error { background: rgba(239,83,80,0.12);  color: #ef5350; border: 1px solid rgba(239,83,80,0.25); display: block; }
+    .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid currentColor;
                border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite;
                vertical-align: middle; margin-right: 6px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ── Empty state ── */
-    .empty { text-align: center; padding: 60px 20px; color: #444; }
-    .empty svg { margin-bottom: 12px; opacity: 0.3; }
+    /* Stats grid */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+                  gap: 10px; margin-bottom: 20px; }
+    .stat-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 8px; padding: 13px 15px; }
+    .stat-lbl { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+    .stat-val { font-size: 1.05rem; font-weight: 700; }
+    .stat-val.pos { color: #26a65b; }
+    .stat-val.neg { color: #ef5350; }
+
+    /* Plot */
+    .plot-wrap { background: #fff; border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
+    .plot-wrap iframe { width: 100%; height: 600px; border: none; display: block; }
+
+    /* Trades table */
+    .trades-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
+    .trades-card h3 { padding: 13px 18px; font-size: 0.9rem; border-bottom: 1px solid #2a2d3e; }
+    .trades-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    th { padding: 9px 12px; text-align: left; color: #666; font-weight: 600; font-size: 0.72rem;
+         text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #2a2d3e; white-space: nowrap; }
+    td { padding: 8px 12px; border-bottom: 1px solid #1a1d2e; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .long-badge  { background: rgba(38,166,91,0.15); color: #26a65b; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    .short-badge { background: rgba(239,83,80,0.15); color: #ef5350; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+
+    .empty { text-align: center; padding: 50px 20px; color: #444; font-size: 0.9rem; }
   </style>
 </head>
 <body>
@@ -91,11 +133,55 @@
 </nav>
 
 <div class="page">
-  <h2>Camarilla Breakout Failure — Backtest</h2>
+  <h2>Backtest</h2>
 
-  <!-- Config -->
-  <div class="config-card">
-    <div class="config-grid">
+  <!-- Mode toggle -->
+  <div class="mode-tabs">
+    <button class="mode-tab active" onclick="setMode('pine')" id="tabPine">📄 Pine Script (AI)</button>
+    <button class="mode-tab" onclick="setMode('builtin')" id="tabBuiltin">📦 Built-in Strategies</button>
+  </div>
+
+  <!-- ── Pine Script mode ─────────────────────────────── -->
+  <div id="pineSection">
+    <div class="card">
+      <div class="pine-label">Paste your Pine Script <span>Claude will convert it to Python</span></div>
+      <textarea class="pine-input" id="pineScript" placeholder="//@version=5&#10;strategy(&quot;My Strategy&quot;, overlay=true)&#10;// Paste your full Pine Script here…"></textarea>
+      <button class="convert-btn" id="convertBtn" onclick="convertPine()">✦ Convert with AI</button>
+
+      <div class="code-section" id="codeSection" style="display:none">
+        <div class="code-header">
+          <div class="code-header-label">Generated Python Strategy <span style="color:#26a65b;font-size:0.75rem" id="codeStatus"></span></div>
+          <div class="code-actions">
+            <button class="code-action-btn" onclick="copyCode()">Copy</button>
+            <button class="code-action-btn" onclick="clearCode()">Clear</button>
+          </div>
+        </div>
+        <textarea class="code-view" id="generatedCode" spellcheck="false"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Built-in mode ────────────────────────────────── -->
+  <div id="builtinSection" style="display:none">
+    <div class="card">
+      <div class="strategy-select-wrap">
+        <label>Strategy</label>
+        <select class="strategy-select" id="strategySelect" onchange="loadStrategyParams()">
+          <option value="camarilla">Camarilla H4/L4 Breakout Failure</option>
+          <option value="sma_cross">SMA Crossover (Golden/Death Cross)</option>
+          <option value="ema_cross">EMA Crossover</option>
+          <option value="rsi">RSI Mean Reversion</option>
+          <option value="bollinger">Bollinger Band Breakout</option>
+          <option value="macd">MACD Crossover</option>
+        </select>
+      </div>
+      <div class="params-grid" id="paramsGrid"></div>
+    </div>
+  </div>
+
+  <!-- ── Common config (both modes) ───────────────────── -->
+  <div class="card">
+    <div class="config-row">
       <div class="field">
         <label>Ticker</label>
         <input type="text" id="ticker" value="MSFT" placeholder="e.g. AAPL">
@@ -112,181 +198,276 @@
         <label>Starting Cash ($)</label>
         <input type="number" id="cash" value="10000" min="1000" step="1000">
       </div>
-      <div class="field">
-        <label>ATR Period</label>
-        <input type="number" id="atrPeriod" value="14" min="5" max="50">
-      </div>
-      <div class="field">
-        <label>Trail Multiplier</label>
-        <input type="number" id="trailMult" value="1.5" min="0.5" max="5" step="0.1">
-      </div>
-      <div class="field">
-        <label>Stop Multiplier</label>
-        <input type="number" id="stopMult" value="2.0" min="0.5" max="10" step="0.1">
-      </div>
     </div>
     <button class="run-btn" id="runBtn" onclick="runBacktest()">▶ Run Backtest</button>
   </div>
 
   <div class="status" id="status"></div>
 
-  <!-- Stats -->
-  <div id="statsSection" style="display:none">
+  <!-- Results -->
+  <div id="results" style="display:none">
     <div class="stats-grid" id="statsGrid"></div>
-
-    <!-- Plot -->
     <div class="plot-wrap" id="plotWrap" style="display:none">
       <iframe id="plotFrame" title="Backtest chart"></iframe>
     </div>
-
-    <!-- Trades -->
     <div class="trades-card" id="tradesCard" style="display:none">
       <h3 id="tradesTitle">Trades</h3>
       <div class="trades-scroll">
         <table>
-          <thead>
-            <tr>
-              <th>Direction</th>
-              <th>Entry Time</th>
-              <th>Exit Time</th>
-              <th>Entry Price</th>
-              <th>Exit Price</th>
-              <th>Size</th>
-              <th>P&amp;L</th>
-              <th>Return %</th>
-            </tr>
-          </thead>
+          <thead><tr>
+            <th>Direction</th><th>Entry</th><th>Exit</th>
+            <th>Entry $</th><th>Exit $</th><th>Size</th><th>P&amp;L</th><th>Return %</th>
+          </tr></thead>
           <tbody id="tradesBody"></tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <div class="empty" id="emptyState">
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-    </svg>
-    <p>Configure parameters above and click Run Backtest</p>
-  </div>
+  <div class="empty" id="emptyState">Configure a strategy above and click Run Backtest</div>
 </div>
 
 <script>
-  const KEY_STATS = [
-    { key: "Return [%]",          label: "Total Return",    fmt: v => v?.toFixed(2) + "%" },
-    { key: "Max. Drawdown [%]",   label: "Max Drawdown",    fmt: v => v?.toFixed(2) + "%" },
-    { key: "Win Rate [%]",        label: "Win Rate",        fmt: v => v?.toFixed(1) + "%" },
-    { key: "# Trades",            label: "Trades",          fmt: v => v },
-    { key: "Profit Factor",       label: "Profit Factor",   fmt: v => v?.toFixed(2) },
-    { key: "Sharpe Ratio",        label: "Sharpe Ratio",    fmt: v => v?.toFixed(2) },
-    { key: "Calmar Ratio",        label: "Calmar Ratio",    fmt: v => v?.toFixed(2) },
-    { key: "Avg. Trade [%]",      label: "Avg Trade",       fmt: v => v?.toFixed(2) + "%" },
-    { key: "Best Trade [%]",      label: "Best Trade",      fmt: v => v?.toFixed(2) + "%" },
-    { key: "Worst Trade [%]",     label: "Worst Trade",     fmt: v => v?.toFixed(2) + "%" },
-    { key: "Exposure Time [%]",   label: "Exposure",        fmt: v => v?.toFixed(1) + "%" },
-    { key: "Equity Final [$]",    label: "Final Equity",    fmt: v => "$" + v?.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) },
-  ];
+  let currentMode    = 'pine';
+  let strategyParams = {};   // name → [{id, label, type, default, ...}]
+  let generatedCode  = '';
 
-  async function runBacktest() {
-    const btn = document.getElementById("runBtn");
-    const statusEl = document.getElementById("status");
+  // ── Mode toggle ──────────────────────────────────────────────────────────
+  function setMode(mode) {
+    currentMode = mode;
+    document.getElementById('pineSection').style.display    = mode === 'pine'    ? '' : 'none';
+    document.getElementById('builtinSection').style.display = mode === 'builtin' ? '' : 'none';
+    document.getElementById('tabPine').classList.toggle('active',    mode === 'pine');
+    document.getElementById('tabBuiltin').classList.toggle('active', mode === 'builtin');
+  }
+
+  // ── Load built-in strategy params from API ───────────────────────────────
+  async function loadStrategyParams() {
+    if (Object.keys(strategyParams).length === 0) {
+      const res  = await fetch('/api/bt/strategies');
+      strategyParams = await res.json();
+    }
+    renderParams(document.getElementById('strategySelect').value);
+  }
+
+  function renderParams(name) {
+    const params = strategyParams[name] || [];
+    const grid   = document.getElementById('paramsGrid');
+    grid.innerHTML = params.map(p => `
+      <div class="field">
+        <label>${p.label}</label>
+        <input type="number" id="param_${p.id}" value="${p.default}"
+               min="${p.min}" max="${p.max}" step="${p.step}">
+      </div>`).join('');
+  }
+
+  // ── Pine Script → AI conversion ──────────────────────────────────────────
+  async function convertPine() {
+    const pine = document.getElementById('pineScript').value.trim();
+    if (!pine) { alert('Paste a Pine Script first.'); return; }
+
+    const btn    = document.getElementById('convertBtn');
+    const section = document.getElementById('codeSection');
+    const codeEl  = document.getElementById('generatedCode');
+    const statusEl = document.getElementById('codeStatus');
+
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Running…';
-    statusEl.className = "status info";
-    statusEl.innerHTML = '<span class="spinner"></span> Fetching data and running backtest…';
-    document.getElementById("statsSection").style.display = "none";
-    document.getElementById("emptyState").style.display  = "none";
+    btn.textContent = '✦ Converting…';
+    section.style.display = '';
+    codeEl.value = '';
+    statusEl.textContent = '⏳ Claude is writing…';
+    generatedCode = '';
 
     try {
-      const res  = await fetch("/api/bt/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ticker:     document.getElementById("ticker").value.trim().toUpperCase(),
-          start_date: document.getElementById("startDate").value,
-          end_date:   document.getElementById("endDate").value,
-          cash:       parseFloat(document.getElementById("cash").value),
-          atr_period: parseInt(document.getElementById("atrPeriod").value),
-          trail_mult: parseFloat(document.getElementById("trailMult").value),
-          stop_mult:  parseFloat(document.getElementById("stopMult").value),
-        }),
+      const res = await fetch('/api/bt/convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pine_script: pine }),
+      });
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const msg = JSON.parse(line.slice(6));
+          if (msg.type === 'chunk') {
+            generatedCode += msg.text;
+            codeEl.value   = generatedCode;
+            codeEl.scrollTop = codeEl.scrollHeight;
+          } else if (msg.type === 'done') {
+            statusEl.textContent = '✓ Ready — review and run';
+            statusEl.style.color = '#26a65b';
+          } else if (msg.type === 'error') {
+            statusEl.textContent = '✗ ' + msg.msg;
+            statusEl.style.color = '#ef5350';
+          }
+        }
+      }
+    } catch (e) {
+      statusEl.textContent = '✗ ' + e;
+      statusEl.style.color = '#ef5350';
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = '✦ Convert with AI';
+    }
+  }
+
+  function copyCode() {
+    navigator.clipboard.writeText(document.getElementById('generatedCode').value);
+  }
+  function clearCode() {
+    generatedCode = '';
+    document.getElementById('generatedCode').value = '';
+    document.getElementById('codeSection').style.display = 'none';
+  }
+
+  // ── Run backtest ─────────────────────────────────────────────────────────
+  async function runBacktest() {
+    const btn      = document.getElementById('runBtn');
+    const statusEl = document.getElementById('status');
+
+    // Build payload
+    let payload = {
+      ticker:     document.getElementById('ticker').value.trim().toUpperCase(),
+      start_date: document.getElementById('startDate').value,
+      end_date:   document.getElementById('endDate').value,
+      cash:       parseFloat(document.getElementById('cash').value),
+    };
+
+    if (currentMode === 'pine') {
+      const code = document.getElementById('generatedCode').value.trim();
+      if (!code) { alert('Convert a Pine Script first, then click Run.'); return; }
+      payload.strategy_type = 'converted';
+      payload.strategy_code = code;
+    } else {
+      const name   = document.getElementById('strategySelect').value;
+      const params = strategyParams[name] || [];
+      const p      = {};
+      for (const param of params) {
+        const el = document.getElementById(`param_${param.id}`);
+        if (el) p[param.id] = parseFloat(el.value);
+      }
+      payload.strategy_type = 'builtin';
+      payload.strategy_name = name;
+      payload.params        = p;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Running…';
+    statusEl.className   = 'status info';
+    statusEl.innerHTML   = '<span class="spinner"></span> Fetching data and running backtest…';
+    document.getElementById('results').style.display    = 'none';
+    document.getElementById('emptyState').style.display = 'none';
+
+    try {
+      const res  = await fetch('/api/bt/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
 
       if (data.error) {
-        statusEl.className = "status error";
-        statusEl.textContent = "Error: " + data.error;
-        document.getElementById("emptyState").style.display = "block";
+        statusEl.className   = 'status error';
+        statusEl.textContent = 'Error: ' + data.error;
+        document.getElementById('emptyState').style.display = 'block';
         return;
       }
 
-      statusEl.style.display = "none";
-      renderStats(data.stats, data.ticker);
+      statusEl.style.display = 'none';
+      renderStats(data.stats);
       renderPlot(data.plot);
       renderTrades(data.trades, data.ticker);
-      document.getElementById("statsSection").style.display = "block";
+      document.getElementById('results').style.display = 'block';
 
     } catch (e) {
-      statusEl.className = "status error";
-      statusEl.textContent = "Request failed: " + e;
-      document.getElementById("emptyState").style.display = "block";
+      statusEl.className   = 'status error';
+      statusEl.textContent = 'Request failed: ' + e;
+      document.getElementById('emptyState').style.display = 'block';
     } finally {
-      btn.disabled = false;
-      btn.textContent = "▶ Run Backtest";
+      btn.disabled    = false;
+      btn.textContent = '▶ Run Backtest';
     }
   }
 
-  function renderStats(stats, ticker) {
-    const grid = document.getElementById("statsGrid");
-    grid.innerHTML = "";
-    for (const { key, label, fmt } of KEY_STATS) {
+  // ── Render helpers ────────────────────────────────────────────────────────
+  const KEY_STATS = [
+    { key: "Return [%]",         label: "Total Return",  fmt: v => fmtPct(v) },
+    { key: "Max. Drawdown [%]",  label: "Max Drawdown",  fmt: v => fmtPct(v), neg: true },
+    { key: "Win Rate [%]",       label: "Win Rate",      fmt: v => fmtPct(v) },
+    { key: "# Trades",           label: "Trades",        fmt: v => v },
+    { key: "Profit Factor",      label: "Profit Factor", fmt: v => v?.toFixed(2) },
+    { key: "Sharpe Ratio",       label: "Sharpe Ratio",  fmt: v => v?.toFixed(2) },
+    { key: "Calmar Ratio",       label: "Calmar Ratio",  fmt: v => v?.toFixed(2) },
+    { key: "Avg. Trade [%]",     label: "Avg Trade",     fmt: v => fmtPct(v) },
+    { key: "Best Trade [%]",     label: "Best Trade",    fmt: v => fmtPct(v) },
+    { key: "Worst Trade [%]",    label: "Worst Trade",   fmt: v => fmtPct(v), neg: true },
+    { key: "Exposure Time [%]",  label: "Exposure",      fmt: v => fmtPct(v) },
+    { key: "Equity Final [$]",   label: "Final Equity",  fmt: v => '$' + v?.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) },
+  ];
+
+  function fmtPct(v) { return v != null ? v.toFixed(2) + '%' : '—'; }
+
+  function renderStats(stats) {
+    const grid = document.getElementById('statsGrid');
+    grid.innerHTML = '';
+    for (const { key, label, fmt, neg } of KEY_STATS) {
       const val = stats[key];
       if (val == null) continue;
-      const formatted = fmt(val);
-      const isNeg = typeof val === "number" && val < 0;
-      const isPos = typeof val === "number" && val > 0 &&
-                    (key.includes("Return") || key.includes("Win") || key.includes("Profit") ||
-                     key.includes("Sharpe") || key.includes("Best") || key.includes("Calmar"));
-      grid.innerHTML += `
-        <div class="stat-card">
-          <div class="stat-label">${label}</div>
-          <div class="stat-value ${isNeg ? "neg" : isPos ? "pos" : ""}">${formatted ?? "—"}</div>
-        </div>`;
+      const isNeg = neg ? true  : (typeof val === 'number' && val < 0);
+      const isPos = neg ? false : (typeof val === 'number' && val > 0 &&
+        (key.includes('Return') || key.includes('Win') || key.includes('Factor') ||
+         key.includes('Sharpe') || key.includes('Calmar') || key.includes('Best')));
+      grid.innerHTML += `<div class="stat-card">
+        <div class="stat-lbl">${label}</div>
+        <div class="stat-val ${isNeg ? 'neg' : isPos ? 'pos' : ''}">${fmt(val) ?? '—'}</div>
+      </div>`;
     }
   }
 
-  function renderPlot(plotHtml) {
-    const wrap  = document.getElementById("plotWrap");
-    const frame = document.getElementById("plotFrame");
-    if (!plotHtml) { wrap.style.display = "none"; return; }
-    frame.srcdoc = plotHtml;
-    wrap.style.display = "block";
+  function renderPlot(html) {
+    const wrap  = document.getElementById('plotWrap');
+    const frame = document.getElementById('plotFrame');
+    if (!html) { wrap.style.display = 'none'; return; }
+    frame.srcdoc       = html;
+    wrap.style.display = 'block';
   }
 
   function renderTrades(trades, ticker) {
-    const card = document.getElementById("tradesCard");
-    const body = document.getElementById("tradesBody");
-    if (!trades || trades.length === 0) { card.style.display = "none"; return; }
-    document.getElementById("tradesTitle").textContent =
-      `${trades.length} Trade${trades.length !== 1 ? "s" : ""} — ${ticker}`;
-    body.innerHTML = trades.map(t => {
-      const pnlColor = t.pnl > 0 ? "#26a65b" : t.pnl < 0 ? "#ef5350" : "#888";
-      const pnlSign  = t.pnl > 0 ? "+" : "";
-      const badge    = t.direction === "Long"
+    const card = document.getElementById('tradesCard');
+    if (!trades?.length) { card.style.display = 'none'; return; }
+    document.getElementById('tradesTitle').textContent =
+      `${trades.length} Trade${trades.length !== 1 ? 's' : ''} — ${ticker}`;
+    document.getElementById('tradesBody').innerHTML = trades.map(t => {
+      const c    = t.pnl > 0 ? '#26a65b' : t.pnl < 0 ? '#ef5350' : '#888';
+      const sign = t.pnl > 0 ? '+' : '';
+      const badge = t.direction === 'Long'
         ? '<span class="long-badge">Long</span>'
         : '<span class="short-badge">Short</span>';
       return `<tr>
         <td>${badge}</td>
-        <td>${t.entry_time.slice(0, 10)}</td>
-        <td>${t.exit_time.slice(0, 10)}</td>
+        <td>${t.entry_time.slice(0,10)}</td>
+        <td>${t.exit_time.slice(0,10)}</td>
         <td>$${t.entry_price.toFixed(2)}</td>
         <td>$${t.exit_price.toFixed(2)}</td>
         <td>${t.size}</td>
-        <td style="color:${pnlColor};font-weight:600">${pnlSign}$${Math.abs(t.pnl).toFixed(2)}</td>
-        <td style="color:${pnlColor}">${t.return_pct > 0 ? "+" : ""}${t.return_pct.toFixed(2)}%</td>
+        <td style="color:${c};font-weight:600">${sign}$${Math.abs(t.pnl).toFixed(2)}</td>
+        <td style="color:${c}">${t.return_pct > 0 ? '+' : ''}${t.return_pct.toFixed(2)}%</td>
       </tr>`;
-    }).join("");
-    card.style.display = "block";
+    }).join('');
+    card.style.display = 'block';
   }
+
+  // Init — load built-in params on page load
+  loadStrategyParams();
 </script>
 </body>
 </html>
