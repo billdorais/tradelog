@@ -14,8 +14,9 @@ _IB_CLIENT_ID_BASE = int(os.environ.get("IB_CLIENT_ID", 0))
 
 class IBBroker:
     def __init__(self):
-        self._ib   = IB()
-        self._lock = threading.Lock()
+        self._ib         = IB()
+        self._lock       = threading.Lock()
+        self._last_error = None  # last connection error, surfaced via status()
 
     # ------------------------------------------------------------------
     # Connection
@@ -26,9 +27,14 @@ class IBBroker:
         # Pick a unique client ID each attempt to avoid "already in use" errors
         # across gunicorn workers and restarts. Use env override if set, else random.
         client_id = _IB_CLIENT_ID_BASE if _IB_CLIENT_ID_BASE else random.randint(10, 999)
-        log.info("IB connecting with clientId %s", client_id)
-        self._ib.connect(IB_HOST, IB_PORT, clientId=client_id, timeout=15, readonly=False)
-        log.info("IB connected — accounts: %s", self._ib.managedAccounts())
+        log.info("IB connecting to %s:%s with clientId %s", IB_HOST, IB_PORT, client_id)
+        try:
+            self._ib.connect(IB_HOST, IB_PORT, clientId=client_id, timeout=15, readonly=False)
+            self._last_error = None
+            log.info("IB connected — accounts: %s", self._ib.managedAccounts())
+        except Exception as e:
+            self._last_error = str(e)
+            raise
 
     def disconnect(self):
         self._ib.disconnect()
@@ -56,7 +62,9 @@ class IBBroker:
 
     def status(self):
         if not self._ib.isConnected():
-            return {"connected": False, "broker": "IB"}
+            return {"connected": False, "broker": "IB",
+                    "last_error": self._last_error,
+                    "host": IB_HOST, "port": IB_PORT}
         return {
             "connected": True,
             "broker":    "IB",

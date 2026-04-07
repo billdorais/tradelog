@@ -1195,7 +1195,9 @@ def ib_sync_fills():
     if not ib_broker:
         return jsonify({"error": "IB broker not initialised"}), 400
     if not ib_broker.is_connected():
-        return jsonify({"error": "IB not connected"}), 400
+        st = ib_broker.status()
+        detail = st.get("last_error") or f"Cannot reach IB Gateway at {st.get('host')}:{st.get('port')}"
+        return jsonify({"error": f"IB not connected — {detail}"}), 400
     # Signal the background thread (which owns the IB event loop) to run the sync
     _ib_sync_event.set()
     try:
