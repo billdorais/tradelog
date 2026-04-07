@@ -22,14 +22,7 @@ class IBBroker:
     # ------------------------------------------------------------------
 
     def connect(self):
-        # ib_insync uses asyncio internally — ensure the calling thread has an event loop
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                raise RuntimeError("closed")
-        except RuntimeError:
-            asyncio.set_event_loop(asyncio.new_event_loop())
-
+        self._ensure_event_loop()
         # Pick a unique client ID each attempt to avoid "already in use" errors
         # across gunicorn workers and restarts. Use env override if set, else random.
         client_id = _IB_CLIENT_ID_BASE if _IB_CLIENT_ID_BASE else random.randint(10, 999)
@@ -43,7 +36,17 @@ class IBBroker:
     def is_connected(self):
         return self._ib.isConnected()
 
+    def _ensure_event_loop(self):
+        """Ensure the calling thread has an asyncio event loop (ib_async requires one)."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("closed")
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
     def _ensure_connected(self):
+        self._ensure_event_loop()
         if not self._ib.isConnected():
             self.connect()
 
