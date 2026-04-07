@@ -7,6 +7,11 @@ RUN grep -q "^AcceptIncomingConnectionAction=" /home/ibgateway/ibc/config.ini \
     && sed -i 's/^AcceptIncomingConnectionAction=.*/AcceptIncomingConnectionAction=accept/' /home/ibgateway/ibc/config.ini \
     || echo "AcceptIncomingConnectionAction=accept" >> /home/ibgateway/ibc/config.ini
 
+# Disable Read-Only API mode in IBC config
+RUN grep -q "^ReadOnlyApi=" /home/ibgateway/ibc/config.ini \
+    && sed -i 's/^ReadOnlyApi=.*/ReadOnlyApi=no/' /home/ibgateway/ibc/config.ini \
+    || echo "ReadOnlyApi=no" >> /home/ibgateway/ibc/config.ini
+
 # Patch IBC config.ini so it writes TrustedIPs=* into jts.ini instead of 127.0.0.1
 RUN grep -q "^TrustedTwsApiClientIPs=" /home/ibgateway/ibc/config.ini \
     && sed -i 's/^TrustedTwsApiClientIPs=.*/TrustedTwsApiClientIPs=*/' /home/ibgateway/ibc/config.ini \
