@@ -12,9 +12,9 @@ RUN grep -q "^TrustedTwsApiClientIPs=" /home/ibgateway/ibc/config.ini \
     && sed -i 's/^TrustedTwsApiClientIPs=.*/TrustedTwsApiClientIPs=*/' /home/ibgateway/ibc/config.ini \
     || echo "TrustedTwsApiClientIPs=*" >> /home/ibgateway/ibc/config.ini
 
-# Pre-write jts.ini with TrustedIPs=* as belt-and-suspenders
+# Pre-write jts.ini with TrustedIPs=* and read-write API enabled
 RUN mkdir -p /home/ibgateway/Jts && \
-    printf '[Logon]\nLocale=en\nUseSSL=true\n\n[IBGateway]\nApiOnly=true\nTrustedIPs=*\n' \
+    printf '[Logon]\nLocale=en\nUseSSL=true\n\n[IBGateway]\nApiOnly=true\nTrustedIPs=*\nReadOnlyApi=false\n' \
     > /home/ibgateway/Jts/jts.ini
 
 USER ibgateway
