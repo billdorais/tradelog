@@ -9,7 +9,6 @@ log = logging.getLogger(__name__)
 
 IB_HOST = os.environ.get("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.environ.get("IB_PORT", 4002))
-_IB_CLIENT_ID_BASE = int(os.environ.get("IB_CLIENT_ID", 0))
 
 
 class IBBroker:
@@ -26,7 +25,7 @@ class IBBroker:
         self._ensure_event_loop()
         # Pick a unique client ID each attempt to avoid "already in use" errors
         # across gunicorn workers and restarts. Use env override if set, else random.
-        client_id = _IB_CLIENT_ID_BASE if _IB_CLIENT_ID_BASE else random.randint(10, 999)
+        client_id = random.randint(10, 999)
         log.info("IB connecting to %s:%s with clientId %s", IB_HOST, IB_PORT, client_id)
         try:
             self._ib.connect(IB_HOST, IB_PORT, clientId=client_id, timeout=15, readonly=False)
