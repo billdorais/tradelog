@@ -178,14 +178,14 @@
     .ring-wrap canvas { width: 100% !important; height: 100% !important; }
 
     /* Avg win/loss bar */
-    .winloss-bar-wrap { width: 110px; }
+    .winloss-bar-wrap { width: 120px; }
 
     .winloss-bar {
       height: 6px;
       border-radius: 3px;
       display: flex;
       overflow: hidden;
-      margin-bottom: 5px;
+      margin-bottom: 6px;
     }
 
     .winloss-bar .win-seg  { background: #26a65b; }
@@ -193,7 +193,8 @@
 
     .winloss-labels {
       display: flex;
-      justify-content: space-between;
+      flex-direction: column;
+      gap: 2px;
       font-size: 0.72rem;
     }
 
