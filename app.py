@@ -467,6 +467,30 @@ def broker_reconnect():
         return jsonify({"connected": False, "error": str(e)}), 500
 
 
+@app.route("/api/broker/orders")
+def broker_orders():
+    """Return live open orders and recent fills directly from IB (no DB)."""
+    if ib_broker is None:
+        return jsonify({"error": "IB_HOST not configured"}), 400
+    try:
+        orders = []
+        for t in ib_broker._ib.openTrades():
+            orders.append({
+                "order_id": t.order.orderId,
+                "symbol":   t.contract.symbol,
+                "action":   t.order.action,
+                "qty":      t.order.totalQuantity,
+                "type":     t.order.orderType,
+                "status":   t.orderStatus.status,
+                "filled":   t.orderStatus.filled,
+                "avg_fill": t.orderStatus.avgFillPrice,
+            })
+        fills = ib_broker.executions()
+        return jsonify({"open_orders": orders, "session_fills": fills})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/broker/close-all", methods=["POST"])
 def broker_close_all():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
