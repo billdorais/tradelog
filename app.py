@@ -144,7 +144,7 @@ if os.environ.get("IB_HOST"):
     def _connect_ib_background():
         """Try to connect to IB Gateway, retrying every 30s on failure.
         Also handles manual sync requests signalled via _ib_sync_event."""
-        time.sleep(3)  # let gunicorn finish forking before we open a socket
+        time.sleep(10)  # give IB Gateway time to be ready before first connect attempt
         while True:
             if not ib_broker.is_connected():
                 try:
