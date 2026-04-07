@@ -97,31 +97,58 @@ class IBBroker:
 
     def executions(self):
         """
-        Return list of filled executions from IB.
-        Uses reqExecutions() to actively request today's fills from IB
-        (unlike fills() which only returns what was seen in the current session).
+        Return fills already fetched in this IB session.
+        Uses self._ib.fills() (cached, no network call) so it is safe to call
+        from any thread, including Flask request threads.
+        Prior-session fills are synced via reqExecutions() on startup in the
+        background connection thread.
+        """
+        result = []
+        for f in self._ib.fills():
+            result.append({
+                "exec_id":  f.execution.execId,
+                "time":     f.execution.time,
+                "symbol":   f.contract.symbol,
+                "sec_type": f.contract.secType,
+                "side":     f.execution.side,
+                "shares":   f.execution.shares,
+                "price":    f.execution.price,
+                "order_id": f.execution.orderId,
+                "account":  f.execution.acctNumber,
+                "exchange": f.execution.exchange,
+                "pnl":      round(f.commissionReport.realizedPNL, 2)
+                            if f.commissionReport
+                               and f.commissionReport.realizedPNL == f.commissionReport.realizedPNL
+                            else None,
+            })
+        return result
+
+    def executions_from_ib(self):
+        """
+        Actively request today's fills from IB via reqExecutions().
+        Must be called from the thread that owns the IB event loop (background thread).
         """
         from ib_async import ExecutionFilter
         with self._lock:
             self._ensure_connected()
-            # reqExecutions with an empty filter returns all today's executions
             fills = self._ib.reqExecutions(ExecutionFilter())
             result = []
             for f in fills:
                 result.append({
-                    "exec_id":   f.execution.execId,
-                    "time":      f.execution.time,
-                    "symbol":    f.contract.symbol,
-                    "sec_type":  f.contract.secType,
-                    "side":      f.execution.side,       # BOT / SLD
-                    "shares":    f.execution.shares,
-                    "price":     f.execution.price,
-                    "order_id":  f.execution.orderId,
-                    "account":   f.execution.acctNumber,
-                    "exchange":  f.execution.exchange,
-                    "pnl":       round(f.commissionReport.realizedPNL, 2)
-                                 if f.commissionReport and f.commissionReport.realizedPNL == f.commissionReport.realizedPNL
-                                 else None,
+                    "exec_id":  f.execution.execId,
+                    "time":     f.execution.time,
+                    "symbol":   f.contract.symbol,
+                    "sec_type": f.contract.secType,
+                    "side":     f.execution.side,
+                    "shares":   f.execution.shares,
+                    "price":    f.execution.price,
+                    "order_id": f.execution.orderId,
+                    "account":  f.execution.acctNumber,
+                    "exchange": f.execution.exchange,
+                    "pnl":      round(f.commissionReport.realizedPNL, 2)
+                                if f.commissionReport
+                                   and f.commissionReport.realizedPNL == f.commissionReport.realizedPNL
+                                else None,
                 })
             return result
 

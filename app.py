@@ -108,7 +108,7 @@ if os.environ.get("IB_HOST"):
     def _sync_fills_on_connect():
         """Persist any fills already in the current IB session after connecting."""
         try:
-            for fill in ib_broker.executions():
+            for fill in ib_broker.executions_from_ib():
                 exec_id = fill["exec_id"]
                 pnl     = fill.get("pnl")
                 conn = get_db()
