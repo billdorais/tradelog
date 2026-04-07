@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Backtest — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #13152a; color: #e0e0e0; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
+
+    /* ── Nav ── */
+    .nav { display: flex; align-items: center; justify-content: space-between;
+           padding: 14px 28px; background: #1c1f2e; border-bottom: 1px solid #2a2d3e; }
+    .nav-brand { font-size: 1.15rem; font-weight: 700; color: #fff; text-decoration: none; }
+    .nav-links a { color: #888; text-decoration: none; font-size: 0.9rem;
+                   border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; margin-left: 4px; }
+    .nav-links a:hover, .nav-links a.active { color: #fff; border-color: #4a90d9; }
+
+    /* ── Layout ── */
+    .page { max-width: 1300px; margin: 0 auto; padding: 28px 24px; }
+    h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 20px; }
+
+    /* ── Config form ── */
+    .config-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
+                   padding: 20px 24px; margin-bottom: 24px; }
+    .config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+    .field label { display: block; font-size: 0.75rem; color: #888; margin-bottom: 5px; }
+    .field input { width: 100%; background: #13152a; border: 1px solid #2a2d3e; border-radius: 6px;
+                   color: #e0e0e0; padding: 8px 10px; font-size: 0.9rem; font-family: inherit; }
+    .field input:focus { outline: none; border-color: #4a90d9; }
+    .run-btn { margin-top: 18px; background: #4a90d9; color: #fff; border: none; border-radius: 6px;
+               padding: 10px 28px; font-size: 0.95rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .run-btn:hover { background: #357abd; }
+    .run-btn:disabled { background: #2a2d3e; color: #555; cursor: not-allowed; }
+
+    /* ── Stats grid ── */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+                  gap: 12px; margin-bottom: 24px; }
+    .stat-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 8px; padding: 14px 16px; }
+    .stat-label { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+    .stat-value { font-size: 1.1rem; font-weight: 700; }
+    .stat-value.pos { color: #26a65b; }
+    .stat-value.neg { color: #ef5350; }
+
+    /* ── Plot iframe ── */
+    .plot-wrap { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
+                 overflow: hidden; margin-bottom: 24px; }
+    .plot-wrap iframe { width: 100%; height: 600px; border: none; background: #fff; display: block; }
+
+    /* ── Trades table ── */
+    .trades-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
+                   overflow: hidden; margin-bottom: 24px; }
+    .trades-card h3 { padding: 14px 18px; font-size: 0.95rem; border-bottom: 1px solid #2a2d3e; }
+    .trades-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { padding: 10px 12px; text-align: left; color: #666; font-weight: 600;
+         font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
+         border-bottom: 1px solid #2a2d3e; white-space: nowrap; }
+    td { padding: 9px 12px; border-bottom: 1px solid #1a1d2e; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .long-badge  { background: rgba(38,166,91,0.15); color: #26a65b; padding: 2px 8px;
+                   border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .short-badge { background: rgba(239,83,80,0.15);  color: #ef5350; padding: 2px 8px;
+                   border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+
+    /* ── Status ── */
+    .status { padding: 12px 16px; border-radius: 6px; font-size: 0.9rem; margin-bottom: 16px; display: none; }
+    .status.info    { background: rgba(74,144,217,0.15); color: #4a90d9; display: block; }
+    .status.error   { background: rgba(239,83,80,0.15);  color: #ef5350; display: block; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #4a90d9;
+               border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite;
+               vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 60px 20px; color: #444; }
+    .empty svg { margin-bottom: 12px; opacity: 0.3; }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="nav-brand" href="/">Kairos Automata</a>
+  <div class="nav-links">
+    <a href="/strategies">Strategies</a>
+    <a href="/backtester">Agent Backtester</a>
+    <a href="/backtest-lib" class="active">Backtest</a>
+    <a href="/about">About</a>
+  </div>
+</nav>
+
+<div class="page">
+  <h2>Camarilla Breakout Failure — Backtest</h2>
+
+  <!-- Config -->
+  <div class="config-card">
+    <div class="config-grid">
+      <div class="field">
+        <label>Ticker</label>
+        <input type="text" id="ticker" value="MSFT" placeholder="e.g. AAPL">
+      </div>
+      <div class="field">
+        <label>Start Date</label>
+        <input type="date" id="startDate" value="2022-01-01">
+      </div>
+      <div class="field">
+        <label>End Date</label>
+        <input type="date" id="endDate" value="2024-12-31">
+      </div>
+      <div class="field">
+        <label>Starting Cash ($)</label>
+        <input type="number" id="cash" value="10000" min="1000" step="1000">
+      </div>
+      <div class="field">
+        <label>ATR Period</label>
+        <input type="number" id="atrPeriod" value="14" min="5" max="50">
+      </div>
+      <div class="field">
+        <label>Trail Multiplier</label>
+        <input type="number" id="trailMult" value="1.5" min="0.5" max="5" step="0.1">
+      </div>
+      <div class="field">
+        <label>Stop Multiplier</label>
+        <input type="number" id="stopMult" value="2.0" min="0.5" max="10" step="0.1">
+      </div>
+    </div>
+    <button class="run-btn" id="runBtn" onclick="runBacktest()">▶ Run Backtest</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <!-- Stats -->
+  <div id="statsSection" style="display:none">
+    <div class="stats-grid" id="statsGrid"></div>
+
+    <!-- Plot -->
+    <div class="plot-wrap" id="plotWrap" style="display:none">
+      <iframe id="plotFrame" title="Backtest chart"></iframe>
+    </div>
+
+    <!-- Trades -->
+    <div class="trades-card" id="tradesCard" style="display:none">
+      <h3 id="tradesTitle">Trades</h3>
+      <div class="trades-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Direction</th>
+              <th>Entry Time</th>
+              <th>Exit Time</th>
+              <th>Entry Price</th>
+              <th>Exit Price</th>
+              <th>Size</th>
+              <th>P&amp;L</th>
+              <th>Return %</th>
+            </tr>
+          </thead>
+          <tbody id="tradesBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="empty" id="emptyState">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    </svg>
+    <p>Configure parameters above and click Run Backtest</p>
+  </div>
+</div>
+
+<script>
+  const KEY_STATS = [
+    { key: "Return [%]",          label: "Total Return",    fmt: v => v?.toFixed(2) + "%" },
+    { key: "Max. Drawdown [%]",   label: "Max Drawdown",    fmt: v => v?.toFixed(2) + "%" },
+    { key: "Win Rate [%]",        label: "Win Rate",        fmt: v => v?.toFixed(1) + "%" },
+    { key: "# Trades",            label: "Trades",          fmt: v => v },
+    { key: "Profit Factor",       label: "Profit Factor",   fmt: v => v?.toFixed(2) },
+    { key: "Sharpe Ratio",        label: "Sharpe Ratio",    fmt: v => v?.toFixed(2) },
+    { key: "Calmar Ratio",        label: "Calmar Ratio",    fmt: v => v?.toFixed(2) },
+    { key: "Avg. Trade [%]",      label: "Avg Trade",       fmt: v => v?.toFixed(2) + "%" },
+    { key: "Best Trade [%]",      label: "Best Trade",      fmt: v => v?.toFixed(2) + "%" },
+    { key: "Worst Trade [%]",     label: "Worst Trade",     fmt: v => v?.toFixed(2) + "%" },
+    { key: "Exposure Time [%]",   label: "Exposure",        fmt: v => v?.toFixed(1) + "%" },
+    { key: "Equity Final [$]",    label: "Final Equity",    fmt: v => "$" + v?.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) },
+  ];
+
+  async function runBacktest() {
+    const btn = document.getElementById("runBtn");
+    const statusEl = document.getElementById("status");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Running…';
+    statusEl.className = "status info";
+    statusEl.innerHTML = '<span class="spinner"></span> Fetching data and running backtest…';
+    document.getElementById("statsSection").style.display = "none";
+    document.getElementById("emptyState").style.display  = "none";
+
+    try {
+      const res  = await fetch("/api/bt/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticker:     document.getElementById("ticker").value.trim().toUpperCase(),
+          start_date: document.getElementById("startDate").value,
+          end_date:   document.getElementById("endDate").value,
+          cash:       parseFloat(document.getElementById("cash").value),
+          atr_period: parseInt(document.getElementById("atrPeriod").value),
+          trail_mult: parseFloat(document.getElementById("trailMult").value),
+          stop_mult:  parseFloat(document.getElementById("stopMult").value),
+        }),
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        statusEl.className = "status error";
+        statusEl.textContent = "Error: " + data.error;
+        document.getElementById("emptyState").style.display = "block";
+        return;
+      }
+
+      statusEl.style.display = "none";
+      renderStats(data.stats, data.ticker);
+      renderPlot(data.plot);
+      renderTrades(data.trades, data.ticker);
+      document.getElementById("statsSection").style.display = "block";
+
+    } catch (e) {
+      statusEl.className = "status error";
+      statusEl.textContent = "Request failed: " + e;
+      document.getElementById("emptyState").style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "▶ Run Backtest";
+    }
+  }
+
+  function renderStats(stats, ticker) {
+    const grid = document.getElementById("statsGrid");
+    grid.innerHTML = "";
+    for (const { key, label, fmt } of KEY_STATS) {
+      const val = stats[key];
+      if (val == null) continue;
+      const formatted = fmt(val);
+      const isNeg = typeof val === "number" && val < 0;
+      const isPos = typeof val === "number" && val > 0 &&
+                    (key.includes("Return") || key.includes("Win") || key.includes("Profit") ||
+                     key.includes("Sharpe") || key.includes("Best") || key.includes("Calmar"));
+      grid.innerHTML += `
+        <div class="stat-card">
+          <div class="stat-label">${label}</div>
+          <div class="stat-value ${isNeg ? "neg" : isPos ? "pos" : ""}">${formatted ?? "—"}</div>
+        </div>`;
+    }
+  }
+
+  function renderPlot(plotHtml) {
+    const wrap  = document.getElementById("plotWrap");
+    const frame = document.getElementById("plotFrame");
+    if (!plotHtml) { wrap.style.display = "none"; return; }
+    frame.srcdoc = plotHtml;
+    wrap.style.display = "block";
+  }
+
+  function renderTrades(trades, ticker) {
+    const card = document.getElementById("tradesCard");
+    const body = document.getElementById("tradesBody");
+    if (!trades || trades.length === 0) { card.style.display = "none"; return; }
+    document.getElementById("tradesTitle").textContent =
+      `${trades.length} Trade${trades.length !== 1 ? "s" : ""} — ${ticker}`;
+    body.innerHTML = trades.map(t => {
+      const pnlColor = t.pnl > 0 ? "#26a65b" : t.pnl < 0 ? "#ef5350" : "#888";
+      const pnlSign  = t.pnl > 0 ? "+" : "";
+      const badge    = t.direction === "Long"
+        ? '<span class="long-badge">Long</span>'
+        : '<span class="short-badge">Short</span>';
+      return `<tr>
+        <td>${badge}</td>
+        <td>${t.entry_time.slice(0, 10)}</td>
+        <td>${t.exit_time.slice(0, 10)}</td>
+        <td>$${t.entry_price.toFixed(2)}</td>
+        <td>$${t.exit_price.toFixed(2)}</td>
+        <td>${t.size}</td>
+        <td style="color:${pnlColor};font-weight:600">${pnlSign}$${Math.abs(t.pnl).toFixed(2)}</td>
+        <td style="color:${pnlColor}">${t.return_pct > 0 ? "+" : ""}${t.return_pct.toFixed(2)}%</td>
+      </tr>`;
+    }).join("");
+    card.style.display = "block";
+  }
+</script>
+</body>
+</html>

@@ -501,6 +501,122 @@ def backtester():
     return render_template("backtester.html")
 
 
+@app.route("/backtest-lib")
+def backtest_lib():
+    return render_template("bt.html")
+
+
+@app.route("/api/bt/run", methods=["POST"])
+def bt_run():
+    import tempfile, os as _os, math
+    try:
+        from backtesting import Backtest
+        from strategies.bt_camarilla import CamarillaBreakoutFailure
+    except ImportError as e:
+        return jsonify({"error": f"Missing dependency: {e}"}), 503
+
+    body       = request.get_json(silent=True) or {}
+    ticker     = (body.get("ticker") or "AAPL").strip().upper()
+    start_date = body.get("start_date", "2022-01-01")
+    end_date   = body.get("end_date",   "2024-12-31")
+    cash       = float(body.get("cash", 10000))
+    atr_period = int(body.get("atr_period", 14))
+    trail_mult = float(body.get("trail_mult", 1.5))
+    stop_mult  = float(body.get("stop_mult", 2.0))
+
+    try:
+        import yfinance as yf
+        raw = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
+        if raw.empty:
+            return jsonify({"error": f"No data returned for {ticker}"}), 400
+        # Flatten MultiIndex columns (yfinance ≥0.2.x)
+        if isinstance(raw.columns, type(raw.columns)) and hasattr(raw.columns, "levels"):
+            raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
+        df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        if len(df) < 30:
+            return jsonify({"error": f"Only {len(df)} bars — need at least 30"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Data fetch failed: {e}"}), 500
+
+    try:
+        bt = Backtest(
+            df, CamarillaBreakoutFailure,
+            cash=cash, commission=0.001, exclusive_orders=True,
+        )
+        stats = bt.run(
+            atr_period=atr_period,
+            trail_mult=trail_mult,
+            stop_mult=stop_mult,
+        )
+
+        # Serialise stats — drop non-scalar fields
+        def _safe(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            try:
+                import pandas as _pd
+                if isinstance(v, (_pd.Series, _pd.DataFrame)):
+                    return None
+            except Exception:
+                pass
+            try:
+                json.dumps(v)
+                return v
+            except Exception:
+                return str(v)
+
+        stats_dict = {k: _safe(v) for k, v in stats.items()
+                      if k not in ("_strategy", "_trades", "_equity_curve")}
+
+        # Trades table
+        trades_df = stats["_trades"] if "_trades" in stats else None
+        trades_list = []
+        if trades_df is not None and not trades_df.empty:
+            for _, row in trades_df.iterrows():
+                trades_list.append({
+                    "entry_time":  str(row.get("EntryTime",  "")),
+                    "exit_time":   str(row.get("ExitTime",   "")),
+                    "direction":   "Long" if row.get("Size", 0) > 0 else "Short",
+                    "size":        abs(int(row.get("Size", 0))),
+                    "entry_price": round(float(row.get("EntryPrice", 0)), 4),
+                    "exit_price":  round(float(row.get("ExitPrice",  0)), 4),
+                    "pnl":         round(float(row.get("PnL", 0)), 2),
+                    "return_pct":  round(float(row.get("ReturnPct", 0)) * 100, 2),
+                })
+
+        # Equity curve
+        eq_curve = []
+        if "_equity_curve" in stats:
+            eq = stats["_equity_curve"]["Equity"]
+            step = max(1, len(eq) // 500)
+            eq_curve = [{"t": str(t), "v": round(float(v), 2)}
+                        for t, v in eq.iloc[::step].items()]
+
+        # Plot — save to temp file, read back, delete
+        plot_html = ""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+                plot_path = f.name
+            bt.plot(filename=plot_path, open_browser=False)
+            with open(plot_path, "r", encoding="utf-8") as f:
+                plot_html = f.read()
+            _os.unlink(plot_path)
+        except Exception as pe:
+            log.warning("bt plot failed: %s", pe)
+
+        return jsonify({
+            "stats":  stats_dict,
+            "trades": trades_list,
+            "equity": eq_curve,
+            "plot":   plot_html,
+            "ticker": ticker,
+        })
+
+    except Exception as e:
+        log.exception("bt_run error")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/backtest/run", methods=["POST"])
 def backtest_run():
     from strategies.camarilla import (
