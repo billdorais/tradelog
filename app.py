@@ -29,10 +29,16 @@ if os.environ.get("IB_HOST"):
     from brokers.ib_broker import IBBroker
     ib_broker = IBBroker()
 
-    def _on_fill(_reqId, contract, execution):
-        """Called by ib_async execDetailsEvent — persists execution to DB."""
+    def _on_fill(_trade, fill):
+        """Called by ib_async execDetailsEvent(trade, fill) — persists execution to DB."""
         try:
-            exec_id = execution.execId
+            contract  = fill.contract
+            execution = fill.execution
+            exec_id   = execution.execId
+            pnl = (round(fill.commissionReport.realizedPNL, 2)
+                   if fill.commissionReport
+                      and fill.commissionReport.realizedPNL == fill.commissionReport.realizedPNL
+                   else None)
             conn = get_db()
             cur  = conn.cursor()
             p    = placeholder()
@@ -40,7 +46,7 @@ if os.environ.get("IB_HOST"):
                 f"INSERT INTO ib_executions "
                 f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
                 f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})"
-                f" ON CONFLICT (exec_id) DO NOTHING",
+                f" ON CONFLICT (exec_id) DO UPDATE SET pnl=EXCLUDED.pnl",
                 (exec_id,
                  str(execution.time),
                  contract.symbol,
@@ -51,9 +57,9 @@ if os.environ.get("IB_HOST"):
                  execution.orderId,
                  execution.acctNumber,
                  execution.exchange,
-                 None),
+                 pnl),
             ) if DATABASE_URL else cur.execute(
-                f"INSERT OR IGNORE INTO ib_executions "
+                f"INSERT OR REPLACE INTO ib_executions "
                 f"(exec_id,ts,symbol,sec_type,side,shares,price,order_id,account,exchange,pnl)"
                 f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
                 (exec_id,
@@ -66,11 +72,11 @@ if os.environ.get("IB_HOST"):
                  execution.orderId,
                  execution.acctNumber,
                  execution.exchange,
-                 None),
+                 pnl),
             )
             conn.commit()
             conn.close()
-            log.info("IB fill saved: %s %s %s @ %s", execution.side, execution.shares, contract.symbol, execution.price)
+            log.info("IB fill saved: %s %s %s @ %s (pnl=%s)", execution.side, execution.shares, contract.symbol, execution.price, pnl)
             threading.Thread(target=_store_account_snapshot, daemon=True).start()
         except Exception as e:
             log.error("Error saving IB fill: %s", e)
