@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Signal Router — Kairos Automata</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
+    .nav-back { color: #888; text-decoration: none; font-size: 0.85rem; border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; }
+    .nav-back:hover { color: #ccc; border-color: #444; }
+
+    .page-body { padding: 24px; max-width: 1400px; margin: 0 auto; }
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+    .page-title { font-size: 1.3rem; font-weight: 600; }
+    .page-subtitle { font-size: 0.85rem; color: #666; margin-top: 4px; }
+
+    .btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: #4a90d9; color: #fff; }
+    .btn-ghost { background: transparent; border: 1px solid #2a2d3e; color: #aaa; }
+    .btn-danger { background: transparent; border: 1px solid #e74c3c; color: #e74c3c; }
+
+    /* Pipeline rows */
+    .pipelines { display: flex; flex-direction: column; gap: 16px; }
+    .pipeline-wrap { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; transition: border-color 0.2s; }
+    .pipeline-wrap.disabled { opacity: 0.45; }
+    .pipeline-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .pipeline-name { font-size: 0.9rem; font-weight: 600; color: #ccc; flex: 1; background: transparent; border: none; outline: none; }
+    .pipeline-name:focus { border-bottom: 1px solid #4a90d9; }
+    .pipeline-toggle { position: relative; width: 36px; height: 20px; cursor: pointer; flex-shrink: 0; }
+    .pipeline-toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; inset: 0; background: #2a2d3e; border-radius: 20px; transition: background 0.2s; }
+    .toggle-slider::after { content:''; position: absolute; width: 14px; height: 14px; background: #fff; border-radius: 50%; top: 3px; left: 3px; transition: transform 0.2s; }
+    .pipeline-toggle input:checked + .toggle-slider { background: #26a65b; }
+    .pipeline-toggle input:checked + .toggle-slider::after { transform: translateX(16px); }
+
+    /* Node chain */
+    .node-chain { display: flex; align-items: center; flex-wrap: wrap; gap: 0; min-height: 60px; }
+    .node-arrow { color: #3a3d4e; font-size: 1.1rem; padding: 0 4px; flex-shrink: 0; }
+    .node { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 110px; height: 60px; border-radius: 8px; border: 2px solid transparent; cursor: pointer; padding: 6px 12px; text-align: center; flex-shrink: 0; transition: filter 0.15s; user-select: none; }
+    .node:hover { filter: brightness(1.15); }
+    .node-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin-bottom: 2px; }
+    .node-value { font-size: 0.85rem; font-weight: 600; }
+    .node-delete { position: absolute; top: -8px; right: -8px; width: 18px; height: 18px; background: #e74c3c; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 0.65rem; color: #fff; cursor: pointer; z-index: 10; }
+    .node:hover .node-delete { display: flex; }
+
+    /* Node colours */
+    .node-strategy  { background: #1a1d2e; border-color: #4a4d6e; color: #ccc; }
+    .node-quantity  { background: #1a2535; border-color: #2a5580; color: #7ab8f5; }
+    .node-instrument-STK    { background: #2a1a40; border-color: #7c4dbd; color: #c39eff; }
+    .node-instrument-FUT    { background: #1a2a40; border-color: #2e6da4; color: #7ab8f5; }
+    .node-instrument-OPT    { background: #2a1f10; border-color: #c8832a; color: #f5c060; }
+    .node-instrument-CRYPTO { background: #2a1a10; border-color: #d46b2a; color: #f5a060; }
+    .node-mode-live  { background: #102a1a; border-color: #26a65b; color: #4fd88a; }
+    .node-mode-paper { background: #2a2510; border-color: #c8a22a; color: #f5d060; }
+    .node-broker-ib       { background: #2a1010; border-color: #c83232; color: #f57070; }
+    .node-broker-coinbase { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
+    .node-ticker { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
+
+    .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
+    .add-node-btn:hover { border-color: #4a90d9; color: #4a90d9; }
+
+    /* Node palette popup */
+    .palette-popup { position: fixed; background: #1a1d2e; border: 1px solid #2a2d3e; border-radius: 10px; padding: 12px; z-index: 1000; box-shadow: 0 8px 32px rgba(0,0,0,0.5); min-width: 200px; }
+    .palette-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #555; margin-bottom: 10px; }
+    .palette-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .palette-item:hover { background: #2a2d3e; }
+    .palette-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Edit modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; display: flex; align-items: center; justify-content: center; }
+    .modal { background: #13161f; border: 1px solid #2a2d3e; border-radius: 12px; padding: 28px; min-width: 320px; max-width: 420px; width: 90%; }
+    .modal h3 { font-size: 1rem; font-weight: 600; margin-bottom: 20px; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 0.78rem; color: #888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .form-group input, .form-group select { width: 100%; background: #0f1117; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 8px 12px; font-size: 0.9rem; outline: none; }
+    .form-group input:focus, .form-group select:focus { border-color: #4a90d9; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+    /* Empty state */
+    .empty-state { text-align: center; padding: 60px 20px; color: #444; }
+    .empty-state svg { margin-bottom: 16px; opacity: 0.3; }
+    .empty-state p { font-size: 0.95rem; margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div style="display:flex;align-items:center;gap:12px">
+    <img src="/static/kariosLogo_128.png" alt="" style="height:36px;width:36px;image-rendering:pixelated">
+    <h1>Kairos Automata — Signal Router</h1>
+  </div>
+  <a href="/" class="nav-back">&#8592; Dashboard</a>
+</header>
+
+<div class="page-body">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Signal Routing Pipelines</div>
+      <div class="page-subtitle">Each pipeline intercepts a TradingView signal and applies your routing rules before placing an order.</div>
+    </div>
+    <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
+  </div>
+
+  <div class="pipelines" id="pipelines">
+    <div class="empty-state" id="emptyState">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="10" y1="6.5" x2="14" y2="6.5"/><line x1="10" y1="17.5" x2="14" y2="17.5"/></svg>
+      <p>No pipelines yet.<br>Click <strong>+ New Pipeline</strong> to build your first routing rule.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Node palette popup (hidden, moved into DOM on demand) -->
+<div class="palette-popup" id="palettePopup" style="display:none">
+  <div class="palette-title">Add Node</div>
+  <div class="palette-item" onclick="addNode('strategy')"><span class="palette-dot" style="background:#4a4d6e"></span>Strategy (filter)</div>
+  <div class="palette-item" onclick="addNode('quantity')"><span class="palette-dot" style="background:#2a5580"></span>Quantity</div>
+  <div class="palette-item" onclick="addNode('instrument')"><span class="palette-dot" style="background:#7c4dbd"></span>Instrument</div>
+  <div class="palette-item" onclick="addNode('mode')"><span class="palette-dot" style="background:#26a65b"></span>Live / Paper</div>
+  <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker</div>
+  <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
+</div>
+
+<!-- Edit modal -->
+<div class="modal-overlay" id="modalOverlay" style="display:none" onclick="closeModalOnOverlay(event)">
+  <div class="modal" id="modal">
+    <h3 id="modalTitle">Edit Node</h3>
+    <div id="modalBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveNode()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // -----------------------------------------------------------------------
+  // State
+  // -----------------------------------------------------------------------
+  let rules = [];          // [{id, name, enabled, nodes:[...]}, ...]
+  let activePipelineId = null;   // which pipeline the palette/modal targets
+  let activeNodeIdx    = null;   // which node index is being edited (-1 = new)
+  let pendingNodeType  = null;   // type for new node being added
+
+  // -----------------------------------------------------------------------
+  // Boot
+  // -----------------------------------------------------------------------
+  async function load() {
+    const res = await fetch('/api/routing/rules');
+    rules = await res.json();
+    renderAll();
+  }
+
+  // -----------------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------------
+  function renderAll() {
+    const container = document.getElementById('pipelines');
+    const empty     = document.getElementById('emptyState');
+    // Clear existing pipeline rows (keep emptyState in DOM)
+    [...container.querySelectorAll('.pipeline-wrap')].forEach(el => el.remove());
+
+    if (rules.length === 0) {
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+
+    rules.forEach(rule => {
+      const wrap = document.createElement('div');
+      wrap.className = 'pipeline-wrap' + (rule.enabled ? '' : ' disabled');
+      wrap.dataset.id = rule.id;
+      wrap.innerHTML = `
+        <div class="pipeline-header">
+          <input class="pipeline-name" value="${escHtml(rule.name)}" placeholder="Pipeline name"
+            onchange="renamePipeline(${rule.id}, this.value)" />
+          <label class="pipeline-toggle" title="${rule.enabled ? 'Enabled' : 'Disabled'}">
+            <input type="checkbox" ${rule.enabled ? 'checked' : ''} onchange="togglePipeline(${rule.id}, this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+          <button class="btn btn-danger" style="font-size:0.75rem;padding:4px 10px" onclick="deletePipeline(${rule.id})">Delete</button>
+        </div>
+        <div class="node-chain" id="chain-${rule.id}">
+          ${renderChain(rule)}
+        </div>`;
+      container.appendChild(wrap);
+    });
+  }
+
+  function renderChain(rule) {
+    const nodes = rule.nodes || [];
+    let html = '';
+    nodes.forEach((node, idx) => {
+      if (idx > 0) html += '<span class="node-arrow">&#8594;</span>';
+      html += renderNode(rule.id, node, idx);
+    });
+    // Add-node button
+    html += `<button class="add-node-btn" onclick="openPalette(event, ${rule.id})" title="Add node">+</button>`;
+    return html;
+  }
+
+  function renderNode(ruleId, node, idx) {
+    const cls   = nodeClass(node);
+    const label = nodeLabel(node);
+    const value = nodeValue(node);
+    return `
+      <div class="node ${cls}" onclick="openNodeEditor(${ruleId}, ${idx})">
+        <div class="node-label">${label}</div>
+        <div class="node-value">${escHtml(value)}</div>
+        <div class="node-delete" onclick="deleteNode(event, ${ruleId}, ${idx})">&#10005;</div>
+      </div>`;
+  }
+
+  function nodeClass(node) {
+    switch (node.type) {
+      case 'strategy':   return 'node-strategy';
+      case 'quantity':   return 'node-quantity';
+      case 'instrument': return `node-instrument-${node.value || 'STK'}`;
+      case 'mode':       return `node-mode-${node.value || 'live'}`;
+      case 'broker':     return `node-broker-${node.value || 'ib'}`;
+      case 'ticker':     return 'node-ticker';
+      default:           return 'node-strategy';
+    }
+  }
+
+  function nodeLabel(node) {
+    const map = { strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument', mode: 'Mode', broker: 'Broker', ticker: 'Ticker' };
+    return map[node.type] || node.type;
+  }
+
+  function nodeValue(node) {
+    switch (node.type) {
+      case 'strategy':   return node.value || 'Any';
+      case 'quantity':   return node.unit === 'dollars' ? `$${node.amount}` : node.unit === 'pct' ? `${node.amount}%` : `${node.amount} shares`;
+      case 'instrument': return { STK: 'Stocks', FUT: 'Futures', OPT: 'Options', CRYPTO: 'Crypto' }[node.value] || node.value || 'Stocks';
+      case 'mode':       return node.value === 'paper' ? 'Paper' : 'Live';
+      case 'broker':     return node.value === 'coinbase' ? 'Coinbase' : 'Interactive Brokers';
+      case 'ticker':     return node.value || '—';
+      default:           return '—';
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Pipeline CRUD
+  // -----------------------------------------------------------------------
+  async function newPipeline() {
+    const res  = await fetch('/api/routing/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Pipeline', nodes: [] }) });
+    const rule = await res.json();
+    rules.push(rule);
+    renderAll();
+  }
+
+  async function renamePipeline(id, name) {
+    await fetch(`/api/routing/rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const rule = rules.find(r => r.id === id);
+    if (rule) rule.name = name;
+  }
+
+  async function togglePipeline(id, enabled) {
+    await fetch(`/api/routing/rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    const rule = rules.find(r => r.id === id);
+    if (rule) { rule.enabled = enabled; renderAll(); }
+  }
+
+  async function deletePipeline(id) {
+    if (!confirm('Delete this pipeline?')) return;
+    await fetch(`/api/routing/rules/${id}`, { method: 'DELETE' });
+    rules = rules.filter(r => r.id !== id);
+    renderAll();
+  }
+
+  async function saveRule(id) {
+    const rule = rules.find(r => r.id === id);
+    if (!rule) return;
+    await fetch(`/api/routing/rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodes: rule.nodes }) });
+  }
+
+  // -----------------------------------------------------------------------
+  // Node palette
+  // -----------------------------------------------------------------------
+  function openPalette(e, ruleId) {
+    e.stopPropagation();
+    activePipelineId = ruleId;
+    const popup = document.getElementById('palettePopup');
+    popup.style.display = 'block';
+    const rect = e.target.getBoundingClientRect();
+    popup.style.top  = (rect.bottom + 8 + window.scrollY) + 'px';
+    popup.style.left = Math.min(rect.left, window.innerWidth - 220) + 'px';
+  }
+
+  document.addEventListener('click', e => {
+    const popup = document.getElementById('palettePopup');
+    if (!popup.contains(e.target)) popup.style.display = 'none';
+  });
+
+  function addNode(type) {
+    document.getElementById('palettePopup').style.display = 'none';
+    pendingNodeType = type;
+    activeNodeIdx   = -1;  // new node
+    openModal(type, null);
+  }
+
+  // -----------------------------------------------------------------------
+  // Node editor modal
+  // -----------------------------------------------------------------------
+  function openNodeEditor(ruleId, idx) {
+    activePipelineId = ruleId;
+    activeNodeIdx    = idx;
+    const rule = rules.find(r => r.id === ruleId);
+    const node = rule ? rule.nodes[idx] : null;
+    if (!node) return;
+    pendingNodeType = node.type;
+    openModal(node.type, node);
+  }
+
+  function openModal(type, node) {
+    document.getElementById('modalTitle').textContent = (node ? 'Edit' : 'Add') + ' — ' + nodeLabel({ type });
+    document.getElementById('modalBody').innerHTML = buildModalForm(type, node);
+    document.getElementById('modalOverlay').style.display = 'flex';
+  }
+
+  function closeModal() { document.getElementById('modalOverlay').style.display = 'none'; }
+  function closeModalOnOverlay(e) { if (e.target === document.getElementById('modalOverlay')) closeModal(); }
+
+  function buildModalForm(type, node) {
+    const v = node || {};
+    switch (type) {
+      case 'strategy':
+        return `
+          <div class="form-group">
+            <label>Strategy Name (from TradingView)</label>
+            <input id="f_value" value="${escHtml(v.value||'')}" placeholder="e.g. CAM_MSFT_V06_5MIN or CAM_*">
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">Use * as a wildcard suffix, e.g. <code style="color:#888">CAM_MSFT*</code> matches any MSFT strategy.</p>`;
+
+      case 'quantity':
+        return `
+          <div class="form-group">
+            <label>Amount</label>
+            <input id="f_amount" type="number" min="0" step="any" value="${v.amount||100}">
+          </div>
+          <div class="form-group">
+            <label>Unit</label>
+            <select id="f_unit">
+              <option value="shares"  ${(v.unit||'shares')==='shares'  ? 'selected':''}>Shares / Contracts</option>
+              <option value="dollars" ${v.unit==='dollars' ? 'selected':''}>Dollar Amount ($)</option>
+              <option value="pct"     ${v.unit==='pct'     ? 'selected':''}>% of Account</option>
+            </select>
+          </div>`;
+
+      case 'instrument':
+        return `
+          <div class="form-group">
+            <label>Instrument Type</label>
+            <select id="f_value">
+              <option value="STK"    ${(v.value||'STK')==='STK'    ? 'selected':''}>Stocks</option>
+              <option value="FUT"    ${v.value==='FUT'    ? 'selected':''}>Futures</option>
+              <option value="OPT"    ${v.value==='OPT'    ? 'selected':''}>Options</option>
+              <option value="CRYPTO" ${v.value==='CRYPTO' ? 'selected':''}>Crypto</option>
+            </select>
+          </div>`;
+
+      case 'mode':
+        return `
+          <div class="form-group">
+            <label>Trading Mode</label>
+            <select id="f_value">
+              <option value="live"  ${(v.value||'live')==='live'  ? 'selected':''}>Live — place real orders</option>
+              <option value="paper" ${v.value==='paper' ? 'selected':''}>Paper — log only, no orders</option>
+            </select>
+          </div>`;
+
+      case 'broker':
+        return `
+          <div class="form-group">
+            <label>Broker</label>
+            <select id="f_value">
+              <option value="ib"       ${(v.value||'ib')==='ib'       ? 'selected':''}>Interactive Brokers</option>
+              <option value="coinbase" ${v.value==='coinbase' ? 'selected':''}>Coinbase</option>
+            </select>
+          </div>`;
+
+      case 'ticker':
+        return `
+          <div class="form-group">
+            <label>Override Ticker</label>
+            <input id="f_value" value="${escHtml(v.value||'')}" placeholder="e.g. MSFT">
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">Forces this ticker regardless of what TradingView sends.</p>`;
+
+      default: return '';
+    }
+  }
+
+  function saveNode() {
+    const type = pendingNodeType;
+    let node = { type };
+
+    switch (type) {
+      case 'strategy':
+      case 'instrument':
+      case 'mode':
+      case 'broker':
+      case 'ticker':
+        node.value = document.getElementById('f_value').value.trim();
+        break;
+      case 'quantity':
+        node.amount = parseFloat(document.getElementById('f_amount').value) || 1;
+        node.unit   = document.getElementById('f_unit').value;
+        break;
+    }
+
+    const rule = rules.find(r => r.id === activePipelineId);
+    if (!rule) { closeModal(); return; }
+
+    if (activeNodeIdx === -1) {
+      rule.nodes.push(node);
+    } else {
+      rule.nodes[activeNodeIdx] = node;
+    }
+
+    saveRule(activePipelineId);
+    closeModal();
+
+    // Re-render just this chain
+    const chain = document.getElementById(`chain-${activePipelineId}`);
+    if (chain) chain.innerHTML = renderChain(rule);
+
+    // Update disabled class
+    const wrap = document.querySelector(`.pipeline-wrap[data-id="${activePipelineId}"]`);
+    if (wrap) wrap.className = 'pipeline-wrap' + (rule.enabled ? '' : ' disabled');
+  }
+
+  function deleteNode(e, ruleId, idx) {
+    e.stopPropagation();
+    const rule = rules.find(r => r.id === ruleId);
+    if (!rule) return;
+    rule.nodes.splice(idx, 1);
+    saveRule(ruleId);
+    const chain = document.getElementById(`chain-${ruleId}`);
+    if (chain) chain.innerHTML = renderChain(rule);
+  }
+
+  // -----------------------------------------------------------------------
+  // Util
+  // -----------------------------------------------------------------------
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // -----------------------------------------------------------------------
+  // Init
+  // -----------------------------------------------------------------------
+  load();
+</script>
+</body>
+</html>

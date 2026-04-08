@@ -329,6 +329,26 @@ def init_db():
     """)
     conn.commit()
 
+    # Routing rules table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS routing_rules (
+            id         SERIAL PRIMARY KEY,
+            name       TEXT,
+            enabled    INTEGER DEFAULT 1,
+            nodes      TEXT,
+            created_at TEXT
+        )
+    """ if DATABASE_URL else """
+        CREATE TABLE IF NOT EXISTS routing_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT,
+            enabled    INTEGER DEFAULT 1,
+            nodes      TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+
     # Migrations for existing databases
     for col in ("strategy TEXT", "broker TEXT", "exec_status TEXT", "exec_detail TEXT"):
         try:
@@ -397,6 +417,59 @@ def webhook():
     if not broker_name and ib_broker is not None:
         broker_name = "ib"
 
+    # Apply routing rules — look up a matching enabled pipeline and override settings
+    strategy_name = (data.get("strategy") or "").strip()
+    quantity      = data.get("quantity", 1)
+    sec_type      = data.get("sec_type", "STK")
+    currency      = data.get("currency", "USD")
+    option_expiry = data.get("option_expiry") or None
+    max_spread    = float(data.get("max_spread", 1.0))
+    strike_offset = int(data.get("strike_offset", 0))
+    paper_mode    = False  # True = skip real order even if broker is set
+
+    try:
+        rconn = get_db()
+        rcur  = rconn.cursor()
+        rcur.execute("SELECT nodes FROM routing_rules WHERE enabled=1 ORDER BY id ASC")
+        rule_rows = rcur.fetchall()
+        rconn.close()
+        for rrow in rule_rows:
+            nodes_raw = rrow[0] if DATABASE_URL else rrow["nodes"]
+            nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+            # Check if a strategy node in this pipeline matches
+            strat_nodes = [n for n in nodes if n.get("type") == "strategy"]
+            if strat_nodes:
+                matched = False
+                for sn in strat_nodes:
+                    pattern = (sn.get("value") or "").strip().upper()
+                    incoming = strategy_name.upper()
+                    if pattern.endswith("*") and incoming.startswith(pattern[:-1]):
+                        matched = True
+                    elif pattern.startswith("*") and incoming.endswith(pattern[1:]):
+                        matched = True
+                    elif pattern == incoming:
+                        matched = True
+                if not matched:
+                    continue
+            # Pipeline matched — apply node settings
+            for n in nodes:
+                ntype = n.get("type")
+                if ntype == "broker":
+                    broker_name = (n.get("value") or broker_name).lower()
+                elif ntype == "mode":
+                    paper_mode = (n.get("value") or "").lower() == "paper"
+                elif ntype == "quantity":
+                    quantity = n.get("amount", quantity)
+                elif ntype == "instrument":
+                    sec_type = n.get("value") or sec_type
+                elif ntype == "ticker":
+                    ticker = (n.get("value") or ticker or "").upper() or None
+            log.info("Routing rule matched for strategy '%s' — broker=%s paper=%s qty=%s sec=%s",
+                     strategy_name, broker_name, paper_mode, quantity, sec_type)
+            break  # first matching pipeline wins
+    except Exception as e:
+        log.warning("Routing rule lookup failed: %s", e)
+
     conn = get_db()
     cur  = conn.cursor()
 
@@ -419,7 +492,11 @@ def webhook():
     exec_status = None
     exec_detail = None
 
-    if broker_name == "ib":
+    if paper_mode:
+        exec_status = "paper"
+        exec_detail = "Routing rule set mode=paper — no real order placed"
+        log.info("Paper mode: skipping real order for %s %s", order_action, ticker)
+    elif broker_name == "ib":
         if ib_broker is None:
             exec_status = "error"
             exec_detail = "IB broker not initialised — check IB_HOST env var"
@@ -428,59 +505,56 @@ def webhook():
             exec_status = "skipped"
             exec_detail = f"No order placed for action '{raw_action}'"
             log.info("Webhook action '%s' logged but no IB order placed", raw_action)
-        elif data.get("sec_type", "STK").upper() == "OPT":
-            # --- Options path: select contract on background thread, then place order ---
+        elif sec_type.upper() == "OPT":
+            # --- Options path ---
             try:
                 current_price = float(data.get("price") or 0)
                 if not current_price:
                     raise ValueError("'price' (underlying price) required for options orders")
-
                 opt = _submit_ib_task(
                     ib_broker.select_option,
                     ticker,
                     order_action,
                     current_price,
-                    _timeout       = 45,
-                    option_expiry  = data.get("option_expiry") or None,
-                    max_spread     = float(data.get("max_spread", 1.0)),
-                    strike_offset  = int(data.get("strike_offset", 0)),
+                    _timeout      = 45,
+                    option_expiry = option_expiry,
+                    max_spread    = max_spread,
+                    strike_offset = strike_offset,
                 )
                 result = _submit_ib_task(
                     ib_broker.place_order,
                     ticker,
                     order_action,
-                    data.get("quantity", 1),
-                    None,  # market order
+                    quantity,
+                    None,
                     _timeout = 20,
                     sec_type = "OPT",
-                    currency = data.get("currency", "USD"),
+                    currency = currency,
                     expiry   = opt["expiry"],
                     strike   = opt["strike"],
                     right    = opt["right"],
                 )
                 exec_status = "ok" if result.get("success") else "error"
                 exec_detail = json.dumps({**result, "option_selected": opt})
-                log.info(
-                    "IB option order %s %s %s %s %s: %s",
-                    order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result,
-                )
+                log.info("IB option order %s %s %s %s %s: %s",
+                         order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result)
             except Exception as e:
                 exec_status = "error"
                 exec_detail = str(e)
                 log.error("IB option order failed for %s %s: %s", order_action, ticker, e)
         else:
-            # --- Equity / forex path ---
+            # --- Equity / futures / crypto path ---
             result = ib_broker.place_order(
                 ticker   = ticker,
                 action   = order_action,
-                quantity = data.get("quantity", 1),
+                quantity = quantity,
                 price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                sec_type = data.get("sec_type", "STK"),
-                currency = data.get("currency", "USD"),
+                sec_type = sec_type,
+                currency = currency,
             )
             exec_status = "ok" if result.get("success") else "error"
             exec_detail = json.dumps(result)
-            log.info("IB order result for %s %s %s: %s", order_action, data.get("quantity", 1), ticker, result)
+            log.info("IB order result for %s %s %s: %s", order_action, quantity, ticker, result)
 
     # 3. Write execution result back to the row
     if exec_status:
@@ -584,6 +658,87 @@ def eod_close_toggle():
     return jsonify({"eod_close_enabled": eod_close_enabled})
 
 
+@app.route("/api/routing/rules", methods=["GET"])
+def routing_rules_list():
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT id, name, enabled, nodes, created_at FROM routing_rules ORDER BY id ASC")
+    rows = cur.fetchall()
+    conn.close()
+    if DATABASE_URL:
+        cols = [d[0] for d in cur.description]
+        result = [dict(zip(cols, r)) for r in rows]
+    else:
+        result = [dict(r) for r in rows]
+    for r in result:
+        if isinstance(r["nodes"], str):
+            try:
+                r["nodes"] = json.loads(r["nodes"])
+            except Exception:
+                r["nodes"] = []
+    return jsonify(result)
+
+
+@app.route("/api/routing/rules", methods=["POST"])
+def routing_rules_create():
+    data = request.get_json(silent=True) or {}
+    name  = data.get("name", "New Pipeline")
+    nodes = json.dumps(data.get("nodes", []))
+    ts    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn  = get_db()
+    cur   = conn.cursor()
+    p     = placeholder()
+    if DATABASE_URL:
+        cur.execute(
+            f"INSERT INTO routing_rules (name,enabled,nodes,created_at) VALUES ({p},{p},{p},{p}) RETURNING id",
+            (name, 1, nodes, ts),
+        )
+        new_id = cur.fetchone()[0]
+    else:
+        cur.execute(
+            f"INSERT INTO routing_rules (name,enabled,nodes,created_at) VALUES ({p},{p},{p},{p})",
+            (name, 1, nodes, ts),
+        )
+        new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({"id": new_id, "name": name, "enabled": 1, "nodes": data.get("nodes", [])})
+
+
+@app.route("/api/routing/rules/<int:rule_id>", methods=["PUT"])
+def routing_rules_update(rule_id):
+    data = request.get_json(silent=True) or {}
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    fields, vals = [], []
+    if "name" in data:
+        fields.append(f"name={p}"); vals.append(data["name"])
+    if "enabled" in data:
+        fields.append(f"enabled={p}"); vals.append(int(data["enabled"]))
+    if "nodes" in data:
+        fields.append(f"nodes={p}"); vals.append(json.dumps(data["nodes"]))
+    if not fields:
+        conn.close()
+        return jsonify({"error": "nothing to update"}), 400
+    vals.append(rule_id)
+    cur.execute(f"UPDATE routing_rules SET {','.join(fields)} WHERE id={p}", vals)
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/routing/rules/<int:rule_id>", methods=["DELETE"])
+def routing_rules_delete(rule_id):
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    cur.execute(f"DELETE FROM routing_rules WHERE id={p}", (rule_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/broker/close-all", methods=["POST"])
 def broker_close_all():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
@@ -601,6 +756,11 @@ def broker_close_all():
 @app.route("/")
 def dashboard():
     return render_template("index.html")
+
+
+@app.route("/routing")
+def routing_page():
+    return render_template("routing.html")
 
 
 @app.route("/about")
