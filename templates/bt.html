@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <title>Backtest — Kairos Automata</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #13152a; color: #e0e0e0; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
@@ -100,9 +101,12 @@
     .stat-val.pos { color: #26a65b; }
     .stat-val.neg { color: #ef5350; }
 
-    /* Plot */
-    .plot-wrap { background: #fff; border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
-    .plot-wrap iframe { width: 100%; height: 600px; border: none; display: block; }
+    /* Charts */
+    .chart-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
+                  overflow: hidden; margin-bottom: 16px; }
+    .chart-title { padding: 10px 16px; font-size: 0.75rem; color: #666;
+                   text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid #2a2d3e; }
+    .chart-container { width: 100%; }
 
     /* Trades table */
     .trades-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
@@ -207,8 +211,13 @@
   <!-- Results -->
   <div id="results" style="display:none">
     <div class="stats-grid" id="statsGrid"></div>
-    <div class="plot-wrap" id="plotWrap" style="display:none">
-      <iframe id="plotFrame" title="Backtest chart"></iframe>
+    <div class="chart-card" id="priceChartCard" style="display:none">
+      <div class="chart-title" id="priceChartTitle">Price &amp; Trades</div>
+      <div class="chart-container" id="priceChart"></div>
+    </div>
+    <div class="chart-card" id="equityChartCard" style="display:none">
+      <div class="chart-title">Equity Curve</div>
+      <div class="chart-container" id="equityChart"></div>
     </div>
     <div class="trades-card" id="tradesCard" style="display:none">
       <h3 id="tradesTitle">Trades</h3>
@@ -384,7 +393,8 @@
 
       statusEl.style.display = 'none';
       renderStats(data.stats);
-      renderPlot(data.plot);
+      renderPriceChart(data.ohlcv, data.trades, data.ticker);
+      renderEquityChart(data.equity);
       renderTrades(data.trades, data.ticker);
       document.getElementById('results').style.display = 'block';
 
@@ -433,12 +443,108 @@
     }
   }
 
-  function renderPlot(html) {
-    const wrap  = document.getElementById('plotWrap');
-    const frame = document.getElementById('plotFrame');
-    if (!html) { wrap.style.display = 'none'; return; }
-    frame.srcdoc       = html;
-    wrap.style.display = 'block';
+  // ── Lightweight Charts ────────────────────────────────────────────────────
+  let _priceChart  = null;
+  let _equityChart = null;
+
+  function toUnix(s) {
+    // Convert "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD" to Unix seconds
+    return Math.floor(new Date(String(s).replace(' ', 'T')).getTime() / 1000);
+  }
+
+  function renderPriceChart(ohlcv, trades, ticker) {
+    const card = document.getElementById('priceChartCard');
+    const el   = document.getElementById('priceChart');
+    if (!ohlcv?.length) { card.style.display = 'none'; return; }
+
+    document.getElementById('priceChartTitle').textContent =
+      `${ticker} — Price & Trades`;
+
+    if (_priceChart) { _priceChart.remove(); _priceChart = null; }
+    el.innerHTML = '';
+
+    _priceChart = LightweightCharts.createChart(el, {
+      width:  el.clientWidth,
+      height: 400,
+      layout:      { background: { color: '#13152a' }, textColor: '#888' },
+      grid:        { vertLines: { color: '#1e2130' }, horzLines: { color: '#1e2130' } },
+      crosshair:   { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#2a2d3e' },
+      timeScale:   { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false },
+    });
+
+    const candles = _priceChart.addCandlestickSeries({
+      upColor:   '#26a65b', downColor:   '#ef5350',
+      borderUpColor: '#26a65b', borderDownColor: '#ef5350',
+      wickUpColor:   '#26a65b', wickDownColor:   '#ef5350',
+    });
+    candles.setData(ohlcv);
+
+    // Trade entry/exit markers
+    if (trades?.length) {
+      const markers = [];
+      for (const t of trades) {
+        const isLong = t.direction === 'Long';
+        if (t.entry_time) markers.push({
+          time:     toUnix(t.entry_time),
+          position: isLong ? 'belowBar' : 'aboveBar',
+          color:    isLong ? '#26a65b' : '#ef5350',
+          shape:    isLong ? 'arrowUp' : 'arrowDown',
+          text:     isLong ? 'Buy' : 'Sell',
+        });
+        if (t.exit_time) markers.push({
+          time:     toUnix(t.exit_time),
+          position: isLong ? 'aboveBar' : 'belowBar',
+          color:    '#888',
+          shape:    isLong ? 'arrowDown' : 'arrowUp',
+          text:     'Exit',
+        });
+      }
+      markers.sort((a, b) => a.time - b.time);
+      candles.setMarkers(markers);
+    }
+
+    _priceChart.timeScale().fitContent();
+    card.style.display = '';
+
+    // Resize on window resize
+    window.addEventListener('resize', () => {
+      if (_priceChart) _priceChart.applyOptions({ width: el.clientWidth });
+    });
+  }
+
+  function renderEquityChart(equity) {
+    const card = document.getElementById('equityChartCard');
+    const el   = document.getElementById('equityChart');
+    if (!equity?.length) { card.style.display = 'none'; return; }
+
+    if (_equityChart) { _equityChart.remove(); _equityChart = null; }
+    el.innerHTML = '';
+
+    _equityChart = LightweightCharts.createChart(el, {
+      width:  el.clientWidth,
+      height: 200,
+      layout:      { background: { color: '#13152a' }, textColor: '#888' },
+      grid:        { vertLines: { color: '#1e2130' }, horzLines: { color: '#1e2130' } },
+      rightPriceScale: { borderColor: '#2a2d3e' },
+      timeScale:   { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false },
+      handleScroll: false, handleScale: false,
+    });
+
+    const baseline = equity[0]?.value ?? 0;
+    const areaSeries = _equityChart.addAreaSeries({
+      topColor:    'rgba(74,144,217,0.3)',
+      bottomColor: 'rgba(74,144,217,0.0)',
+      lineColor:   '#4a90d9',
+      lineWidth:   2,
+    });
+    areaSeries.setData(equity.map(p => ({ time: p.time, value: p.value })));
+    _equityChart.timeScale().fitContent();
+    card.style.display = '';
+
+    window.addEventListener('resize', () => {
+      if (_equityChart) _equityChart.applyOptions({ width: el.clientWidth });
+    });
   }
 
   function renderTrades(trades, ticker) {

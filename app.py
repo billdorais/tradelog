@@ -666,7 +666,8 @@ def bt_convert():
 
 @app.route("/api/bt/run", methods=["POST"])
 def bt_run():
-    import tempfile, os as _os, math
+    import math
+    import pandas as _pd
     try:
         from backtesting import Backtest
         from strategies.bt_strategies import STRATEGIES
@@ -767,23 +768,29 @@ def bt_run():
 
         eq_curve = []
         if "_equity_curve" in stats:
-            eq   = stats["_equity_curve"]["Equity"]
-            step = max(1, len(eq) // 500)
-            eq_curve = [{"t": str(t), "v": round(float(v), 2)} for t, v in eq.iloc[::step].items()]
+            eq      = stats["_equity_curve"]["Equity"]
+            step_eq = max(1, len(eq) // 600)
+            for t, v in eq.iloc[::step_eq].items():
+                try:    ts_int = int(t.timestamp())
+                except Exception: ts_int = int(_pd.Timestamp(t).timestamp())
+                eq_curve.append({"time": ts_int, "value": round(float(v), 2)})
 
-        plot_html = ""
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-                plot_path = f.name
-            bt.plot(filename=plot_path, open_browser=False)
-            with open(plot_path, "r", encoding="utf-8") as f:
-                plot_html = f.read()
-            _os.unlink(plot_path)
-        except Exception as pe:
-            log.warning("bt plot failed: %s", pe)
+        # OHLCV bars for Lightweight Charts (capped at 1500 candles)
+        ohlcv_list = []
+        step_bars = max(1, len(df) // 1500)
+        for ts, row in df.iloc[::step_bars].iterrows():
+            try:    t_int = int(ts.timestamp())
+            except Exception: t_int = int(_pd.Timestamp(ts).timestamp())
+            ohlcv_list.append({
+                "time":  t_int,
+                "open":  round(float(row["Open"]),  4),
+                "high":  round(float(row["High"]),  4),
+                "low":   round(float(row["Low"]),   4),
+                "close": round(float(row["Close"]), 4),
+            })
 
         return jsonify({"stats": stats_dict, "trades": trades_list,
-                        "equity": eq_curve, "plot": plot_html, "ticker": ticker})
+                        "equity": eq_curve, "ohlcv": ohlcv_list, "ticker": ticker})
 
     except Exception as e:
         log.exception("bt_run error")

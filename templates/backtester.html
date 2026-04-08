@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BackTester — Kairos Automata</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -221,12 +221,20 @@
 
     /* ── Chart ── */
     .chart-wrap {
-      background: #0d0d0d;
+      background: #13152a;
       border: 1px solid #2a2d3e;
       border-radius: 8px;
-      padding: 20px 20px 12px;
+      overflow: hidden;
     }
-    .chart-wrap canvas { max-height: 260px; }
+    .chart-wrap-label {
+      padding: 10px 16px;
+      font-size: 0.75rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid #2a2d3e;
+    }
+    .chart-wrap-inner { width: 100%; }
 
     /* ── Trade log ── */
     .table-wrap {
@@ -1117,10 +1125,8 @@ function renderSingle(data) {
     const chartWrap = document.createElement('div');
     chartWrap.className = 'chart-wrap';
     chartWrap.innerHTML = `
-      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:12px">
-        Equity Curve
-      </div>
-      <canvas id="eqCanvas"></canvas>`;
+      <div class="chart-wrap-label">Equity Curve</div>
+      <div class="chart-wrap-inner" id="eqChartEl"></div>`;
     rc.appendChild(chartWrap);
     drawEquityChart(s.equity_curve);
   }
@@ -1299,71 +1305,40 @@ function fmt(v) {
 
 // ── Equity chart ───────────────────────────────────────────────────────────
 function drawEquityChart(curve) {
-  const canvas = document.getElementById('eqCanvas');
-  if (!canvas) return;
-  if (equityChart) { equityChart.destroy(); equityChart = null; }
+  const el = document.getElementById('eqChartEl');
+  if (!el) return;
+  if (equityChart) { equityChart.remove(); equityChart = null; }
 
-  const labels = curve.map(p => p.time);
+  equityChart = LightweightCharts.createChart(el, {
+    width:  el.clientWidth,
+    height: 240,
+    layout:      { background: { color: '#13152a' }, textColor: '#888' },
+    grid:        { vertLines: { color: '#1e2130' }, horzLines: { color: '#1e2130' } },
+    rightPriceScale: { borderColor: '#2a2d3e' },
+    timeScale:   { borderColor: '#2a2d3e', timeVisible: false },
+    handleScroll: false, handleScale: false,
+  });
+
   const values = curve.map(p => p.value);
+  const isProfit = values[values.length - 1] >= 0;
+  const lineColor = isProfit ? '#26a65b' : '#ef5350';
+  const topColor  = isProfit ? 'rgba(38,166,91,0.3)' : 'rgba(239,83,80,0.3)';
 
-  const ctx = canvas.getContext('2d');
-  const h   = canvas.offsetHeight || 200;
+  const area = equityChart.addAreaSeries({
+    topColor,
+    bottomColor: 'rgba(0,0,0,0)',
+    lineColor,
+    lineWidth: 2,
+  });
 
-  // Green/red gradient split at zero
-  const min  = Math.min(0, ...values);
-  const max  = Math.max(0, ...values);
-  const range = max - min || 1;
-  const zeroFrac = 1 - (0 - min) / range;
+  // equity_curve times are strings like "2023-01-15 14:30:00" — convert to
+  // sequential integers so LightweightCharts doesn't reject non-trading hours
+  const data = curve.map((p, i) => ({ time: i + 1, value: p.value }));
+  area.setData(data);
+  equityChart.timeScale().fitContent();
 
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  if (max > 0 && min < 0) {
-    grad.addColorStop(0,          'rgba(38,166,91,0.35)');
-    grad.addColorStop(zeroFrac,   'rgba(38,166,91,0.0)');
-    grad.addColorStop(zeroFrac,   'rgba(239,83,80,0.0)');
-    grad.addColorStop(1,          'rgba(239,83,80,0.35)');
-  } else if (max <= 0) {
-    grad.addColorStop(0, 'rgba(239,83,80,0.35)');
-    grad.addColorStop(1, 'rgba(239,83,80,0.05)');
-  } else {
-    grad.addColorStop(0, 'rgba(38,166,91,0.35)');
-    grad.addColorStop(1, 'rgba(38,166,91,0.05)');
-  }
-
-  equityChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        data: values,
-        borderColor: '#a78bfa',
-        borderWidth: 2,
-        pointRadius: values.length > 100 ? 0 : 3,
-        pointHoverRadius: 5,
-        fill: true,
-        backgroundColor: grad,
-        tension: 0.3,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      plugins: { legend: { display: false },
-                 tooltip: { callbacks: { label: ctx => ' ' + fmt(ctx.parsed.y) } } },
-      scales: {
-        x: {
-          ticks: {
-            color: '#555',
-            maxTicksLimit: 8,
-            maxRotation: 0,
-          },
-          grid: { color: '#1a1a1a' },
-        },
-        y: {
-          ticks: { color: '#555' },
-          grid: { color: '#1a1a1a' },
-        }
-      }
-    }
+  window.addEventListener('resize', () => {
+    if (equityChart) equityChart.applyOptions({ width: el.clientWidth });
   });
 }
 
