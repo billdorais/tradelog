@@ -819,8 +819,14 @@
             const pnl        = ex?.pnl != null ? ex.pnl : undefined;
             const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
             const dur        = en ? tradeDuration(en.time, ex?.time) : '—';
+            const entryId    = en?.exec_id  ? `'${en.exec_id}'`  : 'null';
+            const exitId     = ex?.exec_id  ? `'${ex.exec_id}'`  : 'null';
             rows.push(`<tr class="group-second">
-              <td style="color:#4a90d9;font-size:0.8rem">IB</td>
+              <td style="color:#4a90d9;font-size:0.8rem;white-space:nowrap">
+                IB
+                <button onclick="deleteIBRow(${entryId}, ${exitId})" title="Remove stale IB row"
+                  style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.75rem;padding:0;vertical-align:middle">&#10005;</button>
+              </td>
               <td style="font-size:0.85rem;color:#aaa">${en?.time ?? '—'}</td>
               <td style="font-size:0.85rem;color:#888">${ex?.time ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
               <td style="color:#888;font-size:0.85rem">${dur}</td>
@@ -1223,6 +1229,13 @@
       } finally {
         btn.disabled = false;
       }
+    }
+
+    async function deleteIBRow(entryId, exitId) {
+      if (!confirm('Remove this IB row from the display? (Does not affect your actual IB account)')) return;
+      const ids = [entryId, exitId].filter(Boolean);
+      await Promise.all(ids.map(id => fetch(`/api/ib/executions/${encodeURIComponent(id)}`, { method: 'DELETE' })));
+      await loadTrades();
     }
 
     async function syncIBFills() {

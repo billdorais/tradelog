@@ -1752,6 +1752,18 @@ def ib_sync_fills():
     return jsonify(result)
 
 
+@app.route("/api/ib/executions/<exec_id>", methods=["DELETE"])
+def ib_execution_delete(exec_id):
+    """Remove a single IB execution record (e.g. stale/orphaned fill)."""
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    cur.execute(f"DELETE FROM ib_executions WHERE exec_id={p}", (exec_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/ib/trades")
 def ib_trades():
     conn = get_db()

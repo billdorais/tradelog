@@ -144,7 +144,8 @@ class IBBroker:
         with self._lock:
             self._ensure_connected()
             try:
-                fills = self._ib.reqExecutions(ExecutionFilter(time=since))
+                # No time filter — simpler request is less likely to cause socket issues
+                fills = self._ib.reqExecutions(ExecutionFilter())
                 log.info("reqExecutions returned %d fills", len(fills))
             except Exception as e:
                 log.warning("reqExecutions failed (%s) — falling back to session fills()", e)
