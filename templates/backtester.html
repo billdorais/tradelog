@@ -558,13 +558,21 @@
         <div class="field-group" style="margin-bottom:16px">
           <div class="field-group-title">Data</div>
           <div class="field">
+            <label>Source</label>
+            <select class="data-select" id="dataSource" onchange="updateSourceHint()">
+              <option value="yfinance">Yahoo Finance</option>
+              <option value="ib">Interactive Brokers</option>
+            </select>
+          </div>
+          <p id="sourceHint" style="font-size:0.72rem;margin-top:-4px;display:none"></p>
+          <div class="field">
             <label>Ticker</label>
             <input type="text" class="data-input" id="ticker" value="QQQ" placeholder="e.g. QQQ, MSFT">
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
             <div class="field">
               <label>Start Date</label>
-              <input type="date" class="data-input" id="startDate" value="2024-01-01">
+              <input type="date" class="data-input" id="startDate" value="2016-01-01">
             </div>
             <div class="field">
               <label>End Date</label>
@@ -577,13 +585,11 @@
               <option value="5m">5 min</option>
               <option value="15m">15 min</option>
               <option value="30m">30 min</option>
-              <option value="1h" selected>1 hour</option>
-              <option value="1d">Daily</option>
+              <option value="1h">1 hour</option>
+              <option value="1d" selected>Daily</option>
             </select>
           </div>
-          <p id="intervalHint" style="font-size:0.72rem;color:#f59e0b;display:none">
-            ⚠ Yahoo Finance: 1h = last 730 days, 5m/15m/30m = last 60 days.
-          </p>
+          <p id="intervalHint" style="font-size:0.72rem;color:#f59e0b;display:none"></p>
         </div>
 
         <!-- Pine Script paste -->
@@ -766,15 +772,38 @@ let equityChart      = null;
 let lastRunData       = null;  // full response from /api/backtest/run
 let lastStep1Analysis = '';   // Claude Step 1 analysis text
 
-function getTicker()    { return document.getElementById('ticker').value.trim().toUpperCase(); }
-function getStartDate() { return document.getElementById('startDate').value; }
-function getEndDate()   { return document.getElementById('endDate').value; }
-function getInterval()  { return document.getElementById('interval').value; }
+function getTicker()     { return document.getElementById('ticker').value.trim().toUpperCase(); }
+function getStartDate()  { return document.getElementById('startDate').value; }
+function getEndDate()    { return document.getElementById('endDate').value; }
+function getInterval()   { return document.getElementById('interval').value; }
+function getDataSource() { return document.getElementById('dataSource').value; }
 
+function updateSourceHint() {
+  const hint = document.getElementById('sourceHint');
+  const v    = getDataSource();
+  if (v === 'ib') {
+    hint.textContent   = '✓ IB: 5-min bars back years. Requires IB Gateway connected + market data subscription.';
+    hint.style.color   = '#26a65b';
+    hint.style.display = '';
+  } else {
+    hint.style.display = 'none';
+  }
+}
+
+const INTERVAL_HINTS = {
+  '5m':  '⚠ Yahoo Finance: 5m data is only available for the last 60 days.',
+  '15m': '⚠ Yahoo Finance: 15m data is only available for the last 60 days.',
+  '30m': '⚠ Yahoo Finance: 30m data is only available for the last 60 days.',
+  '1h':  '⚠ Yahoo Finance: 1h data is only available for the last 730 days (~2 years). For longer backtests use Daily.',
+  '1d':  '✓ Daily data — up to 20 years available.',
+};
 function updateIntervalHint() {
   const hint = document.getElementById('intervalHint');
   const v    = getInterval();
-  hint.style.display = ['5m','15m','30m','1h'].includes(v) ? '' : 'none';
+  const msg  = INTERVAL_HINTS[v] || '';
+  hint.textContent    = msg;
+  hint.style.display  = msg ? '' : 'none';
+  hint.style.color    = v === '1d' ? '#26a65b' : '#f59e0b';
 }
 updateIntervalHint();
 
@@ -917,10 +946,11 @@ async function runBacktest() {
 
   const payload = {
     ticker,
-    start_date:  getStartDate(),
-    end_date:    getEndDate(),
-    interval:    getInterval(),
-    mode:        currentMode,
+    start_date:   getStartDate(),
+    end_date:     getEndDate(),
+    interval:     getInterval(),
+    data_source:  getDataSource(),
+    mode:         currentMode,
   };
 
   if (currentMode === 'single') {
@@ -1371,10 +1401,11 @@ async function runStep2(btn) {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ticker:     getTicker(),
-          start_date: getStartDate(),
-          end_date:   getEndDate(),
-          interval:   getInterval(),
+          ticker:      getTicker(),
+          start_date:  getStartDate(),
+          end_date:    getEndDate(),
+          interval:    getInterval(),
+          data_source: getDataSource(),
           mode: 'optimize',
           lta_min: params.lta_min ?? 20, lta_max: params.lta_max ?? 60, lta_step: params.lta_step ?? 5,
           sta_min: params.sta_min ??  5, sta_max: params.sta_max ?? 20, sta_step: params.sta_step ?? 2,
@@ -1500,7 +1531,7 @@ async function runAgent() {
   const end_date    = getEndDate();
   const interval    = getInterval();
   const iterations  = parseInt(document.getElementById('agentIter').value);
-  const data_source = 'yfinance';
+  const data_source = getDataSource();
 
   const rc = document.getElementById('resultsCol');
   rc.innerHTML = '';

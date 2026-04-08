@@ -217,11 +217,11 @@ class IBBroker:
         }
         bar_size = bar_size_map.get(interval, "1 hour")
 
-        # Chunk sizes per request to stay within IB limits
+        # Chunk sizes per request — IB allows larger durations for longer bar sizes
         chunk_days_map = {
-            "5m":  5,
-            "15m": 10,
-            "30m": 20,
+            "5m":  30,    # "1 M" per request
+            "15m": 60,
+            "30m": 90,
             "1h":  365,
             "1d":  365 * 5,
         }

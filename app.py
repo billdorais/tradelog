@@ -800,21 +800,33 @@ def bt_run():
 @app.route("/api/backtest/run", methods=["POST"])
 def backtest_run():
     from strategies.camarilla import run_backtest, optimise
-    from strategies.data import fetch_bars
+    from strategies.data import fetch_bars, fetch_bars_ib
 
-    body = request.get_json(silent=True) or {}
-    ticker     = (body.get("ticker") or "").strip().upper()
-    start_date = body.get("start_date", "2024-01-01")
-    end_date   = body.get("end_date",   "2026-01-01")
-    interval   = body.get("interval",   "1h")
-    mode       = body.get("mode",       "single")
+    body        = request.get_json(silent=True) or {}
+    ticker      = (body.get("ticker") or "").strip().upper()
+    start_date  = body.get("start_date", "2016-01-01")
+    end_date    = body.get("end_date",   "2026-01-01")
+    interval    = body.get("interval",   "1d")
+    mode        = body.get("mode",       "single")
+    data_source = body.get("data_source", "yfinance")
 
     if not ticker:
         return jsonify({"error": "ticker is required"}), 400
 
-    # Fetch OHLCV bars from yfinance
+    # Fetch OHLCV bars
     try:
-        bars = fetch_bars(ticker, start_date, end_date, interval)
+        if data_source == "ib":
+            if ib_broker is None:
+                return jsonify({"error": "IB not configured — set IB_HOST env var"}), 400
+            if not ib_broker.is_connected():
+                return jsonify({"error": "IB Gateway not connected — check the gateway service"}), 400
+            bars = _submit_ib_task(
+                fetch_bars_ib,
+                ib_broker, ticker, start_date, end_date, interval,
+                _timeout=120,
+            )
+        else:
+            bars = fetch_bars(ticker, start_date, end_date, interval)
     except Exception as e:
         return jsonify({"error": f"Data fetch failed for {ticker}: {e}"}), 500
 
