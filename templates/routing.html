@@ -369,8 +369,8 @@
           <div class="form-group">
             <label>Trading Mode</label>
             <select id="f_value">
-              <option value="live"  ${(v.value||'live')==='live'  ? 'selected':''}>Live — place real orders</option>
-              <option value="paper" ${v.value==='paper' ? 'selected':''}>Paper — log only, no orders</option>
+              <option value="paper" ${(v.value||'paper')==='paper' ? 'selected':''}>Paper — IB paper account</option>
+              <option value="live"  ${v.value==='live'  ? 'selected':''}>Live — IB live account</option>
             </select>
           </div>`;
 
