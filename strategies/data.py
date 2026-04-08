@@ -23,12 +23,13 @@ def fetch_bars(ticker, start, end, interval="1h"):
     log.info(f"yfinance download: {ticker} {interval} {start}→{end}")
 
     try:
-        tkr_obj = yf.Ticker(ticker)
-        df = tkr_obj.history(
+        df = yf.download(
+            ticker,
             start=start,
             end=end,
             interval=interval,
             auto_adjust=True,
+            progress=False,
         )
     except Exception as e:
         raise ValueError(f"yfinance download error for {ticker}: {e}")
