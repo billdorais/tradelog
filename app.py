@@ -23,11 +23,13 @@ DATABASE_URL  = os.environ.get("DATABASE_URL")
 # Broker initialisation — connect in background so app starts immediately
 # ---------------------------------------------------------------------------
 
-ib_broker         = None
-_ib_sync_event    = None   # set() to request a manual fill sync from the background thread
-_ib_sync_queue    = None   # background thread puts result here after sync
-_ib_task_queue    = None   # (fn, args, kwargs, result_q) tasks routed to background IB thread
-eod_close_enabled = True   # toggleable via /api/broker/eod-close toggle
+ib_broker         = None   # paper gateway
+ib_broker_live    = None   # live gateway (IB_HOST_LIVE env var)
+_ib_sync_event    = None
+_ib_sync_queue    = None
+_ib_task_queue    = None
+_ib_live_task_queue = None
+eod_close_enabled = True
 
 if os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
@@ -237,6 +239,60 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_eod_close_scheduler, daemon=True).start()
 
 # ---------------------------------------------------------------------------
+# Live IB broker (optional — set IB_HOST_LIVE to enable)
+# ---------------------------------------------------------------------------
+
+if os.environ.get("IB_HOST_LIVE"):
+    import queue as _ib_queue_mod_live
+    if not _ib_task_queue:            # import IBBroker if paper block didn't run
+        from brokers.ib_broker import IBBroker
+    ib_broker_live      = IBBroker(
+        host=os.environ["IB_HOST_LIVE"],
+        port=int(os.environ.get("IB_PORT_LIVE", 4004)),
+    )
+    _ib_live_task_queue = _ib_queue_mod_live.Queue()
+
+    def _submit_ib_live_task(fn, *args, _timeout=30, **kwargs):
+        result_q = _ib_queue_mod_live.SimpleQueue()
+        _ib_live_task_queue.put({"fn": fn, "args": args, "kwargs": kwargs, "result_queue": result_q})
+        try:
+            item = result_q.get(timeout=_timeout)
+        except _ib_queue_mod_live.Empty:
+            raise RuntimeError("IB live task timed out after %ds" % _timeout)
+        if "error" in item:
+            raise RuntimeError(item["error"])
+        return item["result"]
+
+    def _connect_ib_live_background():
+        """Connect and maintain the live IB Gateway connection."""
+        time.sleep(12)  # stagger slightly from paper connection
+        while True:
+            if not ib_broker_live.is_connected():
+                try:
+                    ib_broker_live.connect()
+                    log.info("IB Live Gateway connected — accounts: %s",
+                             ib_broker_live.status().get("accounts"))
+                except Exception as e:
+                    log.warning("IB Live connect failed, retrying in 30s: %s", e)
+                    time.sleep(30)
+                    continue
+            # Drain any tasks (e.g. options contract selection)
+            while True:
+                try:
+                    task = _ib_live_task_queue.get_nowait()
+                    try:
+                        result = task["fn"](*task["args"], **task["kwargs"])
+                        task["result_queue"].put({"result": result})
+                    except Exception as e:
+                        log.error("IB live background task error: %s", e)
+                        task["result_queue"].put({"error": str(e)})
+                except Exception:
+                    break
+            time.sleep(2)
+
+    threading.Thread(target=_connect_ib_live_background, daemon=True).start()
+
+# ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
 # ---------------------------------------------------------------------------
 
@@ -425,7 +481,7 @@ def webhook():
     option_expiry = data.get("option_expiry") or None
     max_spread    = float(data.get("max_spread", 1.0))
     strike_offset = int(data.get("strike_offset", 0))
-    paper_mode    = False  # True = skip real order even if broker is set
+    use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
 
     try:
         rconn = get_db()
@@ -441,7 +497,7 @@ def webhook():
             if strat_nodes:
                 matched = False
                 for sn in strat_nodes:
-                    pattern = (sn.get("value") or "").strip().upper()
+                    pattern  = (sn.get("value") or "").strip().upper()
                     incoming = strategy_name.upper()
                     if pattern.endswith("*") and incoming.startswith(pattern[:-1]):
                         matched = True
@@ -457,15 +513,15 @@ def webhook():
                 if ntype == "broker":
                     broker_name = (n.get("value") or broker_name).lower()
                 elif ntype == "mode":
-                    paper_mode = (n.get("value") or "").lower() == "paper"
+                    use_live_broker = (n.get("value") or "").lower() == "live"
                 elif ntype == "quantity":
                     quantity = n.get("amount", quantity)
                 elif ntype == "instrument":
                     sec_type = n.get("value") or sec_type
                 elif ntype == "ticker":
                     ticker = (n.get("value") or ticker or "").upper() or None
-            log.info("Routing rule matched for strategy '%s' — broker=%s paper=%s qty=%s sec=%s",
-                     strategy_name, broker_name, paper_mode, quantity, sec_type)
+            log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
+                     strategy_name, broker_name, use_live_broker, quantity, sec_type)
             break  # first matching pipeline wins
     except Exception as e:
         log.warning("Routing rule lookup failed: %s", e)
@@ -492,15 +548,18 @@ def webhook():
     exec_status = None
     exec_detail = None
 
-    if paper_mode:
-        exec_status = "paper"
-        exec_detail = "Routing rule set mode=paper — no real order placed"
-        log.info("Paper mode: skipping real order for %s %s", order_action, ticker)
-    elif broker_name == "ib":
-        if ib_broker is None:
+    if broker_name == "ib":
+        # Select paper or live broker based on routing rule Mode node
+        active_broker  = ib_broker_live if (use_live_broker and ib_broker_live) else ib_broker
+        submit_task    = _submit_ib_live_task if (use_live_broker and ib_broker_live) else _submit_ib_task
+        mode_label     = "live" if (use_live_broker and ib_broker_live) else "paper"
+
+        if active_broker is None:
             exec_status = "error"
-            exec_detail = "IB broker not initialised — check IB_HOST env var"
-            log.warning("IB order skipped: broker not initialised")
+            exec_detail = ("IB live broker not initialised — set IB_HOST_LIVE env var"
+                           if use_live_broker else
+                           "IB broker not initialised — check IB_HOST env var")
+            log.warning("IB order skipped: broker not initialised (%s)", mode_label)
         elif order_action not in ("BUY", "SELL"):
             exec_status = "skipped"
             exec_detail = f"No order placed for action '{raw_action}'"
@@ -511,8 +570,8 @@ def webhook():
                 current_price = float(data.get("price") or 0)
                 if not current_price:
                     raise ValueError("'price' (underlying price) required for options orders")
-                opt = _submit_ib_task(
-                    ib_broker.select_option,
+                opt = submit_task(
+                    active_broker.select_option,
                     ticker,
                     order_action,
                     current_price,
@@ -521,8 +580,8 @@ def webhook():
                     max_spread    = max_spread,
                     strike_offset = strike_offset,
                 )
-                result = _submit_ib_task(
-                    ib_broker.place_order,
+                result = submit_task(
+                    active_broker.place_order,
                     ticker,
                     order_action,
                     quantity,
@@ -535,16 +594,16 @@ def webhook():
                     right    = opt["right"],
                 )
                 exec_status = "ok" if result.get("success") else "error"
-                exec_detail = json.dumps({**result, "option_selected": opt})
-                log.info("IB option order %s %s %s %s %s: %s",
-                         order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result)
+                exec_detail = json.dumps({**result, "option_selected": opt, "mode": mode_label})
+                log.info("IB %s option order %s %s %s %s %s: %s",
+                         mode_label, order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result)
             except Exception as e:
                 exec_status = "error"
                 exec_detail = str(e)
-                log.error("IB option order failed for %s %s: %s", order_action, ticker, e)
+                log.error("IB %s option order failed for %s %s: %s", mode_label, order_action, ticker, e)
         else:
             # --- Equity / futures / crypto path ---
-            result = ib_broker.place_order(
+            result = active_broker.place_order(
                 ticker   = ticker,
                 action   = order_action,
                 quantity = quantity,
@@ -553,8 +612,8 @@ def webhook():
                 currency = currency,
             )
             exec_status = "ok" if result.get("success") else "error"
-            exec_detail = json.dumps(result)
-            log.info("IB order result for %s %s %s: %s", order_action, quantity, ticker, result)
+            exec_detail = json.dumps({**result, "mode": mode_label})
+            log.info("IB %s order %s %s %s: %s", mode_label, order_action, quantity, ticker, result)
 
     # 3. Write execution result back to the row
     if exec_status:
@@ -597,11 +656,14 @@ def clear_trades():
 
 @app.route("/api/broker/status")
 def broker_status():
-    if ib_broker is not None:
-        brokers = {"IB": ib_broker.status()}
-    else:
-        brokers = {"IB": {"connected": False, "broker": "IB",
-                          "note": "IB_HOST not set"}}
+    brokers = {}
+    brokers["IB"] = ib_broker.status() if ib_broker else {
+        "connected": False, "broker": "IB", "note": "IB_HOST not set"
+    }
+    if ib_broker_live is not None:
+        st = ib_broker_live.status()
+        st["mode"] = "live"
+        brokers["IB_LIVE"] = st
     return jsonify(brokers)
 
 
