@@ -276,6 +276,7 @@
     .exec-paper  { background: rgba(255,193,7,0.15);  color: #ffc107; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
     .exec-error  { background: rgba(239,83,80,0.15);  color: #ef5350; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
     .exec-none   { color: #444; font-size: 0.75rem; }
+    tr.row-error { background: rgba(239,83,80,0.05); border-left: 3px solid #ef5350; }
 
     .strategy-tag {
       display: inline-block;
@@ -566,14 +567,20 @@
       }
     }
 
-    function execBadge(status) {
+    function execBadge(status, detail) {
       if (!status) return '<span class="exec-none">—</span>';
-      const s = status.toLowerCase();
-      if (s === 'ok')    return '<span class="exec-ok">✓ Filled</span>';
-      if (s === 'paper') return '<span class="exec-paper">Paper</span>';
-      if (s === 'error') return '<span class="exec-error">✗ Error</span>';
-      return `<span class="exec-none">${status}</span>`;
+      const s     = status.toLowerCase();
+      const tip   = detail ? ` title="${escAttr(detail)}" style="cursor:help"` : '';
+      const dText = detail ? `<div style="font-size:0.7rem;color:#888;margin-top:2px;max-width:260px;white-space:normal;word-break:break-word">${escHtml(truncate(detail,120))}</div>` : '';
+      if (s === 'ok')      return `<span class="exec-ok"${tip}>✓ Filled</span>`;
+      if (s === 'paper')   return `<span class="exec-paper"${tip}>Paper</span>`;
+      if (s === 'skipped') return `<span class="exec-none"${tip}>Skipped</span>`;
+      if (s === 'error')   return `<div><span class="exec-error"${tip}>✗ Error</span>${dText}</div>`;
+      return `<span class="exec-none"${tip}>${status}</span>`;
     }
+    function escAttr(s) { return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+    function escHtml(s)  { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function truncate(s,n){ return s && s.length > n ? s.slice(0,n)+'…' : s; }
 
     function actionBadge(value) {
       if (!value) return '—';
@@ -785,7 +792,9 @@
               : undefined;
             const dur        = en ? tradeDuration(en.received_at, ex?.received_at) : '—';
             const status     = ex ? ex.exec_status : en?.exec_status;
-            rows.push(`<tr class="group-first">
+            const detail     = ex ? ex.exec_detail : en?.exec_detail;
+            const rowClass   = status === 'error' ? 'group-first row-error' : 'group-first';
+            rows.push(`<tr class="${rowClass}">
               <td style="color:#aaa;font-size:0.8rem">Trading View</td>
               <td style="font-size:0.85rem">${fmtET(en?.received_at) ?? '—'}</td>
               <td style="font-size:0.85rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
@@ -797,7 +806,7 @@
               <td>${qty ?? '—'}</td>
               <td>${priceCell(entryPrice)}</td>
               <td>${priceCell(exitPrice)}</td>
-              <td>${execBadge(status)}</td>
+              <td>${execBadge(status, detail)}</td>
             </tr>`);
           }
 
