@@ -334,6 +334,7 @@
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button id="syncIBBtn" onclick="syncIBFills()" style="background:transparent;border:1px solid #4a90d9;color:#4a90d9;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Sync IB Fills</button>
+      <button id="eodToggleBtn" onclick="toggleEODClose()" style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">EOD Close: ...</button>
       <button id="closeAllBtn" onclick="closeAllPositions()" style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Close All Positions</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
     </div>
@@ -1065,16 +1066,19 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing...';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
           fetch('/api/ib/trades').catch(() => ({ json: () => [] })),
+          fetch('/api/broker/eod-close').catch(() => ({ json: () => ({eod_close_enabled: true}) })),
         ]);
         const trades  = await tradesRes.json();
         const stats   = await statsRes.json();
         const brokers = await brokerRes.json();
         allIBExecs = await ibExecsRes.json().catch(() => []);
+        const eodData = await eodRes.json().catch(() => ({eod_close_enabled: true}));
+        updateEODBtn(eodData.eod_close_enabled);
 
         // IB connection pill
         const ib = brokers.IB || {};
@@ -1146,6 +1150,25 @@
         alert('Reconnect error');
         document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
       }
+    }
+
+    function updateEODBtn(enabled) {
+      const btn = document.getElementById('eodToggleBtn');
+      if (enabled) {
+        btn.textContent = 'EOD Close: ON';
+        btn.style.borderColor = '#26a65b';
+        btn.style.color = '#26a65b';
+      } else {
+        btn.textContent = 'EOD Close: OFF';
+        btn.style.borderColor = '#e74c3c';
+        btn.style.color = '#e74c3c';
+      }
+    }
+
+    async function toggleEODClose() {
+      const res  = await fetch('/api/broker/eod-close/toggle', { method: 'POST' });
+      const data = await res.json();
+      updateEODBtn(data.eod_close_enabled);
     }
 
     async function closeAllPositions() {

@@ -23,10 +23,11 @@ DATABASE_URL  = os.environ.get("DATABASE_URL")
 # Broker initialisation — connect in background so app starts immediately
 # ---------------------------------------------------------------------------
 
-ib_broker      = None
-_ib_sync_event = None   # set() to request a manual fill sync from the background thread
-_ib_sync_queue = None   # background thread puts result here after sync
-_ib_task_queue = None   # (fn, args, kwargs, result_q) tasks routed to background IB thread
+ib_broker         = None
+_ib_sync_event    = None   # set() to request a manual fill sync from the background thread
+_ib_sync_queue    = None   # background thread puts result here after sync
+_ib_task_queue    = None   # (fn, args, kwargs, result_q) tasks routed to background IB thread
+eod_close_enabled = True   # toggleable via /api/broker/eod-close toggle
 
 if os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
@@ -211,13 +212,14 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
 
     def _eod_close_scheduler():
-        """Close all open IB positions at 3:59 PM ET on weekdays."""
+        """Close all open IB positions at 3:59 PM ET on weekdays (if enabled)."""
         ET = ZoneInfo("America/New_York")
         triggered_date = None
         while True:
             now = datetime.now(ET)
             today = now.date()
-            if (now.weekday() < 5                          # Mon–Fri
+            if (eod_close_enabled
+                    and now.weekday() < 5                  # Mon–Fri
                     and now.hour == 15 and now.minute == 59
                     and triggered_date != today):
                 triggered_date = today
@@ -567,6 +569,19 @@ def broker_orders():
         return jsonify({"open_orders": orders, "session_fills": fills})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/broker/eod-close", methods=["GET"])
+def eod_close_status():
+    return jsonify({"eod_close_enabled": eod_close_enabled})
+
+
+@app.route("/api/broker/eod-close/toggle", methods=["POST"])
+def eod_close_toggle():
+    global eod_close_enabled
+    eod_close_enabled = not eod_close_enabled
+    log.info("EOD close toggled to %s", eod_close_enabled)
+    return jsonify({"eod_close_enabled": eod_close_enabled})
 
 
 @app.route("/api/broker/close-all", methods=["POST"])
