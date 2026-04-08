@@ -7,6 +7,12 @@ RUN grep -q "^AcceptIncomingConnectionAction=" /home/ibgateway/ibc/config.ini \
     && sed -i 's/^AcceptIncomingConnectionAction=.*/AcceptIncomingConnectionAction=accept/' /home/ibgateway/ibc/config.ini \
     || echo "AcceptIncomingConnectionAction=accept" >> /home/ibgateway/ibc/config.ini
 
+# Take over as primary session if another IB session is already active
+# (prevents Gateway from shutting itself down when TWS/mobile is also logged in)
+RUN grep -q "^ExistingSessionDetectedAction=" /home/ibgateway/ibc/config.ini \
+    && sed -i 's/^ExistingSessionDetectedAction=.*/ExistingSessionDetectedAction=primaryoverride/' /home/ibgateway/ibc/config.ini \
+    || echo "ExistingSessionDetectedAction=primaryoverride" >> /home/ibgateway/ibc/config.ini
+
 # Disable Read-Only API mode in IBC config
 RUN grep -q "^ReadOnlyApi=" /home/ibgateway/ibc/config.ini \
     && sed -i 's/^ReadOnlyApi=.*/ReadOnlyApi=no/' /home/ibgateway/ibc/config.ini \
