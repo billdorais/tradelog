@@ -135,13 +135,20 @@ class IBBroker:
         Actively request recent fills from IB via reqExecutions().
         Must be called from the thread that owns the IB event loop (background thread).
         days_back: how many calendar days back to fetch (default 7 to cover weekends/holidays).
+        Falls back to fills() (session cache) if reqExecutions raises, so a socket
+        hiccup doesn't cause the sync to fail entirely.
         """
         from ib_async import ExecutionFilter
         from datetime import datetime, timedelta, timezone
         since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y%m%d %H:%M:%S")
         with self._lock:
             self._ensure_connected()
-            fills = self._ib.reqExecutions(ExecutionFilter(time=since))
+            try:
+                fills = self._ib.reqExecutions(ExecutionFilter(time=since))
+                log.info("reqExecutions returned %d fills", len(fills))
+            except Exception as e:
+                log.warning("reqExecutions failed (%s) — falling back to session fills()", e)
+                fills = self._ib.fills()
             result = []
             for f in fills:
                 result.append({
