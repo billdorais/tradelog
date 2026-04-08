@@ -799,77 +799,54 @@ def bt_run():
 
 @app.route("/api/backtest/run", methods=["POST"])
 def backtest_run():
-    from strategies.camarilla import (
-        parse_bars, run_backtest, optimise,
-        is_trade_list_csv, parse_trade_list, _compute_stats,
-    )
+    from strategies.camarilla import run_backtest, optimise
+    from strategies.data import fetch_bars
 
-    if "csv_file" not in request.files:
-        return jsonify({"error": "No CSV file uploaded"}), 400
+    body = request.get_json(silent=True) or {}
+    ticker     = (body.get("ticker") or "").strip().upper()
+    start_date = body.get("start_date", "2024-01-01")
+    end_date   = body.get("end_date",   "2026-01-01")
+    interval   = body.get("interval",   "1h")
+    mode       = body.get("mode",       "single")
 
-    file = request.files["csv_file"]
-    if not file.filename:
-        return jsonify({"error": "Empty filename"}), 400
+    if not ticker:
+        return jsonify({"error": "ticker is required"}), 400
 
-    file_bytes = file.read()
-
-    # ── Trade-list import (TradingView Strategy Tester export) ────────────
-    if is_trade_list_csv(file_bytes):
-        try:
-            trades = parse_trade_list(file_bytes)
-        except Exception as e:
-            return jsonify({"error": f"CSV parse error: {e}"}), 400
-
-        if not trades:
-            return jsonify({"error": "No valid trades found in CSV"}), 400
-
-        stats = _compute_stats(trades)
-        return jsonify({
-            "mode":         "single",
-            "source":       "trade_list",
-            "bars_loaded":  len(trades),
-            "trades":       trades[:1000],
-            "stats":        stats,
-        })
-
-    # ── OHLCV backtest ────────────────────────────────────────────────────
+    # Fetch OHLCV bars from yfinance
     try:
-        bars = parse_bars(file_bytes)
+        bars = fetch_bars(ticker, start_date, end_date, interval)
     except Exception as e:
-        return jsonify({"error": f"CSV parse error: {e}"}), 400
+        return jsonify({"error": f"Data fetch failed for {ticker}: {e}"}), 500
 
     if len(bars) < 10:
-        return jsonify({"error": "Not enough bars in CSV (need at least 10). "
-                                 "Make sure you export OHLCV candle data, not the "
-                                 "Strategy Tester trade list — or upload the trade "
-                                 "list directly (it is also supported)."}), 400
-
-    mode = request.form.get("mode", "single")
+        return jsonify({"error": f"Only {len(bars)} bars returned for {ticker} "
+                                 f"({start_date} → {end_date}, {interval}). "
+                                 f"Try a wider date range or a different interval."}), 400
 
     if mode == "optimize":
         try:
             opt_params = {
                 "long_trail_activation_range":  [
-                    float(request.form.get("lta_min", 20)),
-                    float(request.form.get("lta_max", 60)),
-                    float(request.form.get("lta_step", 10)),
+                    float(body.get("lta_min", 20)),
+                    float(body.get("lta_max", 60)),
+                    float(body.get("lta_step", 10)),
                 ],
                 "short_trail_activation_range": [
-                    float(request.form.get("sta_min", 5)),
-                    float(request.form.get("sta_max", 20)),
-                    float(request.form.get("sta_step", 5)),
+                    float(body.get("sta_min", 5)),
+                    float(body.get("sta_max", 20)),
+                    float(body.get("sta_step", 5)),
                 ],
                 "long_hard_stop_range": [
-                    float(request.form.get("lhs_min", 50)),
-                    float(request.form.get("lhs_max", 100)),
-                    float(request.form.get("lhs_step", 10)),
+                    float(body.get("lhs_min", 50)),
+                    float(body.get("lhs_max", 100)),
+                    float(body.get("lhs_step", 10)),
                 ],
                 "short_hard_stop_range": [
-                    float(request.form.get("shs_min", 10)),
-                    float(request.form.get("shs_max", 30)),
-                    float(request.form.get("shs_step", 5)),
+                    float(body.get("shs_min", 10)),
+                    float(body.get("shs_max", 30)),
+                    float(body.get("shs_step", 5)),
                 ],
-                "trail_distance": float(request.form.get("trail_distance", 1)),
+                "trail_distance": float(body.get("trail_distance", 1)),
             }
             grid = optimise(bars, opt_params)
             return jsonify({"mode": "optimize", "bars_loaded": len(bars), "grid": grid})
@@ -879,11 +856,11 @@ def backtest_run():
     else:
         try:
             params = {
-                "long_trail_activation":  float(request.form.get("lta", 40)),
-                "short_trail_activation": float(request.form.get("sta", 10)),
-                "long_hard_stop":         float(request.form.get("lhs", 70)),
-                "short_hard_stop":        float(request.form.get("shs", 20)),
-                "trail_distance":         float(request.form.get("trail_distance", 1)),
+                "long_trail_activation":  float(body.get("lta", 40)),
+                "short_trail_activation": float(body.get("sta", 10)),
+                "long_hard_stop":         float(body.get("lhs", 70)),
+                "short_hard_stop":        float(body.get("shs", 20)),
+                "trail_distance":         float(body.get("trail_distance", 1)),
             }
             result = run_backtest(bars, params)
             result["mode"] = "single"

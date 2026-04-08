@@ -72,30 +72,28 @@
       padding-bottom: 8px;
     }
 
-    /* ── Upload area ── */
-    .upload-area {
-      border: 2px dashed #2a2d3e;
-      border-radius: 6px;
-      padding: 28px 20px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
-      margin-bottom: 20px;
+    /* ── Data source select ── */
+    select.data-select {
+      width: 100%;
+      background: #111;
+      border: 1px solid #2a2d3e;
+      border-radius: 4px;
+      color: #e0e0e0;
+      padding: 7px 10px;
+      font-family: inherit;
+      font-size: 0.9rem;
     }
-    .upload-area:hover, .upload-area.dragover {
-      border-color: #a78bfa;
-      background: rgba(167,139,250,0.04);
+    input.data-input {
+      width: 100%;
+      background: #111;
+      border: 1px solid #2a2d3e;
+      border-radius: 4px;
+      color: #e0e0e0;
+      padding: 7px 10px;
+      font-family: inherit;
+      font-size: 0.9rem;
     }
-    .upload-area input { display: none; }
-    .upload-icon { font-size: 1.8rem; margin-bottom: 8px; color: #555; }
-    .upload-label { font-size: 0.85rem; color: #888; }
-    .upload-label span { color: #a78bfa; }
-    .file-name {
-      margin-top: 10px;
-      font-size: 0.8rem;
-      color: #a78bfa;
-      min-height: 1.2em;
-    }
+    input.data-input:focus, select.data-select:focus { outline: none; border-color: #a78bfa; }
 
     /* ── Mode toggle ── */
     .mode-toggle {
@@ -556,15 +554,36 @@
       <div class="panel">
         <div class="panel-title">Configuration</div>
 
-        <!-- File upload -->
-        <div class="upload-area" id="uploadArea">
-          <input type="file" id="csvInput" accept=".csv">
-          <div class="upload-icon">📂</div>
-          <div class="upload-label">
-            <span>Choose CSV</span> or drag &amp; drop<br>
-            <span style="color:#555;font-size:0.78rem">TradingView OHLCV or trade list export</span>
+        <!-- Data config -->
+        <div class="field-group" style="margin-bottom:16px">
+          <div class="field-group-title">Data</div>
+          <div class="field">
+            <label>Ticker</label>
+            <input type="text" class="data-input" id="ticker" value="QQQ" placeholder="e.g. QQQ, MSFT">
           </div>
-          <div class="file-name" id="fileName"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="field">
+              <label>Start Date</label>
+              <input type="date" class="data-input" id="startDate" value="2024-01-01">
+            </div>
+            <div class="field">
+              <label>End Date</label>
+              <input type="date" class="data-input" id="endDate" value="2026-04-07">
+            </div>
+          </div>
+          <div class="field">
+            <label>Interval</label>
+            <select class="data-select" id="interval" onchange="updateIntervalHint()">
+              <option value="5m">5 min</option>
+              <option value="15m">15 min</option>
+              <option value="30m">30 min</option>
+              <option value="1h" selected>1 hour</option>
+              <option value="1d">Daily</option>
+            </select>
+          </div>
+          <p id="intervalHint" style="font-size:0.72rem;color:#f59e0b;display:none">
+            ⚠ Yahoo Finance: 1h = last 730 days, 5m/15m/30m = last 60 days.
+          </p>
         </div>
 
         <!-- Pine Script paste -->
@@ -707,69 +726,12 @@
         <!-- Agent params -->
         <div id="agentParams" style="display:none">
           <p style="font-size:0.78rem;color:#555;margin-bottom:14px">
-            The agent fetches data from Yahoo Finance, runs iterative grid searches,
-            and lets Claude refine the ranges each round.
+            Runs iterative grid searches with Claude refining the parameter ranges each round.
+            Uses the ticker and date range set above.
           </p>
           <div class="field">
-            <label>Data Source</label>
-            <select id="agentSource"
-              style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
-                     color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
-              <option value="yfinance">Yahoo Finance (free, limited history)</option>
-              <option value="ib">Interactive Brokers (10+ years, requires IB connection)</option>
-              <option value="csv">Uploaded CSV</option>
-            </select>
-          </div>
-
-          <!-- CSV notice (shown when CSV source selected) -->
-          <div id="agentCsvNotice" style="display:none;background:#1a1d2a;border:1px solid #2a2d3e;
-               border-radius:6px;padding:10px 14px;font-size:0.82rem;color:#aaa">
-            Using the CSV file uploaded above.
-            <span id="agentCsvName" style="color:#a78bfa"></span>
-          </div>
-
-          <!-- Ticker / date fields (hidden for CSV) -->
-          <div id="agentFetchFields">
-            <div class="field">
-              <label>Tickers (comma-separated)</label>
-              <input type="text" id="agentTickers" value="QQQ, MSFT, SPY"
-                placeholder="QQQ, MSFT, SPY"
-                style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
-                       color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-              <div class="field">
-                <label>Start Date</label>
-                <input type="date" id="agentStart" value="2024-06-01"
-                  style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
-                         color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
-              </div>
-              <div class="field">
-                <label>End Date</label>
-                <input type="date" id="agentEnd" value="2026-04-03"
-                  style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
-                         color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
-              </div>
-            </div>
-            <div class="field">
-              <label>Interval</label>
-              <select id="agentInterval"
-                style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
-                       color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
-                <option value="5m">5 min</option>
-                <option value="15m">15 min</option>
-                <option value="30m">30 min</option>
-                <option value="1h" selected>1 hour</option>
-                <option value="1d">Daily</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="field">
             <label>Iterations</label>
-            <select id="agentIter"
-              style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
-                     color:#e0e0e0;padding:7px 10px;font-family:inherit;font-size:0.9rem">
+            <select id="agentIter" class="data-select">
               <option value="1">1 — Quick</option>
               <option value="2" selected>2 — Balanced</option>
               <option value="3">3 — Thorough</option>
@@ -777,12 +739,9 @@
               <option value="5">5 — Exhaustive</option>
             </select>
           </div>
-          <p id="agentSourceHint" style="font-size:0.72rem;color:#f59e0b;margin-top:-4px">
-            ⚠ Yahoo Finance limits: 1h = last 730 days, 5m/15m/30m = last 60 days.
-          </p>
         </div>
 
-        <button class="run-btn" id="runBtn" onclick="runBacktest()" disabled>
+        <button class="run-btn" id="runBtn" onclick="runBacktest()">
           Run Backtest
         </button>
         <div class="bars-info" id="barsInfo"></div>
@@ -793,7 +752,7 @@
     <div class="results-col" id="resultsCol">
       <div class="empty-state">
         <div class="icon">📈</div>
-        Upload a TradingView CSV and run a backtest to see results here.
+        Set a ticker and date range, then run a backtest to see results here.
       </div>
     </div>
 
@@ -803,97 +762,23 @@
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
 let currentMode      = 'single';
-let csvFile          = null;
 let equityChart      = null;
 let lastRunData       = null;  // full response from /api/backtest/run
 let lastStep1Analysis = '';   // Claude Step 1 analysis text
-let currentTicker     = '';   // parsed from CSV filename
 
-// ── File upload ────────────────────────────────────────────────────────────
-const uploadArea = document.getElementById('uploadArea');
-const csvInput   = document.getElementById('csvInput');
+function getTicker()    { return document.getElementById('ticker').value.trim().toUpperCase(); }
+function getStartDate() { return document.getElementById('startDate').value; }
+function getEndDate()   { return document.getElementById('endDate').value; }
+function getInterval()  { return document.getElementById('interval').value; }
 
-uploadArea.addEventListener('click', () => csvInput.click());
-csvInput.addEventListener('change', e => {
-  if (e.target.files[0]) setFile(e.target.files[0]);
-});
-uploadArea.addEventListener('dragover', e => {
-  e.preventDefault();
-  uploadArea.classList.add('dragover');
-});
-uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
-uploadArea.addEventListener('drop', e => {
-  e.preventDefault();
-  uploadArea.classList.remove('dragover');
-  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
-});
-
-function updateAgentCsvNotice() {
-  const nameEl = document.getElementById('agentCsvName');
-  if (!nameEl) return;
-  if (csvFile) {
-    nameEl.textContent = csvFile.name;
-    nameEl.style.color = '#a78bfa';
-  } else {
-    nameEl.textContent = '(no file uploaded yet)';
-    nameEl.style.color = '#ef5350';
-  }
+function updateIntervalHint() {
+  const hint = document.getElementById('intervalHint');
+  const v    = getInterval();
+  hint.style.display = ['5m','15m','30m','1h'].includes(v) ? '' : 'none';
 }
+updateIntervalHint();
 
-function setFile(f) {
-  csvFile = f;
-  document.getElementById('fileName').textContent = f.name;
-  document.getElementById('runBtn').disabled = false;
-  currentTicker = parseTickerFromFilename(f.name);
-  updateAgentCsvNotice();
-}
-
-function parseTickerFromFilename(name) {
-  // Matches exchange_TICKER pattern: e.g. NASDAQ_QQQ, NYSE_MSFT, AMEX_SPY
-  const exRe = /(?:NASDAQ|NYSE|AMEX|BATS|CME|CBOE)_([A-Z0-9]+)/i.exec(name);
-  if (exRe) return exRe[1].toUpperCase();
-  // Fallback: last uppercase word before the date (YYYY-MM-DD)
-  const dateRe = /([A-Z]{1,6})_\d{4}-\d{2}-\d{2}/i.exec(name);
-  if (dateRe) return dateRe[1].toUpperCase();
-  return '';
-}
-
-// ── Agent data source toggle ───────────────────────────────────────────────
-document.getElementById('agentSource').addEventListener('change', function() {
-  const val    = this.value;
-  const hint   = document.getElementById('agentSourceHint');
-  const start  = document.getElementById('agentStart');
-  const end    = document.getElementById('agentEnd');
-  const today  = new Date().toISOString().slice(0, 10);
-  const fetchFields  = document.getElementById('agentFetchFields');
-  const csvNotice    = document.getElementById('agentCsvNotice');
-  const csvNameEl    = document.getElementById('agentCsvName');
-
-  if (val === 'csv') {
-    fetchFields.style.display = 'none';
-    csvNotice.style.display   = '';
-    hint.style.display        = 'none';
-    updateAgentCsvNotice();
-  } else {
-    fetchFields.style.display = '';
-    csvNotice.style.display   = 'none';
-    hint.style.display        = '';
-    if (val === 'ib') {
-      hint.style.color   = '#26a65b';
-      hint.textContent   = '✓ IB: extended history available. Default is 2 years — increase for deeper backtests (slower).';
-      const twoYearsAgo = new Date();
-      twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
-      start.value = twoYearsAgo.toISOString().slice(0, 10);
-      end.value   = today;
-    } else {
-      hint.style.color   = '#f59e0b';
-      hint.textContent   = '⚠ Yahoo Finance limits: 1h = last 730 days, 5m/15m/30m = last 60 days.';
-      start.value = '2024-06-01';
-      end.value   = today;
-    }
-  }
-});
-
+// ── Placeholder removed ───────────────────────────────────────────────────
 // ── Pine Script paste + param extraction ───────────────────────────────────
 function togglePinePanel() {
   const panel   = document.getElementById('pinePanel');
@@ -1015,59 +900,59 @@ function setMode(mode) {
   document.getElementById('singleParams').style.display   = mode === 'single'   ? '' : 'none';
   document.getElementById('optimizeParams').style.display = mode === 'optimize' ? '' : 'none';
   document.getElementById('agentParams').style.display    = mode === 'agent'    ? '' : 'none';
-  // Agent mode doesn't need a CSV — enable run btn always
-  if (mode === 'agent') {
-    document.getElementById('runBtn').disabled = false;
-    document.getElementById('runBtn').textContent = '⚡ Run Agent';
-    updateAgentCsvNotice();
-  } else {
-    document.getElementById('runBtn').textContent = 'Run Backtest';
-    document.getElementById('runBtn').disabled = !csvFile;
-  }
+  document.getElementById('runBtn').textContent = mode === 'agent' ? '⚡ Run Agent' : 'Run Backtest';
 }
 
 // ── Run ────────────────────────────────────────────────────────────────────
 async function runBacktest() {
   if (currentMode === 'agent') { runAgent(); return; }
-  if (!csvFile) return;
+
+  const ticker = getTicker();
+  if (!ticker) { alert('Enter a ticker symbol first.'); return; }
 
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Running…';
-
   showLoading();
 
-  const fd = new FormData();
-  fd.append('csv_file', csvFile);
-  fd.append('mode', currentMode);
+  const payload = {
+    ticker,
+    start_date:  getStartDate(),
+    end_date:    getEndDate(),
+    interval:    getInterval(),
+    mode:        currentMode,
+  };
 
   if (currentMode === 'single') {
-    fd.append('lta',           document.getElementById('lta').value);
-    fd.append('sta',           document.getElementById('sta').value);
-    fd.append('lhs',           document.getElementById('lhs').value);
-    fd.append('shs',           document.getElementById('shs').value);
-    fd.append('trail_distance', document.getElementById('trd_single').value);
+    payload.lta            = parseFloat(document.getElementById('lta').value);
+    payload.sta            = parseFloat(document.getElementById('sta').value);
+    payload.lhs            = parseFloat(document.getElementById('lhs').value);
+    payload.shs            = parseFloat(document.getElementById('shs').value);
+    payload.trail_distance = parseFloat(document.getElementById('trd_single').value);
   } else {
     for (const id of ['lta_min','lta_max','lta_step',
                        'sta_min','sta_max','sta_step',
                        'lhs_min','lhs_max','lhs_step',
                        'shs_min','shs_max','shs_step']) {
-      fd.append(id, document.getElementById(id).value);
+      payload[id] = parseFloat(document.getElementById(id).value);
     }
-    fd.append('trail_distance', document.getElementById('trd_opt').value);
+    payload.trail_distance = parseFloat(document.getElementById('trd_opt').value);
   }
 
   try {
-    const res  = await fetch('/api/backtest/run', { method: 'POST', body: fd });
+    const res  = await fetch('/api/backtest/run', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
     const data = await res.json();
 
     if (data.error) {
       showError(data.error);
     } else {
       if (data.bars_loaded) {
-        const label = data.source === 'trade_list' ? 'trades imported' : 'bars loaded';
         document.getElementById('barsInfo').textContent =
-          `${data.bars_loaded.toLocaleString()} ${label}`;
+          `${data.bars_loaded.toLocaleString()} bars loaded`;
       }
       lastRunData = data;
       if (data.mode === 'optimize') {
@@ -1081,7 +966,7 @@ async function runBacktest() {
   }
 
   btn.disabled = false;
-  btn.innerHTML = 'Run Backtest';
+  btn.innerHTML = currentMode === 'agent' ? '⚡ Run Agent' : 'Run Backtest';
 }
 
 // ── Render helpers ─────────────────────────────────────────────────────────
@@ -1363,7 +1248,7 @@ async function analyseWithClaude(payload, btn) {
     const resp = await fetch('/api/backtest/analyse', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({...payload, ticker: currentTicker}),
+      body: JSON.stringify({...payload, ticker: getTicker()}),
     });
 
     if (!resp.ok) {
@@ -1454,7 +1339,7 @@ async function runStep2(btn) {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         step1_analysis: lastStep1Analysis,
-        ticker: currentTicker,
+        ticker: getTicker(),
         grid:  lastRunData?.grid  || [],
         stats: lastRunData?.stats || {},
       }),
@@ -1477,23 +1362,27 @@ async function runStep2(btn) {
 
     let bestParams = params;
 
-    // ── Phase 2: Run refined grid (OHLCV only) ────────────────────────────
-    if (csvFile && lastRunData?.source !== 'trade_list') {
+    // ── Phase 2: Run refined grid ──────────────────────────────────────────
+    if (lastRunData?.source !== 'trade_list') {
       document.querySelector('#step2Panel .s2-status').innerHTML =
         '<span class="spinner"></span> Phase 2 — Running refined backtest grid…';
 
-      const fd = new FormData();
-      fd.append('csv_file', csvFile);
-      fd.append('mode', 'optimize');
-      for (const [k, v] of Object.entries({
-        lta_min: params.lta_min ?? 20, lta_max: params.lta_max ?? 60, lta_step: params.lta_step ?? 5,
-        sta_min: params.sta_min ??  5, sta_max: params.sta_max ?? 20, sta_step: params.sta_step ?? 2,
-        lhs_min: params.lhs_min ?? 50, lhs_max: params.lhs_max ?? 100, lhs_step: params.lhs_step ?? 5,
-        shs_min: params.shs_min ?? 10, shs_max: params.shs_max ??  30, shs_step: params.shs_step ?? 2,
-      })) fd.append(k, v);
-      fd.append('trail_distance', params.trail_distance ?? 1);
-
-      const gr = await fetch('/api/backtest/run', { method: 'POST', body: fd });
+      const gr = await fetch('/api/backtest/run', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker:     getTicker(),
+          start_date: getStartDate(),
+          end_date:   getEndDate(),
+          interval:   getInterval(),
+          mode: 'optimize',
+          lta_min: params.lta_min ?? 20, lta_max: params.lta_max ?? 60, lta_step: params.lta_step ?? 5,
+          sta_min: params.sta_min ??  5, sta_max: params.sta_max ?? 20, sta_step: params.sta_step ?? 2,
+          lhs_min: params.lhs_min ?? 50, lhs_max: params.lhs_max ?? 100, lhs_step: params.lhs_step ?? 5,
+          shs_min: params.shs_min ?? 10, shs_max: params.shs_max ??  30, shs_step: params.shs_step ?? 2,
+          trail_distance: params.trail_distance ?? 1,
+        }),
+      });
       const gd = await gr.json();
       if (gd.error) throw new Error(gd.error);
 
@@ -1538,7 +1427,7 @@ async function runStep2(btn) {
     const sc = await fetch('/api/backtest/step2/script', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ params: bestParams, ticker: currentTicker }),
+      body:    JSON.stringify({ params: bestParams, ticker: getTicker() }),
     });
     if (!sc.ok) throw new Error(((await sc.json()).error) || sc.statusText);
 
@@ -1606,13 +1495,12 @@ async function runAgent() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Agent running…';
 
-  const tickers     = document.getElementById('agentTickers').value
-                        .split(',').map(t => t.trim()).filter(Boolean);
-  const start_date  = document.getElementById('agentStart').value;
-  const end_date    = document.getElementById('agentEnd').value;
-  const interval    = document.getElementById('agentInterval').value;
+  const tickers     = getTicker().split(',').map(t => t.trim()).filter(Boolean);
+  const start_date  = getStartDate();
+  const end_date    = getEndDate();
+  const interval    = getInterval();
   const iterations  = parseInt(document.getElementById('agentIter').value);
-  const data_source = document.getElementById('agentSource').value;
+  const data_source = 'yfinance';
 
   const rc = document.getElementById('resultsCol');
   rc.innerHTML = '';
@@ -1649,23 +1537,11 @@ async function runAgent() {
   }
 
   try {
-    let fetchOpts;
-    if (data_source === 'csv') {
-      if (!csvFile) { alert('Please upload a CSV file first.'); btn.disabled = false; btn.textContent = 'Run Backtest'; return; }
-      const fd = new FormData();
-      fd.append('csv_file',    csvFile);
-      fd.append('data_source', 'csv');
-      fd.append('ticker',      currentTicker || 'CSV');
-      fd.append('iterations',  iterations);
-      fd.append('interval',    interval);
-      fetchOpts = { method: 'POST', body: fd };
-    } else {
-      fetchOpts = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers, start_date, end_date, interval, iterations, data_source }),
-      };
-    }
+    const fetchOpts = {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers, start_date, end_date, interval, iterations, data_source }),
+    };
     const resp = await fetch('/api/backtest/agent/run', fetchOpts);
     if (!resp.ok) {
       const e = await resp.json();
