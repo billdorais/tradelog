@@ -381,9 +381,14 @@ def webhook():
     # Normalise ticker — Pine Script sends "symbol", some strategies send "ticker"
     ticker = (data.get("ticker") or data.get("symbol") or "").strip().upper() or None
 
-    # Normalise action — map EXIT_LONG → SELL, EXIT_SHORT → BUY
+    # Normalise action — map direction/exit variants to BUY/SELL
     raw_action = (data.get("action") or "").strip().upper()
-    action_map = {"EXIT_LONG": "SELL", "EXIT_SHORT": "BUY"}
+    action_map = {
+        "EXIT_LONG":  "SELL",
+        "EXIT_SHORT": "BUY",
+        "LONG":       "BUY",
+        "SHORT":      "SELL",
+    }
     order_action = action_map.get(raw_action, raw_action)  # BUY/SELL pass through unchanged
 
     # If no broker specified but IB is configured, default to IB
