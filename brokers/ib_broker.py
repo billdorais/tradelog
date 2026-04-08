@@ -3,7 +3,7 @@ import os
 import random
 import threading
 import logging
-from ib_async import IB, Stock, Forex, MarketOrder, LimitOrder
+from ib_async import IB, Stock, Forex, Option, MarketOrder, LimitOrder
 
 log = logging.getLogger(__name__)
 
@@ -302,15 +302,140 @@ class IBBroker:
         return unique
 
     # ------------------------------------------------------------------
+    # Options helpers (must run on background IB thread)
+    # ------------------------------------------------------------------
+
+    def get_option_chain(self, ticker):
+        """
+        Fetch option chain metadata via reqSecDefOptParams.
+        Returns (expirations, strikes) — both sorted lists.
+        Must be called from the background IB thread.
+        """
+        contract = Stock(ticker, "SMART", "USD")
+        self._ib.qualifyContracts(contract)
+        chains = self._ib.reqSecDefOptParams(
+            contract.symbol, "", contract.secType, contract.conId
+        )
+        if not chains:
+            raise RuntimeError(f"No option chain found for {ticker}")
+        # Prefer SMART exchange; fall back to first result
+        chain = next((c for c in chains if c.exchange == "SMART"), chains[0])
+        return sorted(chain.expirations), sorted(chain.strikes)
+
+    @staticmethod
+    def _next_weekly_expiry(expirations):
+        """
+        Return the nearest Friday expiry >= today from a list of 'YYYYMMDD' strings.
+        Returns None if none found.
+        """
+        from datetime import date
+        today = date.today()
+        candidates = []
+        for exp in expirations:
+            try:
+                d = date(int(exp[:4]), int(exp[4:6]), int(exp[6:8]))
+                if d >= today and d.weekday() == 4:  # 4 = Friday
+                    candidates.append(d)
+            except ValueError:
+                continue
+        if not candidates:
+            return None
+        return min(candidates).strftime("%Y%m%d")
+
+    def get_option_quote(self, ticker, expiry, strike, right):
+        """
+        Return (bid, ask) for a single option contract via reqTickers snapshot.
+        Must be called from the background IB thread.
+        """
+        contract = Option(ticker, expiry, float(strike), right, "SMART")
+        self._ib.qualifyContracts(contract)
+        tickers = self._ib.reqTickers(contract)
+        if not tickers:
+            return None, None
+        t   = tickers[0]
+        bid = float(t.bid) if t.bid and t.bid > 0 else None
+        ask = float(t.ask) if t.ask and t.ask > 0 else None
+        return bid, ask
+
+    def select_option(self, ticker, action, current_price,
+                      option_expiry=None, max_spread=1.0, strike_offset=0):
+        """
+        Select the nearest liquid option contract for a directional signal.
+
+        - action BUY  → call option
+        - action SELL → put option
+        - option_expiry: 'YYYYMMDD' override; None = next weekly Friday
+        - max_spread:    max bid/ask spread in dollars (default $1.00)
+        - strike_offset: strikes OTM from ATM (0 = ATM, 1 = 1 strike OTM, …)
+
+        Returns dict: {expiry, strike, right, bid, ask, spread}
+        Raises RuntimeError if no qualifying contract found.
+        Must be called from the background IB thread.
+        """
+        expirations, strikes = self.get_option_chain(ticker)
+
+        expiry = option_expiry or self._next_weekly_expiry(expirations)
+        if not expiry:
+            raise RuntimeError(f"No weekly Friday expiry found for {ticker}")
+        if expiry not in expirations:
+            # Snap to closest available date
+            closest = min(expirations, key=lambda e: abs(int(e) - int(expiry)))
+            log.warning("Expiry %s not in chain for %s — using %s", expiry, ticker, closest)
+            expiry = closest
+
+        right = "C" if action.upper() == "BUY" else "P"
+
+        # Build candidate strikes starting at ATM + offset, expanding outward
+        if right == "C":
+            # Calls: sort ascending; OTM = higher strikes
+            ordered = sorted(strikes)
+        else:
+            # Puts: sort descending; OTM = lower strikes
+            ordered = sorted(strikes, reverse=True)
+
+        atm_idx = min(range(len(ordered)), key=lambda i: abs(ordered[i] - current_price))
+        start   = min(atm_idx + strike_offset, len(ordered) - 1)
+        # Try up to 10 strikes around the target
+        candidates = ordered[start: start + 10]
+
+        for strike in candidates:
+            try:
+                bid, ask = self.get_option_quote(ticker, expiry, strike, right)
+                if bid is None or ask is None:
+                    continue
+                spread = round(ask - bid, 2)
+                if spread <= max_spread:
+                    log.info(
+                        "Option selected: %s %s %s %s bid=%.2f ask=%.2f spread=%.2f",
+                        ticker, expiry, strike, right, bid, ask, spread,
+                    )
+                    return {
+                        "expiry": expiry,
+                        "strike": float(strike),
+                        "right":  right,
+                        "bid":    bid,
+                        "ask":    ask,
+                        "spread": spread,
+                    }
+            except Exception as e:
+                log.warning("Quote failed %s %s %s %s: %s", ticker, expiry, strike, right, e)
+
+        raise RuntimeError(
+            f"No {right} option for {ticker} {expiry} with spread ≤ ${max_spread}"
+        )
+
+    # ------------------------------------------------------------------
     # Order placement
     # ------------------------------------------------------------------
 
     def place_order(self, ticker, action, quantity, price=None,
-                    sec_type="STK", currency="USD"):
+                    sec_type="STK", currency="USD",
+                    expiry=None, strike=None, right=None):
         """
         Place a market or limit order.
 
-        sec_type: "STK" (default) or "CASH" for forex pairs.
+        sec_type: "STK" (default), "CASH" for forex, or "OPT" for options.
+        For OPT: expiry (YYYYMMDD), strike (float), right ("C" / "P") are required.
         Returns a dict with success/error details.
         """
         with self._lock:
@@ -319,6 +444,9 @@ class IBBroker:
 
                 if sec_type == "CASH":
                     contract = Forex(ticker)
+                elif sec_type == "OPT":
+                    contract = Option(ticker, expiry, float(strike), right, "SMART", currency)
+                    self._ib.qualifyContracts(contract)
                 else:
                     contract = Stock(ticker, "SMART", currency)
 
@@ -331,13 +459,16 @@ class IBBroker:
                 trade = self._ib.placeOrder(contract, order)
                 self._ib.sleep(2)  # let event loop process the acknowledgment
 
-                return {
+                result = {
                     "success":        True,
                     "order_id":       trade.order.orderId,
                     "status":         trade.orderStatus.status,
                     "filled":         trade.orderStatus.filled,
                     "avg_fill_price": trade.orderStatus.avgFillPrice,
                 }
+                if sec_type == "OPT":
+                    result.update({"expiry": expiry, "strike": strike, "right": right})
+                return result
 
             except Exception as e:
                 log.error("IB place_order error: %s", e)

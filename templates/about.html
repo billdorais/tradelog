@@ -135,7 +135,8 @@
       &nbsp;&nbsp;▼<br>
       IB Broker (ib_broker.py)<br>
       &nbsp;&nbsp;│&nbsp; Connects to IB Gateway via internal network<br>
-      &nbsp;&nbsp;│&nbsp; Places market or limit order via ib_async<br>
+      &nbsp;&nbsp;│&nbsp; For stocks: places market or limit order directly<br>
+      &nbsp;&nbsp;│&nbsp; For options: fetches chain, selects ATM contract within spread limit, places order<br>
       &nbsp;&nbsp;▼<br>
       IB Gateway Service<br>
       &nbsp;&nbsp;│&nbsp; Forwards order to Interactive Brokers servers<br>
@@ -160,15 +161,17 @@
     <table>
       <tr><th>File</th><th>Purpose</th></tr>
       <tr><td>app.py</td><td>Main Flask app — webhook handler, API routes, database logic</td></tr>
-      <tr><td>brokers/ib_broker.py</td><td>IB connection and order placement via ib_async</td></tr>
+      <tr><td>brokers/ib_broker.py</td><td>IB connection, order placement, and options contract selection via ib_async</td></tr>
       <tr><td>templates/index.html</td><td>Dashboard UI — trade table, equity curve, performance stats</td></tr>
+      <tr><td>templates/bt.html</td><td>Backtest page — Pine Script AI conversion and built-in strategy runner</td></tr>
+      <tr><td>strategies/bt_strategies.py</td><td>Built-in backtesting.py strategies (SMA/EMA cross, RSI, Bollinger, MACD, Camarilla)</td></tr>
       <tr><td>Dockerfile.ib</td><td>Builds the IB Gateway Docker image</td></tr>
       <tr><td>ib-gateway-start.sh</td><td>Startup script that patches config before launching IB Gateway</td></tr>
       <tr><td>Procfile</td><td>Tells Railway how to start the web service</td></tr>
     </table>
 
-    <h2>Webhook Payload</h2>
-    <p>TradingView alerts POST the following JSON to trigger a trade:</p>
+    <h2>Webhook Payload — Stocks</h2>
+    <p>TradingView alerts POST the following JSON to trigger a stock trade:</p>
     <div class="flow">
       {% raw %}{<br>
       &nbsp;&nbsp;"ticker": "{{ticker}}",<br>
@@ -181,6 +184,77 @@
       &nbsp;&nbsp;"interval": "{{interval}}",<br>
       &nbsp;&nbsp;"broker": "ib"<br>
       }{% endraw %}
+    </div>
+
+    <h2>Webhook Payload — Options</h2>
+    <p>
+      Add <code style="color:#c5a3ff;font-size:0.85rem">"sec_type": "OPT"</code> to route the signal to an options contract instead of the underlying stock.
+      The app automatically selects the nearest Friday expiry and finds the closest ATM contract
+      whose bid/ask spread is within the <code style="color:#c5a3ff;font-size:0.85rem">max_spread</code> limit.
+    </p>
+    <div class="flow">
+      {% raw %}{<br>
+      &nbsp;&nbsp;"ticker":        "{{ticker}}",<br>
+      &nbsp;&nbsp;"action":        "{{strategy.order.action}}",<br>
+      &nbsp;&nbsp;"quantity":      1,<br>
+      &nbsp;&nbsp;"price":         {{close}},<br>
+      &nbsp;&nbsp;"sec_type":      "OPT",<br>
+      &nbsp;&nbsp;"max_spread":    1.00,<br>
+      &nbsp;&nbsp;"strike_offset": 0,<br>
+      &nbsp;&nbsp;"broker":        "ib"<br>
+      }{% endraw %}
+    </div>
+
+    <h2>Options Payload Fields</h2>
+    <table>
+      <tr><th>Field</th><th>Default</th><th>Description</th></tr>
+      <tr>
+        <td>sec_type</td>
+        <td>"STK"</td>
+        <td>Set to <code style="color:#c5a3ff;font-size:0.85rem">"OPT"</code> to trade an options contract. Omit or use <code style="color:#c5a3ff;font-size:0.85rem">"STK"</code> for the underlying stock.</td>
+      </tr>
+      <tr>
+        <td>price</td>
+        <td>required</td>
+        <td>Current price of the underlying (use <code style="color:#c5a3ff;font-size:0.85rem">{{close}}</code>). Used to find the ATM strike.</td>
+      </tr>
+      <tr>
+        <td>max_spread</td>
+        <td>1.00</td>
+        <td>Maximum bid/ask spread in dollars. The app scans strikes outward from ATM and picks the first contract within this limit.</td>
+      </tr>
+      <tr>
+        <td>strike_offset</td>
+        <td>0</td>
+        <td>Number of strikes away from ATM. 0 = ATM, 1 = one strike OTM, 2 = two strikes OTM, etc.</td>
+      </tr>
+      <tr>
+        <td>option_expiry</td>
+        <td>next Friday</td>
+        <td>Override the expiry date as <code style="color:#c5a3ff;font-size:0.85rem">"YYYYMMDD"</code>. If omitted, uses the nearest weekly Friday expiry from the chain.</td>
+      </tr>
+    </table>
+
+    <h2>Options — How It Works</h2>
+    <div class="flow">
+      TradingView Alert (sec_type: OPT)<br>
+      &nbsp;&nbsp;│&nbsp; BUY action → Call option<br>
+      &nbsp;&nbsp;│&nbsp; SELL action → Put option<br>
+      &nbsp;&nbsp;▼<br>
+      app.py — options branch<br>
+      &nbsp;&nbsp;│&nbsp; 1. Routes request to background IB thread (event loop affinity)<br>
+      &nbsp;&nbsp;▼<br>
+      ib_broker.select_option()<br>
+      &nbsp;&nbsp;│&nbsp; 1. reqSecDefOptParams → fetch full option chain<br>
+      &nbsp;&nbsp;│&nbsp; 2. Find nearest Friday expiry from chain<br>
+      &nbsp;&nbsp;│&nbsp; 3. Sort strikes by distance from underlying price<br>
+      &nbsp;&nbsp;│&nbsp; 4. reqTickers → check bid/ask for each strike<br>
+      &nbsp;&nbsp;│&nbsp; 5. Return first contract with spread ≤ max_spread<br>
+      &nbsp;&nbsp;▼<br>
+      ib_broker.place_order(sec_type="OPT")<br>
+      &nbsp;&nbsp;│&nbsp; Market order on selected contract<br>
+      &nbsp;&nbsp;▼<br>
+      Fill logged to dashboard
     </div>
 
   </div>

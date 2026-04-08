@@ -23,9 +23,10 @@ DATABASE_URL  = os.environ.get("DATABASE_URL")
 # Broker initialisation — connect in background so app starts immediately
 # ---------------------------------------------------------------------------
 
-ib_broker     = None
+ib_broker      = None
 _ib_sync_event = None   # set() to request a manual fill sync from the background thread
 _ib_sync_queue = None   # background thread puts result here after sync
+_ib_task_queue = None   # (fn, args, kwargs, result_q) tasks routed to background IB thread
 
 if os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
@@ -33,6 +34,23 @@ if os.environ.get("IB_HOST"):
     ib_broker      = IBBroker()
     _ib_sync_event = threading.Event()
     _ib_sync_queue = _ib_queue_mod.SimpleQueue()
+    _ib_task_queue = _ib_queue_mod.Queue()
+
+    def _submit_ib_task(fn, *args, _timeout=30, **kwargs):
+        """
+        Run fn(*args, **kwargs) on the background IB thread (which owns the event loop).
+        Blocks the calling thread until the result is ready (or _timeout seconds elapse).
+        Raises RuntimeError on task failure or timeout.
+        """
+        result_q = _ib_queue_mod.SimpleQueue()
+        _ib_task_queue.put({"fn": fn, "args": args, "kwargs": kwargs, "result_queue": result_q})
+        try:
+            item = result_q.get(timeout=_timeout)
+        except _ib_queue_mod.Empty:
+            raise RuntimeError("IB task timed out after %ds" % _timeout)
+        if "error" in item:
+            raise RuntimeError(item["error"])
+        return item["result"]
 
     def _on_fill(_trade, fill):
         """Called by ib_async execDetailsEvent(trade, fill) — persists execution to DB."""
@@ -143,7 +161,8 @@ if os.environ.get("IB_HOST"):
 
     def _connect_ib_background():
         """Try to connect to IB Gateway, retrying every 30s on failure.
-        Also handles manual sync requests signalled via _ib_sync_event."""
+        Also handles manual sync requests (_ib_sync_event) and queued IB tasks
+        (_ib_task_queue) that must run on this thread (which owns the event loop)."""
         time.sleep(10)  # give IB Gateway time to be ready before first connect attempt
         while True:
             if not ib_broker.is_connected():
@@ -157,14 +176,27 @@ if os.environ.get("IB_HOST"):
                     time.sleep(30)
                     continue
 
-            # Wait up to 10s, or wake immediately on a manual sync request
-            if _ib_sync_event.wait(timeout=10):
+            # Wait up to 2s, or wake immediately on a manual sync request
+            if _ib_sync_event.wait(timeout=2):
                 _ib_sync_event.clear()
                 try:
                     saved = _sync_fills_on_connect()
                     _ib_sync_queue.put({"synced": saved})
                 except Exception as e:
                     _ib_sync_queue.put({"error": str(e)})
+
+            # Drain any tasks submitted via _submit_ib_task()
+            while True:
+                try:
+                    task = _ib_task_queue.get_nowait()
+                    try:
+                        result = task["fn"](*task["args"], **task["kwargs"])
+                        task["result_queue"].put({"result": result})
+                    except Exception as e:
+                        log.error("IB background task error: %s", e)
+                        task["result_queue"].put({"error": str(e)})
+                except _ib_queue_mod.Empty:
+                    break
 
     threading.Thread(target=_connect_ib_background, daemon=True).start()
 
@@ -389,7 +421,48 @@ def webhook():
             exec_status = "skipped"
             exec_detail = f"No order placed for action '{raw_action}'"
             log.info("Webhook action '%s' logged but no IB order placed", raw_action)
+        elif data.get("sec_type", "STK").upper() == "OPT":
+            # --- Options path: select contract on background thread, then place order ---
+            try:
+                current_price = float(data.get("price") or 0)
+                if not current_price:
+                    raise ValueError("'price' (underlying price) required for options orders")
+
+                opt = _submit_ib_task(
+                    ib_broker.select_option,
+                    ticker,
+                    order_action,
+                    current_price,
+                    _timeout       = 45,
+                    option_expiry  = data.get("option_expiry") or None,
+                    max_spread     = float(data.get("max_spread", 1.0)),
+                    strike_offset  = int(data.get("strike_offset", 0)),
+                )
+                result = _submit_ib_task(
+                    ib_broker.place_order,
+                    ticker,
+                    order_action,
+                    data.get("quantity", 1),
+                    None,  # market order
+                    _timeout = 20,
+                    sec_type = "OPT",
+                    currency = data.get("currency", "USD"),
+                    expiry   = opt["expiry"],
+                    strike   = opt["strike"],
+                    right    = opt["right"],
+                )
+                exec_status = "ok" if result.get("success") else "error"
+                exec_detail = json.dumps({**result, "option_selected": opt})
+                log.info(
+                    "IB option order %s %s %s %s %s: %s",
+                    order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result,
+                )
+            except Exception as e:
+                exec_status = "error"
+                exec_detail = str(e)
+                log.error("IB option order failed for %s %s: %s", order_action, ticker, e)
         else:
+            # --- Equity / forex path ---
             result = ib_broker.place_order(
                 ticker   = ticker,
                 action   = order_action,
