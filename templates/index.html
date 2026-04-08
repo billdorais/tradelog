@@ -334,6 +334,7 @@
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button id="syncIBBtn" onclick="syncIBFills()" style="background:transparent;border:1px solid #4a90d9;color:#4a90d9;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Sync IB Fills</button>
+      <button id="closeAllBtn" onclick="closeAllPositions()" style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Close All Positions</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
     </div>
   </header>
@@ -1144,6 +1145,31 @@
       } catch (e) {
         alert('Reconnect error');
         document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+      }
+    }
+
+    async function closeAllPositions() {
+      if (!confirm('Close ALL open IB positions now? This cannot be undone.')) return;
+      const token = prompt('Enter your webhook token to confirm:');
+      if (!token) return;
+      const btn = document.getElementById('closeAllBtn');
+      btn.textContent = 'Closing...';
+      btn.disabled = true;
+      try {
+        const res  = await fetch(`/api/broker/close-all?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          alert('Close failed: ' + data.error);
+        } else {
+          const n = Array.isArray(data.closed) ? data.closed.length : data.closed;
+          btn.textContent = `Closed ${n} position${n !== 1 ? 's' : ''}`;
+          await loadTrades();
+          setTimeout(() => { btn.textContent = 'Close All Positions'; }, 4000);
+        }
+      } catch (e) {
+        alert('Error: ' + e);
+      } finally {
+        btn.disabled = false;
       }
     }
 
