@@ -810,10 +810,19 @@
             const status     = ex ? ex.exec_status : en?.exec_status;
             const detail     = ex ? ex.exec_detail : en?.exec_detail;
             const rowClass   = status === 'error' ? 'group-first row-error' : 'group-first';
+            const isOpen   = !ex;
+            const closeBtn = isOpen && ref.ticker
+              ? `<button onclick="closePosition('${ref.ticker}', '${ref.quantity ?? 1}', '${tv.direction}')"
+                   title="Close this position in IB"
+                   style="margin-left:6px;background:#c0392b;border:none;color:#fff;cursor:pointer;
+                          font-size:0.7rem;padding:2px 6px;border-radius:3px;vertical-align:middle">
+                   Close
+                 </button>`
+              : '';
             rows.push(`<tr class="${rowClass}">
               <td style="color:#aaa;font-size:0.8rem">Trading View</td>
               <td style="font-size:0.85rem">${fmtET(en?.received_at) ?? '—'}</td>
-              <td style="font-size:0.85rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
+              <td style="font-size:0.85rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>' + closeBtn}</td>
               <td style="color:#888;font-size:0.85rem">${dur}</td>
               <td>${sentimentBadge(ref.sentiment)}</td>
               <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
@@ -1244,6 +1253,28 @@
         alert('Error: ' + e);
       } finally {
         btn.disabled = false;
+      }
+    }
+
+    async function closePosition(ticker, qty, direction) {
+      const token = prompt(`Enter webhook token to close ${ticker} position:`);
+      if (!token) return;
+      const action = direction === 'short' ? 'BUY' : 'SELL';
+      try {
+        const payload = { ticker, action, quantity: qty, broker: 'ib', strategy: 'manual-close' };
+        const res = await fetch(`/webhook?token=${encodeURIComponent(token)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          alert(`Close order sent: ${action} ${qty} ${ticker}`);
+          setTimeout(loadTrades, 2000);
+        } else {
+          alert(res.status === 401 ? 'Invalid token.' : `Error ${res.status}`);
+        }
+      } catch (e) {
+        alert('Error: ' + e);
       }
     }
 
