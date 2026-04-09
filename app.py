@@ -583,106 +583,103 @@ def webhook():
     ))
     conn.commit()
 
-    # 2. Route to broker
-    exec_status = None
-    exec_detail = None
-
+    # 2. Route to broker — fire async so TradingView gets a fast response
     if broker_name == "ib":
-        # Select paper or live broker based on routing rule Mode node
         active_broker  = ib_broker_live if (use_live_broker and ib_broker_live) else ib_broker
         submit_task    = _submit_ib_live_task if (use_live_broker and ib_broker_live) else _submit_ib_task
         mode_label     = "live" if (use_live_broker and ib_broker_live) else "paper"
 
         if active_broker is None:
-            exec_status = "error"
-            exec_detail = ("IB live broker not initialised — set IB_HOST_LIVE env var"
-                           if use_live_broker else
-                           "IB broker not initialised — check IB_HOST env var")
-            log.warning("IB order skipped: broker not initialised (%s)", mode_label)
+            _update_exec(cur, trade_id, "error",
+                         "IB live broker not initialised — set IB_HOST_LIVE env var"
+                         if use_live_broker else
+                         "IB broker not initialised — check IB_HOST env var")
+            conn.commit()
         elif order_action not in ("BUY", "SELL"):
-            exec_status = "skipped"
-            exec_detail = f"No order placed for action '{raw_action}'"
+            _update_exec(cur, trade_id, "skipped", f"No order placed for action '{raw_action}'")
+            conn.commit()
             log.info("Webhook action '%s' logged but no IB order placed", raw_action)
-        elif sec_type.upper() == "OPT":
-            # --- Options path ---
-            try:
-                current_price = float(data.get("price") or 0)
-                if not current_price:
-                    raise ValueError("'price' (underlying price) required for options orders")
-
-                # Pipeline options_config node takes priority over payload fields
-                if opt_target_prem is not None:
-                    opt = submit_task(
-                        active_broker.select_option_by_premium,
-                        ticker,
-                        order_action,
-                        current_price,
-                        _timeout       = 45,
-                        target_premium = opt_target_prem,
-                        expiry_type    = opt_expiry_type,
-                        right_override = opt_right_ovr,
-                        option_expiry  = data.get("option_expiry") or None,
-                    )
-                else:
-                    opt = submit_task(
-                        active_broker.select_option,
-                        ticker,
-                        order_action,
-                        current_price,
-                        _timeout      = 45,
-                        option_expiry = data.get("option_expiry") or None,
-                        max_spread    = float(data.get("max_spread", 1.0)),
-                        strike_offset = int(data.get("strike_offset", 0)),
-                    )
-                result = submit_task(
-                    active_broker.place_order,
-                    ticker,
-                    order_action,
-                    quantity,
-                    None,
-                    _timeout = 20,
-                    sec_type = "OPT",
-                    currency = currency,
-                    expiry   = opt["expiry"],
-                    strike   = opt["strike"],
-                    right    = opt["right"],
-                )
-                exec_status = "ok" if result.get("success") else "error"
-                exec_detail = json.dumps({**result, "option_selected": opt, "mode": mode_label})
-                log.info("IB %s option order %s %s %s %s %s: %s",
-                         mode_label, order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result)
-            except Exception as e:
-                exec_status = "error"
-                exec_detail = str(e)
-                log.error("IB %s option order failed for %s %s: %s", mode_label, order_action, ticker, e)
         else:
-            # --- Equity / futures / crypto path ---
-            # Must run on the background IB thread (which owns the event loop)
-            try:
-                result = submit_task(
-                    active_broker.place_order,
-                    ticker   = ticker,
-                    action   = order_action,
-                    quantity = quantity,
-                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                    sec_type = sec_type,
-                    currency = currency,
-                    _timeout = 30,
-                )
-                exec_status = "ok" if result.get("success") else "error"
-                exec_detail = json.dumps({**result, "mode": mode_label})
-                log.info("IB %s order %s %s %s: %s", mode_label, order_action, quantity, ticker, result)
-            except Exception as e:
-                exec_status = "error"
-                exec_detail = str(e)
-                log.error("IB %s equity order failed for %s %s: %s", mode_label, order_action, ticker, e)
+            # Close DB before handing off — background thread opens its own connection
+            conn.commit()
+            conn.close()
+            conn = None
 
-    # 3. Write execution result back to the row
-    if exec_status:
-        _update_exec(cur, trade_id, exec_status, exec_detail)
+            def _place_async():
+                _exec_status = _exec_detail = None
+                try:
+                    if sec_type.upper() == "OPT":
+                        current_price = float(data.get("price") or 0)
+                        if not current_price:
+                            raise ValueError("'price' (underlying price) required for options orders")
+                        if opt_target_prem is not None:
+                            opt = submit_task(
+                                active_broker.select_option_by_premium,
+                                ticker, order_action, current_price,
+                                _timeout       = 45,
+                                target_premium = opt_target_prem,
+                                expiry_type    = opt_expiry_type,
+                                right_override = opt_right_ovr,
+                                option_expiry  = data.get("option_expiry") or None,
+                            )
+                        else:
+                            opt = submit_task(
+                                active_broker.select_option,
+                                ticker, order_action, current_price,
+                                _timeout      = 45,
+                                option_expiry = data.get("option_expiry") or None,
+                                max_spread    = float(data.get("max_spread", 1.0)),
+                                strike_offset = int(data.get("strike_offset", 0)),
+                            )
+                        result = submit_task(
+                            active_broker.place_order,
+                            ticker, order_action, quantity, None,
+                            _timeout = 20,
+                            sec_type = "OPT",
+                            currency = currency,
+                            expiry   = opt["expiry"],
+                            strike   = opt["strike"],
+                            right    = opt["right"],
+                        )
+                        _exec_status = "ok" if result.get("success") else "error"
+                        _exec_detail = json.dumps({**result, "option_selected": opt, "mode": mode_label})
+                        log.info("IB %s option order %s %s %s %s %s: %s",
+                                 mode_label, order_action, ticker,
+                                 opt["expiry"], opt["strike"], opt["right"], result)
+                    else:
+                        result = submit_task(
+                            active_broker.place_order,
+                            ticker   = ticker,
+                            action   = order_action,
+                            quantity = quantity,
+                            price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                            sec_type = sec_type,
+                            currency = currency,
+                            _timeout = 30,
+                        )
+                        _exec_status = "ok" if result.get("success") else "error"
+                        _exec_detail = json.dumps({**result, "mode": mode_label})
+                        log.info("IB %s order %s %s %s: %s",
+                                 mode_label, order_action, quantity, ticker, result)
+                except Exception as e:
+                    _exec_status = "error"
+                    _exec_detail = str(e)
+                    log.error("IB async order failed for %s %s: %s", order_action, ticker, e)
+                finally:
+                    try:
+                        _c = get_db()
+                        _cur = _c.cursor()
+                        _update_exec(_cur, trade_id, _exec_status, _exec_detail)
+                        _c.commit()
+                        _c.close()
+                    except Exception as e:
+                        log.error("Failed to update exec status for trade %s: %s", trade_id, e)
+
+            threading.Thread(target=_place_async, daemon=True).start()
+
+    if conn:
         conn.commit()
-
-    conn.close()
+        conn.close()
     return jsonify({"status": "ok", "id": trade_id}), 200
 
 
