@@ -1210,6 +1210,9 @@
         const res = await fetch(`/api/broker/reconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
         const data = await res.json();
         if (data.connected) {
+          // Trigger a fill sync so new fills show up immediately after reconnect
+          document.getElementById('ibReconnectBtn').textContent = 'Syncing fills...';
+          await fetch('/api/ib/sync', { method: 'POST' }).catch(() => {});
           await loadTrades();
         } else {
           alert('Reconnect failed: ' + (data.error || 'unknown error'));
