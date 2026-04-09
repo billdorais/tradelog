@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analysis — Kairos Automata</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; padding: 0 0 60px; }
+
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
+    .nav-back { color: #888; text-decoration: none; font-size: 0.85rem; border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; }
+    .nav-back:hover { color: #ccc; border-color: #444; }
+
+    .page { padding: 28px 24px; max-width: 1300px; margin: 0 auto; }
+    .page-title { font-size: 1.3rem; font-weight: 600; margin-bottom: 4px; }
+    .page-sub   { font-size: 0.85rem; color: #555; margin-bottom: 28px; }
+
+    /* ── Overall stat cards ── */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-bottom: 36px; }
+    .stat-card { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 18px; }
+    .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 6px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: #fff; }
+    .stat-value.pos { color: #26a65b; }
+    .stat-value.neg { color: #e74c3c; }
+    .stat-value.neu { color: #f5c060; }
+
+    /* ── Section headings ── */
+    .section { margin-bottom: 36px; }
+    .section-title { font-size: 1rem; font-weight: 600; color: #ccc; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; }
+    .section-title span { font-size: 0.75rem; color: #555; font-weight: 400; }
+
+    /* ── Tables ── */
+    .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2130; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    thead th { background: #13161f; color: #666; font-weight: 500; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.05em; padding: 10px 14px; text-align: left; border-bottom: 1px solid #1e2130; cursor: pointer; white-space: nowrap; user-select: none; }
+    thead th:hover { color: #aaa; }
+    thead th.sorted { color: #4a90d9; }
+    tbody tr { border-bottom: 1px solid #1a1d2e; transition: background 0.1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #13161f; }
+    td { padding: 10px 14px; color: #b0b0b0; white-space: nowrap; }
+    td.name { color: #e0e0e0; font-weight: 500; font-family: monospace; font-size: 0.8rem; }
+    td.pos { color: #26a65b; font-weight: 600; }
+    td.neg { color: #e74c3c; font-weight: 600; }
+
+    /* profit factor badge */
+    .pf { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.8rem; }
+    .pf-good { background: rgba(38,166,91,0.15); color: #26a65b; }
+    .pf-ok   { background: rgba(245,192,96,0.15); color: #f5c060; }
+    .pf-bad  { background: rgba(231,76,60,0.15);  color: #e74c3c; }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab { padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 0.82rem; color: #666; border: 1px solid transparent; transition: all 0.15s; }
+    .tab:hover { color: #aaa; }
+    .tab.active { background: #1a1d2e; border-color: #2a2d3e; color: #e0e0e0; }
+
+    /* ── Daily/Weekly summary colours ── */
+    .day-pos { background: rgba(38,166,91,0.06); }
+    .day-neg { background: rgba(231,76,60,0.06); }
+
+    /* ── AI suggestions panel ── */
+    .suggest-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+    .btn { padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+    .btn-ai { background: linear-gradient(135deg, #6c3fc7, #4a90d9); color: #fff; }
+    .ai-output { background: #13161f; border: 1px solid #2a2d3e; border-radius: 10px; padding: 20px 24px; font-size: 0.88rem; line-height: 1.75; color: #c0c0c0; min-height: 60px; }
+    .ai-output h2 { font-size: 1rem; color: #fff; margin: 18px 0 8px; border-bottom: 1px solid #1e2130; padding-bottom: 5px; }
+    .ai-output h2:first-child { margin-top: 0; }
+    .ai-output ul { margin: 6px 0 10px 20px; }
+    .ai-output li { margin-bottom: 4px; }
+    .ai-output strong { color: #f5c060; }
+    .ai-placeholder { color: #444; font-style: italic; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #4a90d9; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 40px; color: #444; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div style="display:flex;align-items:center;gap:12px">
+    <img src="/static/kariosLogo_128.png" alt="" style="height:36px;width:36px;image-rendering:pixelated">
+    <h1>Kairos Automata — Analysis</h1>
+  </div>
+  <a href="/" class="nav-back">&#8592; Dashboard</a>
+</header>
+
+<div class="page">
+  <div class="page-title">Trading Performance Analysis</div>
+  <div class="page-sub" id="dataAge">Loading…</div>
+
+  <!-- Overall stats -->
+  <div class="stat-grid" id="overallStats"></div>
+
+  <!-- Strategy leaderboard -->
+  <div class="section">
+    <div class="section-title">
+      Strategy Leaderboard
+      <span>click column headers to sort</span>
+    </div>
+    <div class="tbl-wrap">
+      <table id="stratTable">
+        <thead>
+          <tr>
+            <th onclick="sortTable('stratTable',0)">Strategy</th>
+            <th onclick="sortTable('stratTable',1)">Trades</th>
+            <th onclick="sortTable('stratTable',2)">Win %</th>
+            <th onclick="sortTable('stratTable',3)">Profit Factor</th>
+            <th onclick="sortTable('stratTable',4)">Total P&amp;L</th>
+            <th onclick="sortTable('stratTable',5)">Avg Win</th>
+            <th onclick="sortTable('stratTable',6)">Avg Loss</th>
+            <th onclick="sortTable('stratTable',7)">Largest Win</th>
+            <th onclick="sortTable('stratTable',8)">Largest Loss</th>
+          </tr>
+        </thead>
+        <tbody id="stratBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Ticker breakdown -->
+  <div class="section">
+    <div class="section-title">Ticker Breakdown</div>
+    <div class="tbl-wrap">
+      <table id="tickerTable">
+        <thead>
+          <tr>
+            <th onclick="sortTable('tickerTable',0)">Ticker</th>
+            <th onclick="sortTable('tickerTable',1)">Trades</th>
+            <th onclick="sortTable('tickerTable',2)">Win %</th>
+            <th onclick="sortTable('tickerTable',3)">Profit Factor</th>
+            <th onclick="sortTable('tickerTable',4)">Total P&amp;L</th>
+            <th onclick="sortTable('tickerTable',5)">Avg Win</th>
+            <th onclick="sortTable('tickerTable',6)">Avg Loss</th>
+          </tr>
+        </thead>
+        <tbody id="tickerBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Daily / Weekly summaries -->
+  <div class="section">
+    <div class="section-title">Performance Summary</div>
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('daily')">Daily</div>
+      <div class="tab"       onclick="showTab('weekly')">Weekly</div>
+    </div>
+    <div id="tab-daily">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Date</th><th>Trades</th><th>Day P&amp;L</th><th>Cumulative P&amp;L</th>
+          </tr></thead>
+          <tbody id="dailyBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="tab-weekly" style="display:none">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Week</th><th>Trades</th><th>Week P&amp;L</th><th>Cumulative P&amp;L</th>
+          </tr></thead>
+          <tbody id="weeklyBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI suggestions -->
+  <div class="section">
+    <div class="section-title">AI Profit Factor Suggestions</div>
+    <div class="suggest-bar">
+      <button class="btn btn-ai" id="suggestBtn" onclick="getSuggestions()">&#10024; Analyse &amp; Suggest Improvements</button>
+      <span style="font-size:0.78rem;color:#555">Powered by Claude — analyses each strategy and suggests specific improvements</span>
+    </div>
+    <div class="ai-output" id="aiOutput">
+      <span class="ai-placeholder">Click the button above to get AI-powered suggestions for improving your profit factor.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  let analysisData = null;
+  let sortState    = {};   // tableId → {col, dir}
+
+  // ── Load data ──────────────────────────────────────────────────────────────
+  async function load() {
+    const res  = await fetch('/api/analysis');
+    const data = await res.json();
+    if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
+    analysisData = data;
+    document.getElementById('dataAge').textContent =
+      `${data.overall?.trades || 0} closed trades analysed`;
+    renderOverall(data.overall || {});
+    renderStratTable(data.per_strategy || {});
+    renderTickerTable(data.per_ticker  || {});
+    renderDaily(data.daily   || []);
+    renderWeekly(data.weekly || []);
+  }
+
+  // ── Overall stats ──────────────────────────────────────────────────────────
+  function renderOverall(s) {
+    const pf   = s.profit_factor;
+    const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
+    const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+    document.getElementById('overallStats').innerHTML = `
+      ${card('Total Trades',    s.trades    || 0,                       '')}
+      ${card('Win Rate',        (s.win_rate || 0) + '%',               (s.win_rate||0) >= 50 ? 'pos' : 'neg')}
+      ${card('Profit Factor',   pf != null ? pf : '—',                 pfCls)}
+      ${card('Total P&L',       fmt(s.total_pnl),                      pnlCls)}
+      ${card('Avg Win',         fmt(s.avg_win),                        'pos')}
+      ${card('Avg Loss',        fmt(s.avg_loss),                       'neg')}
+      ${card('Largest Win',     fmt(s.largest_win),                    'pos')}
+      ${card('Largest Loss',    fmt(s.largest_loss),                   'neg')}
+    `;
+  }
+
+  function card(label, value, cls) {
+    return `<div class="stat-card">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value ${cls}">${value}</div>
+    </div>`;
+  }
+
+  function fmt(v) {
+    if (v == null || v === '') return '—';
+    const n = parseFloat(v);
+    return (n >= 0 ? '+' : '') + '$' + Math.abs(n).toFixed(2);
+  }
+
+  function pfBadge(pf) {
+    if (pf == null) return '<span class="pf pf-ok">—</span>';
+    const cls = pf >= 1.5 ? 'pf-good' : pf >= 1.0 ? 'pf-ok' : 'pf-bad';
+    return `<span class="pf ${cls}">${pf}</span>`;
+  }
+
+  function pnlCell(v) {
+    const n = parseFloat(v) || 0;
+    return `<td class="${n >= 0 ? 'pos' : 'neg'}">${fmt(v)}</td>`;
+  }
+
+  // ── Strategy table ─────────────────────────────────────────────────────────
+  function renderStratTable(map) {
+    const body = document.getElementById('stratBody');
+    const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="9" class="empty">No closed trades yet.</td></tr>'; return; }
+    body.innerHTML = rows.map(([name, s]) => `
+      <tr>
+        <td class="name">${esc(name)}</td>
+        <td>${s.trades}</td>
+        <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
+        <td>${pfBadge(s.profit_factor)}</td>
+        ${pnlCell(s.total_pnl)}
+        <td class="pos">+$${s.avg_win.toFixed(2)}</td>
+        <td class="neg">-$${Math.abs(s.avg_loss).toFixed(2)}</td>
+        <td class="pos">+$${s.largest_win.toFixed(2)}</td>
+        <td class="neg">$${s.largest_loss.toFixed(2)}</td>
+      </tr>`).join('');
+  }
+
+  // ── Ticker table ───────────────────────────────────────────────────────────
+  function renderTickerTable(map) {
+    const body = document.getElementById('tickerBody');
+    const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No closed trades yet.</td></tr>'; return; }
+    body.innerHTML = rows.map(([ticker, s]) => `
+      <tr>
+        <td class="name">${esc(ticker)}</td>
+        <td>${s.trades}</td>
+        <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
+        <td>${pfBadge(s.profit_factor)}</td>
+        ${pnlCell(s.total_pnl)}
+        <td class="pos">+$${s.avg_win.toFixed(2)}</td>
+        <td class="neg">-$${Math.abs(s.avg_loss).toFixed(2)}</td>
+      </tr>`).join('');
+  }
+
+  // ── Daily / Weekly ─────────────────────────────────────────────────────────
+  function renderDaily(rows) {
+    const body = document.getElementById('dailyBody');
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
+    body.innerHTML = [...rows].reverse().map(r => {
+      const cls = r.pnl >= 0 ? 'day-pos' : 'day-neg';
+      return `<tr class="${cls}">
+        <td>${r.date}</td>
+        <td>${r.trades}</td>
+        ${pnlCell(r.pnl)}
+        ${pnlCell(r.cumulative)}
+      </tr>`;
+    }).join('');
+  }
+
+  function renderWeekly(rows) {
+    const body = document.getElementById('weeklyBody');
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
+    body.innerHTML = [...rows].reverse().map(r => {
+      const cls = r.pnl >= 0 ? 'day-pos' : 'day-neg';
+      return `<tr class="${cls}">
+        <td>${r.week}</td>
+        <td>${r.trades}</td>
+        ${pnlCell(r.pnl)}
+        ${pnlCell(r.cumulative)}
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Tabs ───────────────────────────────────────────────────────────────────
+  function showTab(name) {
+    ['daily','weekly'].forEach(t => {
+      document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+    });
+    document.querySelectorAll('.tab').forEach((el, i) => {
+      el.classList.toggle('active', ['daily','weekly'][i] === name);
+    });
+  }
+
+  // ── Sort ───────────────────────────────────────────────────────────────────
+  function sortTable(tableId, col) {
+    const table = document.getElementById(tableId);
+    const tbody = table.querySelector('tbody');
+    const rows  = Array.from(tbody.querySelectorAll('tr'));
+    if (rows.length === 1 && rows[0].querySelectorAll('td').length === 1) return;
+
+    const prev = sortState[tableId] || { col: -1, dir: 1 };
+    const dir  = (prev.col === col) ? -prev.dir : -1;  // default desc
+    sortState[tableId] = { col, dir };
+
+    table.querySelectorAll('thead th').forEach((th, i) => th.classList.toggle('sorted', i === col));
+
+    rows.sort((a, b) => {
+      const av = a.cells[col]?.textContent.replace(/[^0-9.\-]/g, '') || '';
+      const bv = b.cells[col]?.textContent.replace(/[^0-9.\-]/g, '') || '';
+      const an = parseFloat(av), bn = parseFloat(bv);
+      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * dir;
+      return av.localeCompare(bv) * dir;
+    });
+
+    rows.forEach(r => tbody.appendChild(r));
+  }
+
+  // ── AI suggestions ─────────────────────────────────────────────────────────
+  async function getSuggestions() {
+    if (!analysisData) return;
+    const btn    = document.getElementById('suggestBtn');
+    const output = document.getElementById('aiOutput');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Analysing…';
+    output.innerHTML = '';
+    let buffer = '';
+
+    try {
+      const res = await fetch('/api/analysis/suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          per_strategy: analysisData.per_strategy,
+          overall:      analysisData.overall,
+        }),
+      });
+
+      const reader = res.body.getReader();
+      const dec    = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = dec.decode(value, { stream: true });
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (raw === '[DONE]') break;
+          try {
+            const msg = JSON.parse(raw);
+            if (msg.error) { output.innerHTML = `<span style="color:#e74c3c">${esc(msg.error)}</span>`; return; }
+            if (msg.text)  buffer += msg.text;
+          } catch {}
+        }
+        output.innerHTML = renderMarkdown(buffer);
+        output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    } catch (e) {
+      output.innerHTML = `<span style="color:#e74c3c">Error: ${esc(e.message)}</span>`;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '&#10024; Analyse &amp; Suggest Improvements';
+    }
+  }
+
+  // Minimal markdown renderer (##, **, bullet lists)
+  function renderMarkdown(md) {
+    return md
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+      .replace(/((<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
+      .replace(/\n{2,}/g, '<br><br>')
+      .replace(/\n/g, ' ');
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  load();
+</script>
+</body>
+</html>

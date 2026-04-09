@@ -2041,6 +2041,230 @@ def api_stats():
 
 
 # ---------------------------------------------------------------------------
+# Analysis page
+# ---------------------------------------------------------------------------
+
+@app.route("/analysis")
+def analysis_page():
+    return render_template("analysis.html")
+
+
+def _build_analysis_stats():
+    """
+    Pairs BUY/SELL signals from the trades table into closed round-trips.
+    Returns per-strategy stats, per-ticker stats, daily buckets, weekly buckets.
+    """
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT * FROM trades ORDER BY id ASC")
+    rows = cur.fetchall()
+    if DATABASE_URL:
+        cols   = [d[0] for d in cur.description]
+        trades = [dict(zip(cols, r)) for r in rows]
+    else:
+        trades = [dict(r) for r in rows]
+    conn.close()
+
+    # Pair trades into closed round-trips per (strategy, ticker)
+    open_longs  = {}  # (strategy, ticker) → [(price, qty, time)]
+    open_shorts = {}
+    closed      = []  # {"pnl", "strategy", "ticker", "date", "entry_time", "exit_time"}
+
+    for t in trades:
+        action   = (t.get("action") or "").strip().upper()
+        ticker   = (t.get("ticker") or "").strip().upper()
+        strategy = (t.get("strategy") or "Unknown").strip()
+        received = t.get("received_at") or ""
+        try:
+            price = float(t.get("price") or 0)
+            qty   = float(t.get("quantity") or 1)
+        except (ValueError, TypeError):
+            continue
+        if not ticker or price == 0:
+            continue
+
+        key = (strategy, ticker)
+        date_str = received[:10] if received else ""
+
+        if action == "BUY":
+            queue = open_shorts.get(key, [])
+            if queue:
+                entry_price, entry_qty, entry_time = queue.pop(0)
+                pnl = (entry_price - price) * min(qty, entry_qty)
+                closed.append({"pnl": round(pnl, 2), "strategy": strategy, "ticker": ticker,
+                                "date": date_str, "entry_time": entry_time, "exit_time": received})
+            else:
+                open_longs.setdefault(key, []).append((price, qty, received))
+        elif action == "SELL":
+            queue = open_longs.get(key, [])
+            if queue:
+                entry_price, entry_qty, entry_time = queue.pop(0)
+                pnl = (price - entry_price) * min(qty, entry_qty)
+                closed.append({"pnl": round(pnl, 2), "strategy": strategy, "ticker": ticker,
+                                "date": date_str, "entry_time": entry_time, "exit_time": received})
+            else:
+                open_shorts.setdefault(key, []).append((price, qty, received))
+
+    def _stats_from_trades(trade_list):
+        if not trade_list:
+            return None
+        wins   = [t["pnl"] for t in trade_list if t["pnl"] > 0]
+        losses = [t["pnl"] for t in trade_list if t["pnl"] <= 0]
+        gross_win  = sum(wins)
+        gross_loss = abs(sum(losses))
+        total_pnl  = round(gross_win - gross_loss, 2)
+        pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
+        return {
+            "trades":        len(trade_list),
+            "wins":          len(wins),
+            "losses":        len(losses),
+            "win_rate":      round(len(wins) / len(trade_list) * 100, 1),
+            "profit_factor": pf,
+            "total_pnl":     total_pnl,
+            "avg_win":       round(gross_win  / len(wins),   2) if wins   else 0,
+            "avg_loss":      round(-gross_loss / len(losses), 2) if losses else 0,
+            "largest_win":   round(max(wins),  2) if wins   else 0,
+            "largest_loss":  round(min(losses), 2) if losses else 0,
+        }
+
+    # Per-strategy
+    strat_map = {}
+    for c in closed:
+        strat_map.setdefault(c["strategy"], []).append(c)
+    per_strategy = {}
+    for s, tlist in strat_map.items():
+        st = _stats_from_trades(tlist)
+        if st:
+            per_strategy[s] = st
+
+    # Per-ticker
+    ticker_map = {}
+    for c in closed:
+        ticker_map.setdefault(c["ticker"], []).append(c)
+    per_ticker = {}
+    for tk, tlist in ticker_map.items():
+        st = _stats_from_trades(tlist)
+        if st:
+            per_ticker[tk] = st
+
+    # Daily buckets
+    daily_map = {}
+    for c in closed:
+        d = c["date"] or "unknown"
+        daily_map.setdefault(d, []).append(c["pnl"])
+    daily = []
+    cumulative = 0
+    for d in sorted(daily_map):
+        day_pnl = round(sum(daily_map[d]), 2)
+        cumulative = round(cumulative + day_pnl, 2)
+        daily.append({"date": d, "pnl": day_pnl, "trades": len(daily_map[d]), "cumulative": cumulative})
+
+    # Weekly buckets (ISO week)
+    from datetime import datetime as _dt
+    weekly_map = {}
+    for c in closed:
+        try:
+            dt = _dt.fromisoformat(c["date"])
+            week_key = dt.strftime("%Y-W%W")
+            week_label = dt.strftime("Week of %b %d, %Y")
+        except Exception:
+            week_key = week_label = "unknown"
+        weekly_map.setdefault(week_key, {"label": week_label, "pnl": 0, "trades": 0})
+        weekly_map[week_key]["pnl"]    = round(weekly_map[week_key]["pnl"] + c["pnl"], 2)
+        weekly_map[week_key]["trades"] += 1
+    weekly = []
+    cumulative = 0
+    for wk in sorted(weekly_map):
+        w = weekly_map[wk]
+        cumulative = round(cumulative + w["pnl"], 2)
+        weekly.append({"week": w["label"], "pnl": w["pnl"], "trades": w["trades"], "cumulative": cumulative})
+
+    overall = _stats_from_trades(closed) or {}
+
+    return {
+        "overall":      overall,
+        "per_strategy": per_strategy,
+        "per_ticker":   per_ticker,
+        "daily":        daily,
+        "weekly":       weekly,
+    }
+
+
+@app.route("/api/analysis")
+def api_analysis():
+    try:
+        return jsonify(_build_analysis_stats())
+    except Exception as e:
+        log.exception("Analysis error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/analysis/suggest", methods=["POST"])
+def api_analysis_suggest():
+    """Stream AI suggestions for improving profit factor per strategy."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    data        = request.get_json(silent=True) or {}
+    per_strategy = data.get("per_strategy", {})
+    overall      = data.get("overall", {})
+
+    if not per_strategy:
+        return jsonify({"error": "No strategy data provided"}), 400
+
+    rows = "\n".join(
+        f"  {name}: trades={s['trades']} win_rate={s['win_rate']}% "
+        f"profit_factor={s['profit_factor']} total_pnl=${s['total_pnl']} "
+        f"avg_win=${s['avg_win']} avg_loss=${s['avg_loss']} "
+        f"largest_win=${s['largest_win']} largest_loss=${s['largest_loss']}"
+        for name, s in per_strategy.items()
+    )
+
+    prompt = (
+        f"I am a retail trader using TradingView strategy alerts routed to Interactive Brokers.\n\n"
+        f"Overall account: trades={overall.get('trades')} win_rate={overall.get('win_rate')}% "
+        f"profit_factor={overall.get('profit_factor')} total_pnl=${overall.get('total_pnl')}\n\n"
+        f"Per-strategy breakdown:\n{rows}\n\n"
+        f"For each strategy that has at least 5 trades, provide:\n"
+        f"1. A brief assessment of its current performance\n"
+        f"2. 2-3 specific, actionable suggestions to improve its profit factor\n\n"
+        f"Focus on practical improvements: entry filters, exit management, position sizing, "
+        f"time-of-day filters, or stopping trading low-performing strategies altogether. "
+        f"Be concise and direct. Use ## Strategy Name as headings."
+    )
+
+    def generate():
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                system=(
+                    "You are a quantitative trading analyst reviewing live trading results. "
+                    "Be concise and actionable. Use markdown: ## for strategy headings, "
+                    "**bold** for key metrics, bullet points for suggestions."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
