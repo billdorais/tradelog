@@ -716,10 +716,6 @@
         return true;
       });
       const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
-      const botCount = sorted.filter(e => e.side === 'BOT').length;
-      const sldCount = sorted.filter(e => e.side === 'SLD').length;
-      console.log(`[IB] fills after dedup: ${sorted.length} total, ${botCount} BOT, ${sldCount} SLD`);
-      console.log('[IB] sides:', sorted.map(e => `${e.side} ${e.symbol} ${e.shares}sh`));
       const longs  = {};  // open long positions waiting for SLD
       const shorts = {};  // open short positions waiting for BOT
       const pairs  = [];
@@ -868,7 +864,8 @@
             const qty        = ref.shares;
             const pnl        = ex?.pnl != null ? ex.pnl : undefined;
             const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
-            const dur        = en ? tradeDuration(en.time, ex?.time) : '—';
+            const ibTs = f => f?.ts || f?.time;
+            const dur        = en ? tradeDuration(ibTs(en), ibTs(ex)) : '—';
             const entryId    = en?.exec_id  ? `'${en.exec_id}'`  : 'null';
             const exitId     = ex?.exec_id  ? `'${ex.exec_id}'`  : 'null';
             rows.push(`<tr class="group-second">
@@ -877,8 +874,8 @@
                 <button onclick="deleteIBRow(${entryId}, ${exitId})" title="Remove stale IB row"
                   style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.75rem;padding:0;vertical-align:middle">&#10005;</button>
               </td>
-              <td style="font-size:0.85rem;color:#aaa">${en?.time ?? '—'}</td>
-              <td style="font-size:0.85rem;color:#888">${ex?.time ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
+              <td style="font-size:0.85rem;color:#aaa">${fmtET(ibTs(en)) ?? '—'}</td>
+              <td style="font-size:0.85rem;color:#888">${ibTs(ex) ? fmtET(ibTs(ex)) : '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
               <td style="color:#888;font-size:0.85rem">${dur}</td>
               <td>${sentimentBadge(sentiment)}</td>
               <td><span style="color:#444">—</span></td>
