@@ -657,17 +657,25 @@ def webhook():
                 log.error("IB %s option order failed for %s %s: %s", mode_label, order_action, ticker, e)
         else:
             # --- Equity / futures / crypto path ---
-            result = active_broker.place_order(
-                ticker   = ticker,
-                action   = order_action,
-                quantity = quantity,
-                price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                sec_type = sec_type,
-                currency = currency,
-            )
-            exec_status = "ok" if result.get("success") else "error"
-            exec_detail = json.dumps({**result, "mode": mode_label})
-            log.info("IB %s order %s %s %s: %s", mode_label, order_action, quantity, ticker, result)
+            # Must run on the background IB thread (which owns the event loop)
+            try:
+                result = submit_task(
+                    active_broker.place_order,
+                    ticker   = ticker,
+                    action   = order_action,
+                    quantity = quantity,
+                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                    sec_type = sec_type,
+                    currency = currency,
+                    _timeout = 30,
+                )
+                exec_status = "ok" if result.get("success") else "error"
+                exec_detail = json.dumps({**result, "mode": mode_label})
+                log.info("IB %s order %s %s %s: %s", mode_label, order_action, quantity, ticker, result)
+            except Exception as e:
+                exec_status = "error"
+                exec_detail = str(e)
+                log.error("IB %s equity order failed for %s %s: %s", mode_label, order_action, ticker, e)
 
     # 3. Write execution result back to the row
     if exec_status:
