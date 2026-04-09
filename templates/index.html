@@ -699,7 +699,8 @@
 
     // Pair IB executions: handles both LONG (BOT→SLD) and SHORT (SLD→BOT)
     function pairIBExecs(execs) {
-      const sorted = [...execs].sort((a, b) => new Date(a.ts || a.time) - new Date(b.ts || b.time));
+      const toMs = e => new Date((e.ts || e.time || '').replace(' ', 'T'));
+      const sorted = [...execs].sort((a, b) => toMs(a) - toMs(b));
       const longs  = {};  // open long positions waiting for SLD
       const shorts = {};  // open short positions waiting for BOT
       const pairs  = [];
