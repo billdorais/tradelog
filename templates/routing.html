@@ -61,6 +61,7 @@
     .node-broker-coinbase { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
     .node-ticker          { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
     .node-options_config  { background: #2a1f10; border-color: #e8962a; color: #ffc060; min-width: 130px; }
+    .node-trading_hours   { background: #102030; border-color: #2a7898; color: #60c8e0; min-width: 120px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #4a90d9; color: #4a90d9; }
@@ -125,6 +126,7 @@
   <div class="palette-item" onclick="addNode('mode')"><span class="palette-dot" style="background:#26a65b"></span>Live / Paper</div>
   <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker</div>
   <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
+  <div class="palette-item" onclick="addNode('trading_hours')"><span class="palette-dot" style="background:#2a7898"></span>Trading Hours</div>
 </div>
 
 <!-- Edit modal -->
@@ -225,8 +227,9 @@
       case 'mode':          return `node-mode-${node.value || 'live'}`;
       case 'broker':        return `node-broker-${node.value || 'ib'}`;
       case 'ticker':        return 'node-ticker';
-      case 'options_config':return 'node-options_config';
-      default:              return 'node-strategy';
+      case 'options_config':  return 'node-options_config';
+      case 'trading_hours':   return 'node-trading_hours';
+      default:                return 'node-strategy';
     }
   }
 
@@ -234,6 +237,7 @@
     const map = {
       strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument',
       mode: 'Mode', broker: 'Broker', ticker: 'Ticker', options_config: 'Options',
+      trading_hours: 'Hours',
     };
     return map[node.type] || node.type;
   }
@@ -250,6 +254,10 @@
         const expiry = node.expiry_type === 'monthly' ? 'Monthly' : 'Weekly';
         const right  = node.right_override === 'C' ? 'Calls' : node.right_override === 'P' ? 'Puts' : 'Auto';
         return `$${(node.target_premium ?? 1).toFixed(2)} · ${expiry} · ${right}`;
+      }
+      case 'trading_hours': {
+        const tzLabel = { 'America/New_York': 'ET', 'America/Chicago': 'CT', 'America/Denver': 'MT', 'America/Los_Angeles': 'PT', 'UTC': 'UTC' }[node.tz] || node.tz || 'ET';
+        return `${node.start || '09:30'}–${node.end || '16:00'} ${tzLabel}`;
       }
       default: return '—';
     }
@@ -434,6 +442,28 @@
             </select>
           </div>`;
 
+      case 'trading_hours':
+        return `
+          <div class="form-group">
+            <label>Session Start</label>
+            <input id="f_th_start" type="time" value="${v.start || '09:30'}">
+          </div>
+          <div class="form-group">
+            <label>Session End</label>
+            <input id="f_th_end" type="time" value="${v.end || '16:00'}">
+          </div>
+          <div class="form-group">
+            <label>Timezone</label>
+            <select id="f_th_tz">
+              <option value="America/New_York"     ${(v.tz||'America/New_York')==='America/New_York'     ? 'selected':''}>Eastern (ET) — NYSE/NASDAQ</option>
+              <option value="America/Chicago"      ${v.tz==='America/Chicago'      ? 'selected':''}>Central (CT)</option>
+              <option value="America/Denver"       ${v.tz==='America/Denver'       ? 'selected':''}>Mountain (MT)</option>
+              <option value="America/Los_Angeles"  ${v.tz==='America/Los_Angeles'  ? 'selected':''}>Pacific (PT)</option>
+              <option value="UTC"                  ${v.tz==='UTC'                  ? 'selected':''}>UTC</option>
+            </select>
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">Signals arriving outside this window are silently dropped.</p>`;
+
       default: return '';
     }
   }
@@ -458,6 +488,11 @@
         node.target_premium  = parseFloat(document.getElementById('f_target_premium').value) || 1.00;
         node.expiry_type     = document.getElementById('f_expiry_type').value;
         node.right_override  = document.getElementById('f_right_override').value || null;
+        break;
+      case 'trading_hours':
+        node.start = document.getElementById('f_th_start').value || '09:30';
+        node.end   = document.getElementById('f_th_end').value   || '16:00';
+        node.tz    = document.getElementById('f_th_tz').value    || 'America/New_York';
         break;
     }
 

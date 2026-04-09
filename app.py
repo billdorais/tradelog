@@ -479,6 +479,9 @@ def webhook():
     opt_target_prem  = None   # set by options_config node
     opt_expiry_type  = "weekly"
     opt_right_ovr    = None
+    th_start         = None   # set by trading_hours node (HH:MM string)
+    th_end           = None
+    th_tz            = "America/New_York"
     sec_type        = data.get("sec_type", "STK")
     currency        = data.get("currency", "USD")
     use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
@@ -524,11 +527,31 @@ def webhook():
                     opt_target_prem = float(n.get("target_premium") or 1.0)
                     opt_expiry_type = n.get("expiry_type") or "weekly"
                     opt_right_ovr   = n.get("right_override") or None
+                elif ntype == "trading_hours":
+                    th_start = n.get("start") or "09:30"
+                    th_end   = n.get("end")   or "16:00"
+                    th_tz    = n.get("tz")    or "America/New_York"
             log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
                      strategy_name, broker_name, use_live_broker, quantity, sec_type)
             break  # first matching pipeline wins
     except Exception as e:
         log.warning("Routing rule lookup failed: %s", e)
+
+    # Enforce trading hours if a trading_hours node was found in the matched pipeline
+    if th_start and th_end:
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as _dt
+            _now = _dt.now(ZoneInfo(th_tz))
+            _now_t = _now.strftime("%H:%M")
+            if not (th_start <= _now_t < th_end):
+                log.info(
+                    "Signal for '%s' dropped — outside trading hours (%s–%s %s, now %s)",
+                    strategy_name, th_start, th_end, th_tz, _now_t,
+                )
+                return jsonify({"status": "skipped", "reason": f"outside trading hours ({th_start}–{th_end} {th_tz})"}), 200
+        except Exception as e:
+            log.warning("Trading hours check failed: %s", e)
 
     conn = get_db()
     cur  = conn.cursor()
