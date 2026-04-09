@@ -474,13 +474,13 @@ def webhook():
         broker_name = "ib"
 
     # Apply routing rules — look up a matching enabled pipeline and override settings
-    strategy_name = (data.get("strategy") or "").strip()
-    quantity      = data.get("quantity", 1)
-    sec_type      = data.get("sec_type", "STK")
-    currency      = data.get("currency", "USD")
-    option_expiry = data.get("option_expiry") or None
-    max_spread    = float(data.get("max_spread", 1.0))
-    strike_offset = int(data.get("strike_offset", 0))
+    strategy_name    = (data.get("strategy") or "").strip()
+    quantity         = data.get("quantity", 1)
+    opt_target_prem  = None   # set by options_config node
+    opt_expiry_type  = "weekly"
+    opt_right_ovr    = None
+    sec_type        = data.get("sec_type", "STK")
+    currency        = data.get("currency", "USD")
     use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
 
     try:
@@ -520,6 +520,10 @@ def webhook():
                     sec_type = n.get("value") or sec_type
                 elif ntype == "ticker":
                     ticker = (n.get("value") or ticker or "").upper() or None
+                elif ntype == "options_config":
+                    opt_target_prem = float(n.get("target_premium") or 1.0)
+                    opt_expiry_type = n.get("expiry_type") or "weekly"
+                    opt_right_ovr   = n.get("right_override") or None
             log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
                      strategy_name, broker_name, use_live_broker, quantity, sec_type)
             break  # first matching pipeline wins
@@ -570,16 +574,31 @@ def webhook():
                 current_price = float(data.get("price") or 0)
                 if not current_price:
                     raise ValueError("'price' (underlying price) required for options orders")
-                opt = submit_task(
-                    active_broker.select_option,
-                    ticker,
-                    order_action,
-                    current_price,
-                    _timeout      = 45,
-                    option_expiry = option_expiry,
-                    max_spread    = max_spread,
-                    strike_offset = strike_offset,
-                )
+
+                # Pipeline options_config node takes priority over payload fields
+                if opt_target_prem is not None:
+                    opt = submit_task(
+                        active_broker.select_option_by_premium,
+                        ticker,
+                        order_action,
+                        current_price,
+                        _timeout       = 45,
+                        target_premium = opt_target_prem,
+                        expiry_type    = opt_expiry_type,
+                        right_override = opt_right_ovr,
+                        option_expiry  = data.get("option_expiry") or None,
+                    )
+                else:
+                    opt = submit_task(
+                        active_broker.select_option,
+                        ticker,
+                        order_action,
+                        current_price,
+                        _timeout      = 45,
+                        option_expiry = data.get("option_expiry") or None,
+                        max_spread    = float(data.get("max_spread", 1.0)),
+                        strike_offset = int(data.get("strike_offset", 0)),
+                    )
                 result = submit_task(
                     active_broker.place_order,
                     ticker,

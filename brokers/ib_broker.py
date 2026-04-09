@@ -334,7 +334,6 @@ class IBBroker:
     def _next_weekly_expiry(expirations):
         """
         Return the nearest Friday expiry >= today from a list of 'YYYYMMDD' strings.
-        Returns None if none found.
         """
         from datetime import date
         today = date.today()
@@ -343,6 +342,28 @@ class IBBroker:
             try:
                 d = date(int(exp[:4]), int(exp[4:6]), int(exp[6:8]))
                 if d >= today and d.weekday() == 4:  # 4 = Friday
+                    candidates.append(d)
+            except ValueError:
+                continue
+        if not candidates:
+            return None
+        return min(candidates).strftime("%Y%m%d")
+
+    @staticmethod
+    def _next_monthly_expiry(expirations):
+        """
+        Return the nearest standard monthly expiry (third Friday of the month) >= today.
+        """
+        from datetime import date
+        today = date.today()
+        candidates = []
+        for exp in expirations:
+            try:
+                d = date(int(exp[:4]), int(exp[4:6]), int(exp[6:8]))
+                if d < today or d.weekday() != 4:
+                    continue
+                # Third Friday: day must be between 15–21
+                if 15 <= d.day <= 21:
                     candidates.append(d)
             except ValueError:
                 continue
@@ -431,6 +452,102 @@ class IBBroker:
         raise RuntimeError(
             f"No {right} option for {ticker} {expiry} with spread ≤ ${max_spread}"
         )
+
+    def select_option_by_premium(self, ticker, action, current_price,
+                                  target_premium=1.0, expiry_type="weekly",
+                                  right_override=None, option_expiry=None):
+        """
+        Select the option contract whose mid-price ((bid+ask)/2) is closest
+        to target_premium.  Quotes are fetched in a single bulk reqTickers call.
+
+        - action:          "BUY" → call, "SELL" → put (overridden by right_override)
+        - target_premium:  desired mid-price in dollars (e.g. 1.00)
+        - expiry_type:     "weekly" (nearest Friday) or "monthly" (third Friday)
+        - right_override:  "C" or "P" to force a side; None = follow action
+        - option_expiry:   explicit "YYYYMMDD" override (skips expiry_type logic)
+
+        Returns dict: {expiry, strike, right, bid, ask, mid, spread, diff}
+        Must be called from the background IB thread.
+        """
+        expirations, strikes = self.get_option_chain(ticker)
+        if not expirations or not strikes:
+            raise RuntimeError(f"No option chain found for {ticker}")
+
+        # --- Expiry ---
+        if option_expiry:
+            expiry = option_expiry
+        elif expiry_type == "monthly":
+            expiry = self._next_monthly_expiry(expirations)
+        else:
+            expiry = self._next_weekly_expiry(expirations)
+
+        if not expiry:
+            raise RuntimeError(f"No {expiry_type} expiry found for {ticker}")
+        if expiry not in expirations:
+            expiry = min(expirations, key=lambda e: abs(int(e) - int(expiry)))
+            log.warning("Expiry snapped to %s for %s", expiry, ticker)
+
+        # --- Right ---
+        if right_override and right_override.upper() in ("C", "P"):
+            right = right_override.upper()
+        else:
+            right = "C" if action.upper() == "BUY" else "P"
+
+        # --- Candidate strikes: 25 strikes centred on ATM ---
+        ordered = sorted(strikes)
+        atm_idx  = min(range(len(ordered)), key=lambda i: abs(ordered[i] - current_price))
+        lo = max(0, atm_idx - 5)
+        hi = min(len(ordered), atm_idx + 20)
+        candidates = ordered[lo:hi]
+
+        # --- Bulk quote ---
+        contracts = [Option(ticker, expiry, float(s), right, "SMART") for s in candidates]
+        try:
+            self._ib.qualifyContracts(*contracts)
+        except Exception as e:
+            log.warning("qualifyContracts partial failure: %s", e)
+
+        try:
+            tickers_data = self._ib.reqTickers(*contracts)
+        except Exception as e:
+            raise RuntimeError(f"reqTickers failed for {ticker} {expiry}: {e}")
+
+        # --- Find closest mid to target ---
+        best      = None
+        best_diff = float("inf")
+
+        for tk, strike in zip(tickers_data, candidates):
+            bid = float(tk.bid) if tk.bid and tk.bid > 0 else None
+            ask = float(tk.ask) if tk.ask and tk.ask > 0 else None
+            if bid is None or ask is None:
+                continue
+            mid  = (bid + ask) / 2.0
+            diff = abs(mid - target_premium)
+            if diff < best_diff:
+                best_diff = diff
+                best = {
+                    "expiry": expiry,
+                    "strike": float(strike),
+                    "right":  right,
+                    "bid":    round(bid,  2),
+                    "ask":    round(ask,  2),
+                    "mid":    round(mid,  2),
+                    "spread": round(ask - bid, 2),
+                    "diff":   round(diff, 2),
+                }
+
+        if not best:
+            raise RuntimeError(
+                f"No {right} quotes available for {ticker} {expiry} — "
+                "check IB market data subscription"
+            )
+
+        log.info(
+            "Option by premium: %s %s %s %s mid=%.2f (target=%.2f, diff=%.2f, spread=%.2f)",
+            ticker, expiry, best["strike"], right,
+            best["mid"], target_premium, best["diff"], best["spread"],
+        )
+        return best
 
     # ------------------------------------------------------------------
     # Order placement
