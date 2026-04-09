@@ -742,6 +742,21 @@ def broker_reconnect():
         return jsonify({"connected": False, "error": str(e)}), 500
 
 
+@app.route("/api/broker/disconnect", methods=["POST"])
+def broker_disconnect():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    if ib_broker is None:
+        return jsonify({"error": "IB_HOST not configured"}), 400
+    try:
+        if ib_broker.is_connected():
+            ib_broker.disconnect()
+        return jsonify({"connected": False, "status": "disconnected"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/broker/orders")
 def broker_orders():
     """Return live open orders and recent fills directly from IB (no DB)."""

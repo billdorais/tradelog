@@ -356,6 +356,7 @@
       <span id="modePill"></span>
       <span id="ibPill"></span>
       <button id="ibReconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
+      <button id="ibDisconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#e67e22;border:1px solid #e67e22;border-radius:4px;cursor:pointer" onclick="disconnectIB()">Disconnect IB</button>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button id="syncIBBtn" onclick="syncIBFills()" style="background:transparent;border:1px solid #4a90d9;color:#4a90d9;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Sync IB Fills</button>
@@ -1134,6 +1135,7 @@
           ? `<span class="mode-pill ib-connected"><span class="mode-dot" style="width:7px;height:7px;border-radius:50%;background:#26a65b;animation:pulse 1.5s infinite;display:inline-block"></span>IB ${(ib.accounts||[]).join(', ')}</span>`
           : `<span class="mode-pill ib-disconnected">IB Disconnected</span>`;
         document.getElementById('ibReconnectBtn').style.display = ib.connected ? 'none' : 'inline-block';
+        document.getElementById('ibDisconnectBtn').style.display = ib.connected ? 'inline-block' : 'none';
         allTrades = trades;
 
         // Mode pill (paper vs live)
@@ -1197,6 +1199,29 @@
       } catch (e) {
         alert('Reconnect error');
         document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+      }
+    }
+
+    async function disconnectIB() {
+      const token = prompt('Enter webhook token to disconnect IB:');
+      if (!token) return;
+      const btn = document.getElementById('ibDisconnectBtn');
+      btn.textContent = 'Disconnecting...';
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/broker/disconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          alert('IB disconnected. You can now log into your IB account directly.\nClick Reconnect IB when you\'re done.');
+          await loadTrades();
+        } else {
+          alert('Disconnect failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) {
+        alert('Disconnect error');
+      } finally {
+        btn.textContent = 'Disconnect IB';
+        btn.disabled = false;
       }
     }
 
