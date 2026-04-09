@@ -194,9 +194,9 @@ if os.environ.get("IB_HOST"):
                 except Exception as e:
                     _ib_sync_queue.put({"error": str(e)})
 
-            # Periodic fill sync every 5 minutes as a safety net
+            # Periodic fill sync every 60s as a safety net
             now_ts = time.time()
-            if now_ts - last_periodic_sync >= 300:
+            if now_ts - last_periodic_sync >= 60:
                 last_periodic_sync = now_ts
                 try:
                     saved = _sync_fills_on_connect()
