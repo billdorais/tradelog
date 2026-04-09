@@ -731,6 +731,43 @@ def broker_status():
     return jsonify(brokers)
 
 
+def _railway_ib_call(mutation_name):
+    """Call a Railway GraphQL mutation on the IB Gateway service instance.
+    Returns a status string."""
+    import urllib.request as _urlreq
+    railway_token  = os.environ.get("RAILWAY_API_TOKEN")
+    ib_service_id  = os.environ.get("RAILWAY_IB_SERVICE_ID")
+    environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    if not (railway_token and ib_service_id):
+        return "skipped — RAILWAY_API_TOKEN or RAILWAY_IB_SERVICE_ID not set"
+    try:
+        query = f"""
+          mutation M($serviceId: String!, $environmentId: String) {{
+            {mutation_name}(serviceId: $serviceId, environmentId: $environmentId)
+          }}
+        """
+        payload = json.dumps({
+            "query": query,
+            "variables": {"serviceId": ib_service_id, "environmentId": environment_id},
+        }).encode()
+        req = _urlreq.Request(
+            "https://backboard.railway.app/graphql/v2",
+            data=payload,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {railway_token}"},
+        )
+        with _urlreq.urlopen(req, timeout=10) as resp:
+            resp_data = json.loads(resp.read())
+        if resp_data.get("errors"):
+            log.warning("Railway %s error: %s", mutation_name, resp_data["errors"])
+            return "error: " + str(resp_data["errors"])
+        log.info("Railway %s succeeded", mutation_name)
+        return "ok"
+    except Exception as e:
+        log.warning("Railway API call failed: %s", e)
+        return f"error: {e}"
+
+
 @app.route("/api/broker/reconnect", methods=["POST"])
 def broker_reconnect():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
@@ -740,6 +777,9 @@ def broker_reconnect():
         return jsonify({"error": "IB_HOST not configured"}), 400
     global _ib_paused
     _ib_paused = False  # re-enable background auto-reconnect
+    # Resume the suspended Railway service, then wait for it to start
+    _railway_ib_call("serviceInstanceResume")
+    time.sleep(15)
     try:
         if ib_broker.is_connected():
             ib_broker.disconnect()
@@ -768,44 +808,8 @@ def broker_disconnect():
     except Exception as e:
         log.warning("IB disconnect error: %s", e)
 
-    # Restart IB Gateway service on Railway (if credentials configured)
-    railway_token  = os.environ.get("RAILWAY_API_TOKEN")
-    ib_service_id  = os.environ.get("RAILWAY_IB_SERVICE_ID")
-    environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID")
-    if railway_token and ib_service_id:
-        try:
-            import urllib.request as _urlreq
-            query = """
-              mutation RestartService($serviceId: String!, $environmentId: String) {
-                serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
-              }
-            """
-            payload = json.dumps({
-                "query": query,
-                "variables": {"serviceId": ib_service_id, "environmentId": environment_id},
-            }).encode()
-            req = _urlreq.Request(
-                "https://backboard.railway.app/graphql/v2",
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {railway_token}",
-                },
-            )
-            with _urlreq.urlopen(req, timeout=10) as resp:
-                resp_data = json.loads(resp.read())
-            if resp_data.get("errors"):
-                result["gateway_restart"] = "error: " + str(resp_data["errors"])
-                log.warning("Railway restart error: %s", resp_data["errors"])
-            else:
-                result["gateway_restart"] = "restarting"
-                log.info("IB Gateway restart triggered via Railway API")
-        except Exception as e:
-            result["gateway_restart"] = f"error: {e}"
-            log.warning("Railway API call failed: %s", e)
-    else:
-        result["gateway_restart"] = "skipped — RAILWAY_API_TOKEN or RAILWAY_IB_SERVICE_ID not set"
-
+    # Suspend IB Gateway service on Railway (immediately kills the process)
+    result["gateway_restart"] = _railway_ib_call("serviceInstanceSuspend")
     return jsonify(result)
 
 
