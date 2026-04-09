@@ -231,8 +231,8 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
 
     def _eod_close_scheduler():
-        """Close all open IB positions at 3:59 PM ET on weekdays (if enabled).
-        Fires any time in the 3:59–4:05 PM ET window so a mid-window restart
+        """Close all open IB positions at 3:58 PM ET on weekdays (if enabled).
+        Fires any time in the 3:58–4:00 PM ET window so a mid-window restart
         (e.g. from a redeploy) still catches the close."""
         ET = ZoneInfo("America/New_York")
         triggered_date = None
@@ -240,7 +240,7 @@ if os.environ.get("IB_HOST"):
             now = datetime.now(ET)
             today = now.date()
             t = (now.hour, now.minute)
-            in_window = (15, 59) <= t <= (16, 5)   # 3:59 PM – 4:05 PM ET
+            in_window = (15, 58) <= t <= (16, 0)   # 3:58 PM – 4:00 PM ET
             if (eod_close_enabled
                     and now.weekday() < 5            # Mon–Fri
                     and in_window
