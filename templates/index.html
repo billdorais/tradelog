@@ -703,12 +703,18 @@
         const raw = (e.ts || e.time || '');
         // Truncate microseconds to 3 decimal places for JS Date compatibility
         const fixed = raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
-        const d = new Date(fixed);
-        return d;
+        return new Date(fixed);
       };
-      const sorted = [...execs].sort((a, b) => toMs(a) - toMs(b));
-      console.log('[IB] raw execs:', execs.length, execs.map(e => `${e.side} ${e.symbol} ${e.ts}`));
-      console.log('[IB] sorted:', sorted.map(e => `${e.side} ${e.symbol} ${e.ts}`));
+      // Deduplicate fills with the same (symbol, side, ts) — IB paper trading
+      // sometimes records the same execution with multiple exec_ids.
+      const seen = new Set();
+      const deduped = execs.filter(e => {
+        const key = `${e.symbol}|${e.side}|${e.ts}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
       const longs  = {};  // open long positions waiting for SLD
       const shorts = {};  // open short positions waiting for BOT
       const pairs  = [];
@@ -736,7 +742,6 @@
         for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'long' });
       for (const entries of Object.values(shorts))
         for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'short' });
-      console.log('[IB] pairs:', pairs.map(p => `${(p.entry||p.exit).symbol} dir=${p.direction} open=${!p.exit}`));
       const pairMs = p => {
         const raw = ((p.entry || p.exit).ts || (p.entry || p.exit).time || '');
         return new Date(raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1'));
