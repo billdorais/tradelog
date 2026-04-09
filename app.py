@@ -776,18 +776,13 @@ def broker_reconnect():
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
     global _ib_paused
-    # Resume the suspended Railway IB Gateway service first (best-effort)
+    # Resume the suspended Railway IB Gateway service (best-effort, non-blocking)
     gw = _railway_ib_call("serviceInstanceResume")
     log.info("serviceInstanceResume result: %s", gw)
     # Re-enable the background reconnect loop — it owns the event loop and will connect
     _ib_paused = False
-    # Wait up to 45s for the background thread to establish the connection
-    deadline = time.time() + 45
-    while time.time() < deadline:
-        time.sleep(2)
-        if ib_broker.is_connected():
-            return jsonify(ib_broker.status())
-    return jsonify({"connected": False, "error": "IB Gateway did not connect within 45 s — check Railway logs"}), 504
+    # Return immediately; the JS side polls /api/broker/status until connected
+    return jsonify({"started": True, "gateway": gw})
 
 
 @app.route("/api/broker/disconnect", methods=["POST"])

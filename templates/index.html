@@ -1206,23 +1206,33 @@
     async function reconnectIB() {
       const token = prompt('Enter webhook token to reconnect IB:');
       if (!token) return;
-      document.getElementById('ibReconnectBtn').textContent = 'Connecting...';
+      const btn = document.getElementById('ibReconnectBtn');
+      btn.textContent = 'Connecting...';
+      btn.disabled = true;
       try {
-        const res = await fetch(`/api/broker/reconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
-        const data = await res.json();
-        if (data.connected) {
-          // Trigger a fill sync so new fills show up immediately after reconnect
-          document.getElementById('ibReconnectBtn').textContent = 'Syncing fills...';
-          await fetch('/api/ib/sync', { method: 'POST' }).catch(() => {});
-          await loadTrades();
-        } else {
-          alert('Reconnect failed: ' + (data.error || 'unknown error'));
-          document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
-        }
-      } catch (e) {
-        alert('Reconnect error');
-        document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+        // Kick off reconnect (returns immediately — background thread does the work)
+        await fetch(`/api/broker/reconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+      } catch (e) { /* ignore */ }
+      // Poll /api/broker/status every 3s for up to 60s
+      const deadline = Date.now() + 60000;
+      let connected = false;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          const s = await fetch('/api/broker/status').then(r => r.json());
+          if (s.IB && s.IB.connected) { connected = true; break; }
+        } catch (e) { /* keep polling */ }
+        btn.textContent = `Connecting… ${Math.round((deadline - Date.now()) / 1000)}s`;
       }
+      if (connected) {
+        btn.textContent = 'Syncing fills...';
+        await fetch('/api/ib/sync', { method: 'POST' }).catch(() => {});
+        await loadTrades();
+      } else {
+        alert('IB did not connect within 60s — check Railway IB Gateway logs.');
+        btn.textContent = 'Reconnect IB';
+      }
+      btn.disabled = false;
     }
 
     async function disconnectIB() {
