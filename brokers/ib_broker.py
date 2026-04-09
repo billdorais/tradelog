@@ -393,72 +393,55 @@ class IBBroker:
         ask = float(t.ask) if t.ask and t.ask > 0 else None
         return bid, ask
 
+    def _candidate_expirations(self, expirations, first_expiry, max_tries=3):
+        """Return up to max_tries expirations starting from first_expiry."""
+        future = sorted(e for e in expirations if e >= first_expiry)
+        return future[:max_tries]
+
     def select_option(self, ticker, action, current_price,
                       option_expiry=None, max_spread=1.0, strike_offset=0):
         """
         Select the nearest liquid option contract for a directional signal.
-
-        - action BUY  → call option
-        - action SELL → put option
-        - option_expiry: 'YYYYMMDD' override; None = next weekly Friday
-        - max_spread:    max bid/ask spread in dollars (default $1.00)
-        - strike_offset: strikes OTM from ATM (0 = ATM, 1 = 1 strike OTM, …)
-
-        Returns dict: {expiry, strike, right, bid, ask, spread}
-        Raises RuntimeError if no qualifying contract found.
-        Must be called from the background IB thread.
+        Tries up to 3 consecutive expirations if no qualifying contract is found.
         """
         expirations, strikes = self.get_option_chain(ticker)
 
-        expiry = option_expiry or self._next_weekly_expiry(expirations)
-        if not expiry:
+        first_expiry = option_expiry or self._next_weekly_expiry(expirations)
+        if not first_expiry:
             raise RuntimeError(f"No weekly Friday expiry found for {ticker}")
-        if expiry not in expirations:
-            # Snap to closest available date
-            closest = min(expirations, key=lambda e: abs(int(e) - int(expiry)))
-            log.warning("Expiry %s not in chain for %s — using %s", expiry, ticker, closest)
-            expiry = closest
+        if first_expiry not in expirations:
+            closest = min(expirations, key=lambda e: abs(int(e) - int(first_expiry)))
+            log.warning("Expiry %s not in chain for %s — using %s", first_expiry, ticker, closest)
+            first_expiry = closest
 
         right = "C" if action.upper() == "BUY" else "P"
 
-        # Build candidate strikes starting at ATM + offset, expanding outward
         if right == "C":
-            # Calls: sort ascending; OTM = higher strikes
             ordered = sorted(strikes)
         else:
-            # Puts: sort descending; OTM = lower strikes
             ordered = sorted(strikes, reverse=True)
 
-        atm_idx = min(range(len(ordered)), key=lambda i: abs(ordered[i] - current_price))
-        start   = min(atm_idx + strike_offset, len(ordered) - 1)
-        # Try up to 10 strikes around the target
+        atm_idx    = min(range(len(ordered)), key=lambda i: abs(ordered[i] - current_price))
+        start      = min(atm_idx + strike_offset, len(ordered) - 1)
         candidates = ordered[start: start + 10]
 
-        for strike in candidates:
-            try:
-                bid, ask = self.get_option_quote(ticker, expiry, strike, right)
-                if bid is None or ask is None:
-                    continue
-                spread = round(ask - bid, 2)
-                if spread <= max_spread:
-                    log.info(
-                        "Option selected: %s %s %s %s bid=%.2f ask=%.2f spread=%.2f",
-                        ticker, expiry, strike, right, bid, ask, spread,
-                    )
-                    return {
-                        "expiry": expiry,
-                        "strike": float(strike),
-                        "right":  right,
-                        "bid":    bid,
-                        "ask":    ask,
-                        "spread": spread,
-                    }
-            except Exception as e:
-                log.warning("Quote failed %s %s %s %s: %s", ticker, expiry, strike, right, e)
+        for expiry in self._candidate_expirations(expirations, first_expiry):
+            for strike in candidates:
+                try:
+                    bid, ask = self.get_option_quote(ticker, expiry, strike, right)
+                    if bid is None or ask is None:
+                        continue
+                    spread = round(ask - bid, 2)
+                    if spread <= max_spread:
+                        log.info("Option selected: %s %s %s %s bid=%.2f ask=%.2f spread=%.2f",
+                                 ticker, expiry, strike, right, bid, ask, spread)
+                        return {"expiry": expiry, "strike": float(strike), "right": right,
+                                "bid": bid, "ask": ask, "spread": spread}
+                except Exception as e:
+                    log.warning("Quote failed %s %s %s %s: %s", ticker, expiry, strike, right, e)
+            log.warning("No qualifying %s option for %s %s — trying next expiry", right, ticker, expiry)
 
-        raise RuntimeError(
-            f"No {right} option for {ticker} {expiry} with spread ≤ ${max_spread}"
-        )
+        raise RuntimeError(f"No {right} option for {ticker} near {first_expiry} with spread ≤ ${max_spread}")
 
     def select_option_by_premium(self, ticker, action, current_price,
                                   target_premium=1.0, expiry_type="weekly",
@@ -507,25 +490,28 @@ class IBBroker:
         hi = min(len(ordered), atm_idx + 20)
         candidates = ordered[lo:hi]
 
-        # --- Bulk quote ---
-        contracts = [Option(ticker, expiry, float(s), right, "SMART") for s in candidates]
-        try:
-            self._ib.qualifyContracts(*contracts)
-        except Exception as e:
-            log.warning("qualifyContracts partial failure: %s", e)
-
-        # Only pass contracts that were successfully qualified (have a conId)
-        qualified = [c for c in contracts if c.conId]
-        if not qualified:
-            # Retry with empty exchange — some tickers route to specific exchanges
-            contracts = [Option(ticker, expiry, float(s), right, "") for s in candidates]
+        # --- Try up to 3 expirations until we find qualifying contracts ---
+        qualified = []
+        for expiry in self._candidate_expirations(expirations, expiry):
+            contracts = [Option(ticker, expiry, float(s), right, "SMART") for s in candidates]
             try:
                 self._ib.qualifyContracts(*contracts)
             except Exception as e:
-                log.warning("qualifyContracts (empty exchange) partial failure: %s", e)
+                log.warning("qualifyContracts partial failure: %s", e)
             qualified = [c for c in contracts if c.conId]
+            if not qualified:
+                contracts = [Option(ticker, expiry, float(s), right, "") for s in candidates]
+                try:
+                    self._ib.qualifyContracts(*contracts)
+                except Exception as e:
+                    log.warning("qualifyContracts (empty exchange) partial failure: %s", e)
+                qualified = [c for c in contracts if c.conId]
+            if qualified:
+                log.info("Using expiry %s for %s (%d qualified contracts)", expiry, ticker, len(qualified))
+                break
+            log.warning("No qualifying contracts for %s %s — trying next expiry", ticker, expiry)
         if not qualified:
-            raise RuntimeError(f"No qualifying {right} options found for {ticker} {expiry}")
+            raise RuntimeError(f"No qualifying {right} options found for {ticker} near {expiry}")
 
         try:
             tickers_data = self._ib.reqTickers(*qualified)
