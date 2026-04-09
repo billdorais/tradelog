@@ -118,9 +118,9 @@
     <h2>Overview</h2>
     <p>
       Kairos Automata is an automated trade execution and logging system.
-      TradingView sends trade signals as webhooks, the app logs them and
-      forwards orders to Interactive Brokers for execution, and results
-      are displayed on the dashboard.
+      TradingView sends trade signals as webhooks, which pass through a configurable
+      Signal Router pipeline before being forwarded to Interactive Brokers for execution.
+      Results are displayed on the dashboard along with P&amp;L, equity curves, and execution status.
     </p>
 
     <h2>Trade Flow</h2>
@@ -128,21 +128,37 @@
       TradingView Alert<br>
       &nbsp;&nbsp;│&nbsp; POST /webhook?token=... with JSON payload<br>
       &nbsp;&nbsp;▼<br>
-      Web Service (app.py)<br>
+      Signal Router (app.py)<br>
       &nbsp;&nbsp;│&nbsp; 1. Validates webhook token<br>
-      &nbsp;&nbsp;│&nbsp; 2. Logs trade to PostgreSQL<br>
-      &nbsp;&nbsp;│&nbsp; 3. Routes to IB broker (when broker="ib")<br>
+      &nbsp;&nbsp;│&nbsp; 2. Matches signal against enabled pipelines by strategy name<br>
+      &nbsp;&nbsp;│&nbsp; 3. Applies pipeline node settings (instrument, quantity, mode, broker…)<br>
+      &nbsp;&nbsp;│&nbsp; 4. Enforces Trading Hours node — drops signal if outside session window<br>
+      &nbsp;&nbsp;│&nbsp; 5. Logs trade to PostgreSQL<br>
       &nbsp;&nbsp;▼<br>
       IB Broker (ib_broker.py)<br>
       &nbsp;&nbsp;│&nbsp; Connects to IB Gateway via internal network<br>
-      &nbsp;&nbsp;│&nbsp; For stocks: places market or limit order directly<br>
-      &nbsp;&nbsp;│&nbsp; For options: fetches chain, selects ATM contract within spread limit, places order<br>
+      &nbsp;&nbsp;│&nbsp; Stocks: places market order directly<br>
+      &nbsp;&nbsp;│&nbsp; Options: fetches chain, selects contract by target mid-price, places order<br>
       &nbsp;&nbsp;▼<br>
       IB Gateway Service<br>
       &nbsp;&nbsp;│&nbsp; Forwards order to Interactive Brokers servers<br>
       &nbsp;&nbsp;▼<br>
-      Order Executed → Result logged → Visible on dashboard
+      Order Executed → Fill synced → Visible on dashboard
     </div>
+
+    <h2>Signal Router — Pipeline Nodes</h2>
+    <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Nodes can appear in any order.</p>
+    <table>
+      <tr><th>Node</th><th>Description</th></tr>
+      <tr><td>Strategy</td><td>Matches the incoming strategy name. Supports wildcards, e.g. <code style="color:#c5a3ff;font-size:0.85rem">CAM_MSFT*</code>. If omitted, the pipeline matches all signals.</td></tr>
+      <tr><td>Instrument</td><td>Overrides the instrument type: STK (stocks), OPT (options), FUT (futures), CRYPTO.</td></tr>
+      <tr><td>Options Config</td><td>For options signals — sets target premium (mid-price), expiry type (weekly/monthly), and side (auto/call/put).</td></tr>
+      <tr><td>Quantity</td><td>Overrides the order size in shares, dollar amount, or % of account.</td></tr>
+      <tr><td>Mode</td><td>Routes to the IB paper account or live account.</td></tr>
+      <tr><td>Broker</td><td>Selects the execution broker (Interactive Brokers or Coinbase).</td></tr>
+      <tr><td>Ticker Override</td><td>Forces a specific ticker regardless of what TradingView sends.</td></tr>
+      <tr><td>Trading Hours</td><td>Drops signals arriving outside a configured session window (e.g. 09:30–16:00 ET). No trade is logged.</td></tr>
+    </table>
 
     <h2>Railway Services</h2>
     <table>
@@ -160,10 +176,13 @@
     <h2>Key Files</h2>
     <table>
       <tr><th>File</th><th>Purpose</th></tr>
-      <tr><td>app.py</td><td>Main Flask app — webhook handler, API routes, database logic</td></tr>
+      <tr><td>app.py</td><td>Main Flask app — webhook handler, signal router, API routes, database logic</td></tr>
       <tr><td>brokers/ib_broker.py</td><td>IB connection, order placement, and options contract selection via ib_async</td></tr>
-      <tr><td>templates/index.html</td><td>Dashboard UI — trade table, equity curve, performance stats</td></tr>
-      <tr><td>templates/bt.html</td><td>Backtest page — Pine Script AI conversion and built-in strategy runner</td></tr>
+      <tr><td>strategies/data.py</td><td>Market data fetchers — yfinance (free, up to 20yr daily) and IB historical bars</td></tr>
+      <tr><td>templates/index.html</td><td>Dashboard — trade feed, equity curve, performance stats</td></tr>
+      <tr><td>templates/routing.html</td><td>Signal Router UI — build and manage pipeline chains</td></tr>
+      <tr><td>templates/bt.html</td><td>Backtest page — Pine Script AI conversion and built-in strategy runner with TradingView charts</td></tr>
+      <tr><td>templates/backtester.html</td><td>Agent Backtester — AI-optimised parameter search with yfinance or IB data</td></tr>
       <tr><td>strategies/bt_strategies.py</td><td>Built-in backtesting.py strategies (SMA/EMA cross, RSI, Bollinger, MACD, Camarilla)</td></tr>
       <tr><td>Dockerfile.ib</td><td>Builds the IB Gateway Docker image</td></tr>
       <tr><td>ib-gateway-start.sh</td><td>Startup script that patches config before launching IB Gateway</td></tr>
@@ -171,91 +190,73 @@
     </table>
 
     <h2>Webhook Payload — Stocks</h2>
-    <p>TradingView alerts POST the following JSON to trigger a stock trade:</p>
+    <p>TradingView alerts POST the following JSON to trigger a stock trade. When a Signal Router pipeline matches, its node settings override the payload values.</p>
     <div class="flow">
       {% raw %}{<br>
-      &nbsp;&nbsp;"ticker": "{{ticker}}",<br>
-      &nbsp;&nbsp;"action": "{{strategy.order.action}}",<br>
+      &nbsp;&nbsp;"ticker":    "{{ticker}}",<br>
+      &nbsp;&nbsp;"action":    "{{strategy.order.action}}",<br>
       &nbsp;&nbsp;"sentiment": "{{strategy.market_position}}",<br>
-      &nbsp;&nbsp;"quantity": "100",<br>
-      &nbsp;&nbsp;"price": "{{close}}",<br>
-      &nbsp;&nbsp;"time": "{{timenow}}",<br>
-      &nbsp;&nbsp;"strategy": "STRATEGY_NAME",<br>
-      &nbsp;&nbsp;"interval": "{{interval}}",<br>
-      &nbsp;&nbsp;"broker": "ib"<br>
+      &nbsp;&nbsp;"quantity":  100,<br>
+      &nbsp;&nbsp;"price":     {{close}},<br>
+      &nbsp;&nbsp;"time":      "{{timenow}}",<br>
+      &nbsp;&nbsp;"strategy":  "CAM_MSFT_V1_5MIN",<br>
+      &nbsp;&nbsp;"interval":  "{{interval}}"<br>
       }{% endraw %}
     </div>
 
-    <h2>Webhook Payload — Options</h2>
+    <h2>Webhook Payload — Options (pipeline-driven)</h2>
     <p>
-      Add <code style="color:#c5a3ff;font-size:0.85rem">"sec_type": "OPT"</code> to route the signal to an options contract instead of the underlying stock.
-      The app automatically selects the nearest Friday expiry and finds the closest ATM contract
-      whose bid/ask spread is within the <code style="color:#c5a3ff;font-size:0.85rem">max_spread</code> limit.
+      The recommended approach is to set the Instrument node to <code style="color:#c5a3ff;font-size:0.85rem">OPT</code>
+      and add an <strong>Options Config</strong> node in the Signal Router. The pipeline then selects the contract
+      automatically — no options fields needed in the TradingView payload.
     </p>
     <div class="flow">
       {% raw %}{<br>
-      &nbsp;&nbsp;"ticker":        "{{ticker}}",<br>
-      &nbsp;&nbsp;"action":        "{{strategy.order.action}}",<br>
-      &nbsp;&nbsp;"quantity":      1,<br>
-      &nbsp;&nbsp;"price":         {{close}},<br>
-      &nbsp;&nbsp;"sec_type":      "OPT",<br>
-      &nbsp;&nbsp;"max_spread":    1.00,<br>
-      &nbsp;&nbsp;"strike_offset": 0,<br>
-      &nbsp;&nbsp;"broker":        "ib"<br>
+      &nbsp;&nbsp;"ticker":   "{{ticker}}",<br>
+      &nbsp;&nbsp;"action":   "{{strategy.order.action}}",<br>
+      &nbsp;&nbsp;"quantity": 1,<br>
+      &nbsp;&nbsp;"price":    {{close}},<br>
+      &nbsp;&nbsp;"time":     "{{timenow}}",<br>
+      &nbsp;&nbsp;"strategy": "CAM_PLTR_V6_5MIN"<br>
       }{% endraw %}
     </div>
 
-    <h2>Options Payload Fields</h2>
-    <table>
-      <tr><th>Field</th><th>Default</th><th>Description</th></tr>
-      <tr>
-        <td>sec_type</td>
-        <td>"STK"</td>
-        <td>Set to <code style="color:#c5a3ff;font-size:0.85rem">"OPT"</code> to trade an options contract. Omit or use <code style="color:#c5a3ff;font-size:0.85rem">"STK"</code> for the underlying stock.</td>
-      </tr>
-      <tr>
-        <td>price</td>
-        <td>required</td>
-        <td>Current price of the underlying (use <code style="color:#c5a3ff;font-size:0.85rem">{{close}}</code>). Used to find the ATM strike.</td>
-      </tr>
-      <tr>
-        <td>max_spread</td>
-        <td>1.00</td>
-        <td>Maximum bid/ask spread in dollars. The app scans strikes outward from ATM and picks the first contract within this limit.</td>
-      </tr>
-      <tr>
-        <td>strike_offset</td>
-        <td>0</td>
-        <td>Number of strikes away from ATM. 0 = ATM, 1 = one strike OTM, 2 = two strikes OTM, etc.</td>
-      </tr>
-      <tr>
-        <td>option_expiry</td>
-        <td>next Friday</td>
-        <td>Override the expiry date as <code style="color:#c5a3ff;font-size:0.85rem">"YYYYMMDD"</code>. If omitted, uses the nearest weekly Friday expiry from the chain.</td>
-      </tr>
-    </table>
-
-    <h2>Options — How It Works</h2>
+    <h2>Options Config Node — How It Works</h2>
     <div class="flow">
-      TradingView Alert (sec_type: OPT)<br>
-      &nbsp;&nbsp;│&nbsp; BUY action → Call option<br>
-      &nbsp;&nbsp;│&nbsp; SELL action → Put option<br>
+      TradingView Alert → Signal Router matches pipeline<br>
+      &nbsp;&nbsp;│&nbsp; Instrument node sets sec_type = OPT<br>
+      &nbsp;&nbsp;│&nbsp; Options Config node sets target_premium = $1.00, expiry = weekly<br>
+      &nbsp;&nbsp;│&nbsp; BUY action → Call option / SELL action → Put option (Auto mode)<br>
       &nbsp;&nbsp;▼<br>
-      app.py — options branch<br>
-      &nbsp;&nbsp;│&nbsp; 1. Routes request to background IB thread (event loop affinity)<br>
-      &nbsp;&nbsp;▼<br>
-      ib_broker.select_option()<br>
-      &nbsp;&nbsp;│&nbsp; 1. reqSecDefOptParams → fetch full option chain<br>
-      &nbsp;&nbsp;│&nbsp; 2. Find nearest Friday expiry from chain<br>
-      &nbsp;&nbsp;│&nbsp; 3. Sort strikes by distance from underlying price<br>
-      &nbsp;&nbsp;│&nbsp; 4. reqTickers → check bid/ask for each strike<br>
-      &nbsp;&nbsp;│&nbsp; 5. Return first contract with spread ≤ max_spread<br>
+      ib_broker.select_option_by_premium()<br>
+      &nbsp;&nbsp;│&nbsp; 1. reqSecDefOptParams → fetch full option chain (expirations + strikes)<br>
+      &nbsp;&nbsp;│&nbsp; 2. Resolve expiry — nearest Friday (weekly) or third Friday (monthly)<br>
+      &nbsp;&nbsp;│&nbsp; 3. Select ~25 strikes centred around the current underlying price<br>
+      &nbsp;&nbsp;│&nbsp; 4. reqTickers (bulk) → get live bid/ask for all candidates in one call<br>
+      &nbsp;&nbsp;│&nbsp; 5. Pick strike whose mid-price ((bid+ask)÷2) is closest to target_premium<br>
       &nbsp;&nbsp;▼<br>
       ib_broker.place_order(sec_type="OPT")<br>
       &nbsp;&nbsp;│&nbsp; Market order on selected contract<br>
       &nbsp;&nbsp;▼<br>
-      Fill logged to dashboard
+      Fill synced → logged to dashboard
     </div>
+
+    <h2>Backtester — Data Sources</h2>
+    <table>
+      <tr><th>Source</th><th>Max History</th><th>Intervals</th><th>Notes</th></tr>
+      <tr>
+        <td>Yahoo Finance</td>
+        <td>20 years (daily)</td>
+        <td>1m, 2m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo</td>
+        <td>Free. Intraday capped: 1h ≈ 730 days, 5–30m ≈ 60 days. Start date is automatically adjusted to the limit.</td>
+      </tr>
+      <tr>
+        <td>Interactive Brokers</td>
+        <td>10+ years</td>
+        <td>5m, 15m, 30m, 1h, 1d</td>
+        <td>Requires connected IB Gateway and a market data subscription. Fetched in chunks to stay within IB API limits.</td>
+      </tr>
+    </table>
 
   </div>
 
