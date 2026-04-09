@@ -240,7 +240,7 @@ if os.environ.get("IB_HOST"):
                 log.info("EOD scheduler: closing all positions at 3:59 PM ET")
                 try:
                     if ib_broker and ib_broker.is_connected():
-                        result = ib_broker.close_all_positions()
+                        result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
                         log.info("EOD close result: %s", result)
                     else:
                         log.warning("EOD scheduler: IB not connected, skipping close")
@@ -868,7 +868,7 @@ def broker_close_all():
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
     try:
-        result = ib_broker.close_all_positions()
+        result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
         return jsonify({"closed": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
