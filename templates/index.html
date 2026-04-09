@@ -360,6 +360,7 @@
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button id="syncIBBtn" onclick="syncIBFills()" style="background:transparent;border:1px solid #4a90d9;color:#4a90d9;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Sync IB Fills</button>
+      <button onclick="clearIBFills()" style="background:transparent;border:1px solid #8e44ad;color:#8e44ad;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Reset IB Data</button>
       <button id="eodToggleBtn" onclick="toggleEODClose()" style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">EOD Close: ...</button>
       <button id="closeAllBtn" onclick="closeAllPositions()" style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Close All Positions</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
@@ -709,7 +710,7 @@
       // sometimes records the same execution with multiple exec_ids.
       const seen = new Set();
       const deduped = execs.filter(e => {
-        const key = `${e.symbol}|${e.side}|${e.ts}`;
+        const key = `${e.symbol}|${e.side}|${e.ts}|${e.shares}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -1333,6 +1334,18 @@
       const ids = [entryId, exitId].filter(Boolean);
       await Promise.all(ids.map(id => fetch(`/api/ib/executions/${encodeURIComponent(id)}`, { method: 'DELETE' })));
       await loadTrades();
+    }
+
+    async function clearIBFills() {
+      if (!confirm('Delete all IB fill data and re-sync from IB? This clears stale/duplicate fills.')) return;
+      try {
+        const res  = await fetch('/api/ib/clear', { method: 'POST' });
+        const data = await res.json();
+        if (data.error) { alert('Clear failed: ' + data.error); return; }
+        await syncIBFills();
+      } catch (e) {
+        alert('Clear error: ' + e);
+      }
     }
 
     async function syncIBFills() {

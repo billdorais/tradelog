@@ -1863,6 +1863,17 @@ def backtest_step2_script():
     )
 
 
+@app.route("/api/ib/clear", methods=["POST"])
+def ib_clear_fills():
+    """Delete all IB fill data so a fresh sync can rebuild it cleanly."""
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("DELETE FROM ib_executions")
+    conn.commit()
+    conn.close()
+    return jsonify({"cleared": True})
+
+
 @app.route("/api/ib/sync", methods=["POST"])
 def ib_sync_fills():
     """Manually trigger a fill sync — signals the background IB thread to run reqExecutions."""
