@@ -231,18 +231,22 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
 
     def _eod_close_scheduler():
-        """Close all open IB positions at 3:59 PM ET on weekdays (if enabled)."""
+        """Close all open IB positions at 3:59 PM ET on weekdays (if enabled).
+        Fires any time in the 3:59–4:05 PM ET window so a mid-window restart
+        (e.g. from a redeploy) still catches the close."""
         ET = ZoneInfo("America/New_York")
         triggered_date = None
         while True:
             now = datetime.now(ET)
             today = now.date()
+            t = (now.hour, now.minute)
+            in_window = (15, 59) <= t <= (16, 5)   # 3:59 PM – 4:05 PM ET
             if (eod_close_enabled
-                    and now.weekday() < 5                  # Mon–Fri
-                    and now.hour == 15 and now.minute == 59
+                    and now.weekday() < 5            # Mon–Fri
+                    and in_window
                     and triggered_date != today):
                 triggered_date = today
-                log.info("EOD scheduler: closing all positions at 3:59 PM ET")
+                log.info("EOD scheduler: closing all positions at %02d:%02d ET", now.hour, now.minute)
                 try:
                     if ib_broker and ib_broker.is_connected():
                         result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
