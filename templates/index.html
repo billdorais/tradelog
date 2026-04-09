@@ -699,8 +699,16 @@
 
     // Pair IB executions: handles both LONG (BOT→SLD) and SHORT (SLD→BOT)
     function pairIBExecs(execs) {
-      const toMs = e => new Date((e.ts || e.time || '').replace(' ', 'T'));
+      const toMs = e => {
+        const raw = (e.ts || e.time || '');
+        // Truncate microseconds to 3 decimal places for JS Date compatibility
+        const fixed = raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+        const d = new Date(fixed);
+        return d;
+      };
       const sorted = [...execs].sort((a, b) => toMs(a) - toMs(b));
+      console.log('[IB] raw execs:', execs.length, execs.map(e => `${e.side} ${e.symbol} ${e.ts}`));
+      console.log('[IB] sorted:', sorted.map(e => `${e.side} ${e.symbol} ${e.ts}`));
       const longs  = {};  // open long positions waiting for SLD
       const shorts = {};  // open short positions waiting for BOT
       const pairs  = [];
@@ -728,7 +736,12 @@
         for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'long' });
       for (const entries of Object.values(shorts))
         for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'short' });
-      return pairs.sort((a, b) => new Date((b.entry || b.exit).time) - new Date((a.entry || a.exit).time));
+      console.log('[IB] pairs:', pairs.map(p => `${(p.entry||p.exit).symbol} dir=${p.direction} open=${!p.exit}`));
+      const pairMs = p => {
+        const raw = ((p.entry || p.exit).ts || (p.entry || p.exit).time || '');
+        return new Date(raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1'));
+      };
+      return pairs.sort((a, b) => pairMs(b) - pairMs(a));
     }
 
     // Match TV pairs with IB pairs by ticker, chronologically
