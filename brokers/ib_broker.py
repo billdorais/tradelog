@@ -378,6 +378,8 @@ class IBBroker:
         """
         contract = Option(ticker, expiry, float(strike), right, "SMART")
         self._ib.qualifyContracts(contract)
+        if not contract.conId:
+            return None, None
         tickers = self._ib.reqTickers(contract)
         if not tickers:
             return None, None
@@ -507,8 +509,13 @@ class IBBroker:
         except Exception as e:
             log.warning("qualifyContracts partial failure: %s", e)
 
+        # Only pass contracts that were successfully qualified (have a conId)
+        qualified = [c for c in contracts if c.conId]
+        if not qualified:
+            raise RuntimeError(f"No qualifying {right} options found for {ticker} {expiry}")
+
         try:
-            tickers_data = self._ib.reqTickers(*contracts)
+            tickers_data = self._ib.reqTickers(*qualified)
         except Exception as e:
             raise RuntimeError(f"reqTickers failed for {ticker} {expiry}: {e}")
 
