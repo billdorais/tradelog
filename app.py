@@ -25,11 +25,12 @@ DATABASE_URL  = os.environ.get("DATABASE_URL")
 
 ib_broker         = None   # paper gateway
 ib_broker_live    = None   # live gateway (IB_HOST_LIVE env var)
-_ib_sync_event    = None
-_ib_sync_queue    = None
-_ib_task_queue    = None
+_ib_sync_event      = None
+_ib_sync_queue      = None
+_ib_task_queue      = None
 _ib_live_task_queue = None
-eod_close_enabled = True
+_ib_paused          = False   # when True, background thread skips reconnect
+eod_close_enabled   = True
 
 if os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
@@ -169,6 +170,10 @@ if os.environ.get("IB_HOST"):
         time.sleep(10)  # give IB Gateway time to be ready before first connect attempt
         last_periodic_sync = 0
         while True:
+            global _ib_paused
+            if _ib_paused:
+                time.sleep(2)
+                continue
             if not ib_broker.is_connected():
                 try:
                     ib_broker.connect()
@@ -733,6 +738,8 @@ def broker_reconnect():
         abort(401)
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
+    global _ib_paused
+    _ib_paused = False  # re-enable background auto-reconnect
     try:
         if ib_broker.is_connected():
             ib_broker.disconnect()
@@ -750,9 +757,11 @@ def broker_disconnect():
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
 
+    global _ib_paused
+    _ib_paused = True  # stop background thread from auto-reconnecting
+
     result = {"connected": False, "status": "disconnected", "gateway_restart": None}
 
-    # Disconnect Python client from IB Gateway
     try:
         if ib_broker.is_connected():
             ib_broker.disconnect()
@@ -760,9 +769,9 @@ def broker_disconnect():
         log.warning("IB disconnect error: %s", e)
 
     # Restart IB Gateway service on Railway (if credentials configured)
-    railway_token   = os.environ.get("RAILWAY_API_TOKEN")
-    ib_service_id   = os.environ.get("RAILWAY_IB_SERVICE_ID")
-    environment_id  = os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    railway_token  = os.environ.get("RAILWAY_API_TOKEN")
+    ib_service_id  = os.environ.get("RAILWAY_IB_SERVICE_ID")
+    environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID")
     if railway_token and ib_service_id:
         try:
             import urllib.request as _urlreq
