@@ -716,6 +716,10 @@
         return true;
       });
       const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
+      const botCount = sorted.filter(e => e.side === 'BOT').length;
+      const sldCount = sorted.filter(e => e.side === 'SLD').length;
+      console.log(`[IB] fills after dedup: ${sorted.length} total, ${botCount} BOT, ${sldCount} SLD`);
+      console.log('[IB] sides:', sorted.map(e => `${e.side} ${e.symbol} ${e.shares}sh`));
       const longs  = {};  // open long positions waiting for SLD
       const shorts = {};  // open short positions waiting for BOT
       const pairs  = [];
