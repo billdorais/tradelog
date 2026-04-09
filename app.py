@@ -749,12 +749,55 @@ def broker_disconnect():
         abort(401)
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
+
+    result = {"connected": False, "status": "disconnected", "gateway_restart": None}
+
+    # Disconnect Python client from IB Gateway
     try:
         if ib_broker.is_connected():
             ib_broker.disconnect()
-        return jsonify({"connected": False, "status": "disconnected"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        log.warning("IB disconnect error: %s", e)
+
+    # Restart IB Gateway service on Railway (if credentials configured)
+    railway_token   = os.environ.get("RAILWAY_API_TOKEN")
+    ib_service_id   = os.environ.get("RAILWAY_IB_SERVICE_ID")
+    environment_id  = os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    if railway_token and ib_service_id:
+        try:
+            import urllib.request as _urlreq
+            query = """
+              mutation RestartService($serviceId: String!, $environmentId: String) {
+                serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+              }
+            """
+            payload = json.dumps({
+                "query": query,
+                "variables": {"serviceId": ib_service_id, "environmentId": environment_id},
+            }).encode()
+            req = _urlreq.Request(
+                "https://backboard.railway.app/graphql/v2",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {railway_token}",
+                },
+            )
+            with _urlreq.urlopen(req, timeout=10) as resp:
+                resp_data = json.loads(resp.read())
+            if resp_data.get("errors"):
+                result["gateway_restart"] = "error: " + str(resp_data["errors"])
+                log.warning("Railway restart error: %s", resp_data["errors"])
+            else:
+                result["gateway_restart"] = "restarting"
+                log.info("IB Gateway restart triggered via Railway API")
+        except Exception as e:
+            result["gateway_restart"] = f"error: {e}"
+            log.warning("Railway API call failed: %s", e)
+    else:
+        result["gateway_restart"] = "skipped — RAILWAY_API_TOKEN or RAILWAY_IB_SERVICE_ID not set"
+
+    return jsonify(result)
 
 
 @app.route("/api/broker/orders")

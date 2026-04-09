@@ -1212,7 +1212,10 @@
         const res = await fetch(`/api/broker/disconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
         const data = await res.json();
         if (res.ok) {
-          alert('IB disconnected. You can now log into your IB account directly.\nClick Reconnect IB when you\'re done.');
+          const gwStatus = data.gateway_restart === 'restarting'
+            ? 'IB Gateway is restarting — you can now log into your IB account.\nClick Reconnect IB when you\'re done.'
+            : 'IB client disconnected. You can now log into your IB account.\nClick Reconnect IB when you\'re done.';
+          alert(gwStatus);
           await loadTrades();
         } else {
           alert('Disconnect failed: ' + (data.error || 'unknown error'));
