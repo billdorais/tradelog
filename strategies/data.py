@@ -14,11 +14,38 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def fetch_bars(ticker, start, end, interval="1h"):
+# Yahoo Finance maximum lookback per interval
+_YF_MAX_DAYS = {
+    "1d":  365 * 20,   # daily: 20 years available
+    "1wk": 365 * 20,
+    "1mo": 365 * 20,
+    "1h":  729,         # hourly: ~2 years
+    "30m": 59,
+    "15m": 59,
+    "5m":  59,
+    "2m":  59,
+}
+
+
+def fetch_bars(ticker, start, end, interval="1d"):
     try:
         import yfinance as yf
     except ImportError:
         raise RuntimeError("yfinance is not installed")
+
+    from datetime import datetime, timedelta
+
+    # Enforce Yahoo Finance's per-interval lookback limits
+    max_days = _YF_MAX_DAYS.get(interval)
+    if max_days:
+        earliest = (datetime.utcnow() - timedelta(days=max_days)).strftime("%Y-%m-%d")
+        if start < earliest:
+            log.warning(
+                "fetch_bars: %s %s requested start %s, but Yahoo Finance only "
+                "keeps %d days for this interval — capping to %s",
+                ticker, interval, start, max_days, earliest,
+            )
+            start = earliest
 
     log.info(f"yfinance download: {ticker} {interval} {start}→{end}")
 
