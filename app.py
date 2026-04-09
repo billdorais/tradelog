@@ -167,6 +167,7 @@ if os.environ.get("IB_HOST"):
         Also handles manual sync requests (_ib_sync_event) and queued IB tasks
         (_ib_task_queue) that must run on this thread (which owns the event loop)."""
         time.sleep(10)  # give IB Gateway time to be ready before first connect attempt
+        last_periodic_sync = 0
         while True:
             if not ib_broker.is_connected():
                 try:
@@ -187,6 +188,17 @@ if os.environ.get("IB_HOST"):
                     _ib_sync_queue.put({"synced": saved})
                 except Exception as e:
                     _ib_sync_queue.put({"error": str(e)})
+
+            # Periodic fill sync every 5 minutes as a safety net
+            now_ts = time.time()
+            if now_ts - last_periodic_sync >= 300:
+                last_periodic_sync = now_ts
+                try:
+                    saved = _sync_fills_on_connect()
+                    if saved:
+                        log.info("Periodic fill sync: saved %d new fills", saved)
+                except Exception as e:
+                    log.warning("Periodic fill sync error: %s", e)
 
             # Drain any tasks submitted via _submit_ib_task()
             while True:
