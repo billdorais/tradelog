@@ -376,9 +376,14 @@ class IBBroker:
         Return (bid, ask) for a single option contract via reqTickers snapshot.
         Must be called from the background IB thread.
         """
-        contract = Option(ticker, expiry, float(strike), right, "SMART")
-        self._ib.qualifyContracts(contract)
-        if not contract.conId:
+        contract = None
+        for exchange in ("SMART", ""):
+            c = Option(ticker, expiry, float(strike), right, exchange)
+            self._ib.qualifyContracts(c)
+            if c.conId:
+                contract = c
+                break
+        if contract is None:
             return None, None
         tickers = self._ib.reqTickers(contract)
         if not tickers:
@@ -511,6 +516,14 @@ class IBBroker:
 
         # Only pass contracts that were successfully qualified (have a conId)
         qualified = [c for c in contracts if c.conId]
+        if not qualified:
+            # Retry with empty exchange — some tickers route to specific exchanges
+            contracts = [Option(ticker, expiry, float(s), right, "") for s in candidates]
+            try:
+                self._ib.qualifyContracts(*contracts)
+            except Exception as e:
+                log.warning("qualifyContracts (empty exchange) partial failure: %s", e)
+            qualified = [c for c in contracts if c.conId]
         if not qualified:
             raise RuntimeError(f"No qualifying {right} options found for {ticker} {expiry}")
 
