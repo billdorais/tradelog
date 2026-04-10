@@ -7,15 +7,11 @@
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #13152a; color: #e0e0e0; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
 
     /* Nav */
     .nav { display: flex; align-items: center; justify-content: space-between;
-           padding: 14px 28px; background: #1c1f2e; border-bottom: 1px solid #2a2d3e; }
-    .nav-brand { font-size: 1.15rem; font-weight: 700; color: #fff; text-decoration: none; }
-    .nav-links a { color: #888; text-decoration: none; font-size: 0.9rem;
-                   border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; margin-left: 4px; }
-    .nav-links a:hover, .nav-links a.active { color: #fff; border-color: #4a90d9; }
+           padding: 12px 24px; background: #13161f; border-bottom: 1px solid #1e2130; }
 
     .page { max-width: 1300px; margin: 0 auto; padding: 28px 24px; }
     h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 20px; }
@@ -127,12 +123,21 @@
 <body>
 
 <nav class="nav">
-  <a class="nav-brand" href="/">Kairos Automata</a>
-  <div class="nav-links">
-    <a href="/strategies">Strategies</a>
-    <a href="/backtester">Agent Backtester</a>
-    <a href="/backtest-lib" class="active">Backtest</a>
-    <a href="/about">About</a>
+  <div style="display:flex;align-items:center;gap:10px">
+    <img src="/static/kariosLogo_128.png" alt="" style="height:36px;width:36px;image-rendering:pixelated">
+    <span style="font-size:1.1rem;font-weight:600;color:#e0e0e0">Kairos Automata — Backtest</span>
+  </div>
+  <div style="position:relative;display:inline-block">
+    <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:180px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+      <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+      <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+      <a href="/strategies" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128200; Strategies</a>
+      <a href="/backtester" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#9889; Agent Backtester</a>
+      <a href="/backtest-lib" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128202; Backtest</a>
+      <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+      <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+    </div>
   </div>
 </nav>
 
@@ -574,6 +579,16 @@
 
   // Init — load built-in params on page load
   loadStrategyParams();
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    const btn = document.getElementById('navMenuBtn');
+    const menu = document.getElementById('navMenu');
+    if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+  });
 </script>
 </body>
 </html>
