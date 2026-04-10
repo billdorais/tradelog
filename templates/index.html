@@ -21,10 +21,22 @@
       max-width: 1200px;
       margin: 0 auto 24px;
       display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .header-row1 {
+      display: flex;
       align-items: center;
       justify-content: space-between;
-      flex-wrap: wrap;
+      width: 100%;
+    }
+
+    .header-row2 {
+      display: flex;
+      align-items: center;
       gap: 12px;
+      flex-wrap: wrap;
     }
 
     h1 { font-size: 1.6rem; color: #fff; }
@@ -228,10 +240,22 @@
     .table-wrap {
       max-width: 1200px;
       margin: 0 auto;
-      overflow-x: auto;
       border-radius: 8px;
       border: 1px solid #2a2d3e;
+      overflow: hidden;
     }
+
+    /* Scrollable table — sticky header via position:sticky */
+    .table-wrap {
+      max-height: 560px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #2a2d3e #13161f;
+    }
+    .table-wrap::-webkit-scrollbar { width: 6px; }
+    .table-wrap::-webkit-scrollbar-track { background: #13161f; }
+    .table-wrap::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
+    .table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
 
     table {
       width: 100%;
@@ -240,11 +264,15 @@
     }
 
     thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
       background: #1c1f2e;
       color: #aaa;
       text-align: left;
-      padding: 12px 16px;
+      padding: 8px 10px;
       font-weight: normal;
+      font-size: 0.75rem;
       border-bottom: 1px solid #2a2d3e;
       white-space: nowrap;
     }
@@ -252,7 +280,7 @@
     tbody tr { border-bottom: 1px solid #1e2130; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #1a1d2a; }
-    td { padding: 11px 16px; vertical-align: middle; white-space: nowrap; }
+    td { padding: 8px 10px; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     tr.group-first  { border-top: 2px solid #2a2d3e; }
     tr.group-second { border-bottom: 1px solid #1e2130; background: rgba(255,255,255,0.015); }
 
@@ -320,29 +348,36 @@
 <body>
 
   <header>
-    <div style="display:flex;align-items:center;gap:10px">
-      <img src="/static/kariosLogo_128.png" alt="Kairos Automata" style="height:48px;width:48px;image-rendering:pixelated">
-      <h1>Kairos Automata</h1>
-    </div>
-    <div class="controls">
-      <!-- Hamburger nav -->
+    <!-- Row 1: logo + hamburger -->
+    <div class="header-row1">
+      <div style="display:flex;align-items:center;gap:10px">
+        <img src="/static/kariosLogo_128.png" alt="Kairos Automata" style="height:48px;width:48px;image-rendering:pixelated">
+        <h1>Kairos Automata</h1>
+      </div>
+      <!-- Hamburger nav (right-aligned) -->
       <div style="position:relative;display:inline-block">
         <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
-        <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);left:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:180px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:180px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
           <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
           <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
           <a href="/strategies" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128200; Strategies</a>
           <a href="/backtester" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#9889; Agent Backtester</a>
           <a href="/backtest-lib" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128202; Backtest</a>
+          <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
           <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
         </div>
       </div>
+    </div>
+    <!-- Row 2: status pills + action buttons -->
+    <div class="header-row2">
       <span id="modePill"></span>
       <span id="ibPill"></span>
       <button id="ibReconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
+      <button id="ibDisconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#e67e22;border:1px solid #e67e22;border-radius:4px;cursor:pointer" onclick="disconnectIB()">Disconnect IB</button>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()">Refresh</button>
       <button id="syncIBBtn" onclick="syncIBFills()" style="background:transparent;border:1px solid #4a90d9;color:#4a90d9;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Sync IB Fills</button>
+      <button onclick="clearIBFills()" style="background:transparent;border:1px solid #8e44ad;color:#8e44ad;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Reset IB Data</button>
       <button id="eodToggleBtn" onclick="toggleEODClose()" style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">EOD Close: ...</button>
       <button id="closeAllBtn" onclick="closeAllPositions()" style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Close All Positions</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
@@ -476,15 +511,24 @@
     </div>
   </div>
 
-  <!-- Daily cumulative P&L chart -->
+  <!-- Daily P&L charts (bar + cumulative, side by side) -->
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <div class="chart-title" style="margin-bottom:0">Daily Net Cumulative P&amp;L</div>
+      <div class="chart-title" style="margin-bottom:0">Daily P&amp;L</div>
       <select id="dailyStrategyFilter" onchange="applyDailyFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
         <option value="">All Strategies</option>
       </select>
     </div>
-    <canvas id="dailyPnlChart" height="90"></canvas>
+    <div style="display:flex;gap:32px;flex-wrap:wrap">
+      <div style="flex:0 0 calc(50% - 16px);min-width:280px">
+        <div style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Net Daily P&amp;L</div>
+        <canvas id="netDailyPnlChart" height="110"></canvas>
+      </div>
+      <div style="flex:0 0 calc(50% - 16px);min-width:280px">
+        <div style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Cumulative P&amp;L</div>
+        <canvas id="dailyPnlChart" height="110"></canvas>
+      </div>
+    </div>
   </div>
 
   <!-- Combined trade table -->
@@ -499,17 +543,17 @@
     <table>
       <thead>
         <tr>
-          <th>Source</th>
+          <th>Src</th>
           <th>Entry</th>
           <th>Exit</th>
-          <th>Duration</th>
-          <th>Direction</th>
+          <th>Dur</th>
+          <th>Dir</th>
           <th>Strategy</th>
           <th>Ticker</th>
           <th>P&amp;L</th>
           <th>Qty</th>
-          <th>Entry Price</th>
-          <th>Exit Price</th>
+          <th>Entry $</th>
+          <th>Exit $</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -522,6 +566,7 @@
   <script>
     let equityChartInstance  = null;
     let dailyChartInstance   = null;
+    let netDailyChartInstance = null;
     let allTrades   = [];
     let allIBExecs  = [];
     let selectedStrategy = '';
@@ -682,7 +727,22 @@
 
     // Pair IB executions: handles both LONG (BOT→SLD) and SHORT (SLD→BOT)
     function pairIBExecs(execs) {
-      const sorted = [...execs].sort((a, b) => new Date(a.time) - new Date(b.time));
+      const toMs = e => {
+        const raw = (e.ts || e.time || '');
+        // Truncate microseconds to 3 decimal places for JS Date compatibility
+        const fixed = raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+        return new Date(fixed);
+      };
+      // Deduplicate fills with the same (symbol, side, ts) — IB paper trading
+      // sometimes records the same execution with multiple exec_ids.
+      const seen = new Set();
+      const deduped = execs.filter(e => {
+        const key = `${e.symbol}|${e.side}|${e.ts}|${e.shares}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
       const longs  = {};  // open long positions waiting for SLD
       const shorts = {};  // open short positions waiting for BOT
       const pairs  = [];
@@ -710,7 +770,11 @@
         for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'long' });
       for (const entries of Object.values(shorts))
         for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'short' });
-      return pairs.sort((a, b) => new Date((b.entry || b.exit).time) - new Date((a.entry || a.exit).time));
+      const pairMs = p => {
+        const raw = ((p.entry || p.exit).ts || (p.entry || p.exit).time || '');
+        return new Date(raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1'));
+      };
+      return pairs.sort((a, b) => pairMs(b) - pairMs(a));
     }
 
     // Match TV pairs with IB pairs by ticker, chronologically
@@ -794,11 +858,20 @@
             const status     = ex ? ex.exec_status : en?.exec_status;
             const detail     = ex ? ex.exec_detail : en?.exec_detail;
             const rowClass   = status === 'error' ? 'group-first row-error' : 'group-first';
+            const isOpen   = !ex;
+            const closeBtn = isOpen && ref.ticker
+              ? `<button onclick="closePosition('${ref.ticker}', '${ref.quantity ?? 1}', '${tv.direction}')"
+                   title="Close this position in IB"
+                   style="margin-left:6px;background:#c0392b;border:none;color:#fff;cursor:pointer;
+                          font-size:0.7rem;padding:2px 6px;border-radius:3px;vertical-align:middle">
+                   Close
+                 </button>`
+              : '';
             rows.push(`<tr class="${rowClass}">
-              <td style="color:#aaa;font-size:0.8rem">Trading View</td>
-              <td style="font-size:0.85rem">${fmtET(en?.received_at) ?? '—'}</td>
-              <td style="font-size:0.85rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
-              <td style="color:#888;font-size:0.85rem">${dur}</td>
+              <td style="color:#aaa;font-size:0.75rem">TV</td>
+              <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
+              <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.72rem">Open</span>' + closeBtn}</td>
+              <td style="color:#888;font-size:0.78rem">${dur}</td>
               <td>${sentimentBadge(ref.sentiment)}</td>
               <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
               <td><strong>${ref.ticker ?? '—'}</strong></td>
@@ -818,18 +891,19 @@
             const qty        = ref.shares;
             const pnl        = ex?.pnl != null ? ex.pnl : undefined;
             const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
-            const dur        = en ? tradeDuration(en.time, ex?.time) : '—';
+            const ibTs = f => f?.ts || f?.time;
+            const dur        = en ? tradeDuration(ibTs(en), ibTs(ex)) : '—';
             const entryId    = en?.exec_id  ? `'${en.exec_id}'`  : 'null';
             const exitId     = ex?.exec_id  ? `'${ex.exec_id}'`  : 'null';
             rows.push(`<tr class="group-second">
-              <td style="color:#4a90d9;font-size:0.8rem;white-space:nowrap">
+              <td style="color:#4a90d9;font-size:0.75rem;white-space:nowrap">
                 IB
                 <button onclick="deleteIBRow(${entryId}, ${exitId})" title="Remove stale IB row"
-                  style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.75rem;padding:0;vertical-align:middle">&#10005;</button>
+                  style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
               </td>
-              <td style="font-size:0.85rem;color:#aaa">${en?.time ?? '—'}</td>
-              <td style="font-size:0.85rem;color:#888">${ex?.time ?? '<span style="color:#26a65b;font-size:0.75rem">Open</span>'}</td>
-              <td style="color:#888;font-size:0.85rem">${dur}</td>
+              <td style="font-size:0.78rem;color:#aaa">${fmtET(ibTs(en)) ?? '—'}</td>
+              <td style="font-size:0.78rem;color:#888">${ibTs(ex) ? fmtET(ibTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+              <td style="color:#888;font-size:0.78rem">${dur}</td>
               <td>${sentimentBadge(sentiment)}</td>
               <td><span style="color:#444">—</span></td>
               <td><strong>${ref.symbol ?? '—'}</strong></td>
@@ -939,6 +1013,59 @@
       drawDailyChart(stats.equity_curve || []);
     }
 
+    function drawNetDailyChart(equityCurve) {
+      // Compute per-day net P&L (day-over-day change in cumulative equity)
+      const dayMap = {};
+      for (const p of equityCurve) {
+        const day = p.time.slice(0, 10);
+        dayMap[day] = p.value;
+      }
+      const labels = Object.keys(dayMap).sort();
+      const cumValues = labels.map(d => dayMap[d]);
+      const netValues = cumValues.map((v, i) => i === 0 ? v : parseFloat((v - cumValues[i - 1]).toFixed(2)));
+
+      if (netDailyChartInstance) { netDailyChartInstance.destroy(); netDailyChartInstance = null; }
+      if (!netValues.length) return;
+
+      const canvas = document.getElementById('netDailyPnlChart');
+      const ctx    = canvas.getContext('2d');
+
+      netDailyChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            data: netValues,
+            backgroundColor: netValues.map(v => v >= 0 ? 'rgba(38,166,91,0.75)' : 'rgba(239,83,80,0.75)'),
+            borderColor:     netValues.map(v => v >= 0 ? '#26a65b' : '#ef5350'),
+            borderWidth: 1,
+            borderRadius: 2,
+          }],
+        },
+        options: {
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => (ctx.parsed.y >= 0 ? '+' : '') + '$' + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
+              },
+            },
+          },
+          scales: {
+            x: {
+              ticks: { color: '#666', maxTicksLimit: 8 },
+              grid: { color: '#1a1d2a' },
+            },
+            y: {
+              grid: { color: '#1a1d2a', borderDash: [4,4] },
+              ticks: { color: '#666', callback: v => '$' + v.toLocaleString() },
+            },
+          },
+        },
+      });
+    }
+
     function drawDailyChart(equityCurve) {
       // Bucket the equity curve into daily values (last point per day)
       const dayMap = {};
@@ -948,6 +1075,8 @@
       }
       const labels = Object.keys(dayMap).sort();
       const values = labels.map(d => dayMap[d]);
+
+      drawNetDailyChart(equityCurve);
 
       if (dailyChartInstance) { dailyChartInstance.destroy(); dailyChartInstance = null; }
 
@@ -1109,6 +1238,7 @@
           ? `<span class="mode-pill ib-connected"><span class="mode-dot" style="width:7px;height:7px;border-radius:50%;background:#26a65b;animation:pulse 1.5s infinite;display:inline-block"></span>IB ${(ib.accounts||[]).join(', ')}</span>`
           : `<span class="mode-pill ib-disconnected">IB Disconnected</span>`;
         document.getElementById('ibReconnectBtn').style.display = ib.connected ? 'none' : 'inline-block';
+        document.getElementById('ibDisconnectBtn').style.display = ib.connected ? 'inline-block' : 'none';
         allTrades = trades;
 
         // Mode pill (paper vs live)
@@ -1159,19 +1289,58 @@
     async function reconnectIB() {
       const token = prompt('Enter webhook token to reconnect IB:');
       if (!token) return;
-      document.getElementById('ibReconnectBtn').textContent = 'Connecting...';
+      const btn = document.getElementById('ibReconnectBtn');
+      btn.textContent = 'Connecting...';
+      btn.disabled = true;
       try {
-        const res = await fetch(`/api/broker/reconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        // Kick off reconnect (returns immediately — background thread does the work)
+        await fetch(`/api/broker/reconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+      } catch (e) { /* ignore */ }
+      // Poll /api/broker/status every 3s for up to 60s
+      const deadline = Date.now() + 60000;
+      let connected = false;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          const s = await fetch('/api/broker/status').then(r => r.json());
+          if (s.IB && s.IB.connected) { connected = true; break; }
+        } catch (e) { /* keep polling */ }
+        btn.textContent = `Connecting… ${Math.round((deadline - Date.now()) / 1000)}s`;
+      }
+      if (connected) {
+        btn.textContent = 'Syncing fills...';
+        await fetch('/api/ib/sync', { method: 'POST' }).catch(() => {});
+        await loadTrades();
+      } else {
+        alert('IB did not connect within 60s — check Railway IB Gateway logs.');
+        btn.textContent = 'Reconnect IB';
+      }
+      btn.disabled = false;
+    }
+
+    async function disconnectIB() {
+      const token = prompt('Enter webhook token to disconnect IB:');
+      if (!token) return;
+      const btn = document.getElementById('ibDisconnectBtn');
+      btn.textContent = 'Disconnecting...';
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/broker/disconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
         const data = await res.json();
-        if (data.connected) {
+        if (res.ok) {
+          const gwStatus = data.gateway_restart === 'restarting'
+            ? 'IB Gateway is restarting — you can now log into your IB account.\nClick Reconnect IB when you\'re done.'
+            : 'IB client disconnected. You can now log into your IB account.\nClick Reconnect IB when you\'re done.';
+          alert(gwStatus);
           await loadTrades();
         } else {
-          alert('Reconnect failed: ' + (data.error || 'unknown error'));
-          document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+          alert('Disconnect failed: ' + (data.error || 'unknown error'));
         }
       } catch (e) {
-        alert('Reconnect error');
-        document.getElementById('ibReconnectBtn').textContent = 'Reconnect IB';
+        alert('Disconnect error');
+      } finally {
+        btn.textContent = 'Disconnect IB';
+        btn.disabled = false;
       }
     }
 
@@ -1231,11 +1400,45 @@
       }
     }
 
+    async function closePosition(ticker, qty, direction) {
+      const token = prompt(`Enter webhook token to close ${ticker} position:`);
+      if (!token) return;
+      const action = direction === 'short' ? 'BUY' : 'SELL';
+      try {
+        const payload = { ticker, action, quantity: qty, broker: 'ib', strategy: 'manual-close' };
+        const res = await fetch(`/webhook?token=${encodeURIComponent(token)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          alert(`Close order sent: ${action} ${qty} ${ticker}`);
+          setTimeout(loadTrades, 2000);
+        } else {
+          alert(res.status === 401 ? 'Invalid token.' : `Error ${res.status}`);
+        }
+      } catch (e) {
+        alert('Error: ' + e);
+      }
+    }
+
     async function deleteIBRow(entryId, exitId) {
       if (!confirm('Remove this IB row from the display? (Does not affect your actual IB account)')) return;
       const ids = [entryId, exitId].filter(Boolean);
       await Promise.all(ids.map(id => fetch(`/api/ib/executions/${encodeURIComponent(id)}`, { method: 'DELETE' })));
       await loadTrades();
+    }
+
+    async function clearIBFills() {
+      if (!confirm('Delete all IB fill data and re-sync from IB? This clears stale/duplicate fills.')) return;
+      try {
+        const res  = await fetch('/api/ib/clear', { method: 'POST' });
+        const data = await res.json();
+        if (data.error) { alert('Clear failed: ' + data.error); return; }
+        await syncIBFills();
+      } catch (e) {
+        alert('Clear error: ' + e);
+      }
     }
 
     async function syncIBFills() {

@@ -10,8 +10,6 @@
 
     header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
     header h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
-    .nav-back { color: #888; text-decoration: none; font-size: 0.85rem; border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; }
-    .nav-back:hover { color: #ccc; border-color: #444; }
 
     .page-body { padding: 24px; max-width: 1400px; margin: 0 auto; }
     .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
@@ -60,7 +58,9 @@
     .node-broker-ib       { background: #2a1010; border-color: #c83232; color: #f57070; }
     .node-broker-alpaca   { background: #0f2a1a; border-color: #2ab86e; color: #5fe0a0; }
     .node-broker-coinbase { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
-    .node-ticker { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
+    .node-ticker          { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
+    .node-options_config  { background: #2a1f10; border-color: #e8962a; color: #ffc060; min-width: 130px; }
+    .node-trading_hours   { background: #102030; border-color: #2a7898; color: #60c8e0; min-width: 120px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #4a90d9; color: #4a90d9; }
@@ -95,7 +95,18 @@
     <img src="/static/kariosLogo_128.png" alt="" style="height:36px;width:36px;image-rendering:pixelated">
     <h1>Kairos Automata — Signal Router</h1>
   </div>
-  <a href="/" class="nav-back">&#8592; Dashboard</a>
+  <div style="position:relative;display:inline-block">
+    <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:180px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+      <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+      <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+      <a href="/strategies" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128200; Strategies</a>
+      <a href="/backtester" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#9889; Agent Backtester</a>
+      <a href="/backtest-lib" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128202; Backtest</a>
+      <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+      <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+    </div>
+  </div>
 </header>
 
 <div class="page-body">
@@ -121,9 +132,11 @@
   <div class="palette-item" onclick="addNode('strategy')"><span class="palette-dot" style="background:#4a4d6e"></span>Strategy (filter)</div>
   <div class="palette-item" onclick="addNode('quantity')"><span class="palette-dot" style="background:#2a5580"></span>Quantity</div>
   <div class="palette-item" onclick="addNode('instrument')"><span class="palette-dot" style="background:#7c4dbd"></span>Instrument</div>
+  <div class="palette-item" onclick="addNode('options_config')"><span class="palette-dot" style="background:#e8962a"></span>Options Config</div>
   <div class="palette-item" onclick="addNode('mode')"><span class="palette-dot" style="background:#26a65b"></span>Live / Paper</div>
   <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker (IB / Alpaca / Coinbase)</div>
   <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
+  <div class="palette-item" onclick="addNode('trading_hours')"><span class="palette-dot" style="background:#2a7898"></span>Trading Hours</div>
 </div>
 
 <!-- Edit modal -->
@@ -218,18 +231,24 @@
 
   function nodeClass(node) {
     switch (node.type) {
-      case 'strategy':   return 'node-strategy';
-      case 'quantity':   return 'node-quantity';
-      case 'instrument': return `node-instrument-${node.value || 'STK'}`;
-      case 'mode':       return `node-mode-${node.value || 'live'}`;
-      case 'broker':     return `node-broker-${node.value || 'ib'}`.replace(/[^a-z0-9-]/g,'');
-      case 'ticker':     return 'node-ticker';
-      default:           return 'node-strategy';
+      case 'strategy':       return 'node-strategy';
+      case 'quantity':       return 'node-quantity';
+      case 'instrument':     return `node-instrument-${node.value || 'STK'}`;
+      case 'mode':           return `node-mode-${node.value || 'live'}`;
+      case 'broker':         return `node-broker-${node.value || 'ib'}`.replace(/[^a-z0-9-]/g,'');
+      case 'ticker':         return 'node-ticker';
+      case 'options_config': return 'node-options_config';
+      case 'trading_hours':  return 'node-trading_hours';
+      default:               return 'node-strategy';
     }
   }
 
   function nodeLabel(node) {
-    const map = { strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument', mode: 'Mode', broker: 'Broker', ticker: 'Ticker' };
+    const map = {
+      strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument',
+      mode: 'Mode', broker: 'Broker', ticker: 'Ticker', options_config: 'Options',
+      trading_hours: 'Hours',
+    };
     return map[node.type] || node.type;
   }
 
@@ -244,7 +263,16 @@
         return bmap[node.value] || node.value || 'Interactive Brokers';
       }
       case 'ticker':     return node.value || '—';
-      default:           return '—';
+      case 'options_config': {
+        const expiry = node.expiry_type === 'monthly' ? 'Monthly' : 'Weekly';
+        const right  = node.right_override === 'C' ? 'Calls' : node.right_override === 'P' ? 'Puts' : 'Auto';
+        return `$${(node.target_premium ?? 1).toFixed(2)} · ${expiry} · ${right}`;
+      }
+      case 'trading_hours': {
+        const tzLabel = { 'America/New_York': 'ET', 'America/Chicago': 'CT', 'America/Denver': 'MT', 'America/Los_Angeles': 'PT', 'UTC': 'UTC' }[node.tz] || node.tz || 'ET';
+        return `${node.start || '09:30'}–${node.end || '16:00'} ${tzLabel}`;
+      }
+      default: return '—';
     }
   }
 
@@ -401,6 +429,55 @@
           </div>
           <p style="font-size:0.78rem;color:#555;margin-top:-8px">Forces this ticker regardless of what TradingView sends.</p>`;
 
+      case 'options_config':
+        return `
+          <div class="form-group">
+            <label>Target Premium ($)</label>
+            <input id="f_target_premium" type="number" min="0.01" step="0.25"
+                   value="${v.target_premium ?? 1.00}"
+                   placeholder="e.g. 1.00">
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-10px;margin-bottom:14px">
+            IB will scan the chain and pick the strike whose mid-price ((bid+ask)÷2) is closest to this value.
+          </p>
+          <div class="form-group">
+            <label>Expiry</label>
+            <select id="f_expiry_type">
+              <option value="weekly"  ${(v.expiry_type||'weekly')==='weekly'  ? 'selected':''}>Weekly — nearest Friday</option>
+              <option value="monthly" ${v.expiry_type==='monthly' ? 'selected':''}>Monthly — third Friday</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Option Side</label>
+            <select id="f_right_override">
+              <option value=""  ${!v.right_override ? 'selected':''}>Auto — BUY signal → Call, SELL → Put</option>
+              <option value="C" ${v.right_override==='C' ? 'selected':''}>Always Call</option>
+              <option value="P" ${v.right_override==='P' ? 'selected':''}>Always Put</option>
+            </select>
+          </div>`;
+
+      case 'trading_hours':
+        return `
+          <div class="form-group">
+            <label>Session Start</label>
+            <input id="f_th_start" type="time" value="${v.start || '09:30'}">
+          </div>
+          <div class="form-group">
+            <label>Session End</label>
+            <input id="f_th_end" type="time" value="${v.end || '16:00'}">
+          </div>
+          <div class="form-group">
+            <label>Timezone</label>
+            <select id="f_th_tz">
+              <option value="America/New_York"     ${(v.tz||'America/New_York')==='America/New_York'     ? 'selected':''}>Eastern (ET) — NYSE/NASDAQ</option>
+              <option value="America/Chicago"      ${v.tz==='America/Chicago'      ? 'selected':''}>Central (CT)</option>
+              <option value="America/Denver"       ${v.tz==='America/Denver'       ? 'selected':''}>Mountain (MT)</option>
+              <option value="America/Los_Angeles"  ${v.tz==='America/Los_Angeles'  ? 'selected':''}>Pacific (PT)</option>
+              <option value="UTC"                  ${v.tz==='UTC'                  ? 'selected':''}>UTC</option>
+            </select>
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">Signals arriving outside this window are silently dropped.</p>`;
+
       default: return '';
     }
   }
@@ -420,6 +497,16 @@
       case 'quantity':
         node.amount = parseFloat(document.getElementById('f_amount').value) || 1;
         node.unit   = document.getElementById('f_unit').value;
+        break;
+      case 'options_config':
+        node.target_premium  = parseFloat(document.getElementById('f_target_premium').value) || 1.00;
+        node.expiry_type     = document.getElementById('f_expiry_type').value;
+        node.right_override  = document.getElementById('f_right_override').value || null;
+        break;
+      case 'trading_hours':
+        node.start = document.getElementById('f_th_start').value || '09:30';
+        node.end   = document.getElementById('f_th_end').value   || '16:00';
+        node.tz    = document.getElementById('f_th_tz').value    || 'America/New_York';
         break;
     }
 
@@ -465,6 +552,16 @@
   // Init
   // -----------------------------------------------------------------------
   load();
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    const btn = document.getElementById('navMenuBtn');
+    const menu = document.getElementById('navMenu');
+    if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+  });
 </script>
 </body>
 </html>

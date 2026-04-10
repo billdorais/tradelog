@@ -25,11 +25,12 @@ DATABASE_URL  = os.environ.get("DATABASE_URL")
 
 ib_broker         = None   # paper gateway
 ib_broker_live    = None   # live gateway (IB_HOST_LIVE env var)
-_ib_sync_event    = None
-_ib_sync_queue    = None
-_ib_task_queue    = None
+_ib_sync_event      = None
+_ib_sync_queue      = None
+_ib_task_queue      = None
 _ib_live_task_queue = None
-eod_close_enabled = True
+_ib_paused          = False   # when True, background thread skips reconnect
+eod_close_enabled   = True
 
 if os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
@@ -167,7 +168,12 @@ if os.environ.get("IB_HOST"):
         Also handles manual sync requests (_ib_sync_event) and queued IB tasks
         (_ib_task_queue) that must run on this thread (which owns the event loop)."""
         time.sleep(10)  # give IB Gateway time to be ready before first connect attempt
+        last_periodic_sync = 0
         while True:
+            global _ib_paused
+            if _ib_paused:
+                time.sleep(2)
+                continue
             if not ib_broker.is_connected():
                 try:
                     ib_broker.connect()
@@ -187,6 +193,17 @@ if os.environ.get("IB_HOST"):
                     _ib_sync_queue.put({"synced": saved})
                 except Exception as e:
                     _ib_sync_queue.put({"error": str(e)})
+
+            # Periodic fill sync every 60s as a safety net
+            now_ts = time.time()
+            if now_ts - last_periodic_sync >= 60:
+                last_periodic_sync = now_ts
+                try:
+                    saved = _sync_fills_on_connect()
+                    if saved:
+                        log.info("Periodic fill sync: saved %d new fills", saved)
+                except Exception as e:
+                    log.warning("Periodic fill sync error: %s", e)
 
             # Drain any tasks submitted via _submit_ib_task()
             while True:
@@ -214,21 +231,25 @@ if os.environ.get("IB_HOST"):
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
 
     def _eod_close_scheduler():
-        """Close all open IB positions at 3:59 PM ET on weekdays (if enabled)."""
+        """Close all open IB positions at 3:58 PM ET on weekdays (if enabled).
+        Fires any time in the 3:58–4:00 PM ET window so a mid-window restart
+        (e.g. from a redeploy) still catches the close."""
         ET = ZoneInfo("America/New_York")
         triggered_date = None
         while True:
             now = datetime.now(ET)
             today = now.date()
+            t = (now.hour, now.minute)
+            in_window = (15, 58) <= t <= (16, 0)   # 3:58 PM – 4:00 PM ET
             if (eod_close_enabled
-                    and now.weekday() < 5                  # Mon–Fri
-                    and now.hour == 15 and now.minute == 59
+                    and now.weekday() < 5            # Mon–Fri
+                    and in_window
                     and triggered_date != today):
                 triggered_date = today
-                log.info("EOD scheduler: closing all positions at 3:59 PM ET")
+                log.info("EOD scheduler: closing all positions at %02d:%02d ET", now.hour, now.minute)
                 try:
                     if ib_broker and ib_broker.is_connected():
-                        result = ib_broker.close_all_positions()
+                        result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
                         log.info("EOD close result: %s", result)
                     else:
                         log.warning("EOD scheduler: IB not connected, skipping close")
@@ -494,13 +515,16 @@ def webhook():
         broker_name = "ib"
 
     # Apply routing rules — look up a matching enabled pipeline and override settings
-    strategy_name = (data.get("strategy") or "").strip()
-    quantity      = data.get("quantity", 1)
-    sec_type      = data.get("sec_type", "STK")
-    currency      = data.get("currency", "USD")
-    option_expiry = data.get("option_expiry") or None
-    max_spread    = float(data.get("max_spread", 1.0))
-    strike_offset = int(data.get("strike_offset", 0))
+    strategy_name    = (data.get("strategy") or "").strip()
+    quantity         = data.get("quantity", 1)
+    opt_target_prem  = None   # set by options_config node
+    opt_expiry_type  = "weekly"
+    opt_right_ovr    = None
+    th_start         = None   # set by trading_hours node (HH:MM string)
+    th_end           = None
+    th_tz            = "America/New_York"
+    sec_type        = data.get("sec_type", "STK")
+    currency        = data.get("currency", "USD")
     use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
 
     try:
@@ -540,11 +564,35 @@ def webhook():
                     sec_type = n.get("value") or sec_type
                 elif ntype == "ticker":
                     ticker = (n.get("value") or ticker or "").upper() or None
+                elif ntype == "options_config":
+                    opt_target_prem = float(n.get("target_premium") or 1.0)
+                    opt_expiry_type = n.get("expiry_type") or "weekly"
+                    opt_right_ovr   = n.get("right_override") or None
+                elif ntype == "trading_hours":
+                    th_start = n.get("start") or "09:30"
+                    th_end   = n.get("end")   or "16:00"
+                    th_tz    = n.get("tz")    or "America/New_York"
             log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
                      strategy_name, broker_name, use_live_broker, quantity, sec_type)
             break  # first matching pipeline wins
     except Exception as e:
         log.warning("Routing rule lookup failed: %s", e)
+
+    # Enforce trading hours if a trading_hours node was found in the matched pipeline
+    if th_start and th_end:
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as _dt
+            _now = _dt.now(ZoneInfo(th_tz))
+            _now_t = _now.strftime("%H:%M")
+            if not (th_start <= _now_t < th_end):
+                log.info(
+                    "Signal for '%s' dropped — outside trading hours (%s–%s %s, now %s)",
+                    strategy_name, th_start, th_end, th_tz, _now_t,
+                )
+                return jsonify({"status": "skipped", "reason": f"outside trading hours ({th_start}–{th_end} {th_tz})"}), 200
+        except Exception as e:
+            log.warning("Trading hours check failed: %s", e)
 
     conn = get_db()
     cur  = conn.cursor()
@@ -564,76 +612,99 @@ def webhook():
     ))
     conn.commit()
 
-    # 2. Route to broker
-    exec_status = None
-    exec_detail = None
-
+    # 2. Route to broker — fire async so TradingView gets a fast response
     if broker_name == "ib":
-        # Select paper or live broker based on routing rule Mode node
         active_broker  = ib_broker_live if (use_live_broker and ib_broker_live) else ib_broker
         submit_task    = _submit_ib_live_task if (use_live_broker and ib_broker_live) else _submit_ib_task
         mode_label     = "live" if (use_live_broker and ib_broker_live) else "paper"
 
         if active_broker is None:
-            exec_status = "error"
-            exec_detail = ("IB live broker not initialised — set IB_HOST_LIVE env var"
-                           if use_live_broker else
-                           "IB broker not initialised — check IB_HOST env var")
-            log.warning("IB order skipped: broker not initialised (%s)", mode_label)
+            _update_exec(cur, trade_id, "error",
+                         "IB live broker not initialised — set IB_HOST_LIVE env var"
+                         if use_live_broker else
+                         "IB broker not initialised — check IB_HOST env var")
+            conn.commit()
         elif order_action not in ("BUY", "SELL"):
-            exec_status = "skipped"
-            exec_detail = f"No order placed for action '{raw_action}'"
+            _update_exec(cur, trade_id, "skipped", f"No order placed for action '{raw_action}'")
+            conn.commit()
             log.info("Webhook action '%s' logged but no IB order placed", raw_action)
-        elif sec_type.upper() == "OPT":
-            # --- Options path ---
-            try:
-                current_price = float(data.get("price") or 0)
-                if not current_price:
-                    raise ValueError("'price' (underlying price) required for options orders")
-                opt = submit_task(
-                    active_broker.select_option,
-                    ticker,
-                    order_action,
-                    current_price,
-                    _timeout      = 45,
-                    option_expiry = option_expiry,
-                    max_spread    = max_spread,
-                    strike_offset = strike_offset,
-                )
-                result = submit_task(
-                    active_broker.place_order,
-                    ticker,
-                    order_action,
-                    quantity,
-                    None,
-                    _timeout = 20,
-                    sec_type = "OPT",
-                    currency = currency,
-                    expiry   = opt["expiry"],
-                    strike   = opt["strike"],
-                    right    = opt["right"],
-                )
-                exec_status = "ok" if result.get("success") else "error"
-                exec_detail = json.dumps({**result, "option_selected": opt, "mode": mode_label})
-                log.info("IB %s option order %s %s %s %s %s: %s",
-                         mode_label, order_action, ticker, opt["expiry"], opt["strike"], opt["right"], result)
-            except Exception as e:
-                exec_status = "error"
-                exec_detail = str(e)
-                log.error("IB %s option order failed for %s %s: %s", mode_label, order_action, ticker, e)
         else:
-            # --- Equity / futures / crypto path ---
-            result = active_broker.place_order(
-                ticker   = ticker,
-                action   = order_action,
-                quantity = quantity,
-                price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                sec_type = sec_type,
-                currency = currency,
-            )
-            exec_status = "ok" if result.get("success") else "error"
-            exec_detail = json.dumps({**result, "mode": mode_label})
-            log.info("IB %s order %s %s %s: %s", mode_label, order_action, quantity, ticker, result)
+            # Close DB before handing off — background thread opens its own connection
+            conn.commit()
+            conn.close()
+            conn = None
+
+            def _place_async():
+                _exec_status = _exec_detail = None
+                try:
+                    if sec_type.upper() == "OPT":
+                        current_price = float(data.get("price") or 0)
+                        if not current_price:
+                            raise ValueError("'price' (underlying price) required for options orders")
+                        if opt_target_prem is not None:
+                            opt = submit_task(
+                                active_broker.select_option_by_premium,
+                                ticker, order_action, current_price,
+                                _timeout       = 45,
+                                target_premium = opt_target_prem,
+                                expiry_type    = opt_expiry_type,
+                                right_override = opt_right_ovr,
+                                option_expiry  = data.get("option_expiry") or None,
+                            )
+                        else:
+                            opt = submit_task(
+                                active_broker.select_option,
+                                ticker, order_action, current_price,
+                                _timeout      = 45,
+                                option_expiry = data.get("option_expiry") or None,
+                                max_spread    = float(data.get("max_spread", 1.0)),
+                                strike_offset = int(data.get("strike_offset", 0)),
+                            )
+                        result = submit_task(
+                            active_broker.place_order,
+                            ticker, order_action, quantity, None,
+                            _timeout = 20,
+                            sec_type = "OPT",
+                            currency = currency,
+                            expiry   = opt["expiry"],
+                            strike   = opt["strike"],
+                            right    = opt["right"],
+                        )
+                        _exec_status = "ok" if result.get("success") else "error"
+                        _exec_detail = json.dumps({**result, "option_selected": opt, "mode": mode_label})
+                        log.info("IB %s option order %s %s %s %s %s: %s",
+                                 mode_label, order_action, ticker,
+                                 opt["expiry"], opt["strike"], opt["right"], result)
+                    else:
+                        result = submit_task(
+                            active_broker.place_order,
+                            ticker   = ticker,
+                            action   = order_action,
+                            quantity = quantity,
+                            price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                            sec_type = sec_type,
+                            currency = currency,
+                            _timeout = 30,
+                        )
+                        _exec_status = "ok" if result.get("success") else "error"
+                        _exec_detail = json.dumps({**result, "mode": mode_label})
+                        log.info("IB %s order %s %s %s: %s",
+                                 mode_label, order_action, quantity, ticker, result)
+                except Exception as e:
+                    _exec_status = "error"
+                    _exec_detail = str(e)
+                    log.error("IB async order failed for %s %s: %s", order_action, ticker, e)
+                finally:
+                    try:
+                        _c = get_db()
+                        _cur = _c.cursor()
+                        _update_exec(_cur, trade_id, _exec_status, _exec_detail)
+                        _c.commit()
+                        _c.close()
+                    except Exception as e:
+                        log.error("Failed to update exec status for trade %s: %s", trade_id, e)
+
+            threading.Thread(target=_place_async, daemon=True).start()
 
     elif broker_name == "alpaca":
         if alpaca_broker is None:
@@ -687,12 +758,9 @@ def webhook():
                 exec_detail = str(e)
                 log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
 
-    # 3. Write execution result back to the row
-    if exec_status:
-        _update_exec(cur, trade_id, exec_status, exec_detail)
+    if conn:
         conn.commit()
-
-    conn.close()
+        conn.close()
     return jsonify({"status": "ok", "id": trade_id}), 200
 
 
@@ -743,6 +811,43 @@ def broker_status():
     return jsonify(brokers)
 
 
+def _railway_ib_call(mutation_name):
+    """Call a Railway GraphQL mutation on the IB Gateway service instance.
+    Returns a status string."""
+    import urllib.request as _urlreq
+    railway_token  = os.environ.get("RAILWAY_API_TOKEN")
+    ib_service_id  = os.environ.get("RAILWAY_IB_SERVICE_ID")
+    environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    if not (railway_token and ib_service_id):
+        return "skipped — RAILWAY_API_TOKEN or RAILWAY_IB_SERVICE_ID not set"
+    try:
+        query = f"""
+          mutation M($serviceId: String!, $environmentId: String) {{
+            {mutation_name}(serviceId: $serviceId, environmentId: $environmentId)
+          }}
+        """
+        payload = json.dumps({
+            "query": query,
+            "variables": {"serviceId": ib_service_id, "environmentId": environment_id},
+        }).encode()
+        req = _urlreq.Request(
+            "https://backboard.railway.app/graphql/v2",
+            data=payload,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {railway_token}"},
+        )
+        with _urlreq.urlopen(req, timeout=10) as resp:
+            resp_data = json.loads(resp.read())
+        if resp_data.get("errors"):
+            log.warning("Railway %s error: %s", mutation_name, resp_data["errors"])
+            return "error: " + str(resp_data["errors"])
+        log.info("Railway %s succeeded", mutation_name)
+        return "ok"
+    except Exception as e:
+        log.warning("Railway API call failed: %s", e)
+        return f"error: {e}"
+
+
 @app.route("/api/broker/reconnect", methods=["POST"])
 def broker_reconnect():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
@@ -750,13 +855,38 @@ def broker_reconnect():
         abort(401)
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
+    global _ib_paused
+    # Resume the suspended Railway IB Gateway service (best-effort, non-blocking)
+    gw = _railway_ib_call("serviceInstanceResume")
+    log.info("serviceInstanceResume result: %s", gw)
+    # Re-enable the background reconnect loop — it owns the event loop and will connect
+    _ib_paused = False
+    # Return immediately; the JS side polls /api/broker/status until connected
+    return jsonify({"started": True, "gateway": gw})
+
+
+@app.route("/api/broker/disconnect", methods=["POST"])
+def broker_disconnect():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    if ib_broker is None:
+        return jsonify({"error": "IB_HOST not configured"}), 400
+
+    global _ib_paused
+    _ib_paused = True  # stop background thread from auto-reconnecting
+
+    result = {"connected": False, "status": "disconnected", "gateway_restart": None}
+
     try:
         if ib_broker.is_connected():
             ib_broker.disconnect()
-        ib_broker.connect()
-        return jsonify(ib_broker.status())
     except Exception as e:
-        return jsonify({"connected": False, "error": str(e)}), 500
+        log.warning("IB disconnect error: %s", e)
+
+    # Suspend IB Gateway service on Railway (immediately kills the process)
+    result["gateway_restart"] = _railway_ib_call("serviceInstanceSuspend")
+    return jsonify(result)
 
 
 @app.route("/api/broker/orders")
@@ -885,7 +1015,7 @@ def broker_close_all():
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
     try:
-        result = ib_broker.close_all_positions()
+        result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
         return jsonify({"closed": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1808,6 +1938,17 @@ def backtest_step2_script():
     )
 
 
+@app.route("/api/ib/clear", methods=["POST"])
+def ib_clear_fills():
+    """Delete all IB fill data so a fresh sync can rebuild it cleanly."""
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("DELETE FROM ib_executions")
+    conn.commit()
+    conn.close()
+    return jsonify({"cleared": True})
+
+
 @app.route("/api/ib/sync", methods=["POST"])
 def ib_sync_fills():
     """Manually trigger a fill sync — signals the background IB thread to run reqExecutions."""
@@ -1973,6 +2114,230 @@ def api_stats():
         "max_drawdown":     round(max_dd, 2),
         "equity_curve":     equity_curve,
     })
+
+
+# ---------------------------------------------------------------------------
+# Analysis page
+# ---------------------------------------------------------------------------
+
+@app.route("/analysis")
+def analysis_page():
+    return render_template("analysis.html")
+
+
+def _build_analysis_stats():
+    """
+    Pairs BUY/SELL signals from the trades table into closed round-trips.
+    Returns per-strategy stats, per-ticker stats, daily buckets, weekly buckets.
+    """
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT * FROM trades ORDER BY id ASC")
+    rows = cur.fetchall()
+    if DATABASE_URL:
+        cols   = [d[0] for d in cur.description]
+        trades = [dict(zip(cols, r)) for r in rows]
+    else:
+        trades = [dict(r) for r in rows]
+    conn.close()
+
+    # Pair trades into closed round-trips per (strategy, ticker)
+    open_longs  = {}  # (strategy, ticker) → [(price, qty, time)]
+    open_shorts = {}
+    closed      = []  # {"pnl", "strategy", "ticker", "date", "entry_time", "exit_time"}
+
+    for t in trades:
+        action   = (t.get("action") or "").strip().upper()
+        ticker   = (t.get("ticker") or "").strip().upper()
+        strategy = (t.get("strategy") or "Unknown").strip()
+        received = t.get("received_at") or ""
+        try:
+            price = float(t.get("price") or 0)
+            qty   = float(t.get("quantity") or 1)
+        except (ValueError, TypeError):
+            continue
+        if not ticker or price == 0:
+            continue
+
+        key = (strategy, ticker)
+        date_str = received[:10] if received else ""
+
+        if action == "BUY":
+            queue = open_shorts.get(key, [])
+            if queue:
+                entry_price, entry_qty, entry_time = queue.pop(0)
+                pnl = (entry_price - price) * min(qty, entry_qty)
+                closed.append({"pnl": round(pnl, 2), "strategy": strategy, "ticker": ticker,
+                                "date": date_str, "entry_time": entry_time, "exit_time": received})
+            else:
+                open_longs.setdefault(key, []).append((price, qty, received))
+        elif action == "SELL":
+            queue = open_longs.get(key, [])
+            if queue:
+                entry_price, entry_qty, entry_time = queue.pop(0)
+                pnl = (price - entry_price) * min(qty, entry_qty)
+                closed.append({"pnl": round(pnl, 2), "strategy": strategy, "ticker": ticker,
+                                "date": date_str, "entry_time": entry_time, "exit_time": received})
+            else:
+                open_shorts.setdefault(key, []).append((price, qty, received))
+
+    def _stats_from_trades(trade_list):
+        if not trade_list:
+            return None
+        wins   = [t["pnl"] for t in trade_list if t["pnl"] > 0]
+        losses = [t["pnl"] for t in trade_list if t["pnl"] <= 0]
+        gross_win  = sum(wins)
+        gross_loss = abs(sum(losses))
+        total_pnl  = round(gross_win - gross_loss, 2)
+        pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
+        return {
+            "trades":        len(trade_list),
+            "wins":          len(wins),
+            "losses":        len(losses),
+            "win_rate":      round(len(wins) / len(trade_list) * 100, 1),
+            "profit_factor": pf,
+            "total_pnl":     total_pnl,
+            "avg_win":       round(gross_win  / len(wins),   2) if wins   else 0,
+            "avg_loss":      round(-gross_loss / len(losses), 2) if losses else 0,
+            "largest_win":   round(max(wins),  2) if wins   else 0,
+            "largest_loss":  round(min(losses), 2) if losses else 0,
+        }
+
+    # Per-strategy
+    strat_map = {}
+    for c in closed:
+        strat_map.setdefault(c["strategy"], []).append(c)
+    per_strategy = {}
+    for s, tlist in strat_map.items():
+        st = _stats_from_trades(tlist)
+        if st:
+            per_strategy[s] = st
+
+    # Per-ticker
+    ticker_map = {}
+    for c in closed:
+        ticker_map.setdefault(c["ticker"], []).append(c)
+    per_ticker = {}
+    for tk, tlist in ticker_map.items():
+        st = _stats_from_trades(tlist)
+        if st:
+            per_ticker[tk] = st
+
+    # Daily buckets
+    daily_map = {}
+    for c in closed:
+        d = c["date"] or "unknown"
+        daily_map.setdefault(d, []).append(c["pnl"])
+    daily = []
+    cumulative = 0
+    for d in sorted(daily_map):
+        day_pnl = round(sum(daily_map[d]), 2)
+        cumulative = round(cumulative + day_pnl, 2)
+        daily.append({"date": d, "pnl": day_pnl, "trades": len(daily_map[d]), "cumulative": cumulative})
+
+    # Weekly buckets (ISO week)
+    from datetime import datetime as _dt
+    weekly_map = {}
+    for c in closed:
+        try:
+            dt = _dt.fromisoformat(c["date"])
+            week_key = dt.strftime("%Y-W%W")
+            week_label = dt.strftime("Week of %b %d, %Y")
+        except Exception:
+            week_key = week_label = "unknown"
+        weekly_map.setdefault(week_key, {"label": week_label, "pnl": 0, "trades": 0})
+        weekly_map[week_key]["pnl"]    = round(weekly_map[week_key]["pnl"] + c["pnl"], 2)
+        weekly_map[week_key]["trades"] += 1
+    weekly = []
+    cumulative = 0
+    for wk in sorted(weekly_map):
+        w = weekly_map[wk]
+        cumulative = round(cumulative + w["pnl"], 2)
+        weekly.append({"week": w["label"], "pnl": w["pnl"], "trades": w["trades"], "cumulative": cumulative})
+
+    overall = _stats_from_trades(closed) or {}
+
+    return {
+        "overall":      overall,
+        "per_strategy": per_strategy,
+        "per_ticker":   per_ticker,
+        "daily":        daily,
+        "weekly":       weekly,
+    }
+
+
+@app.route("/api/analysis")
+def api_analysis():
+    try:
+        return jsonify(_build_analysis_stats())
+    except Exception as e:
+        log.exception("Analysis error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/analysis/suggest", methods=["POST"])
+def api_analysis_suggest():
+    """Stream AI suggestions for improving profit factor per strategy."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    data        = request.get_json(silent=True) or {}
+    per_strategy = data.get("per_strategy", {})
+    overall      = data.get("overall", {})
+
+    if not per_strategy:
+        return jsonify({"error": "No strategy data provided"}), 400
+
+    rows = "\n".join(
+        f"  {name}: trades={s['trades']} win_rate={s['win_rate']}% "
+        f"profit_factor={s['profit_factor']} total_pnl=${s['total_pnl']} "
+        f"avg_win=${s['avg_win']} avg_loss=${s['avg_loss']} "
+        f"largest_win=${s['largest_win']} largest_loss=${s['largest_loss']}"
+        for name, s in per_strategy.items()
+    )
+
+    prompt = (
+        f"I am a retail trader using TradingView strategy alerts routed to Interactive Brokers.\n\n"
+        f"Overall account: trades={overall.get('trades')} win_rate={overall.get('win_rate')}% "
+        f"profit_factor={overall.get('profit_factor')} total_pnl=${overall.get('total_pnl')}\n\n"
+        f"Per-strategy breakdown:\n{rows}\n\n"
+        f"For each strategy that has at least 5 trades, provide:\n"
+        f"1. A brief assessment of its current performance\n"
+        f"2. 2-3 specific, actionable suggestions to improve its profit factor\n\n"
+        f"Focus on practical improvements: entry filters, exit management, position sizing, "
+        f"time-of-day filters, or stopping trading low-performing strategies altogether. "
+        f"Be concise and direct. Use ## Strategy Name as headings."
+    )
+
+    def generate():
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                system=(
+                    "You are a quantitative trading analyst reviewing live trading results. "
+                    "Be concise and actionable. Use markdown: ## for strategy headings, "
+                    "**bold** for key metrics, bullet points for suggestions."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -28,4 +28,19 @@ RUN mkdir -p /home/ibgateway/Jts && \
     printf '[Logon]\nLocale=en\nUseSSL=true\n\n[IBGateway]\nApiOnly=true\nTrustedIPs=*\nReadOnlyApi=false\n' \
     > /home/ibgateway/Jts/jts.ini
 
+# Enable IBC auto-restart so it handles nightly IB session resets cleanly
+RUN grep -q "^ReloginAfterSecondFactorAuthenticationTimeout=" /home/ibgateway/ibc/config.ini \
+    && sed -i 's/^ReloginAfterSecondFactorAuthenticationTimeout=.*/ReloginAfterSecondFactorAuthenticationTimeout=yes/' /home/ibgateway/ibc/config.ini \
+    || echo "ReloginAfterSecondFactorAuthenticationTimeout=yes" >> /home/ibgateway/ibc/config.ini
+
+# Auto-restart IBC/Gateway daily at 11:59 PM ET (before IB's server restart window)
+RUN grep -q "^DailyScheduledRestart=" /home/ibgateway/ibc/config.ini \
+    && sed -i 's/^DailyScheduledRestart=.*/DailyScheduledRestart=23:59/' /home/ibgateway/ibc/config.ini \
+    || echo "DailyScheduledRestart=23:59" >> /home/ibgateway/ibc/config.ini
+
+# Ensure IBC will attempt to re-login after a restart
+RUN grep -q "^ReloginAfterRestart=" /home/ibgateway/ibc/config.ini \
+    && sed -i 's/^ReloginAfterRestart=.*/ReloginAfterRestart=yes/' /home/ibgateway/ibc/config.ini \
+    || echo "ReloginAfterRestart=yes" >> /home/ibgateway/ibc/config.ini
+
 USER ibgateway
