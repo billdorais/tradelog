@@ -293,6 +293,26 @@ if os.environ.get("IB_HOST_LIVE"):
     threading.Thread(target=_connect_ib_live_background, daemon=True).start()
 
 # ---------------------------------------------------------------------------
+# Alpaca broker (optional — set ALPACA_KEY + ALPACA_SECRET to enable)
+# ---------------------------------------------------------------------------
+
+alpaca_broker = None
+if os.environ.get("ALPACA_KEY"):
+    from brokers.alpaca_broker import AlpacaBroker
+    alpaca_broker = AlpacaBroker()
+    log.info("Alpaca broker initialised (paper=%s)", os.environ.get("ALPACA_PAPER", "true"))
+
+# ---------------------------------------------------------------------------
+# Coinbase broker (optional — set COINBASE_KEY + COINBASE_SECRET to enable)
+# ---------------------------------------------------------------------------
+
+coinbase_broker = None
+if os.environ.get("COINBASE_KEY"):
+    from brokers.coinbase_broker import CoinbaseBroker
+    coinbase_broker = CoinbaseBroker()
+    log.info("Coinbase broker initialised")
+
+# ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
 # ---------------------------------------------------------------------------
 
@@ -615,6 +635,58 @@ def webhook():
             exec_detail = json.dumps({**result, "mode": mode_label})
             log.info("IB %s order %s %s %s: %s", mode_label, order_action, quantity, ticker, result)
 
+    elif broker_name == "alpaca":
+        if alpaca_broker is None:
+            exec_status = "error"
+            exec_detail = "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars"
+            log.warning("Alpaca order skipped: broker not initialised")
+        elif order_action not in ("BUY", "SELL"):
+            exec_status = "skipped"
+            exec_detail = f"No order placed for action '{raw_action}'"
+        else:
+            try:
+                result = alpaca_broker.place_order(
+                    ticker   = ticker,
+                    action   = order_action,
+                    quantity = quantity,
+                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                    sec_type = sec_type,
+                    currency = currency,
+                )
+                exec_status = "ok" if result.get("success") else "error"
+                exec_detail = json.dumps(result)
+                log.info("Alpaca order %s %s %s: %s", order_action, quantity, ticker, result)
+            except Exception as e:
+                exec_status = "error"
+                exec_detail = str(e)
+                log.error("Alpaca order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+
+    elif broker_name == "coinbase":
+        if coinbase_broker is None:
+            exec_status = "error"
+            exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
+            log.warning("Coinbase order skipped: broker not initialised")
+        elif order_action not in ("BUY", "SELL"):
+            exec_status = "skipped"
+            exec_detail = f"No order placed for action '{raw_action}'"
+        else:
+            try:
+                result = coinbase_broker.place_order(
+                    ticker   = ticker,
+                    action   = order_action,
+                    quantity = quantity,
+                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                    sec_type = sec_type,
+                    currency = currency,
+                )
+                exec_status = "ok" if result.get("success") else "error"
+                exec_detail = json.dumps(result)
+                log.info("Coinbase order %s %s %s: %s", order_action, quantity, ticker, result)
+            except Exception as e:
+                exec_status = "error"
+                exec_detail = str(e)
+                log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+
     # 3. Write execution result back to the row
     if exec_status:
         _update_exec(cur, trade_id, exec_status, exec_detail)
@@ -664,6 +736,10 @@ def broker_status():
         st = ib_broker_live.status()
         st["mode"] = "live"
         brokers["IB_LIVE"] = st
+    if alpaca_broker is not None:
+        brokers["Alpaca"] = alpaca_broker.status()
+    if coinbase_broker is not None:
+        brokers["Coinbase"] = coinbase_broker.status()
     return jsonify(brokers)
 
 

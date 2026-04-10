@@ -6,3 +6,5 @@ ib-async
 anthropic>=0.25.0
 yfinance>=0.2.40
 backtesting>=0.3.3
+alpaca-py>=0.20.0
+coinbase-advanced-py>=1.4.0

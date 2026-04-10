@@ -58,6 +58,7 @@
     .node-mode-live  { background: #102a1a; border-color: #26a65b; color: #4fd88a; }
     .node-mode-paper { background: #2a2510; border-color: #c8a22a; color: #f5d060; }
     .node-broker-ib       { background: #2a1010; border-color: #c83232; color: #f57070; }
+    .node-broker-alpaca   { background: #0f2a1a; border-color: #2ab86e; color: #5fe0a0; }
     .node-broker-coinbase { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
     .node-ticker { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
 
@@ -121,7 +122,7 @@
   <div class="palette-item" onclick="addNode('quantity')"><span class="palette-dot" style="background:#2a5580"></span>Quantity</div>
   <div class="palette-item" onclick="addNode('instrument')"><span class="palette-dot" style="background:#7c4dbd"></span>Instrument</div>
   <div class="palette-item" onclick="addNode('mode')"><span class="palette-dot" style="background:#26a65b"></span>Live / Paper</div>
-  <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker</div>
+  <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker (IB / Alpaca / Coinbase)</div>
   <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
 </div>
 
@@ -221,7 +222,7 @@
       case 'quantity':   return 'node-quantity';
       case 'instrument': return `node-instrument-${node.value || 'STK'}`;
       case 'mode':       return `node-mode-${node.value || 'live'}`;
-      case 'broker':     return `node-broker-${node.value || 'ib'}`;
+      case 'broker':     return `node-broker-${node.value || 'ib'}`.replace(/[^a-z0-9-]/g,'');
       case 'ticker':     return 'node-ticker';
       default:           return 'node-strategy';
     }
@@ -238,7 +239,10 @@
       case 'quantity':   return node.unit === 'dollars' ? `$${node.amount}` : node.unit === 'pct' ? `${node.amount}%` : `${node.amount} shares`;
       case 'instrument': return { STK: 'Stocks', FUT: 'Futures', OPT: 'Options', CRYPTO: 'Crypto' }[node.value] || node.value || 'Stocks';
       case 'mode':       return node.value === 'paper' ? 'Paper' : 'Live';
-      case 'broker':     return node.value === 'coinbase' ? 'Coinbase' : 'Interactive Brokers';
+      case 'broker': {
+        const bmap = { ib: 'Interactive Brokers', alpaca: 'Alpaca', coinbase: 'Coinbase' };
+        return bmap[node.value] || node.value || 'Interactive Brokers';
+      }
       case 'ticker':     return node.value || '—';
       default:           return '—';
     }
@@ -384,6 +388,7 @@
             <label>Broker</label>
             <select id="f_value">
               <option value="ib"       ${(v.value||'ib')==='ib'       ? 'selected':''}>Interactive Brokers</option>
+              <option value="alpaca"   ${v.value==='alpaca'   ? 'selected':''}>Alpaca</option>
               <option value="coinbase" ${v.value==='coinbase' ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;
