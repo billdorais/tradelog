@@ -1318,7 +1318,7 @@
 
         // Broker pills — render one per configured broker
         const brokerDefs = [
-          { key: 'IB',       label: 'IB',       color: '#26a65b', acctFn: b => (b.accounts||[]).join(', ') },
+          { key: 'IB',       label: 'IB',       color: '#26a65b', acctFn: b => 'Paper' },
           { key: 'IB_LIVE',  label: 'IB Live',  color: '#4a90d9', acctFn: b => (b.accounts||[]).join(', ') },
           { key: 'Alpaca',   label: 'Alpaca',   color: '#5fe0a0', acctFn: b => b.paper ? 'Paper' : 'Live' },
           { key: 'Coinbase', label: 'Coinbase', color: '#70a8f5', acctFn: b => (b.accounts||[b.account||'']).join(', ').slice(0,12) },
