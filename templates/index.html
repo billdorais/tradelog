@@ -1365,7 +1365,7 @@
         dailySel.innerHTML = options;
         dailySel.value = prevDaily;
 
-        renderTable(trades, selectedStrategy);
+        try { renderTable(trades, selectedStrategy); } catch(re) { console.error('renderTable error:', re); }
 
         // Fetch stats respecting the equity curve's own filter
         const equityStrategy = document.getElementById('equityStrategyFilter').value;
@@ -1378,7 +1378,7 @@
         document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 
       } catch (e) {
-        document.getElementById('status').textContent = 'Error loading data';
+        document.getElementById('status').textContent = 'Error: ' + e.message;
         console.error(e);
       }
     }
