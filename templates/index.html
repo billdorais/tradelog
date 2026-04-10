@@ -371,7 +371,7 @@
     <!-- Row 2: status pills + action buttons -->
     <div class="header-row2">
       <span id="modePill"></span>
-      <span id="ibPill"></span>
+      <span id="brokerPills"></span>
       <button id="ibReconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
       <button id="ibDisconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#e67e22;border:1px solid #e67e22;border-radius:4px;cursor:pointer" onclick="disconnectIB()">Disconnect IB</button>
       <span class="status" id="status">Loading...</span>
@@ -1232,11 +1232,29 @@
         const eodData = await eodRes.json().catch(() => ({eod_close_enabled: true}));
         updateEODBtn(eodData.eod_close_enabled);
 
-        // IB connection pill
+        // Broker pills — render one per configured broker
+        const brokerDefs = [
+          { key: 'IB',       label: 'IB',       color: '#26a65b', acctFn: b => (b.accounts||[]).join(', ') },
+          { key: 'IB_LIVE',  label: 'IB Live',  color: '#4a90d9', acctFn: b => (b.accounts||[]).join(', ') },
+          { key: 'Alpaca',   label: 'Alpaca',   color: '#5fe0a0', acctFn: b => b.paper ? 'Paper' : 'Live' },
+          { key: 'Coinbase', label: 'Coinbase', color: '#70a8f5', acctFn: b => (b.accounts||[b.account||'']).join(', ').slice(0,12) },
+        ];
+        let pillsHtml = '';
+        for (const def of brokerDefs) {
+          const b = brokers[def.key];
+          if (!b) continue;  // not configured — skip
+          if (b.connected) {
+            const acct = def.acctFn(b);
+            pillsHtml += `<span class="mode-pill ib-connected" style="border-color:${def.color};background:${def.color}22">
+              <span style="width:7px;height:7px;border-radius:50%;background:${def.color};animation:pulse 1.5s infinite;display:inline-block;margin-right:5px"></span>
+              ${def.label}${acct ? ' · ' + acct : ''}
+            </span>`;
+          } else {
+            pillsHtml += `<span class="mode-pill ib-disconnected" title="${b.error||b.note||''}">${def.label} ✕</span>`;
+          }
+        }
+        document.getElementById('brokerPills').innerHTML = pillsHtml;
         const ib = brokers.IB || {};
-        document.getElementById('ibPill').innerHTML = ib.connected
-          ? `<span class="mode-pill ib-connected"><span class="mode-dot" style="width:7px;height:7px;border-radius:50%;background:#26a65b;animation:pulse 1.5s infinite;display:inline-block"></span>IB ${(ib.accounts||[]).join(', ')}</span>`
-          : `<span class="mode-pill ib-disconnected">IB Disconnected</span>`;
         document.getElementById('ibReconnectBtn').style.display = ib.connected ? 'none' : 'inline-block';
         document.getElementById('ibDisconnectBtn').style.display = ib.connected ? 'inline-block' : 'none';
         allTrades = trades;
