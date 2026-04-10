@@ -370,7 +370,6 @@
     </div>
     <!-- Row 2: status pills + action buttons -->
     <div class="header-row2">
-      <span id="modePill"></span>
       <span id="brokerPills"></span>
       <button id="ibReconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
       <button id="ibDisconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#e67e22;border:1px solid #e67e22;border-radius:4px;cursor:pointer" onclick="disconnectIB()">Disconnect IB</button>
@@ -567,8 +566,9 @@
     let equityChartInstance  = null;
     let dailyChartInstance   = null;
     let netDailyChartInstance = null;
-    let allTrades   = [];
-    let allIBExecs  = [];
+    let allTrades      = [];
+    let allIBExecs     = [];
+    let allAlpacaExecs = [];
     let selectedStrategy = '';
     let activeTab = 'signals';
 
@@ -777,37 +777,92 @@
       return pairs.sort((a, b) => pairMs(b) - pairMs(a));
     }
 
-    // Match TV pairs with IB pairs by ticker, chronologically
-    function matchPairs(tvPairs, ibPairs) {
-      const ibByTicker = {};
-      for (const p of ibPairs) {
-        const sym = ((p.entry || p.exit).symbol || '').toUpperCase();
-        if (!ibByTicker[sym]) ibByTicker[sym] = [];
-        ibByTicker[sym].push(p);
+    // Same pairing logic for Alpaca fills (same BOT/SLD convention as IB)
+    function pairAlpacaExecs(execs) {
+      const toMs = e => {
+        const raw = (e.time || '');
+        const fixed = raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+        return new Date(fixed);
+      };
+      const seen = new Set();
+      const deduped = execs.filter(e => {
+        const key = `${e.symbol}|${e.side}|${e.time}|${e.shares}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
+      const longs  = {};
+      const shorts = {};
+      const pairs  = [];
+      for (const e of sorted) {
+        const symbol = (e.symbol || '').toUpperCase();
+        if (e.side === 'BOT') {
+          if (shorts[symbol] && shorts[symbol].length) {
+            pairs.push({ entry: shorts[symbol].shift(), exit: e, direction: 'short' });
+          } else {
+            if (!longs[symbol]) longs[symbol] = [];
+            longs[symbol].push(e);
+          }
+        } else if (e.side === 'SLD') {
+          if (longs[symbol] && longs[symbol].length) {
+            pairs.push({ entry: longs[symbol].shift(), exit: e, direction: 'long' });
+          } else {
+            if (!shorts[symbol]) shorts[symbol] = [];
+            shorts[symbol].push(e);
+          }
+        }
       }
-      const usedIB = new Set();
+      for (const entries of Object.values(longs))
+        for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'long' });
+      for (const entries of Object.values(shorts))
+        for (const e of entries) pairs.push({ entry: e, exit: null, direction: 'short' });
+      const pairMs = p => {
+        const raw = ((p.entry || p.exit).time || '');
+        return new Date(raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1'));
+      };
+      return pairs.sort((a, b) => pairMs(b) - pairMs(a));
+    }
+
+    // Build groups: TV → IB first, then TV → Alpaca, then unmatched
+    function buildGroups(tvPairs, ibPairs, alpacaPairs) {
+      const toTicker = p => ((p.entry || p.exit).symbol || (p.entry || p.exit).ticker || '').toUpperCase();
+      const byTicker = arr => {
+        const map = {};
+        for (const p of arr) {
+          const sym = toTicker(p);
+          if (!map[sym]) map[sym] = [];
+          map[sym].push(p);
+        }
+        return map;
+      };
+      const ibByTicker     = byTicker(ibPairs);
+      const alpacaByTicker = byTicker(alpacaPairs);
+      const usedIB     = new Set();
+      const usedAlpaca = new Set();
       const groups = [];
       for (const tvP of tvPairs) {
         const ticker = ((tvP.entry || tvP.exit).ticker || '').toUpperCase();
-        const candidates = ibByTicker[ticker] || [];
         let ibMatch = null;
-        for (let i = 0; i < candidates.length; i++) {
-          if (!usedIB.has(i + '|' + ticker)) {
-            ibMatch = candidates[i];
-            usedIB.add(i + '|' + ticker);
-            break;
+        const ibCandidates = ibByTicker[ticker] || [];
+        for (let i = 0; i < ibCandidates.length; i++) {
+          if (!usedIB.has(i + '|' + ticker)) { ibMatch = ibCandidates[i]; usedIB.add(i + '|' + ticker); break; }
+        }
+        let alpacaMatch = null;
+        if (!ibMatch) {
+          const alpCandidates = alpacaByTicker[ticker] || [];
+          for (let i = 0; i < alpCandidates.length; i++) {
+            if (!usedAlpaca.has(i + '|' + ticker)) { alpacaMatch = alpCandidates[i]; usedAlpaca.add(i + '|' + ticker); break; }
           }
         }
-        groups.push({ tv: tvP, ib: ibMatch });
+        groups.push({ tv: tvP, ib: ibMatch, alpaca: alpacaMatch });
       }
-      // Unmatched IB pairs
-      for (const [ticker, list] of Object.entries(ibByTicker)) {
-        for (let i = 0; i < list.length; i++) {
-          if (!usedIB.has(i + '|' + ticker)) {
-            groups.push({ tv: null, ib: list[i] });
-          }
-        }
-      }
+      for (const [ticker, list] of Object.entries(ibByTicker))
+        for (let i = 0; i < list.length; i++)
+          if (!usedIB.has(i + '|' + ticker)) groups.push({ tv: null, ib: list[i], alpaca: null });
+      for (const [ticker, list] of Object.entries(alpacaByTicker))
+        for (let i = 0; i < list.length; i++)
+          if (!usedAlpaca.has(i + '|' + ticker)) groups.push({ tv: null, ib: null, alpaca: list[i] });
       return groups;
     }
 
@@ -831,9 +886,10 @@
         ? trades.filter(t => t.strategy === strategyFilter)
         : trades;
 
-      const tvPairs  = pairSignals(filtered);
-      const ibPairs  = pairIBExecs(allIBExecs);
-      const groups   = matchPairs(tvPairs, ibPairs);
+      const tvPairs     = pairSignals(filtered);
+      const ibPairs     = pairIBExecs(allIBExecs);
+      const alpacaPairs = pairAlpacaExecs(allAlpacaExecs);
+      const groups      = buildGroups(tvPairs, ibPairs, alpacaPairs);
       const body     = document.getElementById('tradeBody');
 
       if (!groups.length) {
@@ -903,6 +959,32 @@
               </td>
               <td style="font-size:0.78rem;color:#aaa">${fmtET(ibTs(en)) ?? '—'}</td>
               <td style="font-size:0.78rem;color:#888">${ibTs(ex) ? fmtET(ibTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+              <td style="color:#888;font-size:0.78rem">${dur}</td>
+              <td>${sentimentBadge(sentiment)}</td>
+              <td><span style="color:#444">—</span></td>
+              <td><strong>${ref.symbol ?? '—'}</strong></td>
+              ${pnlCell(pnl)}
+              <td>${qty ?? '—'}</td>
+              <td>${priceCell(entryPrice)}</td>
+              <td>${priceCell(exitPrice)}</td>
+              <td><span class="exec-ok">✓ Filled</span></td>
+            </tr>`);
+          }
+
+          if (alpaca) {
+            const en = alpaca.entry, ex = alpaca.exit;
+            const ref        = en || ex;
+            const entryPrice = en ? en.price : null;
+            const exitPrice  = ex ? ex.price : null;
+            const qty        = ref.shares;
+            const pnl        = ex?.pnl != null ? ex.pnl : undefined;
+            const sentiment  = alpaca.direction === 'short' ? 'Short' : 'Long';
+            const alpTs = f => f?.time;
+            const dur   = en ? tradeDuration(alpTs(en), alpTs(ex)) : '—';
+            rows.push(`<tr class="group-second">
+              <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
+              <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
+              <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
               <td style="color:#888;font-size:0.78rem">${dur}</td>
               <td>${sentimentBadge(sentiment)}</td>
               <td><span style="color:#444">—</span></td>
@@ -1218,17 +1300,19 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing...';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
           fetch('/api/ib/trades').catch(() => ({ json: () => [] })),
+          fetch('/api/alpaca/trades').catch(() => ({ json: () => [] })),
           fetch('/api/broker/eod-close').catch(() => ({ json: () => ({eod_close_enabled: true}) })),
         ]);
         const trades  = await tradesRes.json();
         const stats   = await statsRes.json();
         const brokers = await brokerRes.json();
-        allIBExecs = await ibExecsRes.json().catch(() => []);
+        allIBExecs     = await ibExecsRes.json().catch(() => []);
+        allAlpacaExecs = await alpacaExecsRes.json().catch(() => []);
         const eodData = await eodRes.json().catch(() => ({eod_close_enabled: true}));
         updateEODBtn(eodData.eod_close_enabled);
 
@@ -1259,11 +1343,6 @@
         document.getElementById('ibDisconnectBtn').style.display = ib.connected ? 'inline-block' : 'none';
         allTrades = trades;
 
-        // Mode pill (paper vs live)
-        const isPaper = stats.paper_trading !== false;
-        document.getElementById('modePill').innerHTML = isPaper
-          ? '<span class="mode-pill paper"><span class="mode-dot"></span>PAPER</span>'
-          : '<span class="mode-pill live"><span class="mode-dot"></span>LIVE</span>';
 
         // --- Populate strategy filter dropdowns (table + equity curve) ---
         const strategies = [...new Set(trades.map(t => t.strategy).filter(Boolean))].sort();

@@ -1981,6 +1981,19 @@ def ib_execution_delete(exec_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/alpaca/trades")
+def alpaca_trades():
+    """Return today's filled Alpaca orders in the same shape as ib_executions."""
+    if alpaca_broker is None:
+        return jsonify([])
+    try:
+        fills = alpaca_broker.get_fills()
+        return jsonify(fills)
+    except Exception as e:
+        log.error("alpaca_trades error: %s", e)
+        return jsonify([])
+
+
 @app.route("/api/ib/trades")
 def ib_trades():
     conn = get_db()
