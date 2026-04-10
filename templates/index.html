@@ -245,34 +245,17 @@
       overflow: hidden;
     }
 
-    /* Scrollable tbody — sticky header stays in place */
-    .table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.8rem; table-layout: fixed; }
-    .table-wrap thead { display: table; width: 100%; table-layout: fixed; }
-    .table-wrap tbody {
-      display: block;
-      max-height: 540px;   /* ~10 rows */
+    /* Scrollable table — sticky header via position:sticky */
+    .table-wrap {
+      max-height: 560px;
       overflow-y: auto;
-      overflow-x: hidden;
       scrollbar-width: thin;
       scrollbar-color: #2a2d3e #13161f;
     }
-    .table-wrap tbody::-webkit-scrollbar { width: 6px; }
-    .table-wrap tbody::-webkit-scrollbar-track { background: #13161f; }
-    .table-wrap tbody::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
-    .table-wrap tbody tr { display: table; width: 100%; table-layout: fixed; }
-    /* Column widths */
-    .table-wrap col.col-src      { width: 4%; }
-    .table-wrap col.col-entry    { width: 13%; }
-    .table-wrap col.col-exit     { width: 13%; }
-    .table-wrap col.col-dur      { width: 7%; }
-    .table-wrap col.col-dir      { width: 6%; }
-    .table-wrap col.col-strat    { width: 14%; }
-    .table-wrap col.col-ticker   { width: 6%; }
-    .table-wrap col.col-pnl      { width: 7%; }
-    .table-wrap col.col-qty      { width: 5%; }
-    .table-wrap col.col-eprice   { width: 8%; }
-    .table-wrap col.col-xprice   { width: 8%; }
-    .table-wrap col.col-status   { width: 9%; }
+    .table-wrap::-webkit-scrollbar { width: 6px; }
+    .table-wrap::-webkit-scrollbar-track { background: #13161f; }
+    .table-wrap::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
+    .table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
 
     table {
       width: 100%;
@@ -281,6 +264,9 @@
     }
 
     thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
       background: #1c1f2e;
       color: #aaa;
       text-align: left;
@@ -289,8 +275,6 @@
       font-size: 0.75rem;
       border-bottom: 1px solid #2a2d3e;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
     tbody tr { border-bottom: 1px solid #1e2130; }
@@ -557,20 +541,6 @@
   </div>
   <div class="table-wrap">
     <table>
-      <colgroup>
-        <col class="col-src">
-        <col class="col-entry">
-        <col class="col-exit">
-        <col class="col-dur">
-        <col class="col-dir">
-        <col class="col-strat">
-        <col class="col-ticker">
-        <col class="col-pnl">
-        <col class="col-qty">
-        <col class="col-eprice">
-        <col class="col-xprice">
-        <col class="col-status">
-      </colgroup>
       <thead>
         <tr>
           <th>Src</th>
