@@ -1304,16 +1304,16 @@
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
-          fetch('/api/ib/trades').catch(() => ({ json: () => [] })),
-          fetch('/api/alpaca/trades').catch(() => ({ json: () => [] })),
-          fetch('/api/broker/eod-close').catch(() => ({ json: () => ({eod_close_enabled: true}) })),
+          fetch('/api/ib/trades').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
+          fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
         const stats   = await statsRes.json();
         const brokers = await brokerRes.json();
-        allIBExecs     = await ibExecsRes.json().catch(() => []);
-        allAlpacaExecs = await alpacaExecsRes.json().catch(() => []);
-        const eodData = await eodRes.json().catch(() => ({eod_close_enabled: true}));
+        allIBExecs     = ibExecsRes;
+        allAlpacaExecs = alpacaExecsRes;
+        const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
         // Broker pills — render one per configured broker
