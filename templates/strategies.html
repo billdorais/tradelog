@@ -199,15 +199,23 @@
   <div class="content">
 
     <div class="strategy-card">
-      <div class="strategy-title">Camarilla Strategy</div>
-      <div class="strategy-subtitle">Pivot level breakout with EMA trend filter — Intraday</div>
+      <div class="strategy-title">Camarilla Strategy <span style="font-size:0.75rem;font-weight:400;color:#555;margin-left:8px">cam_v6</span></div>
+      <div class="strategy-subtitle">RTH pivot level breakout with EMA trend filter — Intraday</div>
 
       <h2>Core Idea</h2>
       <p>
-        Uses Camarilla pivot levels calculated from the previous day's High, Low, and Close.
-        <strong style="color:#e0e0e0">H4</strong> and <strong style="color:#e0e0e0">L4</strong> are the key breakout levels.
+        Uses Camarilla H4/L4 levels calculated from the <strong style="color:#e0e0e0">previous RTH session</strong> (09:30–16:00 ET) High, Low, and Close.
+        Levels are locked at the start of each new RTH day and held flat throughout the session.
         EMA 8 is used as a trend filter — entries are only taken when price is aligned with momentum.
+        Orders execute on close (<code style="font-size:0.8rem;color:#aaa">process_orders_on_close = true</code>).
       </p>
+
+      <h2>Level Formula</h2>
+      <table>
+        <tr><th>Level</th><th>Formula</th></tr>
+        <tr><td>H4</td><td style="font-family:monospace;font-size:0.85rem">prevRTHClose + (prevRTHHigh − prevRTHLow) × 1.1 / 2</td></tr>
+        <tr><td>L4</td><td style="font-family:monospace;font-size:0.85rem">prevRTHClose − (prevRTHHigh − prevRTHLow) × 1.1 / 2</td></tr>
+      </table>
 
       <h2>Entry Conditions</h2>
       <div class="signal-grid">
@@ -215,8 +223,9 @@
         <div class="signal-block long">
           <div class="signal-label">Long — Breakout above H4</div>
           <ul class="condition-list">
-            <li>close &gt; dtime_h4 <span class="condition-comment">// closed above H4</span></li>
-            <li>open &lt; dtime_h4 <span class="condition-comment">// opened below H4</span></li>
+            <li>inRTH <span class="condition-comment">// within 09:30–16:00 ET</span></li>
+            <li>close &gt; h4 <span class="condition-comment">// closed above H4</span></li>
+            <li>open &lt; h4 <span class="condition-comment">// opened below H4</span></li>
             <li>ema8 &lt; close <span class="condition-comment">// price above 8 EMA</span></li>
           </ul>
         </div>
@@ -224,15 +233,16 @@
         <div class="signal-block short">
           <div class="signal-label">Short — Breakdown below L4</div>
           <ul class="condition-list">
-            <li>close &lt; dtime_l4 <span class="condition-comment">// closed below L4</span></li>
-            <li>open &gt; dtime_l4 <span class="condition-comment">// opened above L4</span></li>
+            <li>inRTH <span class="condition-comment">// within 09:30–16:00 ET</span></li>
+            <li>close &lt; l4 <span class="condition-comment">// closed below L4</span></li>
+            <li>open &gt; l4 <span class="condition-comment">// opened above L4</span></li>
             <li>ema8 &gt; close <span class="condition-comment">// price below 8 EMA</span></li>
           </ul>
         </div>
 
       </div>
       <p style="font-size:0.85rem;color:#666;margin-top:8px">
-        All three conditions must be true on the same candle. Entry is at the open of the following candle.
+        All conditions must be true on the same candle. Entry executes on the close of the signal candle. No pyramiding.
       </p>
 
       <h2>Exit Rules</h2>
@@ -241,17 +251,42 @@
         <tr>
           <td>Trailing stop activates</td>
           <td>+40 points profit</td>
-          <td>+10 points profit</td>
+          <td>+40 points profit</td>
         </tr>
         <tr>
           <td>Trail distance</td>
-          <td>1 point</td>
-          <td>1 point</td>
+          <td>10 points</td>
+          <td>10 points</td>
         </tr>
         <tr>
           <td>Hard stop loss</td>
-          <td>70 points</td>
-          <td>20 points</td>
+          <td>80 points</td>
+          <td>80 points</td>
+        </tr>
+      </table>
+
+      <h2>Alert Message Format</h2>
+      <table>
+        <tr><th>Signal</th><th>Action</th><th>Example payload</th></tr>
+        <tr>
+          <td>Long entry</td>
+          <td style="color:#26a65b;font-weight:600">BUY</td>
+          <td style="font-family:monospace;font-size:0.78rem;color:#888">{"action":"BUY","symbol":"AAPL","id":"AAPL_LONG_..."}</td>
+        </tr>
+        <tr>
+          <td>Long exit</td>
+          <td style="color:#888">EXIT_LONG</td>
+          <td style="font-family:monospace;font-size:0.78rem;color:#888">{"action":"EXIT_LONG","symbol":"AAPL","id":"AAPL_EXIT_LONG_..."}</td>
+        </tr>
+        <tr>
+          <td>Short entry</td>
+          <td style="color:#ef5350;font-weight:600">SELL</td>
+          <td style="font-family:monospace;font-size:0.78rem;color:#888">{"action":"SELL","symbol":"AAPL","id":"AAPL_SHORT_..."}</td>
+        </tr>
+        <tr>
+          <td>Short exit</td>
+          <td style="color:#888">EXIT_SHORT</td>
+          <td style="font-family:monospace;font-size:0.78rem;color:#888">{"action":"EXIT_SHORT","symbol":"AAPL","id":"AAPL_EXIT_SHORT_..."}</td>
         </tr>
       </table>
 
