@@ -32,11 +32,18 @@ class CoinbaseBroker:
     def status(self):
         try:
             self._ensure_client()
-            accounts = self._client.get_accounts()
+            resp = self._client.get_accounts()
+            # SDK returns a typed object; accounts list is an attribute
+            accts = getattr(resp, "accounts", None) or []
+            ids = []
+            for a in accts[:3]:
+                uid = getattr(a, "uuid", None) or (a.get("uuid") if isinstance(a, dict) else None)
+                if uid:
+                    ids.append(uid)
             return {
                 "broker":    "Coinbase",
                 "connected": True,
-                "accounts":  [a["uuid"] for a in (accounts.get("accounts") or [])[:3]],
+                "accounts":  ids,
             }
         except Exception as e:
             return {"broker": "Coinbase", "connected": False, "error": str(e)}
@@ -104,16 +111,24 @@ class CoinbaseBroker:
         """Return non-zero account balances as positions."""
         self._ensure_client()
         try:
-            accounts = self._client.get_accounts()
-            result   = []
-            for acct in accounts.get("accounts") or []:
-                bal = float(acct.get("available_balance", {}).get("value", 0))
+            resp   = self._client.get_accounts()
+            accts  = getattr(resp, "accounts", None) or []
+            result = []
+            for acct in accts:
+                # Support both typed objects and dicts
+                if isinstance(acct, dict):
+                    bal = float((acct.get("available_balance") or {}).get("value", 0))
+                    sym = acct.get("currency", "")
+                else:
+                    ab  = getattr(acct, "available_balance", None)
+                    bal = float(getattr(ab, "value", 0) or 0)
+                    sym = getattr(acct, "currency", "")
                 if bal > 0:
                     result.append({
-                        "symbol":    acct.get("currency", ""),
-                        "qty":       bal,
-                        "side":      "long",
-                        "market_value": None,
+                        "symbol":         sym,
+                        "qty":            bal,
+                        "side":           "long",
+                        "market_value":   None,
                         "unrealized_pnl": None,
                     })
             return result
