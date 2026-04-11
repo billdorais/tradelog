@@ -447,13 +447,18 @@ def init_db():
     conn.commit()
 
     # Migrations for existing databases
-    for col in ("strategy TEXT", "broker TEXT", "exec_status TEXT", "exec_detail TEXT",
-                "sort_order INTEGER"):
+    for col in ("strategy TEXT", "broker TEXT", "exec_status TEXT", "exec_detail TEXT"):
         try:
             cur.execute(f"ALTER TABLE trades ADD COLUMN {col}")
             conn.commit()
         except Exception:
             conn.rollback()
+
+    try:
+        cur.execute("ALTER TABLE routing_rules ADD COLUMN sort_order INTEGER")
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
     conn.close()
 
