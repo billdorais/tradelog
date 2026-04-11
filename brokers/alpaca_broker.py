@@ -83,13 +83,21 @@ class AlpacaBroker:
         # (Alpaca doesn't support shorting crypto — this closes whatever is held)
         if is_crypto and side == OrderSide.SELL:
             try:
-                order = self._trading.close_position(ticker)
-                log.info("Alpaca close_position %s → id=%s status=%s", ticker, order.id, order.status)
+                # Scan all positions — Alpaca may store symbol as ETHUSD or ETH/USD
+                base = ticker.split("/")[0].upper()  # "ETH" from "ETH/USD"
+                positions = self._trading.get_all_positions()
+                pos = next((p for p in positions if base in p.symbol.upper()), None)
+                if pos is None:
+                    all_syms = [p.symbol for p in positions]
+                    log.warning("No %s position found. Open positions: %s", base, all_syms)
+                    return {"success": False, "error": f"No {base} position to close (open: {all_syms})"}
+                order = self._trading.close_position(pos.symbol)
+                log.info("Alpaca close_position %s → id=%s status=%s", pos.symbol, order.id, order.status)
                 return {
                     "success":  True,
                     "order_id": str(order.id),
                     "status":   str(order.status),
-                    "symbol":   ticker,
+                    "symbol":   pos.symbol,
                     "side":     "sell",
                     "paper":    self._paper,
                 }
