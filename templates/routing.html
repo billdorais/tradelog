@@ -24,8 +24,13 @@
 
     /* Pipeline rows */
     .pipelines { display: flex; flex-direction: column; gap: 16px; }
-    .pipeline-wrap { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; transition: border-color 0.2s; }
+    .pipeline-wrap { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; transition: border-color 0.2s, opacity 0.2s; cursor: default; }
     .pipeline-wrap.disabled { opacity: 0.45; }
+    .pipeline-wrap.drag-over { border-color: #4a90d9; background: #151829; }
+    .pipeline-wrap.dragging  { opacity: 0.35; }
+    .drag-handle { cursor: grab; color: #3a3d4e; font-size: 1rem; padding: 4px 6px 4px 0; flex-shrink: 0; user-select: none; line-height: 1; }
+    .drag-handle:hover { color: #888; }
+    .drag-handle:active { cursor: grabbing; }
     .pipeline-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
     .pipeline-name { font-size: 0.9rem; font-weight: 600; color: #ccc; flex: 1; background: transparent; border: none; outline: none; }
     .pipeline-name:focus { border-bottom: 1px solid #4a90d9; }
@@ -161,6 +166,7 @@
   let activePipelineId = null;   // which pipeline the palette/modal targets
   let activeNodeIdx    = null;   // which node index is being edited (-1 = new)
   let pendingNodeType  = null;   // type for new node being added
+  let dragSrcId        = null;   // id of pipeline being dragged
 
   // -----------------------------------------------------------------------
   // Boot
@@ -190,19 +196,49 @@
       const wrap = document.createElement('div');
       wrap.className = 'pipeline-wrap' + (rule.enabled ? '' : ' disabled');
       wrap.dataset.id = rule.id;
+      wrap.draggable = true;
       wrap.innerHTML = `
         <div class="pipeline-header">
+          <span class="drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
           <input class="pipeline-name" value="${escHtml(rule.name)}" placeholder="Pipeline name"
             onchange="renamePipeline(${rule.id}, this.value)" />
           <label class="pipeline-toggle" title="${rule.enabled ? 'Enabled' : 'Disabled'}">
             <input type="checkbox" ${rule.enabled ? 'checked' : ''} onchange="togglePipeline(${rule.id}, this.checked)">
             <span class="toggle-slider"></span>
           </label>
+          <button class="btn btn-ghost" style="font-size:0.75rem;padding:4px 10px" onclick="duplicatePipeline(${rule.id})" title="Duplicate pipeline">&#10697;</button>
           <button class="btn btn-danger" style="font-size:0.75rem;padding:4px 10px" onclick="deletePipeline(${rule.id})">Delete</button>
         </div>
         <div class="node-chain" id="chain-${rule.id}">
           ${renderChain(rule)}
         </div>`;
+      // Drag-and-drop events
+      wrap.addEventListener('dragstart', e => {
+        dragSrcId = rule.id;
+        setTimeout(() => wrap.classList.add('dragging'), 0);
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      wrap.addEventListener('dragend', () => {
+        wrap.classList.remove('dragging');
+        document.querySelectorAll('.pipeline-wrap').forEach(w => w.classList.remove('drag-over'));
+      });
+      wrap.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        document.querySelectorAll('.pipeline-wrap').forEach(w => w.classList.remove('drag-over'));
+        if (rule.id !== dragSrcId) wrap.classList.add('drag-over');
+      });
+      wrap.addEventListener('drop', e => {
+        e.preventDefault();
+        if (dragSrcId == null || dragSrcId === rule.id) return;
+        const srcIdx  = rules.findIndex(r => r.id === dragSrcId);
+        const dstIdx  = rules.findIndex(r => r.id === rule.id);
+        const [moved] = rules.splice(srcIdx, 1);
+        rules.splice(dstIdx, 0, moved);
+        persistOrder();
+        renderAll();
+      });
+
       container.appendChild(wrap);
     });
   }
@@ -308,6 +344,22 @@
     await fetch(`/api/routing/rules/${id}`, { method: 'DELETE' });
     rules = rules.filter(r => r.id !== id);
     renderAll();
+  }
+
+  async function duplicatePipeline(id) {
+    const res  = await fetch(`/api/routing/rules/${id}/duplicate`, { method: 'POST' });
+    const rule = await res.json();
+    rules.push(rule);
+    renderAll();
+  }
+
+  async function persistOrder() {
+    const order = rules.map((r, i) => ({ id: r.id, sort_order: i }));
+    await fetch('/api/routing/rules/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(order),
+    });
   }
 
   async function saveRule(id) {

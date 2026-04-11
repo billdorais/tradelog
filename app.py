@@ -447,7 +447,8 @@ def init_db():
     conn.commit()
 
     # Migrations for existing databases
-    for col in ("strategy TEXT", "broker TEXT", "exec_status TEXT", "exec_detail TEXT"):
+    for col in ("strategy TEXT", "broker TEXT", "exec_status TEXT", "exec_detail TEXT",
+                "sort_order INTEGER"):
         try:
             cur.execute(f"ALTER TABLE trades ADD COLUMN {col}")
             conn.commit()
@@ -530,7 +531,7 @@ def webhook():
     try:
         rconn = get_db()
         rcur  = rconn.cursor()
-        rcur.execute("SELECT nodes FROM routing_rules WHERE enabled=1 ORDER BY id ASC")
+        rcur.execute("SELECT nodes FROM routing_rules WHERE enabled=1 ORDER BY COALESCE(sort_order, id) ASC")
         rule_rows = rcur.fetchall()
         rconn.close()
         for rrow in rule_rows:
@@ -942,7 +943,7 @@ def eod_close_toggle():
 def routing_rules_list():
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT id, name, enabled, nodes, created_at FROM routing_rules ORDER BY id ASC")
+    cur.execute("SELECT id, name, enabled, nodes, created_at FROM routing_rules ORDER BY COALESCE(sort_order, id) ASC")
     rows = cur.fetchall()
     conn.close()
     if DATABASE_URL:
@@ -1014,6 +1015,51 @@ def routing_rules_delete(rule_id):
     cur  = conn.cursor()
     p    = placeholder()
     cur.execute(f"DELETE FROM routing_rules WHERE id={p}", (rule_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/routing/rules/<int:rule_id>/duplicate", methods=["POST"])
+def routing_rules_duplicate(rule_id):
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    cur.execute(f"SELECT name, nodes FROM routing_rules WHERE id={p}", (rule_id,))
+    row  = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    name  = (row[0] if DATABASE_URL else row["name"]) + " (copy)"
+    nodes = row[1] if DATABASE_URL else row["nodes"]
+    ts    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if DATABASE_URL:
+        cur.execute(
+            f"INSERT INTO routing_rules (name,enabled,nodes,created_at) VALUES ({p},{p},{p},{p}) RETURNING id",
+            (name, 1, nodes, ts),
+        )
+        new_id = cur.fetchone()[0]
+    else:
+        cur.execute(
+            f"INSERT INTO routing_rules (name,enabled,nodes,created_at) VALUES ({p},{p},{p},{p})",
+            (name, 1, nodes, ts),
+        )
+        new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    nodes_parsed = json.loads(nodes) if isinstance(nodes, str) else nodes
+    return jsonify({"id": new_id, "name": name, "enabled": 1, "nodes": nodes_parsed})
+
+
+@app.route("/api/routing/rules/reorder", methods=["POST"])
+def routing_rules_reorder():
+    order = request.get_json(silent=True) or []  # [{id, sort_order}, ...]
+    conn  = get_db()
+    cur   = conn.cursor()
+    p     = placeholder()
+    for item in order:
+        cur.execute(f"UPDATE routing_rules SET sort_order={p} WHERE id={p}",
+                    (item["sort_order"], item["id"]))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
