@@ -79,6 +79,18 @@ class AlpacaBroker:
         is_crypto = "/" in ticker
         tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
 
+        # For crypto SELL: use actual held quantity rather than the requested qty
+        # (Alpaca doesn't support shorting crypto — sell only what you own)
+        if is_crypto and side == OrderSide.SELL:
+            try:
+                pos = self._trading.get_open_position(ticker)
+                held = float(pos.qty)
+                if held <= 0:
+                    return {"success": False, "error": f"No {ticker} position to sell — skipping short"}
+                qty = held
+            except Exception:
+                return {"success": False, "error": f"No open {ticker} position — skipping crypto sell"}
+
         try:
             if price:
                 req = LimitOrderRequest(
