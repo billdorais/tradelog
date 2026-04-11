@@ -24,7 +24,9 @@ class CoinbaseBroker:
         if self._client is not None:
             return
         from coinbase.rest import RESTClient
-        self._client = RESTClient(api_key=self._key, api_secret=self._secret)
+        # Railway stores multi-line secrets as literal \n — convert to real newlines
+        secret = self._secret.replace("\\n", "\n") if self._secret else self._secret
+        self._client = RESTClient(api_key=self._key, api_secret=secret)
         log.info("Coinbase RESTClient initialised")
 
     def status(self):
