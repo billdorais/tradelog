@@ -631,6 +631,8 @@ def webhook():
     conn.commit()
 
     # 2. Route to broker — fire async so TradingView gets a fast response
+    exec_status = None
+    exec_detail = None
     if broker_name == "ib":
         active_broker  = ib_broker_live if (use_live_broker and ib_broker_live) else ib_broker
         submit_task    = _submit_ib_live_task if (use_live_broker and ib_broker_live) else _submit_ib_task
@@ -777,6 +779,8 @@ def webhook():
                 log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
 
     if conn:
+        if exec_status is not None:
+            _update_exec(cur, trade_id, exec_status, exec_detail)
         conn.commit()
         conn.close()
     return jsonify({"status": "ok", "id": trade_id}), 200

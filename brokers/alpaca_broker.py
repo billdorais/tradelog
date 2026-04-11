@@ -60,6 +60,17 @@ class AlpacaBroker:
 
         self._ensure_client()
 
+        # Normalise crypto tickers: ETHUSD → ETH/USD, COINBASE:BTCUSD → BTC/USD
+        import re as _re
+        t = ticker.upper()
+        if ":" in t:
+            t = t.split(":")[-1]
+        if "/" not in t:
+            m = _re.match(r'^([A-Z]{2,5})(USD[T]?|BTC|ETH)$', t)
+            if m:
+                t = f"{m.group(1)}/{m.group(2)}"
+        ticker = t
+
         side = OrderSide.BUY if action.upper() == "BUY" else OrderSide.SELL
         # Crypto quantities are fractional; stocks use whole shares
         raw_qty = float(quantity) if quantity else 1
