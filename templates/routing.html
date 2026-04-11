@@ -61,6 +61,7 @@
     .node-ticker          { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
     .node-options_config  { background: #2a1f10; border-color: #e8962a; color: #ffc060; min-width: 130px; }
     .node-trading_hours   { background: #102030; border-color: #2a7898; color: #60c8e0; min-width: 120px; }
+    .node-crypto_qty      { background: #1a1500; border-color: #c8a500; color: #f5cc30; min-width: 120px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #4a90d9; color: #4a90d9; }
@@ -137,6 +138,7 @@
   <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker (IB / Alpaca / Coinbase)</div>
   <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
   <div class="palette-item" onclick="addNode('trading_hours')"><span class="palette-dot" style="background:#2a7898"></span>Trading Hours</div>
+  <div class="palette-item" onclick="addNode('crypto_qty')"><span class="palette-dot" style="background:#c8a500"></span>Crypto Dollar Qty (BTC/ETH…)</div>
 </div>
 
 <!-- Edit modal -->
@@ -239,6 +241,7 @@
       case 'ticker':         return 'node-ticker';
       case 'options_config': return 'node-options_config';
       case 'trading_hours':  return 'node-trading_hours';
+      case 'crypto_qty':     return 'node-crypto_qty';
       default:               return 'node-strategy';
     }
   }
@@ -247,7 +250,7 @@
     const map = {
       strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument',
       mode: 'Mode', broker: 'Broker', ticker: 'Ticker', options_config: 'Options',
-      trading_hours: 'Hours',
+      trading_hours: 'Hours', crypto_qty: 'Crypto $',
     };
     return map[node.type] || node.type;
   }
@@ -272,6 +275,8 @@
         const tzLabel = { 'America/New_York': 'ET', 'America/Chicago': 'CT', 'America/Denver': 'MT', 'America/Los_Angeles': 'PT', 'UTC': 'UTC' }[node.tz] || node.tz || 'ET';
         return `${node.start || '09:30'}–${node.end || '16:00'} ${tzLabel}`;
       }
+      case 'crypto_qty':
+        return `$${node.dollars || 10} → ${node.symbol || 'BTC'}`;
       default: return '—';
     }
   }
@@ -357,6 +362,7 @@
     document.getElementById('modalTitle').textContent = (node ? 'Edit' : 'Add') + ' — ' + nodeLabel({ type });
     document.getElementById('modalBody').innerHTML = buildModalForm(type, node);
     document.getElementById('modalOverlay').style.display = 'flex';
+    if (type === 'crypto_qty') setTimeout(updateCryptoPreview, 0);
   }
 
   function closeModal() { document.getElementById('modalOverlay').style.display = 'none'; }
@@ -478,7 +484,49 @@
           </div>
           <p style="font-size:0.78rem;color:#555;margin-top:-8px">Signals arriving outside this window are silently dropped.</p>`;
 
+      case 'crypto_qty':
+        return `
+          <div class="form-group">
+            <label>Crypto Symbol</label>
+            <select id="f_cq_symbol" onchange="updateCryptoPreview()">
+              <option value="BTC" ${(v.symbol||'BTC')==='BTC' ? 'selected':''}>Bitcoin (BTC)</option>
+              <option value="ETH" ${v.symbol==='ETH' ? 'selected':''}>Ethereum (ETH)</option>
+              <option value="SOL" ${v.symbol==='SOL' ? 'selected':''}>Solana (SOL)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Dollar Amount (USD)</label>
+            <input id="f_cq_dollars" type="number" min="1" step="1" value="${v.dollars||10}"
+                   oninput="updateCryptoPreview()">
+          </div>
+          <div id="cq_preview" style="background:#0f1117;border:1px solid #2a2d3e;border-radius:6px;padding:12px 14px;font-size:0.85rem;color:#888;margin-top:4px">
+            Fetching price…
+          </div>`;
+
       default: return '';
+    }
+  }
+
+  let _cqPriceCache = {};
+  async function updateCryptoPreview() {
+    const sym  = (document.getElementById('f_cq_symbol')?.value || 'BTC').toUpperCase();
+    const usd  = parseFloat(document.getElementById('f_cq_dollars')?.value) || 0;
+    const el   = document.getElementById('cq_preview');
+    if (!el) return;
+    if (usd <= 0) { el.textContent = 'Enter a dollar amount.'; return; }
+    el.textContent = 'Fetching price…';
+    try {
+      if (!_cqPriceCache[sym] || Date.now() - _cqPriceCache[sym].ts > 30000) {
+        const r = await fetch(`/api/crypto/price?symbol=${sym}`);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        _cqPriceCache[sym] = { price: d.price, ts: Date.now() };
+      }
+      const price = _cqPriceCache[sym].price;
+      const qty   = (usd / price).toFixed(8);
+      el.innerHTML = `<span style="color:#e0e0e0">$${usd.toFixed(2)} ÷ $${price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} = </span><span style="color:#f5cc30;font-weight:600">${qty} ${sym}</span>`;
+    } catch(e) {
+      el.textContent = 'Price unavailable: ' + e.message;
     }
   }
 
@@ -507,6 +555,10 @@
         node.start = document.getElementById('f_th_start').value || '09:30';
         node.end   = document.getElementById('f_th_end').value   || '16:00';
         node.tz    = document.getElementById('f_th_tz').value    || 'America/New_York';
+        break;
+      case 'crypto_qty':
+        node.symbol  = document.getElementById('f_cq_symbol').value  || 'BTC';
+        node.dollars = parseFloat(document.getElementById('f_cq_dollars').value) || 10;
         break;
     }
 

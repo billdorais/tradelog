@@ -560,6 +560,18 @@ def webhook():
                     use_live_broker = (n.get("value") or "").lower() == "live"
                 elif ntype == "quantity":
                     quantity = n.get("amount", quantity)
+                elif ntype == "crypto_qty":
+                    _dollars = float(n.get("dollars") or 10)
+                    try:
+                        import urllib.request as _ur
+                        import json as _jx
+                        _sym = (n.get("symbol") or "BTC").upper()
+                        with _ur.urlopen(f"https://api.coinbase.com/v2/prices/{_sym}-USD/spot", timeout=5) as _r:
+                            _price = float(_jx.loads(_r.read())["data"]["amount"])
+                        quantity = round(_dollars / _price, 8)
+                        log.info("crypto_qty: $%.2f / $%.2f = %.8f %s", _dollars, _price, quantity, _sym)
+                    except Exception as _e:
+                        log.error("crypto_qty price fetch failed: %s", _e)
                 elif ntype == "instrument":
                     sec_type = n.get("value") or sec_type
                 elif ntype == "ticker":
@@ -1005,6 +1017,21 @@ def routing_rules_delete(rule_id):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+@app.route("/api/crypto/price")
+def api_crypto_price():
+    symbol  = request.args.get("symbol", "BTC").upper()
+    product = f"{symbol}-USD"
+    try:
+        import urllib.request as _urllib
+        import json as _json
+        url = f"https://api.coinbase.com/v2/prices/{product}/spot"
+        with _urllib.urlopen(url, timeout=5) as resp:
+            price = float(_json.loads(resp.read())["data"]["amount"])
+        return jsonify({"symbol": symbol, "price": price, "currency": "USD"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/broker/close-all", methods=["POST"])
