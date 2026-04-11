@@ -919,8 +919,13 @@
                    Close
                  </button>`
               : '';
+            const enId = en?.id ?? null;
+            const exId = ex?.id ?? null;
             rows.push(`<tr class="${rowClass}">
-              <td style="color:#aaa;font-size:0.75rem">TV</td>
+              <td style="color:#aaa;font-size:0.75rem;white-space:nowrap">TV
+                <button onclick="deleteTVRow(${enId}, ${exId})" title="Delete from log"
+                  style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
+              </td>
               <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
               <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.72rem">Open</span>' + closeBtn}</td>
               <td style="color:#888;font-size:0.78rem">${dur}</td>
@@ -1488,6 +1493,13 @@
       } catch (e) {
         alert('Error: ' + e);
       }
+    }
+
+    async function deleteTVRow(entryId, exitId) {
+      if (!confirm('Delete this trade from the log?')) return;
+      const ids = [entryId, exitId].filter(Boolean);
+      await Promise.all(ids.map(id => fetch(`/api/trades/${id}`, { method: 'DELETE' })));
+      await loadTrades();
     }
 
     async function deleteIBRow(entryId, exitId) {

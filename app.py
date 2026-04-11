@@ -803,6 +803,17 @@ def api_trades():
     return jsonify(result)
 
 
+@app.route("/api/trades/<int:trade_id>", methods=["DELETE"])
+def delete_trade(trade_id):
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    cur.execute(f"DELETE FROM trades WHERE id={p}", (trade_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/trades/clear", methods=["POST"])
 def clear_trades():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
