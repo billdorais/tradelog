@@ -323,7 +323,8 @@
   async function newPipeline() {
     const res  = await fetch('/api/routing/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Pipeline', nodes: [] }) });
     const rule = await res.json();
-    rules.push(rule);
+    rules.unshift(rule);
+    persistOrder();
     renderAll();
   }
 
@@ -349,7 +350,8 @@
   async function duplicatePipeline(id) {
     const res  = await fetch(`/api/routing/rules/${id}/duplicate`, { method: 'POST' });
     const rule = await res.json();
-    rules.push(rule);
+    rules.unshift(rule);
+    persistOrder();
     renderAll();
   }
 
