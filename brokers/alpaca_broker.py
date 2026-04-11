@@ -61,7 +61,9 @@ class AlpacaBroker:
         self._ensure_client()
 
         side = OrderSide.BUY if action.upper() == "BUY" else OrderSide.SELL
-        qty  = int(quantity) if quantity else 1
+        # Crypto quantities are fractional; stocks use whole shares
+        raw_qty = float(quantity) if quantity else 1
+        qty = raw_qty if (raw_qty != int(raw_qty)) else int(raw_qty)
 
         try:
             if price:
