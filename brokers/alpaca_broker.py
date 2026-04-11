@@ -75,6 +75,9 @@ class AlpacaBroker:
         # Crypto quantities are fractional; stocks use whole shares
         raw_qty = float(quantity) if quantity else 1
         qty = raw_qty if (raw_qty != int(raw_qty)) else int(raw_qty)
+        # Crypto requires GTC; stocks use DAY
+        is_crypto = "/" in ticker
+        tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
 
         try:
             if price:
@@ -82,7 +85,7 @@ class AlpacaBroker:
                     symbol       = ticker,
                     qty          = qty,
                     side         = side,
-                    time_in_force= TimeInForce.DAY,
+                    time_in_force= tif,
                     limit_price  = round(float(price), 2),
                 )
             else:
@@ -90,7 +93,7 @@ class AlpacaBroker:
                     symbol       = ticker,
                     qty          = qty,
                     side         = side,
-                    time_in_force= TimeInForce.DAY,
+                    time_in_force= tif,
                 )
             order = self._trading.submit_order(req)
             log.info("Alpaca order submitted: %s %s %s → id=%s status=%s",
