@@ -117,9 +117,33 @@
     <p>
       Kairos Automata is an automated trade execution and logging system created by Bill Dorais.
       TradingView sends trade signals as webhooks, which pass through a configurable
-      Signal Router pipeline before being forwarded to Interactive Brokers for execution.
-      Results are displayed on the dashboard along with P&amp;L, equity curves, and execution status.
+      Signal Router pipeline before being forwarded to one of three supported brokers —
+      Interactive Brokers, Alpaca, or Coinbase — for execution.
+      Results are displayed on the dashboard with paired TV + broker rows, P&amp;L, equity curves, and execution status.
     </p>
+
+    <h2>Supported Brokers</h2>
+    <table>
+      <tr><th>Broker</th><th>Asset Classes</th><th>Accounts</th><th>Env Vars Required</th></tr>
+      <tr>
+        <td>Interactive Brokers</td>
+        <td>Stocks, Options, Futures</td>
+        <td>Paper (port 4002) · Live (port 4004)</td>
+        <td>Managed via IB Gateway service — no extra env vars</td>
+      </tr>
+      <tr>
+        <td>Alpaca</td>
+        <td>Stocks, Crypto (fractional)</td>
+        <td>Paper · Live</td>
+        <td><code style="font-size:0.82rem;color:#aaa">ALPACA_KEY</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_SECRET</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_PAPER</code></td>
+      </tr>
+      <tr>
+        <td>Coinbase</td>
+        <td>Crypto</td>
+        <td>Live</td>
+        <td><code style="font-size:0.82rem;color:#aaa">COINBASE_KEY</code>, <code style="font-size:0.82rem;color:#aaa">COINBASE_SECRET</code></td>
+      </tr>
+    </table>
 
     <h2>Trade Flow</h2>
     <div class="flow">
@@ -133,30 +157,35 @@
       &nbsp;&nbsp;│&nbsp; 4. Enforces Trading Hours node — drops signal if outside session window<br>
       &nbsp;&nbsp;│&nbsp; 5. Logs trade to PostgreSQL<br>
       &nbsp;&nbsp;▼<br>
-      IB Broker (ib_broker.py)<br>
-      &nbsp;&nbsp;│&nbsp; Connects to IB Gateway via internal network<br>
-      &nbsp;&nbsp;│&nbsp; Stocks: places market order directly<br>
-      &nbsp;&nbsp;│&nbsp; Options: fetches chain, selects contract by target mid-price, places order<br>
+      Broker selection (from Broker node or "broker" field in payload)<br>
+      &nbsp;&nbsp;├─ IB Paper/Live → ib_broker.py → IB Gateway → Interactive Brokers servers<br>
+      &nbsp;&nbsp;├─ Alpaca → alpaca_broker.py → Alpaca API (stocks + crypto with fractional support)<br>
+      &nbsp;&nbsp;└─ Coinbase → coinbase_broker.py → Coinbase Advanced Trade API<br>
       &nbsp;&nbsp;▼<br>
-      IB Gateway Service<br>
-      &nbsp;&nbsp;│&nbsp; Forwards order to Interactive Brokers servers<br>
-      &nbsp;&nbsp;▼<br>
-      Order Executed → Fill synced → Visible on dashboard
+      Order Executed → Fill synced → Dashboard shows paired TV + broker rows
     </div>
 
     <h2>Signal Router — Pipeline Nodes</h2>
-    <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Nodes can appear in any order.</p>
+    <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Pipelines can be dragged to reorder and duplicated via the ⧉ button.</p>
     <table>
       <tr><th>Node</th><th>Description</th></tr>
       <tr><td>Strategy</td><td>Matches the incoming strategy name. Supports wildcards, e.g. <code style="color:#c5a3ff;font-size:0.85rem">CAM_MSFT*</code>. If omitted, the pipeline matches all signals.</td></tr>
       <tr><td>Instrument</td><td>Overrides the instrument type: STK (stocks), OPT (options), FUT (futures), CRYPTO.</td></tr>
       <tr><td>Options Config</td><td>For options signals — sets target premium (mid-price), expiry type (weekly/monthly), and side (auto/call/put).</td></tr>
-      <tr><td>Quantity</td><td>Overrides the order size in shares, dollar amount, or % of account.</td></tr>
-      <tr><td>Mode</td><td>Routes to the IB paper account or live account.</td></tr>
-      <tr><td>Broker</td><td>Selects the execution broker (Interactive Brokers or Coinbase).</td></tr>
+      <tr><td>Quantity</td><td>Overrides the order size in shares, dollar amount, or % of account. Fractional quantities supported for crypto.</td></tr>
+      <tr><td>Mode</td><td>Routes to the IB paper account or IB live account. Does not affect Alpaca/Coinbase routing.</td></tr>
+      <tr><td>Broker</td><td>Selects the execution broker: <strong style="color:#26a65b">IB</strong>, <strong style="color:#5fe0a0">Alpaca</strong>, or <strong style="color:#70a8f5">Coinbase</strong>. Overrides the "broker" field in the TradingView payload.</td></tr>
       <tr><td>Ticker Override</td><td>Forces a specific ticker regardless of what TradingView sends.</td></tr>
       <tr><td>Trading Hours</td><td>Drops signals arriving outside a configured session window (e.g. 09:30–16:00 ET). No trade is logged.</td></tr>
     </table>
+
+    <h2>Dashboard — Trade Feed</h2>
+    <p>
+      Each trade appears as a paired row group. The top row shows the TradingView signal (source: <strong style="color:#aaa">TV</strong>);
+      the row beneath shows the broker execution fill (<strong style="color:#4a90d9">IB</strong> or <strong style="color:#5fe0a0">Alpaca</strong>).
+      TV signals are matched to broker fills chronologically by ticker. Unmatched fills from either broker appear as standalone rows.
+      TV rows have a ✕ delete button to remove stale entries without affecting the broker account.
+    </p>
 
     <h2>Railway Services</h2>
     <table>
@@ -167,23 +196,25 @@
       </tr>
       <tr>
         <td>ib-gateway</td>
-        <td>Runs the IB Gateway application inside Docker. IBC (IB Controller) automates the login process. Exposes the IB API internally on port 4002, proxied to port 4004 via socat. Configured to trade in paper (simulation) mode.</td>
+        <td>Runs the IB Gateway application inside Docker. IBC (IB Controller) automates the login process. Exposes the IB API internally on port 4002 (paper), with a live port available at 4004. Configured with <code style="font-size:0.82rem;color:#aaa">ExistingSessionDetectedAction=primaryoverride</code> to survive the nightly 8 PM reset.</td>
       </tr>
     </table>
 
     <h2>Key Files</h2>
     <table>
       <tr><th>File</th><th>Purpose</th></tr>
-      <tr><td>app.py</td><td>Main Flask app — webhook handler, signal router, API routes, database logic</td></tr>
-      <tr><td>brokers/ib_broker.py</td><td>IB connection, order placement, and options contract selection via ib_async</td></tr>
+      <tr><td>app.py</td><td>Main Flask app — webhook handler, signal router, API routes, database logic, multi-broker orchestration</td></tr>
+      <tr><td>brokers/ib_broker.py</td><td>IB connection, order placement, fill sync, and options contract selection via ib_async</td></tr>
+      <tr><td>brokers/alpaca_broker.py</td><td>Alpaca integration — stocks and crypto orders, fractional qty, position close, fill history</td></tr>
+      <tr><td>brokers/coinbase_broker.py</td><td>Coinbase Advanced Trade integration — market buy/sell for crypto</td></tr>
       <tr><td>strategies/data.py</td><td>Market data fetchers — yfinance (free, up to 20yr daily) and IB historical bars</td></tr>
-      <tr><td>templates/index.html</td><td>Dashboard — trade feed, equity curve, performance stats</td></tr>
-      <tr><td>templates/routing.html</td><td>Signal Router UI — build and manage pipeline chains</td></tr>
+      <tr><td>templates/index.html</td><td>Dashboard — paired TV+broker trade feed, equity curve, performance stats</td></tr>
+      <tr><td>templates/routing.html</td><td>Signal Router UI — build, reorder, and duplicate pipeline chains</td></tr>
+      <tr><td>templates/strategies.html</td><td>Strategy documentation — Camarilla cam_v6 entry/exit rules and alert format</td></tr>
       <tr><td>templates/bt.html</td><td>Backtest page — Pine Script AI conversion and built-in strategy runner with TradingView charts</td></tr>
       <tr><td>templates/backtester.html</td><td>Agent Backtester — AI-optimised parameter search with yfinance or IB data</td></tr>
       <tr><td>strategies/bt_strategies.py</td><td>Built-in backtesting.py strategies (SMA/EMA cross, RSI, Bollinger, MACD, Camarilla)</td></tr>
       <tr><td>Dockerfile.ib</td><td>Builds the IB Gateway Docker image</td></tr>
-      <tr><td>ib-gateway-start.sh</td><td>Startup script that patches config before launching IB Gateway</td></tr>
       <tr><td>Procfile</td><td>Tells Railway how to start the web service</td></tr>
     </table>
 
