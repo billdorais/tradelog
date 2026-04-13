@@ -2065,11 +2065,16 @@ def ib_sync_fills():
 
 @app.route("/api/ib/executions/<exec_id>", methods=["DELETE"])
 def ib_execution_delete(exec_id):
-    """Remove a single IB execution record (e.g. stale/orphaned fill)."""
+    """Soft-delete a single IB execution so sync never re-inserts it."""
     conn = get_db()
     cur  = conn.cursor()
     p    = placeholder()
-    cur.execute(f"DELETE FROM ib_executions WHERE exec_id={p}", (exec_id,))
+    try:
+        cur.execute(f"ALTER TABLE ib_executions ADD COLUMN deleted INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+    cur.execute(f"UPDATE ib_executions SET deleted=1 WHERE exec_id={p}", (exec_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -2092,7 +2097,7 @@ def alpaca_trades():
 def ib_trades():
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT * FROM ib_executions ORDER BY ts DESC")
+    cur.execute("SELECT * FROM ib_executions WHERE deleted IS NULL OR deleted=0 ORDER BY ts DESC")
     rows = cur.fetchall()
     if DATABASE_URL:
         cols   = [d[0] for d in cur.description]
@@ -2110,7 +2115,7 @@ def ib_equity():
     cur  = conn.cursor()
     cur.execute(
         "SELECT ts, pnl FROM ib_executions "
-        "WHERE side = 'SLD' AND pnl IS NOT NULL "
+        "WHERE side = 'SLD' AND pnl IS NOT NULL AND (deleted IS NULL OR deleted=0) "
         "ORDER BY ts ASC"
     )
     rows = cur.fetchall()
