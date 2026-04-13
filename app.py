@@ -516,10 +516,6 @@ def webhook():
     }
     order_action = action_map.get(raw_action, raw_action)  # BUY/SELL pass through unchanged
 
-    # If no broker specified but IB is configured, default to IB
-    if not broker_name and ib_broker is not None:
-        broker_name = "ib"
-
     # Apply routing rules — look up a matching enabled pipeline and override settings
     strategy_name    = (data.get("strategy") or "").strip()
     quantity         = data.get("quantity", 1)
@@ -777,6 +773,11 @@ def webhook():
                 exec_status = "error"
                 exec_detail = str(e)
                 log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+
+    if not broker_name:
+        exec_status = "error"
+        exec_detail = f"No routing pipeline matched strategy '{strategy_name}' — signal logged but no order placed. Check your Signal Router for a typo in the strategy name."
+        log.warning("Webhook: no broker resolved for strategy '%s' — signal logged only", strategy_name)
 
     if conn:
         if exec_status is not None:
