@@ -318,6 +318,8 @@ if os.environ.get("IB_HOST_LIVE"):
 # ---------------------------------------------------------------------------
 
 alpaca_broker = None
+_alpaca_fills_cache = {"data": [], "ts": 0.0}
+ALPACA_CACHE_TTL = 30  # seconds
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
@@ -2082,11 +2084,16 @@ def ib_execution_delete(exec_id):
 
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
-    """Return today's filled Alpaca orders in the same shape as ib_executions."""
+    """Return filled Alpaca orders, cached for 30s to avoid repeated API calls."""
+    global _alpaca_fills_cache
     if alpaca_broker is None:
         return jsonify([])
+    now = time.time()
+    if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
+        return jsonify(_alpaca_fills_cache["data"])
     try:
         fills = alpaca_broker.get_fills()
+        _alpaca_fills_cache = {"data": fills, "ts": now}
         return jsonify(fills)
     except Exception as e:
         log.error("alpaca_trades error: %s", e)

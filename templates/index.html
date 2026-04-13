@@ -567,6 +567,9 @@
     let allIBExecs     = [];
     let allAlpacaExecs = [];
     let selectedStrategy = '';
+    let _allGroups     = [];
+    let _shownGroups   = 0;
+    const PAGE_SIZE    = 20;
     let activeTab = 'signals';
 
     function switchTab(tab) {
@@ -878,6 +881,130 @@
       return p != null ? '$' + Number(p).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
     }
 
+    function _groupToRows(g) {
+      const rows = [];
+      const { tv, ib, alpaca } = g;
+      if (tv) {
+        const en = tv.entry, ex = tv.exit;
+        const ref        = en || ex;
+        const entryPrice = en ? en.price : null;
+        const exitPrice  = ex ? ex.price : null;
+        const qty        = ref.quantity;
+        const pnl        = (entryPrice != null && exitPrice != null)
+          ? tv.direction === 'short' ? (entryPrice - exitPrice) * qty : (exitPrice - entryPrice) * qty
+          : undefined;
+        const dur      = en ? tradeDuration(en.received_at, ex?.received_at) : '—';
+        const status   = ex ? ex.exec_status : en?.exec_status;
+        const detail   = ex ? ex.exec_detail : en?.exec_detail;
+        const rowClass = status === 'error' ? 'group-first row-error' : 'group-first';
+        const isOpen   = !ex;
+        const closeBtn = isOpen && ref.ticker
+          ? `<button onclick="closePosition('${ref.ticker}', '${ref.quantity ?? 1}', '${tv.direction}')"
+               title="Close this position in IB"
+               style="margin-left:6px;background:#c0392b;border:none;color:#fff;cursor:pointer;
+                      font-size:0.7rem;padding:2px 6px;border-radius:3px;vertical-align:middle">Close</button>`
+          : '';
+        const enId = en?.id ?? null;
+        const exId = ex?.id ?? null;
+        rows.push(`<tr class="${rowClass}">
+          <td style="color:#aaa;font-size:0.75rem;white-space:nowrap">TV
+            <button onclick="deleteTVRow(${enId}, ${exId})" title="Delete from log"
+              style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
+          </td>
+          <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
+          <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.72rem">Open</span>' + closeBtn}</td>
+          <td style="color:#888;font-size:0.78rem">${dur}</td>
+          <td>${sentimentBadge(ref.sentiment)}</td>
+          <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+          <td><strong>${ref.ticker ?? '—'}</strong></td>
+          ${pnlCell(pnl)}
+          <td>${qty ?? '—'}</td>
+          <td>${priceCell(entryPrice)}</td>
+          <td>${priceCell(exitPrice)}</td>
+          <td>${execBadge(status, detail)}</td>
+        </tr>`);
+      }
+      if (ib) {
+        const en = ib.entry, ex = ib.exit;
+        const ref        = en || ex;
+        const entryPrice = en ? en.price : null;
+        const exitPrice  = ex ? ex.price : null;
+        const qty        = ref.shares;
+        const pnl        = ex?.pnl != null ? ex.pnl : undefined;
+        const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
+        const ibTs = f => f?.ts || f?.time;
+        const dur  = en ? tradeDuration(ibTs(en), ibTs(ex)) : '—';
+        const entryId = en?.exec_id ? `'${en.exec_id}'` : 'null';
+        const exitId  = ex?.exec_id ? `'${ex.exec_id}'` : 'null';
+        rows.push(`<tr class="group-second">
+          <td style="color:#4a90d9;font-size:0.75rem;white-space:nowrap">IB
+            <button onclick="deleteIBRow(${entryId}, ${exitId})" title="Remove stale IB row"
+              style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
+          </td>
+          <td style="font-size:0.78rem;color:#aaa">${fmtET(ibTs(en)) ?? '—'}</td>
+          <td style="font-size:0.78rem;color:#888">${ibTs(ex) ? fmtET(ibTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+          <td style="color:#888;font-size:0.78rem">${dur}</td>
+          <td>${sentimentBadge(sentiment)}</td>
+          <td><span style="color:#444">—</span></td>
+          <td><strong>${ref.symbol ?? '—'}</strong></td>
+          ${pnlCell(pnl)}
+          <td>${qty ?? '—'}</td>
+          <td>${priceCell(entryPrice)}</td>
+          <td>${priceCell(exitPrice)}</td>
+          <td><span class="exec-ok">✓ Filled</span></td>
+        </tr>`);
+      }
+      if (alpaca) {
+        const en = alpaca.entry, ex = alpaca.exit;
+        const ref        = en || ex;
+        const entryPrice = en ? en.price : null;
+        const exitPrice  = ex ? ex.price : null;
+        const qty        = ref.shares;
+        const pnl        = ex?.pnl != null ? ex.pnl : undefined;
+        const sentiment  = alpaca.direction === 'short' ? 'Short' : 'Long';
+        const alpTs = f => f?.time;
+        const dur   = en ? tradeDuration(alpTs(en), alpTs(ex)) : '—';
+        rows.push(`<tr class="group-second">
+          <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
+          <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
+          <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+          <td style="color:#888;font-size:0.78rem">${dur}</td>
+          <td>${sentimentBadge(sentiment)}</td>
+          <td><span style="color:#444">—</span></td>
+          <td><strong>${ref.symbol ?? '—'}</strong></td>
+          ${pnlCell(pnl)}
+          <td>${qty ?? '—'}</td>
+          <td>${priceCell(entryPrice)}</td>
+          <td>${priceCell(exitPrice)}</td>
+          <td><span class="exec-ok">✓ Filled</span></td>
+        </tr>`);
+      }
+      return rows.join('');
+    }
+
+    function _renderGroups() {
+      const body  = document.getElementById('tradeBody');
+      const batch = _allGroups.slice(_shownGroups, _shownGroups + PAGE_SIZE);
+      // Remove existing Load More row if present
+      const existing = document.getElementById('loadMoreRow');
+      if (existing) existing.remove();
+      body.insertAdjacentHTML('beforeend', batch.map(_groupToRows).join(''));
+      _shownGroups += batch.length;
+      if (_shownGroups < _allGroups.length) {
+        const remaining = _allGroups.length - _shownGroups;
+        body.insertAdjacentHTML('beforeend', `<tr id="loadMoreRow">
+          <td colspan="12" style="text-align:center;padding:14px 0;border-top:1px solid #1e2130">
+            <button onclick="_renderGroups()"
+              style="background:transparent;border:1px solid #2a2d3e;color:#888;padding:6px 20px;
+                     border-radius:4px;cursor:pointer;font-size:0.85rem">
+              Load ${Math.min(remaining, PAGE_SIZE)} more
+              <span style="color:#555;font-size:0.78rem">(${remaining} remaining)</span>
+            </button>
+          </td>
+        </tr>`);
+      }
+    }
+
     function renderTable(trades, strategyFilter) {
       const filtered = strategyFilter
         ? trades.filter(t => t.strategy === strategyFilter)
@@ -889,117 +1016,13 @@
       const groups      = buildGroups(tvPairs, ibPairs, alpacaPairs);
       const body     = document.getElementById('tradeBody');
 
+      _allGroups   = groups;
+      _shownGroups = 0;
+      body.innerHTML = '';
       if (!groups.length) {
         body.innerHTML = '<tr><td colspan="12" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
       } else {
-        const rows = [];
-        for (const g of groups) {
-          const { tv, ib, alpaca } = g;
-
-          if (tv) {
-            const en = tv.entry, ex = tv.exit;
-            const ref        = en || ex;
-            const entryPrice = en ? en.price : null;
-            const exitPrice  = ex ? ex.price : null;
-            const qty        = ref.quantity;
-            const pnl        = (entryPrice != null && exitPrice != null)
-              ? tv.direction === 'short'
-                ? (entryPrice - exitPrice) * qty
-                : (exitPrice - entryPrice) * qty
-              : undefined;
-            const dur        = en ? tradeDuration(en.received_at, ex?.received_at) : '—';
-            const status     = ex ? ex.exec_status : en?.exec_status;
-            const detail     = ex ? ex.exec_detail : en?.exec_detail;
-            const rowClass   = status === 'error' ? 'group-first row-error' : 'group-first';
-            const isOpen   = !ex;
-            const closeBtn = isOpen && ref.ticker
-              ? `<button onclick="closePosition('${ref.ticker}', '${ref.quantity ?? 1}', '${tv.direction}')"
-                   title="Close this position in IB"
-                   style="margin-left:6px;background:#c0392b;border:none;color:#fff;cursor:pointer;
-                          font-size:0.7rem;padding:2px 6px;border-radius:3px;vertical-align:middle">
-                   Close
-                 </button>`
-              : '';
-            const enId = en?.id ?? null;
-            const exId = ex?.id ?? null;
-            rows.push(`<tr class="${rowClass}">
-              <td style="color:#aaa;font-size:0.75rem;white-space:nowrap">TV
-                <button onclick="deleteTVRow(${enId}, ${exId})" title="Delete from log"
-                  style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
-              </td>
-              <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
-              <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.72rem">Open</span>' + closeBtn}</td>
-              <td style="color:#888;font-size:0.78rem">${dur}</td>
-              <td>${sentimentBadge(ref.sentiment)}</td>
-              <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
-              <td><strong>${ref.ticker ?? '—'}</strong></td>
-              ${pnlCell(pnl)}
-              <td>${qty ?? '—'}</td>
-              <td>${priceCell(entryPrice)}</td>
-              <td>${priceCell(exitPrice)}</td>
-              <td>${execBadge(status, detail)}</td>
-            </tr>`);
-          }
-
-          if (ib) {
-            const en = ib.entry, ex = ib.exit;
-            const ref        = en || ex;
-            const entryPrice = en ? en.price : null;
-            const exitPrice  = ex ? ex.price : null;
-            const qty        = ref.shares;
-            const pnl        = ex?.pnl != null ? ex.pnl : undefined;
-            const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
-            const ibTs = f => f?.ts || f?.time;
-            const dur        = en ? tradeDuration(ibTs(en), ibTs(ex)) : '—';
-            const entryId    = en?.exec_id  ? `'${en.exec_id}'`  : 'null';
-            const exitId     = ex?.exec_id  ? `'${ex.exec_id}'`  : 'null';
-            rows.push(`<tr class="group-second">
-              <td style="color:#4a90d9;font-size:0.75rem;white-space:nowrap">
-                IB
-                <button onclick="deleteIBRow(${entryId}, ${exitId})" title="Remove stale IB row"
-                  style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
-              </td>
-              <td style="font-size:0.78rem;color:#aaa">${fmtET(ibTs(en)) ?? '—'}</td>
-              <td style="font-size:0.78rem;color:#888">${ibTs(ex) ? fmtET(ibTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
-              <td style="color:#888;font-size:0.78rem">${dur}</td>
-              <td>${sentimentBadge(sentiment)}</td>
-              <td><span style="color:#444">—</span></td>
-              <td><strong>${ref.symbol ?? '—'}</strong></td>
-              ${pnlCell(pnl)}
-              <td>${qty ?? '—'}</td>
-              <td>${priceCell(entryPrice)}</td>
-              <td>${priceCell(exitPrice)}</td>
-              <td><span class="exec-ok">✓ Filled</span></td>
-            </tr>`);
-          }
-
-          if (alpaca) {
-            const en = alpaca.entry, ex = alpaca.exit;
-            const ref        = en || ex;
-            const entryPrice = en ? en.price : null;
-            const exitPrice  = ex ? ex.price : null;
-            const qty        = ref.shares;
-            const pnl        = ex?.pnl != null ? ex.pnl : undefined;
-            const sentiment  = alpaca.direction === 'short' ? 'Short' : 'Long';
-            const alpTs = f => f?.time;
-            const dur   = en ? tradeDuration(alpTs(en), alpTs(ex)) : '—';
-            rows.push(`<tr class="group-second">
-              <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
-              <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
-              <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
-              <td style="color:#888;font-size:0.78rem">${dur}</td>
-              <td>${sentimentBadge(sentiment)}</td>
-              <td><span style="color:#444">—</span></td>
-              <td><strong>${ref.symbol ?? '—'}</strong></td>
-              ${pnlCell(pnl)}
-              <td>${qty ?? '—'}</td>
-              <td>${priceCell(entryPrice)}</td>
-              <td>${priceCell(exitPrice)}</td>
-              <td><span class="exec-ok">✓ Filled</span></td>
-            </tr>`);
-          }
-        }
-        body.innerHTML = rows.join('');
+        _renderGroups();
       }
 
       document.getElementById('statTotal').textContent    = filtered.length;
