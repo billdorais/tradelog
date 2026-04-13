@@ -620,7 +620,7 @@ def webhook():
         ticker,
         raw_action,
         data.get("sentiment"),
-        data.get("quantity"),
+        quantity,
         data.get("price"),
         data.get("time"),
         data.get("interval"),
