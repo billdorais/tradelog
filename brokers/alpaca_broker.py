@@ -166,14 +166,12 @@ class AlpacaBroker:
             return {"success": False, "error": str(e)}
 
     def get_fills(self):
-        """Return recent filled orders (last 30 days)."""
+        """Return recent filled orders."""
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
-        from datetime import datetime, timezone, timedelta
         self._ensure_client()
         try:
-            after = datetime.now(timezone.utc) - timedelta(days=30)
-            req   = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=200, after=after)
+            req    = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=200)
             orders = self._trading.get_orders(filter=req)
             result = []
             for o in orders:
@@ -194,6 +192,7 @@ class AlpacaBroker:
                     "exchange": "",
                     "pnl":      None,
                 })
+            log.info("Alpaca get_fills: returned %d filled orders", len(result))
             return result
         except Exception as e:
             log.error("Alpaca get_fills failed: %s", e)
