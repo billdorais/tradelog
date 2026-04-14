@@ -537,6 +537,7 @@ def webhook():
     sec_type        = data.get("sec_type", "STK")
     currency        = data.get("currency", "USD")
     use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
+    broker_targets  = []     # populated by broker nodes; supports multi-broker pipelines
 
     try:
         rconn = get_db()
@@ -566,7 +567,7 @@ def webhook():
             for n in nodes:
                 ntype = n.get("type")
                 if ntype == "broker":
-                    broker_name = (n.get("value") or broker_name).lower()
+                    broker_targets.append((n.get("value") or "ib").lower())
                 elif ntype == "mode":
                     use_live_broker = (n.get("value") or "").lower() == "live"
                 elif ntype == "quantity":
@@ -595,11 +596,17 @@ def webhook():
                     th_start = n.get("start") or "09:30"
                     th_end   = n.get("end")   or "16:00"
                     th_tz    = n.get("tz")    or "America/New_York"
+            if broker_targets:
+                broker_name = ",".join(broker_targets)
             log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
                      strategy_name, broker_name, use_live_broker, quantity, sec_type)
             break  # first matching pipeline wins
     except Exception as e:
         log.warning("Routing rule lookup failed: %s", e)
+
+    # If no broker nodes fired from pipeline, fall back to the single broker_name from request body
+    if not broker_targets and broker_name:
+        broker_targets = [broker_name]
 
     # Enforce trading hours if a trading_hours node was found in the matched pipeline
     if th_start and th_end:
@@ -635,29 +642,100 @@ def webhook():
     ))
     conn.commit()
 
-    # 2. Route to broker — fire async so TradingView gets a fast response
+    # 2. Route to broker(s) — supports single or multi-broker pipelines
     exec_status = None
     exec_detail = None
-    if broker_name == "ib":
+
+    if not broker_targets:
+        exec_status = "error"
+        exec_detail = f"No routing pipeline matched strategy '{strategy_name}' — signal logged but no order placed. Check your Signal Router for a typo in the strategy name."
+        log.warning("Webhook: no broker resolved for strategy '%s' — signal logged only", strategy_name)
+
+    # Fire sync brokers first (Alpaca, Coinbase), then IB last (async, closes conn)
+    sync_targets = [t for t in broker_targets if t in ("alpaca", "coinbase")]
+    ib_targets   = [t for t in broker_targets if t == "ib"]
+
+    for target in sync_targets:
+        if target == "alpaca":
+            if alpaca_broker is None:
+                exec_status = "error"
+                exec_detail = "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars"
+                log.warning("Alpaca order skipped: broker not initialised")
+            elif order_action not in ("BUY", "SELL"):
+                exec_status = "skipped"
+                exec_detail = f"No order placed for action '{raw_action}'"
+            else:
+                try:
+                    result = alpaca_broker.place_order(
+                        ticker   = ticker,
+                        action   = order_action,
+                        quantity = quantity,
+                        price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                        sec_type = sec_type,
+                        currency = currency,
+                    )
+                    exec_status = "ok" if result.get("success") else "error"
+                    exec_detail = json.dumps(result)
+                    log.info("Alpaca order %s %s %s: %s", order_action, quantity, ticker, result)
+                except Exception as e:
+                    exec_status = "error"
+                    exec_detail = str(e)
+                    log.error("Alpaca order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+
+        elif target == "coinbase":
+            if coinbase_broker is None:
+                exec_status = "error"
+                exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
+                log.warning("Coinbase order skipped: broker not initialised")
+            elif order_action not in ("BUY", "SELL"):
+                exec_status = "skipped"
+                exec_detail = f"No order placed for action '{raw_action}'"
+            else:
+                try:
+                    result = coinbase_broker.place_order(
+                        ticker   = ticker,
+                        action   = order_action,
+                        quantity = quantity,
+                        price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                        sec_type = sec_type,
+                        currency = currency,
+                    )
+                    exec_status = "ok" if result.get("success") else "error"
+                    exec_detail = json.dumps(result)
+                    log.info("Coinbase order %s %s %s: %s", order_action, quantity, ticker, result)
+                except Exception as e:
+                    exec_status = "error"
+                    exec_detail = str(e)
+                    log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+
+    # Commit sync results before handing off to IB async thread
+    if conn and exec_status is not None:
+        _update_exec(cur, trade_id, exec_status, exec_detail)
+        conn.commit()
+
+    for target in ib_targets:
         active_broker  = ib_broker_live if (use_live_broker and ib_broker_live) else ib_broker
         submit_task    = _submit_ib_live_task if (use_live_broker and ib_broker_live) else _submit_ib_task
         mode_label     = "live" if (use_live_broker and ib_broker_live) else "paper"
 
         if active_broker is None:
-            _update_exec(cur, trade_id, "error",
-                         "IB live broker not initialised — set IB_HOST_LIVE env var"
-                         if use_live_broker else
-                         "IB broker not initialised — check IB_HOST env var")
-            conn.commit()
+            if conn:
+                _update_exec(cur, trade_id, "error",
+                             "IB live broker not initialised — set IB_HOST_LIVE env var"
+                             if use_live_broker else
+                             "IB broker not initialised — check IB_HOST env var")
+                conn.commit()
         elif order_action not in ("BUY", "SELL"):
-            _update_exec(cur, trade_id, "skipped", f"No order placed for action '{raw_action}'")
-            conn.commit()
+            if conn:
+                _update_exec(cur, trade_id, "skipped", f"No order placed for action '{raw_action}'")
+                conn.commit()
             log.info("Webhook action '%s' logged but no IB order placed", raw_action)
         else:
             # Close DB before handing off — background thread opens its own connection
-            conn.commit()
-            conn.close()
-            conn = None
+            if conn:
+                conn.commit()
+                conn.close()
+                conn = None
 
             def _place_async():
                 _exec_status = _exec_detail = None
@@ -731,66 +809,7 @@ def webhook():
 
             threading.Thread(target=_place_async, daemon=True).start()
 
-    elif broker_name == "alpaca":
-        if alpaca_broker is None:
-            exec_status = "error"
-            exec_detail = "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars"
-            log.warning("Alpaca order skipped: broker not initialised")
-        elif order_action not in ("BUY", "SELL"):
-            exec_status = "skipped"
-            exec_detail = f"No order placed for action '{raw_action}'"
-        else:
-            try:
-                result = alpaca_broker.place_order(
-                    ticker   = ticker,
-                    action   = order_action,
-                    quantity = quantity,
-                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                    sec_type = sec_type,
-                    currency = currency,
-                )
-                exec_status = "ok" if result.get("success") else "error"
-                exec_detail = json.dumps(result)
-                log.info("Alpaca order %s %s %s: %s", order_action, quantity, ticker, result)
-            except Exception as e:
-                exec_status = "error"
-                exec_detail = str(e)
-                log.error("Alpaca order failed for %s %s %s: %s", order_action, quantity, ticker, e)
-
-    elif broker_name == "coinbase":
-        if coinbase_broker is None:
-            exec_status = "error"
-            exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
-            log.warning("Coinbase order skipped: broker not initialised")
-        elif order_action not in ("BUY", "SELL"):
-            exec_status = "skipped"
-            exec_detail = f"No order placed for action '{raw_action}'"
-        else:
-            try:
-                result = coinbase_broker.place_order(
-                    ticker   = ticker,
-                    action   = order_action,
-                    quantity = quantity,
-                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                    sec_type = sec_type,
-                    currency = currency,
-                )
-                exec_status = "ok" if result.get("success") else "error"
-                exec_detail = json.dumps(result)
-                log.info("Coinbase order %s %s %s: %s", order_action, quantity, ticker, result)
-            except Exception as e:
-                exec_status = "error"
-                exec_detail = str(e)
-                log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
-
-    if not broker_name:
-        exec_status = "error"
-        exec_detail = f"No routing pipeline matched strategy '{strategy_name}' — signal logged but no order placed. Check your Signal Router for a typo in the strategy name."
-        log.warning("Webhook: no broker resolved for strategy '%s' — signal logged only", strategy_name)
-
     if conn:
-        if exec_status is not None:
-            _update_exec(cur, trade_id, exec_status, exec_detail)
         conn.commit()
         conn.close()
     return jsonify({"status": "ok", "id": trade_id}), 200
