@@ -527,6 +527,17 @@
     </div>
   </div>
 
+  <!-- Trade time performance scatter chart -->
+  <div class="chart-wrap">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div class="chart-title" style="margin-bottom:0">Trade Time Performance</div>
+      <select id="timeScatterStrategyFilter" onchange="drawTimeScatter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
+        <option value="">All Strategies</option>
+      </select>
+    </div>
+    <canvas id="timeScatterChart" height="120"></canvas>
+  </div>
+
   <!-- Combined trade table -->
   <div class="section-label">Trade Feed</div>
   <div class="filter-bar">
@@ -560,9 +571,11 @@
   </div>
 
   <script>
-    let equityChartInstance  = null;
-    let dailyChartInstance   = null;
-    let netDailyChartInstance = null;
+    let equityChartInstance    = null;
+    let dailyChartInstance     = null;
+    let netDailyChartInstance  = null;
+    let timeScatterInstance    = null;
+    let _lastEquityCurve       = [];
     let allTrades      = [];
     let allIBExecs     = [];
     let allAlpacaExecs = [];
@@ -1129,6 +1142,7 @@
       }
 
       drawDailyChart(stats.equity_curve || []);
+      drawTimeScatter(stats.equity_curve || []);
     }
 
     function drawNetDailyChart(equityCurve) {
@@ -1178,6 +1192,147 @@
             y: {
               grid: { color: '#1a1d2a', borderDash: [4,4] },
               ticks: { color: '#666', callback: v => '$' + v.toLocaleString() },
+            },
+          },
+        },
+      });
+    }
+
+    function drawTimeScatter(equityCurveArg) {
+      // Use provided curve or last known curve, filtered by strategy selector
+      const curve = equityCurveArg || _lastEquityCurve;
+      if (equityCurveArg) _lastEquityCurve = equityCurveArg;
+
+      const stratFilter = (document.getElementById('timeScatterStrategyFilter') || {}).value || '';
+
+      // Extract per-trade P&L from consecutive cumulative values
+      // Also populate the strategy filter if we have fresh allTrades data
+      if (equityCurveArg) {
+        const sel = document.getElementById('timeScatterStrategyFilter');
+        if (sel) {
+          const strategies = [...new Set(allTrades.map(t => t.strategy).filter(Boolean))].sort();
+          const prev = sel.value;
+          sel.innerHTML = '<option value="">All Strategies</option>' +
+            strategies.map(s => `<option value="${s}">${s}</option>`).join('');
+          sel.value = prev;
+        }
+      }
+
+      // Build individual trade data points from equity curve
+      // Each point: { x: minutes since 9:30 ET, y: per-trade P&L }
+      const ET_OPEN_MINUTES = 9 * 60 + 30; // 9:30 AM = 570 min
+      const ET_CLOSE_MINUTES = 16 * 60;    // 4:00 PM = 960 min
+      const points = [];
+
+      // Filter trades by strategy to get time-of-day
+      const tradesForScatter = stratFilter
+        ? allTrades.filter(t => t.strategy === stratFilter)
+        : allTrades;
+
+      // Re-pair to get per-trade P&L with exit time (for time-of-day)
+      const openLongs = {}, openShorts = {};
+      const sorted = [...tradesForScatter].sort((a, b) => a.id - b.id);
+      for (const t of sorted) {
+        const action = (t.action || '').trim().toUpperCase();
+        const ticker = (t.ticker || '').trim().toUpperCase();
+        const strat  = (t.strategy || '').trim();
+        const price  = parseFloat(t.price);
+        const qty    = parseFloat(t.quantity) || 1;
+        const time   = t.received_at || '';
+        if (!ticker || isNaN(price) || price === 0) continue;
+        const key = strat + '|' + ticker;
+        if (action === 'BUY') {
+          const q = openShorts[key];
+          if (q && q.length) {
+            const e = q.shift();
+            const pnl = (e.price - price) * Math.min(qty, e.qty);
+            const d = new Date((time || '').replace(' ', 'T') + (time.includes('+') ? '' : 'Z'));
+            if (!isNaN(d)) {
+              const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
+              const [h, m] = etMs.split(':').map(Number);
+              const minOfDay = h * 60 + m;
+              if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
+                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0 });
+            }
+          } else { if (!openLongs[key]) openLongs[key] = []; openLongs[key].push({ price, qty }); }
+        } else if (action === 'SELL') {
+          const q = openLongs[key];
+          if (q && q.length) {
+            const e = q.shift();
+            const pnl = (price - e.price) * Math.min(qty, e.qty);
+            const d = new Date((time || '').replace(' ', 'T') + (time.includes('+') ? '' : 'Z'));
+            if (!isNaN(d)) {
+              const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
+              const [h, m] = etMs.split(':').map(Number);
+              const minOfDay = h * 60 + m;
+              if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
+                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0 });
+            }
+          } else { if (!openShorts[key]) openShorts[key] = []; openShorts[key].push({ price, qty }); }
+        }
+      }
+
+      if (timeScatterInstance) { timeScatterInstance.destroy(); timeScatterInstance = null; }
+      if (!points.length) return;
+
+      const canvas = document.getElementById('timeScatterChart');
+      const ctx    = canvas.getContext('2d');
+      timeScatterInstance = new Chart(ctx, {
+        type: 'scatter',
+        data: {
+          datasets: [{
+            data: points.filter(p => p.win).map(p => ({ x: p.x, y: p.y })),
+            backgroundColor: 'rgba(38,166,91,0.7)',
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            label: 'Win',
+          }, {
+            data: points.filter(p => !p.win).map(p => ({ x: p.x, y: p.y })),
+            backgroundColor: 'rgba(239,83,80,0.7)',
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            label: 'Loss',
+          }],
+        },
+        options: {
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => {
+                  const min = ctx.parsed.x;
+                  const h = Math.floor(min / 60), m = min % 60;
+                  const t = `${h}:${String(m).padStart(2,'0')}`;
+                  const pnl = ctx.parsed.y >= 0 ? '+$' + ctx.parsed.y.toFixed(2) : '-$' + Math.abs(ctx.parsed.y).toFixed(2);
+                  return `${t} ET  ${pnl}`;
+                },
+                title: () => '',
+              },
+            },
+          },
+          scales: {
+            x: {
+              type: 'linear',
+              min: ET_OPEN_MINUTES,
+              max: ET_CLOSE_MINUTES,
+              ticks: {
+                color: '#666',
+                stepSize: 30,
+                callback: val => {
+                  const h = Math.floor(val / 60), m = val % 60;
+                  return `${h}:${String(m).padStart(2,'0')}`;
+                },
+              },
+              grid: { color: 'rgba(255,255,255,0.04)' },
+            },
+            y: {
+              ticks: {
+                color: '#666',
+                callback: val => '$' + val.toLocaleString('en-US'),
+              },
+              grid: { color: 'rgba(255,255,255,0.04)' },
+              border: { dash: [3, 3] },
             },
           },
         },
