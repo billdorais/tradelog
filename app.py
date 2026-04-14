@@ -408,6 +408,13 @@ def init_db():
     """)
     conn.commit()
 
+    # Migration: add deleted column to ib_executions if missing
+    try:
+        cur.execute("ALTER TABLE ib_executions ADD COLUMN deleted INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Account snapshots table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS account_snapshots (

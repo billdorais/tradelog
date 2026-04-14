@@ -175,7 +175,8 @@ class AlpacaBroker:
             orders = self._trading.get_orders(filter=req)
             result = []
             for o in orders:
-                if str(o.status) != "filled":
+                status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
+                if status_str != "filled":
                     continue
                 filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%S") if o.filled_at else ""
                 side_str  = o.side.value if hasattr(o.side, 'value') else str(o.side)
