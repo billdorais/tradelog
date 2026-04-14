@@ -489,7 +489,10 @@
           style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer">
           Signals P&amp;L
         </button>
-        <button id="tabIB" onclick="switchTab('ib')" style="display:none">IB Account</button>
+        <button id="tabIB" onclick="switchTab('ib')"
+          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
+          Alpaca P&amp;L
+        </button>
       </div>
       <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
         Cumulative P&amp;L from closed trades
@@ -500,7 +503,7 @@
     </div>
     <canvas id="equityChart" height="90"></canvas>
     <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555;margin-top:6px">
-      Cumulative realized P&amp;L from IB fills.
+      Cumulative realized P&amp;L from Alpaca fills.
     </div>
   </div>
 
@@ -585,27 +588,66 @@
         label.textContent    = 'Cumulative P&L from closed trades';
         applyEquityFilter();
       } else {
-        ibBtn.style.cssText      = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2962ff;background:rgba(41,98,255,0.15);color:#2962ff;cursor:pointer';
+        ibBtn.style.cssText      = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer';
         signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
         filter.style.display = 'none';
         note.style.display   = 'flex';
-        label.textContent    = 'Cumulative realized P&L from IB fills';
-        loadIBEquity();
+        label.textContent    = 'Cumulative realized P&L from Alpaca fills';
+        loadAlpacaEquity();
       }
     }
 
-    async function loadIBEquity() {
-      const data = await fetch('/api/ib/equity').then(r => r.json());
-      const labels = data.map(p => p.time);
-      const values = data.map(p => p.value);
+    function loadAlpacaEquity() {
+      // Build cumulative P&L from allAlpacaExecs using same FIFO pairing as pairAlpacaExecs
+      const execs = [...allAlpacaExecs];
+      // Deduplicate
+      const seen = new Set();
+      const deduped = execs.filter(e => {
+        const key = `${e.symbol}|${e.side}|${e.time}|${e.shares}`;
+        if (seen.has(key)) return false; seen.add(key); return true;
+      });
+      // Parse UTC time robustly
+      const toMs = e => {
+        let raw = (e.time || '');
+        let fixed = raw.includes('-') ? raw : raw.replace(/^(\d{4})(\d{2})(\d{2})\s+/, '$1-$2-$3T');
+        if (fixed.includes('T') && !fixed.endsWith('Z') && !fixed.includes('+')) fixed += 'Z';
+        return new Date(fixed);
+      };
+      const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
+      // FIFO match buys to sells per symbol
+      const longs = {}, shorts = {};
+      const trades = [];
+      for (const e of sorted) {
+        const sym = (e.symbol || '').toUpperCase();
+        if (e.side === 'BOT') {
+          if (shorts[sym] && shorts[sym].length) {
+            const entry = shorts[sym].shift();
+            trades.push({ time: toMs(e), pnl: (entry.price - e.price) * e.shares });
+          } else { if (!longs[sym]) longs[sym] = []; longs[sym].push(e); }
+        } else if (e.side === 'SLD') {
+          if (longs[sym] && longs[sym].length) {
+            const entry = longs[sym].shift();
+            trades.push({ time: toMs(e), pnl: (e.price - entry.price) * e.shares });
+          } else { if (!shorts[sym]) shorts[sym] = []; shorts[sym].push(e); }
+        }
+      }
+      trades.sort((a, b) => a.time - b.time);
+      // Build cumulative series
+      let cum = 0;
+      const labels = [], values = [];
+      for (const t of trades) {
+        cum += t.pnl;
+        labels.push(t.time.toLocaleString('en-US', { timeZone: 'America/New_York', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false }));
+        values.push(parseFloat(cum.toFixed(2)));
+      }
       const finalVal  = values.length ? values[values.length - 1] : 0;
-      const lineColor = finalVal >= 0 ? '#2962ff' : '#ef5350';
+      const lineColor = finalVal >= 0 ? '#5fe0a0' : '#ef5350';
       drawChart(labels, values, lineColor);
 
       if (!values.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
-        c.fillText('No IB fills yet — chart updates after trades are closed', document.getElementById('equityChart').width / 2, 60);
+        c.fillText('No closed Alpaca trades yet', document.getElementById('equityChart').width / 2, 60);
       }
     }
 
