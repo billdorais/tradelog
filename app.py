@@ -567,7 +567,13 @@ def webhook():
             for n in nodes:
                 ntype = n.get("type")
                 if ntype == "broker":
-                    broker_targets.append((n.get("value") or "ib").lower())
+                    # Support combined values (ib-paper, ib-live, alpaca-paper, alpaca-live)
+                    # as well as legacy bare values (ib, alpaca, coinbase)
+                    raw_bv = (n.get("value") or "ib-paper").lower()
+                    broker_targets.append(raw_bv)
+                    # Combined values also set use_live_broker for IB
+                    if raw_bv == "ib-live":
+                        use_live_broker = True
                 elif ntype == "mode":
                     use_live_broker = (n.get("value") or "").lower() == "live"
                 elif ntype == "quantity":
@@ -651,12 +657,18 @@ def webhook():
         exec_detail = f"No routing pipeline matched strategy '{strategy_name}' — signal logged but no order placed. Check your Signal Router for a typo in the strategy name."
         log.warning("Webhook: no broker resolved for strategy '%s' — signal logged only", strategy_name)
 
+    # Normalise targets: ib-paper/ib-live → ib, alpaca-paper/alpaca-live → alpaca
+    def _broker_family(t):
+        if t in ("ib", "ib-paper", "ib-live"):    return "ib"
+        if t in ("alpaca", "alpaca-paper", "alpaca-live"): return "alpaca"
+        return t
+
     # Fire sync brokers first (Alpaca, Coinbase), then IB last (async, closes conn)
-    sync_targets = [t for t in broker_targets if t in ("alpaca", "coinbase")]
-    ib_targets   = [t for t in broker_targets if t == "ib"]
+    sync_targets = [t for t in broker_targets if _broker_family(t) in ("alpaca", "coinbase")]
+    ib_targets   = [t for t in broker_targets if _broker_family(t) == "ib"]
 
     for target in sync_targets:
-        if target == "alpaca":
+        if _broker_family(target) == "alpaca":
             if alpaca_broker is None:
                 exec_status = "error"
                 exec_detail = "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars"
@@ -682,7 +694,7 @@ def webhook():
                     exec_detail = str(e)
                     log.error("Alpaca order failed for %s %s %s: %s", order_action, quantity, ticker, e)
 
-        elif target == "coinbase":
+        elif _broker_family(target) == "coinbase":
             if coinbase_broker is None:
                 exec_status = "error"
                 exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
@@ -714,15 +726,16 @@ def webhook():
         conn.commit()
 
     for target in ib_targets:
-        active_broker  = ib_broker_live if (use_live_broker and ib_broker_live) else ib_broker
-        submit_task    = _submit_ib_live_task if (use_live_broker and ib_broker_live) else _submit_ib_task
-        mode_label     = "live" if (use_live_broker and ib_broker_live) else "paper"
+        _live = (target == "ib-live") or (use_live_broker and target != "ib-paper")
+        active_broker  = ib_broker_live if (_live and ib_broker_live) else ib_broker
+        submit_task    = _submit_ib_live_task if (_live and ib_broker_live) else _submit_ib_task
+        mode_label     = "live" if (_live and ib_broker_live) else "paper"
 
         if active_broker is None:
             if conn:
                 _update_exec(cur, trade_id, "error",
                              "IB live broker not initialised — set IB_HOST_LIVE env var"
-                             if use_live_broker else
+                             if _live else
                              "IB broker not initialised — check IB_HOST env var")
                 conn.commit()
         elif order_action not in ("BUY", "SELL"):

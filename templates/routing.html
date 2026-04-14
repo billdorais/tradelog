@@ -60,9 +60,13 @@
     .node-instrument-CRYPTO { background: #2a1a10; border-color: #d46b2a; color: #f5a060; }
     .node-mode-live  { background: #102a1a; border-color: #26a65b; color: #4fd88a; }
     .node-mode-paper { background: #2a2510; border-color: #c8a22a; color: #f5d060; }
-    .node-broker-ib       { background: #2a1010; border-color: #c83232; color: #f57070; }
-    .node-broker-alpaca   { background: #0f2a1a; border-color: #2ab86e; color: #5fe0a0; }
-    .node-broker-coinbase { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
+    .node-broker-ib         { background: #2a1010; border-color: #c83232; color: #f57070; }
+    .node-broker-ib-paper   { background: #2a1010; border-color: #c83232; color: #f57070; }
+    .node-broker-ib-live    { background: #3a0808; border-color: #ff4444; color: #ff9090; }
+    .node-broker-alpaca     { background: #0f2a1a; border-color: #2ab86e; color: #5fe0a0; }
+    .node-broker-alpaca-paper { background: #0f2a1a; border-color: #2ab86e; color: #5fe0a0; }
+    .node-broker-alpaca-live  { background: #052a10; border-color: #00e676; color: #80ffb0; }
+    .node-broker-coinbase   { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
     .node-ticker          { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
     .node-options_config  { background: #2a1f10; border-color: #e8962a; color: #ffc060; min-width: 130px; }
     .node-trading_hours   { background: #102030; border-color: #2a7898; color: #60c8e0; min-width: 120px; }
@@ -140,7 +144,7 @@
   <div class="palette-item" onclick="addNode('instrument')"><span class="palette-dot" style="background:#7c4dbd"></span>Instrument</div>
   <div class="palette-item" onclick="addNode('options_config')"><span class="palette-dot" style="background:#e8962a"></span>Options Config</div>
   <div class="palette-item" onclick="addNode('mode')"><span class="palette-dot" style="background:#26a65b"></span>Live / Paper</div>
-  <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker (IB / Alpaca / Coinbase)</div>
+  <div class="palette-item" onclick="addNode('broker')"><span class="palette-dot" style="background:#c83232"></span>Broker</div>
   <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
   <div class="palette-item" onclick="addNode('trading_hours')"><span class="palette-dot" style="background:#2a7898"></span>Trading Hours</div>
   <div class="palette-item" onclick="addNode('crypto_qty')"><span class="palette-dot" style="background:#c8a500"></span>Crypto Dollar Qty (BTC/ETH…)</div>
@@ -273,7 +277,7 @@
       case 'quantity':       return 'node-quantity';
       case 'instrument':     return `node-instrument-${node.value || 'STK'}`;
       case 'mode':           return `node-mode-${node.value || 'live'}`;
-      case 'broker':         return `node-broker-${node.value || 'ib'}`.replace(/[^a-z0-9-]/g,'');
+      case 'broker':         return `node-broker-${(node.value || 'ib-paper').replace(/[^a-z0-9-]/g,'')}`;
       case 'ticker':         return 'node-ticker';
       case 'options_config': return 'node-options_config';
       case 'trading_hours':  return 'node-trading_hours';
@@ -298,8 +302,12 @@
       case 'instrument': return { STK: 'Stocks', FUT: 'Futures', OPT: 'Options', CRYPTO: 'Crypto' }[node.value] || node.value || 'Stocks';
       case 'mode':       return node.value === 'paper' ? 'Paper' : 'Live';
       case 'broker': {
-        const bmap = { ib: 'Interactive Brokers', alpaca: 'Alpaca', coinbase: 'Coinbase' };
-        return bmap[node.value] || node.value || 'Interactive Brokers';
+        const bmap = {
+          'ib': 'IB Paper', 'ib-paper': 'IB Paper', 'ib-live': 'IB Live',
+          'alpaca': 'Alpaca Paper', 'alpaca-paper': 'Alpaca Paper', 'alpaca-live': 'Alpaca Live',
+          'coinbase': 'Coinbase',
+        };
+        return bmap[node.value] || node.value || 'IB Paper';
       }
       case 'ticker':     return node.value || '—';
       case 'options_config': {
@@ -471,16 +479,20 @@
             </select>
           </div>`;
 
-      case 'broker':
+      case 'broker': {
+        const bv = v.value === 'ib' ? 'ib-paper' : v.value === 'alpaca' ? 'alpaca-paper' : (v.value || 'ib-paper');
         return `
           <div class="form-group">
             <label>Broker</label>
             <select id="f_value">
-              <option value="ib"       ${(v.value||'ib')==='ib'       ? 'selected':''}>Interactive Brokers</option>
-              <option value="alpaca"   ${v.value==='alpaca'   ? 'selected':''}>Alpaca</option>
-              <option value="coinbase" ${v.value==='coinbase' ? 'selected':''}>Coinbase</option>
+              <option value="ib-paper"     ${bv==='ib-paper'     ? 'selected':''}>Interactive Brokers — Paper</option>
+              <option value="ib-live"      ${bv==='ib-live'      ? 'selected':''}>Interactive Brokers — Live</option>
+              <option value="alpaca-paper" ${bv==='alpaca-paper' ? 'selected':''}>Alpaca — Paper</option>
+              <option value="alpaca-live"  ${bv==='alpaca-live'  ? 'selected':''}>Alpaca — Live</option>
+              <option value="coinbase"     ${bv==='coinbase'     ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;
+      }
 
       case 'ticker':
         return `
