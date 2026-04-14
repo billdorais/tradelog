@@ -965,7 +965,11 @@
         const entryPrice = en ? en.price : null;
         const exitPrice  = ex ? ex.price : null;
         const qty        = ref.shares;
-        const pnl        = ex?.pnl != null ? ex.pnl : undefined;
+        const pnl        = (entryPrice != null && exitPrice != null)
+          ? (alpaca.direction === 'short'
+              ? (entryPrice - exitPrice) * qty
+              : (exitPrice  - entryPrice) * qty)
+          : undefined;
         const sentiment  = alpaca.direction === 'short' ? 'Short' : 'Long';
         const alpTs = f => f?.time;
         const dur   = en ? tradeDuration(alpTs(en), alpTs(ex)) : '—';
