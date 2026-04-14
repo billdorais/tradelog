@@ -826,7 +826,9 @@
 
     // Build groups: TV → IB first, then TV → Alpaca, then unmatched
     function buildGroups(tvPairs, ibPairs, alpacaPairs) {
-      const toTicker = p => ((p.entry || p.exit).symbol || (p.entry || p.exit).ticker || '').toUpperCase();
+      // Normalise ticker: remove / and exchange prefix (e.g. ETH/USD → ETHUSD, COINBASE:BTCUSD → BTCUSD)
+      const normTicker = s => (s || '').toUpperCase().replace(/[:/]/g, '').replace(/^[A-Z]+:/, '');
+      const toTicker = p => normTicker((p.entry || p.exit).symbol || (p.entry || p.exit).ticker || '');
       const byTicker = arr => {
         const map = {};
         for (const p of arr) {
@@ -842,7 +844,7 @@
       const usedAlpaca = new Set();
       const groups = [];
       for (const tvP of tvPairs) {
-        const ticker = ((tvP.entry || tvP.exit).ticker || '').toUpperCase();
+        const ticker = normTicker((tvP.entry || tvP.exit).ticker || '');
         let ibMatch = null;
         const ibCandidates = ibByTicker[ticker] || [];
         for (let i = 0; i < ibCandidates.length; i++) {
