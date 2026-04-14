@@ -489,10 +489,7 @@
           style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer">
           Signals P&amp;L
         </button>
-        <button id="tabIB" onclick="switchTab('ib')"
-          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
-          IB Account
-        </button>
+        <button id="tabIB" onclick="switchTab('ib')" style="display:none">IB Account</button>
       </div>
       <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
         Cumulative P&amp;L from closed trades
@@ -781,10 +778,12 @@
     function pairAlpacaExecs(execs) {
       const toMs = e => {
         const raw = (e.time || '');
-        // Handle ISO (2026-04-13T15:50:01) and legacy IB format (20260413  15:50:01)
-        const fixed = raw.includes('-')
+        // Handle ISO (2026-04-13T19:50:01Z) and legacy IB format (20260413  15:50:01)
+        let fixed = raw.includes('-')
           ? raw
           : raw.replace(/^(\d{4})(\d{2})(\d{2})\s+/, '$1-$2-$3T');
+        // Append Z so JS treats as UTC, not local time
+        if (fixed.includes('T') && !fixed.endsWith('Z') && !fixed.includes('+')) fixed += 'Z';
         return new Date(fixed);
       };
       const seen = new Set();
@@ -848,23 +847,13 @@
       const groups = [];
       for (const tvP of tvPairs) {
         const ticker = normTicker((tvP.entry || tvP.exit).ticker || '');
-        let ibMatch = null;
-        const ibCandidates = ibByTicker[ticker] || [];
-        for (let i = 0; i < ibCandidates.length; i++) {
-          if (!usedIB.has(i + '|' + ticker)) { ibMatch = ibCandidates[i]; usedIB.add(i + '|' + ticker); break; }
-        }
+        const alpCandidates = alpacaByTicker[ticker] || [];
         let alpacaMatch = null;
-        if (!ibMatch) {
-          const alpCandidates = alpacaByTicker[ticker] || [];
-          for (let i = 0; i < alpCandidates.length; i++) {
-            if (!usedAlpaca.has(i + '|' + ticker)) { alpacaMatch = alpCandidates[i]; usedAlpaca.add(i + '|' + ticker); break; }
-          }
+        for (let i = 0; i < alpCandidates.length; i++) {
+          if (!usedAlpaca.has(i + '|' + ticker)) { alpacaMatch = alpCandidates[i]; usedAlpaca.add(i + '|' + ticker); break; }
         }
-        groups.push({ tv: tvP, ib: ibMatch, alpaca: alpacaMatch });
+        groups.push({ tv: tvP, ib: null, alpaca: alpacaMatch });
       }
-      for (const [ticker, list] of Object.entries(ibByTicker))
-        for (let i = 0; i < list.length; i++)
-          if (!usedIB.has(i + '|' + ticker)) groups.push({ tv: null, ib: list[i], alpaca: null });
       for (const [ticker, list] of Object.entries(alpacaByTicker))
         for (let i = 0; i < list.length; i++)
           if (!usedAlpaca.has(i + '|' + ticker)) groups.push({ tv: null, ib: null, alpaca: list[i] });
@@ -929,36 +918,7 @@
           <td>${execBadge(status, detail)}</td>
         </tr>`);
       }
-      if (ib) {
-        const en = ib.entry, ex = ib.exit;
-        const ref        = en || ex;
-        const entryPrice = en ? en.price : null;
-        const exitPrice  = ex ? ex.price : null;
-        const qty        = ref.shares;
-        const pnl        = ex?.pnl != null ? ex.pnl : undefined;
-        const sentiment  = ib.direction === 'short' ? 'Short' : 'Long';
-        const ibTs = f => f?.ts || f?.time;
-        const dur  = en ? tradeDuration(ibTs(en), ibTs(ex)) : '—';
-        const entryId = en?.exec_id ? `'${en.exec_id}'` : 'null';
-        const exitId  = ex?.exec_id ? `'${ex.exec_id}'` : 'null';
-        rows.push(`<tr class="group-second">
-          <td style="color:#4a90d9;font-size:0.75rem;white-space:nowrap">IB
-            <button onclick="deleteIBRow(${entryId}, ${exitId})" title="Remove stale IB row"
-              style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
-          </td>
-          <td style="font-size:0.78rem;color:#aaa">${fmtET(ibTs(en)) ?? '—'}</td>
-          <td style="font-size:0.78rem;color:#888">${ibTs(ex) ? fmtET(ibTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
-          <td style="color:#888;font-size:0.78rem">${dur}</td>
-          <td>${sentimentBadge(sentiment)}</td>
-          <td><span style="color:#444">—</span></td>
-          <td><strong>${ref.symbol ?? '—'}</strong></td>
-          ${pnlCell(pnl)}
-          <td>${qty ?? '—'}</td>
-          <td>${priceCell(entryPrice)}</td>
-          <td>${priceCell(exitPrice)}</td>
-          <td><span class="exec-ok">✓ Filled</span></td>
-        </tr>`);
-      }
+      // IB rows hidden — not currently using IB
       if (alpaca) {
         const en = alpaca.entry, ex = alpaca.exit;
         const ref        = en || ex;
@@ -1352,8 +1312,6 @@
 
         // Broker pills — render one per configured broker
         const brokerDefs = [
-          { key: 'IB',       label: 'IB',       color: '#26a65b', acctFn: b => 'Paper' },
-          { key: 'IB_LIVE',  label: 'IB Live',  color: '#4a90d9', acctFn: b => (b.accounts||[]).join(', ') },
           { key: 'Alpaca',   label: 'Alpaca',   color: '#5fe0a0', acctFn: b => b.paper ? 'Paper' : 'Live' },
           { key: 'Coinbase', label: 'Coinbase', color: '#70a8f5', acctFn: b => (b.accounts||[b.account||'']).join(', ').slice(0,12) },
         ];
@@ -1373,7 +1331,7 @@
         }
         document.getElementById('brokerPills').innerHTML = pillsHtml;
         const ib = brokers.IB || {};
-        document.getElementById('ibReconnectBtn').style.display = ib.connected ? 'none' : 'inline-block';
+        document.getElementById('ibReconnectBtn').style.display = 'none';
         allTrades = trades;
 
 

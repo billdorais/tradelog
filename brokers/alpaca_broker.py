@@ -178,7 +178,7 @@ class AlpacaBroker:
                 status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
                 if status_str != "filled":
                     continue
-                filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%S") if o.filled_at else ""
+                filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
                 side_str  = o.side.value if hasattr(o.side, 'value') else str(o.side)
                 result.append({
                     "exec_id":  str(o.id),
