@@ -781,7 +781,10 @@
     function pairAlpacaExecs(execs) {
       const toMs = e => {
         const raw = (e.time || '');
-        const fixed = raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+        // Handle ISO (2026-04-13T15:50:01) and legacy IB format (20260413  15:50:01)
+        const fixed = raw.includes('-')
+          ? raw
+          : raw.replace(/^(\d{4})(\d{2})(\d{2})\s+/, '$1-$2-$3T');
         return new Date(fixed);
       };
       const seen = new Set();

@@ -166,23 +166,27 @@ class AlpacaBroker:
             return {"success": False, "error": str(e)}
 
     def get_fills(self):
-        """Return today's filled orders."""
+        """Return recent filled orders (last 30 days)."""
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
+        from datetime import datetime, timezone, timedelta
         self._ensure_client()
         try:
-            req    = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100)
+            after = datetime.now(timezone.utc) - timedelta(days=30)
+            req   = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=200, after=after)
             orders = self._trading.get_orders(filter=req)
             result = []
             for o in orders:
                 if str(o.status) != "filled":
                     continue
+                filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%S") if o.filled_at else ""
+                side_str  = o.side.value if hasattr(o.side, 'value') else str(o.side)
                 result.append({
                     "exec_id":  str(o.id),
-                    "time":     o.filled_at.strftime("%Y%m%d  %H:%M:%S") if o.filled_at else "",
+                    "time":     filled_at,
                     "symbol":   o.symbol,
                     "sec_type": "STK",
-                    "side":     "BOT" if str(o.side) == "buy" else "SLD",
+                    "side":     "BOT" if side_str == "buy" else "SLD",
                     "shares":   float(o.filled_qty or 0),
                     "price":    float(o.filled_avg_price or 0),
                     "order_id": str(o.client_order_id or o.id),
