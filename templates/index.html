@@ -1116,7 +1116,7 @@
       document.getElementById('wlLossSeg').style.width = (avgLoss / total * 100) + '%';
 
       if (activeTab === 'signals') {
-        const labels    = (stats.equity_curve || []).map(p => p.time);
+        const labels    = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
         const values    = (stats.equity_curve || []).map(p => p.value);
         drawChart(labels, values, '#a78bfa');
 
