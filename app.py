@@ -375,11 +375,10 @@ def _compute_daily_pnl():
             return snap["realized_pnl"] + snap["unrealized_pnl"]
         except Exception as _e:
             log.debug("_compute_daily_pnl IB Live error: %s", _e)
-    # Alpaca: unrealized P&L from open positions (realized not tracked in-app)
+    # Alpaca: equity minus previous day's close — captures both realized and unrealized daily change
     if alpaca_broker:
         try:
-            positions = alpaca_broker.get_positions()
-            return sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+            return alpaca_broker.daily_pnl()
         except Exception as _e:
             log.debug("_compute_daily_pnl Alpaca error: %s", _e)
     return None

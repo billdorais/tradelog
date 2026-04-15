@@ -49,6 +49,12 @@ class AlpacaBroker:
         except Exception as e:
             return {"broker": "Alpaca", "connected": False, "error": str(e)}
 
+    def daily_pnl(self):
+        """Return today's P&L as equity minus previous trading day's closing equity."""
+        self._ensure_client()
+        acct = self._trading.get_account()
+        return float(acct.equity) - float(acct.last_equity)
+
     def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD"):
         """
         Place a market or limit order.
