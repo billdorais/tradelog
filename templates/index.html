@@ -501,9 +501,14 @@
       <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
         Cumulative P&amp;L from closed trades
       </div>
-      <select id="equityStrategyFilter" onchange="applyEquityFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
-        <option value="">All Strategies</option>
-      </select>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="equityStrategyFilter" onchange="applyEquityFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
+          <option value="">All Strategies</option>
+        </select>
+        <input type="date" id="equityFromDate" onchange="applyEquityFilter()"
+          title="Show P&L from this date forward"
+          style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
+      </div>
     </div>
     <canvas id="equityChart" height="90"></canvas>
     <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555;margin-top:6px">
@@ -1496,27 +1501,34 @@
       });
     }
 
+    function buildStatsUrl(strategy, fromDate) {
+      const p = new URLSearchParams();
+      if (strategy) p.set('strategy', strategy);
+      if (fromDate) p.set('from_date', fromDate);
+      return '/api/stats' + (p.toString() ? '?' + p.toString() : '');
+    }
+
     async function applyFilter() {
       selectedStrategy = document.getElementById('strategyFilter').value;
       renderTable(allTrades, selectedStrategy);
       // Sync equity curve dropdown to match
       document.getElementById('equityStrategyFilter').value = selectedStrategy;
-      const url = selectedStrategy ? `/api/stats?strategy=${encodeURIComponent(selectedStrategy)}` : '/api/stats';
-      const stats = await fetch(url).then(r => r.json());
+      const fromDate = document.getElementById('equityFromDate').value;
+      const stats = await fetch(buildStatsUrl(selectedStrategy, fromDate)).then(r => r.json());
       renderStats(stats);
     }
 
     async function applyEquityFilter() {
       const strategy = document.getElementById('equityStrategyFilter').value;
-      const url = strategy ? `/api/stats?strategy=${encodeURIComponent(strategy)}` : '/api/stats';
-      const stats = await fetch(url).then(r => r.json());
+      const fromDate  = document.getElementById('equityFromDate').value;
+      const stats = await fetch(buildStatsUrl(strategy, fromDate)).then(r => r.json());
       renderStats(stats);
     }
 
     async function applyDailyFilter() {
       const strategy = document.getElementById('dailyStrategyFilter').value;
-      const url = strategy ? `/api/stats?strategy=${encodeURIComponent(strategy)}` : '/api/stats';
-      const stats = await fetch(url).then(r => r.json());
+      const fromDate  = document.getElementById('equityFromDate').value;
+      const stats = await fetch(buildStatsUrl(strategy, fromDate)).then(r => r.json());
       drawDailyChart(stats.equity_curve || []);
     }
 
@@ -1589,12 +1601,11 @@
 
         try { renderTable(trades, selectedStrategy); } catch(re) { console.error('renderTable error:', re); }
 
-        // Fetch stats respecting the equity curve's own filter
+        // Fetch stats respecting the equity curve's own filters
         const equityStrategy = document.getElementById('equityStrategyFilter').value;
-        const statsUrl = equityStrategy
-          ? `/api/stats?strategy=${encodeURIComponent(equityStrategy)}`
-          : '/api/stats';
-        const filteredStats = equityStrategy ? await fetch(statsUrl).then(r => r.json()) : stats;
+        const equityFromDate = document.getElementById('equityFromDate').value;
+        const statsUrl = buildStatsUrl(equityStrategy, equityFromDate);
+        const filteredStats = (equityStrategy || equityFromDate) ? await fetch(statsUrl).then(r => r.json()) : stats;
         renderStats(filteredStats);
 
         document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;

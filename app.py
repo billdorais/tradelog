@@ -2636,6 +2636,7 @@ def ib_equity():
 @app.route("/api/stats")
 def api_stats():
     strategy_filter = request.args.get("strategy")
+    from_date       = request.args.get("from_date")  # "YYYY-MM-DD" — only emit closes on/after this date
     conn = get_db()
     cur  = conn.cursor()
     p    = placeholder()
@@ -2674,13 +2675,15 @@ def api_stats():
         if exec_status in ("blocked", "skipped", "error"):
             continue
         key = (strategy, ticker)
+        in_window = (not from_date) or (received[:10] >= from_date)
         if action == "BUY":
             # Closes an open short; otherwise opens a new long
             queue = open_shorts.get(key, [])
             if queue:
                 entry_price, entry_qty, _ = queue.pop(0)
                 pnl = (entry_price - price) * min(qty, entry_qty)
-                closed.append({"pnl": pnl, "time": received})
+                if in_window:
+                    closed.append({"pnl": pnl, "time": received})
             else:
                 open_longs.setdefault(key, []).append((price, qty, received))
         elif action == "SELL":
@@ -2689,7 +2692,8 @@ def api_stats():
             if queue:
                 entry_price, entry_qty, _ = queue.pop(0)
                 pnl = (price - entry_price) * min(qty, entry_qty)
-                closed.append({"pnl": pnl, "time": received})
+                if in_window:
+                    closed.append({"pnl": pnl, "time": received})
             else:
                 open_shorts.setdefault(key, []).append((price, qty, received))
 
