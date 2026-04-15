@@ -357,31 +357,78 @@ if os.environ.get("COINBASE_KEY"):
 # Risk monitor — polls P&L every 60s; halts + liquidates on MAX_DAILY_LOSS
 # ---------------------------------------------------------------------------
 
+_daily_pnl_cache = {"value": None, "ts": 0.0}
+
+
 def _compute_daily_pnl():
-    """Return today's total P&L (realized + unrealized) across active brokers.
-    For IB, RealizedPnL + UnrealizedPnL both reset at the start of each trading
-    day, making them the most accurate source. Returns None if unavailable."""
-    # IB paper: RealizedPnL + UnrealizedPnL reset daily — best source
-    if ib_broker and ib_broker.is_connected():
-        try:
-            snap = ib_broker.account_snapshot()
-            return snap["realized_pnl"] + snap["unrealized_pnl"]
-        except Exception as _e:
-            log.debug("_compute_daily_pnl IB error: %s", _e)
-    # IB live
-    if ib_broker_live and ib_broker_live.is_connected():
-        try:
-            snap = ib_broker_live.account_snapshot()
-            return snap["realized_pnl"] + snap["unrealized_pnl"]
-        except Exception as _e:
-            log.debug("_compute_daily_pnl IB Live error: %s", _e)
-    # Alpaca: equity minus previous day's close — captures both realized and unrealized daily change
-    if alpaca_broker:
-        try:
-            return alpaca_broker.daily_pnl()
-        except Exception as _e:
-            log.debug("_compute_daily_pnl Alpaca error: %s", _e)
-    return None
+    """Return today's realized P&L by pairing BUY/SELL signals in the trades
+    table — the same algorithm used by the analysis page, so the number shown
+    in the risk panel always matches what the user sees there.
+    Result is cached for 60 s to keep the 15 s UI refresh cheap."""
+    now_ts = time.time()
+    if now_ts - _daily_pnl_cache["ts"] < 60 and _daily_pnl_cache["value"] is not None:
+        return _daily_pnl_cache["value"]
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT action, ticker, strategy, received_at, price, quantity FROM trades ORDER BY id ASC")
+        rows = cur.fetchall()
+        conn.close()
+        if DATABASE_URL:
+            cols       = [d[0] for d in cur.description]
+            trade_rows = [dict(zip(cols, r)) for r in rows]
+        else:
+            trade_rows = [dict(r) for r in rows]
+
+        open_longs  = {}   # (strategy, ticker) → [(price, qty)]
+        open_shorts = {}
+        today_pnl   = 0.0
+
+        for t in trade_rows:
+            action   = (t.get("action") or "").strip().upper()
+            ticker   = (t.get("ticker") or "").strip().upper()
+            strategy = (t.get("strategy") or "Unknown").strip()
+            received = t.get("received_at") or ""
+            try:
+                price = float(t.get("price") or 0)
+                qty   = float(t.get("quantity") or 1)
+            except (ValueError, TypeError):
+                continue
+            if not ticker or price == 0:
+                continue
+
+            key      = (strategy, ticker)
+            is_today = received[:10] == today
+
+            if action in ("BUY", "LONG", "EXIT_SHORT"):
+                queue = open_shorts.get(key, [])
+                if queue:
+                    entry_price, entry_qty = queue.pop(0)
+                    pnl = (entry_price - price) * min(qty, entry_qty)
+                    if is_today:
+                        today_pnl += pnl
+                else:
+                    open_longs.setdefault(key, []).append((price, qty))
+            elif action in ("SELL", "SHORT", "EXIT_LONG"):
+                queue = open_longs.get(key, [])
+                if queue:
+                    entry_price, entry_qty = queue.pop(0)
+                    pnl = (price - entry_price) * min(qty, entry_qty)
+                    if is_today:
+                        today_pnl += pnl
+                else:
+                    open_shorts.setdefault(key, []).append((price, qty))
+
+        result = round(today_pnl, 2)
+        _daily_pnl_cache["value"] = result
+        _daily_pnl_cache["ts"]    = now_ts
+        return result
+    except Exception as _e:
+        log.debug("_compute_daily_pnl error: %s", _e)
+        _daily_pnl_cache["ts"] = now_ts   # back off on errors too
+        return _daily_pnl_cache["value"]
 
 
 def _risk_monitor_loop():
