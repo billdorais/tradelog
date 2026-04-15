@@ -2655,8 +2655,8 @@ def api_stats():
         trades = [dict(r) for r in rows]
     conn.close()
 
-    open_longs  = {}  # (strategy, ticker) → [(price, qty, time)]
-    open_shorts = {}  # (strategy, ticker) → [(price, qty, time)]
+    open_longs  = {}  # (strategy, ticker) → [(price, qty, time, trade_id)]
+    open_shorts = {}  # (strategy, ticker) → [(price, qty, time, trade_id)]
     closed      = []
 
     for t in trades:
@@ -2664,6 +2664,7 @@ def api_stats():
         ticker   = (t.get("ticker") or "").strip().upper()
         strategy = (t.get("strategy") or "").strip()
         received = t.get("received_at") or ""
+        trade_id = t.get("id")
         try:
             price = float(t.get("price") or 0)
             qty   = float(t.get("quantity") or 1)
@@ -2680,22 +2681,22 @@ def api_stats():
             # Closes an open short; otherwise opens a new long
             queue = open_shorts.get(key, [])
             if queue:
-                entry_price, entry_qty, _ = queue.pop(0)
+                entry_price, entry_qty, _, entry_id = queue.pop(0)
                 pnl = (entry_price - price) * min(qty, entry_qty)
                 if in_window:
-                    closed.append({"pnl": pnl, "time": received})
+                    closed.append({"pnl": pnl, "time": received, "entry_id": entry_id, "exit_id": trade_id})
             else:
-                open_longs.setdefault(key, []).append((price, qty, received))
+                open_longs.setdefault(key, []).append((price, qty, received, trade_id))
         elif action == "SELL":
             # Closes an open long; otherwise opens a new short
             queue = open_longs.get(key, [])
             if queue:
-                entry_price, entry_qty, _ = queue.pop(0)
+                entry_price, entry_qty, _, entry_id = queue.pop(0)
                 pnl = (price - entry_price) * min(qty, entry_qty)
                 if in_window:
-                    closed.append({"pnl": pnl, "time": received})
+                    closed.append({"pnl": pnl, "time": received, "entry_id": entry_id, "exit_id": trade_id})
             else:
-                open_shorts.setdefault(key, []).append((price, qty, received))
+                open_shorts.setdefault(key, []).append((price, qty, received, trade_id))
 
     if not closed:
         return jsonify({
@@ -2717,7 +2718,12 @@ def api_stats():
     cumulative = peak = max_dd = 0
     for c in closed:
         cumulative += c["pnl"]
-        equity_curve.append({"time": c["time"], "value": round(cumulative, 2)})
+        equity_curve.append({
+            "time":     c["time"],
+            "value":    round(cumulative, 2),
+            "entry_id": c.get("entry_id"),
+            "exit_id":  c.get("exit_id"),
+        })
         if cumulative > peak:
             peak = cumulative
         dd = peak - cumulative

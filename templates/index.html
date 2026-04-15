@@ -1181,7 +1181,8 @@
       if (activeTab === 'signals') {
         const labels    = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
         const values    = (stats.equity_curve || []).map(p => p.value);
-        drawChart(labels, values, '#a78bfa');
+        const tradeIds  = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
+        drawChart(labels, values, '#a78bfa', tradeIds);
 
         if (!values.length) {
           const chartCanvas = document.getElementById('equityChart');
@@ -1470,7 +1471,7 @@
       });
     }
 
-    function drawChart(labels, values, lineColor) {
+    function drawChart(labels, values, lineColor, tradeIds) {
       if (equityChartInstance) equityChartInstance.destroy();
       const ctx = document.getElementById('equityChart').getContext('2d');
       equityChartInstance = new Chart(ctx, {
@@ -1502,7 +1503,22 @@
         },
         options: {
           animation: false,
-          plugins: { legend: { display: false } },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => {
+                  const v = ctx.parsed.y;
+                  const sign = v >= 0 ? '+' : '';
+                  const ids = tradeIds && tradeIds[ctx.dataIndex];
+                  const idStr = ids
+                    ? `  [entry #${ids.entry ?? '?'} → exit #${ids.exit ?? '?'}]`
+                    : '';
+                  return sign + '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + idStr;
+                },
+              },
+            },
+          },
           scales: {
             x: { display: false },
             y: {
