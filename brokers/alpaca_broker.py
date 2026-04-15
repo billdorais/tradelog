@@ -291,6 +291,22 @@ class AlpacaBroker:
             log.error("Alpaca get_positions failed: %s", e)
             return []
 
+    def close_position(self, symbol):
+        """Close a single open position by symbol."""
+        self._ensure_client()
+        try:
+            order = self._trading.close_position(symbol)
+            log.info("Alpaca close_position %s → id=%s status=%s", symbol, order.id, order.status)
+            return {
+                "success":  True,
+                "order_id": str(order.id),
+                "status":   str(order.status),
+                "symbol":   symbol,
+            }
+        except Exception as e:
+            log.error("Alpaca close_position failed for %s: %s", symbol, e)
+            return {"success": False, "error": str(e)}
+
     def close_all_positions(self):
         self._ensure_client()
         try:

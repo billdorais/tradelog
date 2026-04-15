@@ -96,6 +96,45 @@
     .empty-state { text-align: center; padding: 60px 20px; color: #444; }
     .empty-state svg { margin-bottom: 16px; opacity: 0.3; }
     .empty-state p { font-size: 0.95rem; margin-bottom: 20px; }
+
+    /* Risk panel */
+    .risk-panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+    .risk-panel.halted { border-color: #e74c3c; background: #1a0e0e; }
+    .risk-section { display: flex; flex-direction: column; gap: 4px; }
+    .risk-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; }
+    .risk-value { font-size: 1rem; font-weight: 600; }
+    .risk-value.positive { color: #4fd88a; }
+    .risk-value.negative { color: #e74c3c; }
+    .risk-value.neutral  { color: #aaa; }
+    .risk-status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
+    .risk-status-badge.active   { background: #0e1e0e; border: 1px solid #26a65b; color: #4fd88a; }
+    .risk-status-badge.halted   { background: #1a0808; border: 1px solid #e74c3c; color: #e74c3c; }
+    .risk-status-badge.disabled { background: #1a1d2e; border: 1px solid #2a2d3e; color: #555; }
+    .risk-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .risk-dot.green  { background: #26a65b; }
+    .risk-dot.red    { background: #e74c3c; }
+    .risk-dot.grey   { background: #444; }
+    .risk-input-row  { display: flex; align-items: center; gap: 8px; }
+    .risk-input { background: #0f1117; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 10px; font-size: 0.88rem; width: 120px; outline: none; }
+    .risk-input:focus { border-color: #4a90d9; }
+    .risk-input.invalid { border-color: #e74c3c; }
+    .risk-hint { font-size: 0.72rem; color: #555; margin-top: 3px; }
+    .risk-divider { width: 1px; background: #1e2130; align-self: stretch; flex-shrink: 0; }
+
+    /* Risk panel — details row (positions + blocked strategies) */
+    .risk-details { border-top: 1px solid #1e2130; margin-top: 14px; padding-top: 14px; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+    .risk-blocked { display: flex; align-items: flex-start; gap: 10px; background: #1a0808; border: 1px solid #c0392b; border-radius: 8px; padding: 10px 14px; }
+    .risk-blocked-icon { font-size: 1.1rem; flex-shrink: 0; line-height: 1.4; }
+    .risk-blocked-body { flex: 1; min-width: 0; }
+    .risk-blocked-title { font-size: 0.85rem; font-weight: 600; color: #e74c3c; }
+    .risk-blocked-reason { font-size: 0.78rem; color: #aaa; margin-top: 2px; }
+    .risk-blocked-meta { font-size: 0.72rem; color: #666; margin-top: 2px; }
+    .risk-positions-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .risk-positions-table th { text-align: left; color: #555; font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 6px 0; border-bottom: 1px solid #1e2130; }
+    .risk-positions-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
+    .risk-positions-table tr:last-child td { border-bottom: none; }
+    .pos-pnl-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
+    .pos-pnl-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
   </style>
 </head>
 <body>
@@ -126,6 +165,68 @@
       <div class="page-subtitle">Each pipeline intercepts a TradingView signal and applies your routing rules before placing an order.</div>
     </div>
     <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
+  </div>
+
+  <!-- Risk panel -->
+  <div class="risk-panel" id="riskPanel">
+    <div class="risk-section">
+      <div class="risk-label">Risk Guard</div>
+      <div id="riskStatusBadge" class="risk-status-badge disabled">
+        <span class="risk-dot grey" id="riskDot"></span>
+        <span id="riskStatusText">Loading…</span>
+      </div>
+      <div class="risk-hint" id="riskHint"></div>
+    </div>
+
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label">Today's P&amp;L</div>
+      <div class="risk-value neutral" id="riskPnl">—</div>
+    </div>
+
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label">Max Daily Loss</div>
+      <div class="risk-input-row">
+        <input class="risk-input" id="riskLimitInput" type="number" step="1" placeholder="e.g. -500">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRiskLimit()">Set</button>
+        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRiskLimit()" title="Disable risk guard">Off</button>
+      </div>
+      <div class="risk-hint">Negative value halts &amp; liquidates (e.g. -500). 0 = disabled.</div>
+    </div>
+
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label">Per-Position Stop ($)</div>
+      <div class="risk-input-row">
+        <input class="risk-input" id="posLimitInput" type="number" step="1" placeholder="e.g. -200">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
+        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()" title="Disable position stop">Off</button>
+      </div>
+      <div class="risk-hint">Close &amp; block strategy when unrealized loss hits this value.</div>
+    </div>
+
+    <div id="riskResetSection" style="display:none; margin-left:auto">
+      <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
+    </div>
+
+    <!-- Blocked strategies + live positions (shown when there is data) -->
+    <div class="risk-details" id="riskDetails" style="display:none">
+      <div id="riskBlockedList"></div>
+      <div id="riskPositionsWrap" style="display:none">
+        <div class="risk-label" style="margin-bottom:8px">Open Positions</div>
+        <table class="risk-positions-table">
+          <thead><tr>
+            <th>Symbol</th><th>Broker</th><th>Qty</th>
+            <th>Unrealized P&amp;L</th><th style="width:90px">vs Limit</th>
+          </tr></thead>
+          <tbody id="riskPositionsTbody"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <div class="pipelines" id="pipelines">
@@ -163,6 +264,8 @@
 </div>
 
 <script>
+  window._webhookToken = {{ webhook_token | tojson }};
+
   // -----------------------------------------------------------------------
   // State
   // -----------------------------------------------------------------------
@@ -173,12 +276,207 @@
   let dragSrcId        = null;   // id of pipeline being dragged
 
   // -----------------------------------------------------------------------
+  // Risk panel
+  // -----------------------------------------------------------------------
+  async function loadRisk() {
+    try {
+      const res  = await fetch('/api/risk/status');
+      const data = await res.json();
+      const panel  = document.getElementById('riskPanel');
+      const badge  = document.getElementById('riskStatusBadge');
+      const dot    = document.getElementById('riskDot');
+      const text   = document.getElementById('riskStatusText');
+      const hint   = document.getElementById('riskHint');
+      const pnlEl  = document.getElementById('riskPnl');
+      const resetSec = document.getElementById('riskResetSection');
+      const input  = document.getElementById('riskLimitInput');
+
+      // P&L display
+      if (data.current_pnl !== null && data.current_pnl !== undefined) {
+        const sign = data.current_pnl >= 0 ? '+' : '';
+        pnlEl.textContent = sign + '$' + data.current_pnl.toFixed(2);
+        pnlEl.className = 'risk-value ' + (data.current_pnl >= 0 ? 'positive' : 'negative');
+      } else {
+        pnlEl.textContent = '—';
+        pnlEl.className = 'risk-value neutral';
+      }
+
+      // Pre-fill inputs (only when not actively editing)
+      if (document.activeElement !== input && data.max_daily_loss !== null) {
+        input.value = data.max_daily_loss;
+      }
+      const posInput = document.getElementById('posLimitInput');
+      if (document.activeElement !== posInput && data.max_position_loss !== null) {
+        posInput.value = data.max_position_loss;
+      }
+
+      // Status badge + panel border
+      if (data.halted) {
+        badge.className = 'risk-status-badge halted';
+        dot.className   = 'risk-dot red';
+        text.textContent = 'HALTED';
+        hint.textContent = 'All orders are blocked. Resolve the loss condition then clear the halt.';
+        panel.classList.add('halted');
+        resetSec.style.display = 'block';
+      } else if (data.enabled) {
+        badge.className = 'risk-status-badge active';
+        dot.className   = 'risk-dot green';
+        text.textContent = 'Active';
+        hint.textContent = 'Guard is live. Limit: $' + data.max_daily_loss.toFixed(0);
+        panel.classList.remove('halted');
+        resetSec.style.display = 'none';
+      } else {
+        badge.className = 'risk-status-badge disabled';
+        dot.className   = 'risk-dot grey';
+        text.textContent = 'Disabled';
+        hint.textContent = 'Set a negative limit to enable.';
+        panel.classList.remove('halted');
+        resetSec.style.display = 'none';
+      }
+      // Blocked strategies + positions detail row
+      const blocked   = data.blocked_strategies || {};
+      const positions = data.positions || [];
+      const details   = document.getElementById('riskDetails');
+      const hasBlocked   = Object.keys(blocked).length > 0;
+      const hasPositions = positions.length > 0;
+      details.style.display = (hasBlocked || hasPositions) ? 'flex' : 'none';
+      renderBlockedStrategies(blocked);
+      renderPositions(positions, data.max_position_loss);
+
+    } catch (e) {
+      console.warn('Risk status fetch failed:', e);
+    }
+  }
+
+  async function _postLimit(body) {
+    await fetch('/api/risk/limit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    await loadRisk();
+  }
+
+  async function saveRiskLimit() {
+    const input = document.getElementById('riskLimitInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearRiskLimit(); return; }
+    const val = parseFloat(raw);
+    if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({max_daily_loss: val}); }
+    catch(e) { console.error('saveRiskLimit failed:', e); }
+  }
+
+  async function clearRiskLimit() {
+    document.getElementById('riskLimitInput').value = '';
+    try { await _postLimit({max_daily_loss: 0}); }
+    catch(e) { console.error('clearRiskLimit failed:', e); }
+  }
+
+  async function savePositionLimit() {
+    const input = document.getElementById('posLimitInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearPositionLimit(); return; }
+    const val = parseFloat(raw);
+    if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({max_position_loss: val}); }
+    catch(e) { console.error('savePositionLimit failed:', e); }
+  }
+
+  async function clearPositionLimit() {
+    document.getElementById('posLimitInput').value = '';
+    try { await _postLimit({max_position_loss: 0}); }
+    catch(e) { console.error('clearPositionLimit failed:', e); }
+  }
+
+  async function resetRiskHalt() {
+    if (!confirm('Clear the risk halt and resume trading?')) return;
+    try {
+      await fetch('/api/risk/reset?token=' + encodeURIComponent(window._webhookToken || ''),
+                  {method: 'POST'});
+      await loadRisk();
+    } catch(e) { console.error('resetRiskHalt failed:', e); }
+  }
+
+  async function unblockStrategy(name) {
+    if (!confirm(`Unblock strategy "${name}" and allow new signals?`)) return;
+    try {
+      await fetch('/api/risk/unblock/' + encodeURIComponent(name) +
+                  '?token=' + encodeURIComponent(window._webhookToken || ''),
+                  {method: 'POST'});
+      await loadRisk();
+    } catch(e) { console.error('unblockStrategy failed:', e); }
+  }
+
+  function renderBlockedStrategies(blocked) {
+    const list = document.getElementById('riskBlockedList');
+    const names = Object.keys(blocked || {});
+    list.innerHTML = '';
+    for (const name of names) {
+      const info = blocked[name];
+      const div  = document.createElement('div');
+      div.className = 'risk-blocked';
+      div.innerHTML = `
+        <div class="risk-blocked-icon">&#9888;</div>
+        <div class="risk-blocked-body">
+          <div class="risk-blocked-title">Strategy blocked: ${name}</div>
+          <div class="risk-blocked-reason">${info.reason}</div>
+          <div class="risk-blocked-meta">${info.ts} &nbsp;|&nbsp; ${info.broker}</div>
+        </div>
+        <button class="btn btn-ghost" style="font-size:0.78rem;padding:4px 10px;flex-shrink:0"
+                onclick="unblockStrategy(${JSON.stringify(name)})">Unblock</button>`;
+      list.appendChild(div);
+    }
+  }
+
+  function renderPositions(positions, limitVal) {
+    const wrap  = document.getElementById('riskPositionsWrap');
+    const tbody = document.getElementById('riskPositionsTbody');
+    if (!positions || positions.length === 0) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+    tbody.innerHTML = '';
+    for (const p of positions) {
+      const upnl    = p.unrealized_pnl ?? 0;
+      const sign    = upnl >= 0 ? '+' : '';
+      const color   = upnl >= 0 ? '#4fd88a' : '#e74c3c';
+      // Bar: how far toward the limit (0–100%)
+      let barPct = 0, barColor = '#e74c3c';
+      if (limitVal && limitVal < 0 && upnl < 0) {
+        barPct = Math.min(100, Math.round((upnl / limitVal) * 100));
+        barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#4fd88a';
+      }
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-weight:600;color:#ccc">${p.symbol}</td>
+        <td style="color:#666;font-size:0.75rem">${p.broker}</td>
+        <td style="color:#aaa">${p.qty}</td>
+        <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
+        <td>${limitVal && limitVal < 0
+          ? `<div class="pos-pnl-bar-wrap"><div class="pos-pnl-bar" style="width:${barPct}%;background:${barColor}"></div></div>`
+          : '<span style="color:#444">—</span>'}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  // Allow pressing Enter in limit inputs
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('riskLimitInput')
+      .addEventListener('keydown', e => { if (e.key === 'Enter') saveRiskLimit(); });
+    document.getElementById('posLimitInput')
+      .addEventListener('keydown', e => { if (e.key === 'Enter') savePositionLimit(); });
+  });
+
+  // -----------------------------------------------------------------------
   // Boot
   // -----------------------------------------------------------------------
   async function load() {
     const res = await fetch('/api/routing/rules');
     rules = await res.json();
     renderAll();
+    await loadRisk();
+    setInterval(loadRisk, 15000);  // refresh P&L + status every 15s
   }
 
   // -----------------------------------------------------------------------

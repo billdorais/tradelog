@@ -174,6 +174,46 @@ class IBBroker:
     # EOD — close all open positions
     # ------------------------------------------------------------------
 
+    def get_positions(self):
+        """Return open positions with live unrealized P&L via portfolio()."""
+        with self._lock:
+            self._ensure_connected()
+            result = []
+            for item in self._ib.portfolio():
+                qty = item.position
+                if qty == 0:
+                    continue
+                result.append({
+                    "symbol":         item.contract.symbol,
+                    "qty":            float(qty),
+                    "side":           "long" if qty > 0 else "short",
+                    "market_value":   float(item.marketValue),
+                    "unrealized_pnl": float(item.unrealizedPNL),
+                })
+            return result
+
+    def close_position(self, symbol, qty):
+        """Close a single position by placing a market order in the opposite direction."""
+        with self._lock:
+            self._ensure_connected()
+            qty = float(qty)
+            if qty == 0:
+                return {"success": False, "error": "qty is 0"}
+            action   = "SELL" if qty > 0 else "BUY"
+            abs_qty  = abs(qty)
+            contract = Stock(symbol, "SMART", "USD")
+            order    = MarketOrder(action, abs_qty)
+            trade    = self._ib.placeOrder(contract, order)
+            self._ib.sleep(2)
+            log.info("Position stop close: %s %s %s — %s", action, abs_qty, symbol, trade.orderStatus.status)
+            return {
+                "success": True,
+                "symbol":  symbol,
+                "action":  action,
+                "qty":     abs_qty,
+                "status":  trade.orderStatus.status,
+            }
+
     def close_all_positions(self):
         """Place market orders to flatten all open positions. Returns list of actions taken."""
         with self._lock:

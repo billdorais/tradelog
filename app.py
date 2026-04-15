@@ -32,6 +32,24 @@ _ib_live_task_queue = None
 _ib_paused          = False   # when True, background thread skips reconnect
 eod_close_enabled   = True
 
+# ---------------------------------------------------------------------------
+# Risk management state
+# MAX_DAILY_LOSS: halt + liquidate when daily P&L drops to this value (e.g. -500.0).
+#                 Set to 0 (default) to disable.
+# SIGNAL_COOLDOWN_SECS: drop duplicate signals for the same strategy+ticker+action
+#                       within this window. Set to 0 to disable.
+# ---------------------------------------------------------------------------
+MAX_DAILY_LOSS        = float(os.environ.get("MAX_DAILY_LOSS", "0"))
+MAX_POSITION_LOSS     = float(os.environ.get("MAX_POSITION_LOSS", "0"))
+SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
+
+_risk_halted          = False   # True when daily loss limit is breached
+_last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
+_blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
+_auto_closed_symbols  = set()   # symbols already sent a position-stop close today
+_latest_positions     = []      # cached by position monitor for the status endpoint
+_risk_lock            = threading.Lock()
+
 if os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
     from brokers.ib_broker import IBBroker
@@ -334,6 +352,200 @@ if os.environ.get("COINBASE_KEY"):
     from brokers.coinbase_broker import CoinbaseBroker
     coinbase_broker = CoinbaseBroker()
     log.info("Coinbase broker initialised")
+
+# ---------------------------------------------------------------------------
+# Risk monitor — polls P&L every 60s; halts + liquidates on MAX_DAILY_LOSS
+# ---------------------------------------------------------------------------
+
+def _compute_daily_pnl():
+    """Return today's total P&L (realized + unrealized) across active brokers.
+    For IB, RealizedPnL + UnrealizedPnL both reset at the start of each trading
+    day, making them the most accurate source. Returns None if unavailable."""
+    # IB paper: RealizedPnL + UnrealizedPnL reset daily — best source
+    if ib_broker and ib_broker.is_connected():
+        try:
+            snap = ib_broker.account_snapshot()
+            return snap["realized_pnl"] + snap["unrealized_pnl"]
+        except Exception as _e:
+            log.debug("_compute_daily_pnl IB error: %s", _e)
+    # IB live
+    if ib_broker_live and ib_broker_live.is_connected():
+        try:
+            snap = ib_broker_live.account_snapshot()
+            return snap["realized_pnl"] + snap["unrealized_pnl"]
+        except Exception as _e:
+            log.debug("_compute_daily_pnl IB Live error: %s", _e)
+    # Alpaca: unrealized P&L from open positions (realized not tracked in-app)
+    if alpaca_broker:
+        try:
+            positions = alpaca_broker.get_positions()
+            return sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+        except Exception as _e:
+            log.debug("_compute_daily_pnl Alpaca error: %s", _e)
+    return None
+
+
+def _risk_monitor_loop():
+    """Background thread: poll daily P&L every 60s.
+    When P&L hits MAX_DAILY_LOSS, set _risk_halted and close all positions."""
+    global _risk_halted
+    time.sleep(20)  # wait for broker connections to establish
+    while True:
+        if MAX_DAILY_LOSS < 0:
+            try:
+                pnl = _compute_daily_pnl()
+                if pnl is not None and pnl <= MAX_DAILY_LOSS:
+                    with _risk_lock:
+                        already_halted = _risk_halted
+                        _risk_halted = True
+                    if not already_halted:
+                        log.error(
+                            "RISK HALT: daily P&L $%.2f reached limit $%.2f — liquidating all positions",
+                            pnl, MAX_DAILY_LOSS,
+                        )
+                        for _broker, _label in [
+                            (alpaca_broker,   "Alpaca"),
+                            (coinbase_broker, "Coinbase"),
+                        ]:
+                            if _broker:
+                                try:
+                                    _broker.close_all_positions()
+                                    log.info("Risk liquidation: %s positions closed", _label)
+                                except Exception as _e:
+                                    log.error("Risk liquidation %s failed: %s", _label, _e)
+                        # IB close must run on the background IB thread
+                        if _ib_task_queue is not None and ib_broker:
+                            try:
+                                _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
+                                log.info("Risk liquidation: IB positions closed")
+                            except Exception as _e:
+                                log.error("Risk liquidation IB failed: %s", _e)
+                        if _ib_live_task_queue is not None and ib_broker_live:
+                            try:
+                                _submit_ib_live_task(ib_broker_live.close_all_positions, _timeout=60)
+                                log.info("Risk liquidation: IB Live positions closed")
+                            except Exception as _e:
+                                log.error("Risk liquidation IB Live failed: %s", _e)
+            except Exception as _e:
+                log.warning("Risk monitor error: %s", _e)
+        time.sleep(60)
+
+
+threading.Thread(target=_risk_monitor_loop, daemon=True).start()
+
+
+def _find_strategy_for_symbol(symbol):
+    """Return the most recent strategy name that traded this symbol, or None."""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        p    = placeholder()
+        cur.execute(
+            f"SELECT strategy FROM trades WHERE ticker={p} AND strategy IS NOT NULL "
+            f"ORDER BY id DESC LIMIT 1",
+            (symbol,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0] if DATABASE_URL else row["strategy"]
+    except Exception as _e:
+        log.debug("_find_strategy_for_symbol failed: %s", _e)
+    return None
+
+
+def _check_position_stops():
+    """Check all open positions against MAX_POSITION_LOSS.
+    Closes offending positions and blocks the originating strategy."""
+    global _latest_positions
+    all_positions = []
+
+    if alpaca_broker:
+        try:
+            for p in alpaca_broker.get_positions():
+                p["broker"] = "alpaca"
+                all_positions.append(p)
+        except Exception as _e:
+            log.debug("Position stop: Alpaca get_positions failed: %s", _e)
+
+    if _ib_task_queue is not None and ib_broker:
+        try:
+            for p in _submit_ib_task(ib_broker.get_positions, _timeout=15):
+                p["broker"] = "ib"
+                all_positions.append(p)
+        except Exception as _e:
+            log.debug("Position stop: IB get_positions failed: %s", _e)
+
+    if _ib_live_task_queue is not None and ib_broker_live:
+        try:
+            for p in _submit_ib_live_task(ib_broker_live.get_positions, _timeout=15):
+                p["broker"] = "ib-live"
+                all_positions.append(p)
+        except Exception as _e:
+            log.debug("Position stop: IB Live get_positions failed: %s", _e)
+
+    with _risk_lock:
+        _latest_positions = all_positions
+
+    for pos in all_positions:
+        upnl   = float(pos.get("unrealized_pnl") or 0)
+        symbol = pos["symbol"]
+        broker = pos["broker"]
+
+        if upnl > MAX_POSITION_LOSS:   # e.g. -150 > -200 → still OK
+            continue
+
+        with _risk_lock:
+            if symbol in _auto_closed_symbols:
+                continue
+            _auto_closed_symbols.add(symbol)
+
+        strategy = _find_strategy_for_symbol(symbol)
+
+        log.error(
+            "POSITION STOP: %s unrealized P&L $%.2f hit limit $%.2f [%s] — "
+            "closing position, blocking strategy '%s'",
+            symbol, upnl, MAX_POSITION_LOSS, broker, strategy,
+        )
+
+        # Close the position
+        try:
+            if broker == "alpaca":
+                alpaca_broker.close_position(symbol)
+            elif broker == "ib" and _ib_task_queue is not None:
+                _submit_ib_task(ib_broker.close_position, symbol, pos.get("qty", 0), _timeout=30)
+            elif broker == "ib-live" and _ib_live_task_queue is not None:
+                _submit_ib_live_task(ib_broker_live.close_position, symbol, pos.get("qty", 0), _timeout=30)
+            log.info("Position stop: %s closed on %s", symbol, broker)
+        except Exception as _e:
+            log.error("Position stop close failed for %s: %s", symbol, _e)
+
+        # Block the strategy for the rest of the session
+        if strategy:
+            with _risk_lock:
+                _blocked_strategies[strategy] = {
+                    "reason":   f"Position stop triggered: {symbol} loss ${upnl:.2f}",
+                    "symbol":   symbol,
+                    "loss":     round(upnl, 2),
+                    "ts":       datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    "broker":   broker,
+                }
+            log.error("Strategy '%s' blocked — position stop on %s (loss=$%.2f)", strategy, symbol, upnl)
+
+
+def _position_monitor_loop():
+    """Background thread: poll positions every 30s, close any that breach MAX_POSITION_LOSS."""
+    time.sleep(25)  # stagger from risk monitor
+    while True:
+        if MAX_POSITION_LOSS < 0:
+            try:
+                _check_position_stops()
+            except Exception as _e:
+                log.warning("Position monitor error: %s", _e)
+        time.sleep(30)
+
+
+threading.Thread(target=_position_monitor_loop, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Database — PostgreSQL on Railway, SQLite locally
@@ -650,6 +862,22 @@ def webhook():
         except Exception as e:
             log.warning("Trading hours check failed: %s", e)
 
+    # Duplicate signal filter — drop retries / double-fires within cooldown window
+    if SIGNAL_COOLDOWN_SECS > 0 and order_action in ("BUY", "SELL"):
+        _sig_key  = (strategy_name or "", ticker or "", order_action)
+        _now_ts   = time.time()
+        with _risk_lock:
+            _last_ts = _last_signal_ts.get(_sig_key, 0)
+            _remaining = SIGNAL_COOLDOWN_SECS - (_now_ts - _last_ts)
+            if _remaining > 0:
+                log.info(
+                    "Duplicate signal dropped — %s %s %s (%.1fs cooldown remaining)",
+                    order_action, ticker, strategy_name, _remaining,
+                )
+                return jsonify({"status": "skipped", "reason": "duplicate_signal",
+                                "cooldown_remaining": round(_remaining, 1)}), 200
+            _last_signal_ts[_sig_key] = _now_ts
+
     conn = get_db()
     cur  = conn.cursor()
 
@@ -667,6 +895,35 @@ def webhook():
         broker_name or None,
     ))
     conn.commit()
+
+    # Daily max loss circuit breaker — block new orders if halt is active
+    if MAX_DAILY_LOSS < 0 and order_action in ("BUY", "SELL"):
+        with _risk_lock:
+            _halted = _risk_halted
+        if _halted:
+            log.warning("Risk halt active — order blocked: %s %s %s", order_action, quantity, ticker)
+            _update_exec(cur, trade_id, "blocked", "Daily max loss limit reached — orders halted")
+            conn.commit()
+            conn.close()
+            return jsonify({"status": "blocked", "reason": "daily_loss_limit"}), 200
+
+    # Per-strategy block (set by position stop monitor)
+    if strategy_name and order_action in ("BUY", "SELL"):
+        with _risk_lock:
+            _block_info = _blocked_strategies.get(strategy_name)
+        if _block_info:
+            log.warning("Strategy '%s' is blocked — order rejected: %s %s %s",
+                        strategy_name, order_action, quantity, ticker)
+            _update_exec(cur, trade_id, "blocked",
+                         f"Strategy blocked: {_block_info['reason']}")
+            conn.commit()
+            conn.close()
+            return jsonify({
+                "status":   "blocked",
+                "reason":   "strategy_blocked",
+                "strategy": strategy_name,
+                "detail":   _block_info,
+            }), 200
 
     # 2. Route to broker(s) — supports single or multi-broker pipelines
     exec_status = None
@@ -1034,6 +1291,105 @@ def eod_close_toggle():
     return jsonify({"eod_close_enabled": eod_close_enabled})
 
 
+@app.route("/api/risk/status")
+def risk_status():
+    pnl = _compute_daily_pnl()
+    with _risk_lock:
+        halted     = _risk_halted
+        blocked    = dict(_blocked_strategies)
+        positions  = list(_latest_positions)
+    return jsonify({
+        "halted":               halted,
+        "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,
+        "current_pnl":          round(pnl, 2) if pnl is not None else None,
+        "enabled":              MAX_DAILY_LOSS < 0,
+        "max_position_loss":    MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
+        "position_stop_enabled": MAX_POSITION_LOSS < 0,
+        "positions":            positions,
+        "blocked_strategies":   blocked,
+    })
+
+
+def _update_env_file(key, value):
+    """Update or insert KEY=value in the .env file next to app.py.
+    Preserves all other lines. Safe to call even if the file doesn't exist."""
+    import re as _re
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        try:
+            with open(env_path, "r") as _f:
+                content = _f.read()
+        except FileNotFoundError:
+            content = ""
+        line    = f"{key}={value}"
+        pattern = rf"^{_re.escape(key)}=.*$"
+        if _re.search(pattern, content, _re.MULTILINE):
+            content = _re.sub(pattern, line, content, flags=_re.MULTILINE)
+        else:
+            content = content.rstrip("\n") + ("\n" if content else "") + line + "\n"
+        with open(env_path, "w") as _f:
+            _f.write(content)
+        log.info("Updated .env: %s=%s", key, value)
+    except Exception as _e:
+        log.warning("Failed to update .env: %s", _e)
+
+
+@app.route("/api/risk/limit", methods=["POST"])
+def risk_set_limit():
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS
+    data = request.get_json(silent=True) or {}
+    changed = []
+    if "max_daily_loss" in data:
+        try:
+            MAX_DAILY_LOSS = float(data["max_daily_loss"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_daily_loss must be a number"}), 400
+        _update_env_file("MAX_DAILY_LOSS", f"{MAX_DAILY_LOSS:g}")
+        log.info("MAX_DAILY_LOSS updated to %g", MAX_DAILY_LOSS)
+        changed.append("max_daily_loss")
+    if "max_position_loss" in data:
+        try:
+            MAX_POSITION_LOSS = float(data["max_position_loss"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_position_loss must be a number"}), 400
+        _update_env_file("MAX_POSITION_LOSS", f"{MAX_POSITION_LOSS:g}")
+        log.info("MAX_POSITION_LOSS updated to %g", MAX_POSITION_LOSS)
+        changed.append("max_position_loss")
+    return jsonify({
+        "max_daily_loss":    MAX_DAILY_LOSS,
+        "max_position_loss": MAX_POSITION_LOSS,
+        "changed":           changed,
+    })
+
+
+@app.route("/api/risk/reset", methods=["POST"])
+def risk_reset():
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    global _risk_halted
+    with _risk_lock:
+        _risk_halted = False
+    log.info("Risk halt manually cleared")
+    return jsonify({"halted": False})
+
+
+@app.route("/api/risk/unblock/<path:strategy_name>", methods=["POST"])
+def risk_unblock_strategy(strategy_name):
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    with _risk_lock:
+        removed = _blocked_strategies.pop(strategy_name, None)
+        _auto_closed_symbols.discard(
+            removed["symbol"] if removed else ""
+        )
+    if removed:
+        log.info("Strategy '%s' unblocked manually", strategy_name)
+        return jsonify({"unblocked": strategy_name})
+    return jsonify({"error": "strategy not found"}), 404
+
+
 @app.route("/api/routing/rules", methods=["GET"])
 def routing_rules_list():
     conn = get_db()
@@ -1210,7 +1566,7 @@ def dashboard():
 
 @app.route("/routing")
 def routing_page():
-    return render_template("routing.html")
+    return render_template("routing.html", webhook_token=WEBHOOK_TOKEN)
 
 
 @app.route("/about")

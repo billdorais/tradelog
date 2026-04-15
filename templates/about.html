@@ -154,8 +154,11 @@
       &nbsp;&nbsp;│&nbsp; 1. Validates webhook token<br>
       &nbsp;&nbsp;│&nbsp; 2. Matches signal against enabled pipelines by strategy name<br>
       &nbsp;&nbsp;│&nbsp; 3. Applies pipeline node settings (instrument, quantity, mode, broker…)<br>
-      &nbsp;&nbsp;│&nbsp; 4. Enforces Trading Hours node — drops signal if outside session window<br>
-      &nbsp;&nbsp;│&nbsp; 5. Logs trade to PostgreSQL<br>
+      &nbsp;&nbsp;│&nbsp; 4. Enforces Trading Hours node — drops if outside session window<br>
+      &nbsp;&nbsp;│&nbsp; 5. Duplicate signal filter — drops if same strategy+ticker+action fired within cooldown<br>
+      &nbsp;&nbsp;│&nbsp; 6. Logs signal to PostgreSQL<br>
+      &nbsp;&nbsp;│&nbsp; 7. Daily max loss check — blocks &amp; records if account P&amp;L hit MAX_DAILY_LOSS<br>
+      &nbsp;&nbsp;│&nbsp; 8. Strategy block check — blocks if strategy was position-stopped earlier today<br>
       &nbsp;&nbsp;▼<br>
       Broker selection (from Broker node or "broker" field in payload)<br>
       &nbsp;&nbsp;├─ IB Paper/Live → ib_broker.py → IB Gateway → Interactive Brokers servers<br>
@@ -164,6 +167,52 @@
       &nbsp;&nbsp;▼<br>
       Order Executed → Fill synced → Dashboard shows paired TV + broker rows
     </div>
+
+    <h2>Risk Management</h2>
+    <p>
+      Three independent safety guards run alongside the signal router. All limits are set
+      from the <strong>Risk panel at the top of the Signal Router page</strong> and are saved to
+      <code style="font-size:0.82rem;color:#aaa">.env</code> so they survive restarts.
+      The panel refreshes every 15 seconds and shows today's P&amp;L, open positions, and any blocked strategies.
+    </p>
+    <table>
+      <tr><th>Guard</th><th>Env Var</th><th>How it works</th></tr>
+      <tr>
+        <td>Daily Max Loss</td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_DAILY_LOSS</code></td>
+        <td>
+          A background thread polls account P&amp;L every 60 seconds. When today's total
+          (realized + unrealized) drops to or below this value, two things happen simultaneously:
+          all open positions are liquidated across every active broker, and an account-wide halt
+          is set that blocks every subsequent incoming order until manually cleared.
+          The halt is cleared with the <em>Clear Halt &amp; Resume Trading</em> button in the risk panel.
+          Set to a negative dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">-500</code>). Default: disabled.
+        </td>
+      </tr>
+      <tr>
+        <td>Per-Position Stop</td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code></td>
+        <td>
+          A background thread polls all open positions every 30 seconds across all active brokers
+          (Alpaca, IB paper, IB live). When any single position's unrealized P&amp;L drops to or
+          below this value, that position is closed immediately and the strategy that opened it
+          is blocked for the rest of the session — any new signals from that strategy are rejected
+          and recorded in the trade log as <em>blocked</em>. Blocked strategies appear as alert
+          cards in the risk panel with an individual <em>Unblock</em> button.
+          Set to a negative dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">-200</code>). Default: disabled.
+        </td>
+      </tr>
+      <tr>
+        <td>Duplicate Signal Filter</td>
+        <td><code style="font-size:0.82rem;color:#aaa">SIGNAL_COOLDOWN_SECS</code></td>
+        <td>
+          Drops a signal silently if the same strategy + ticker + action combination has already
+          been received within the cooldown window. Prevents double-fills caused by TradingView
+          alert retries or accidental duplicate alerts. The response includes the remaining
+          cooldown time. Default: 10 seconds.
+        </td>
+      </tr>
+    </table>
 
     <h2>Signal Router — Pipeline Nodes</h2>
     <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Pipelines can be dragged to reorder and duplicated via the ⧉ button.</p>
@@ -270,6 +319,25 @@
       Fill synced → logged to dashboard
     </div>
 
+    <h2>Environment Variables Reference</h2>
+    <table>
+      <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+      <tr><td>WEBHOOK_TOKEN</td><td>—</td><td>Required. Secret token that TradingView includes in every alert URL. Requests with the wrong token are rejected with 401.</td></tr>
+      <tr><td>DATABASE_URL</td><td>SQLite</td><td>PostgreSQL connection string (Railway provides this automatically). When unset, a local <code style="font-size:0.82rem;color:#aaa">trades.db</code> SQLite file is used.</td></tr>
+      <tr><td>IB_HOST</td><td>—</td><td>Hostname of the IB Gateway service (paper). Setting this enables the IB paper broker and starts the background connection thread.</td></tr>
+      <tr><td>IB_PORT</td><td>4002</td><td>IB Gateway paper port.</td></tr>
+      <tr><td>IB_HOST_LIVE</td><td>—</td><td>Hostname of the IB Gateway live instance. Setting this enables a second IB connection for live trading.</td></tr>
+      <tr><td>IB_PORT_LIVE</td><td>4004</td><td>IB Gateway live port.</td></tr>
+      <tr><td>ALPACA_KEY</td><td>—</td><td>Alpaca API key. Setting this enables the Alpaca broker.</td></tr>
+      <tr><td>ALPACA_SECRET</td><td>—</td><td>Alpaca API secret.</td></tr>
+      <tr><td>ALPACA_PAPER</td><td>true</td><td>Set to <code style="font-size:0.82rem;color:#aaa">false</code> to switch Alpaca to live trading.</td></tr>
+      <tr><td>COINBASE_KEY</td><td>—</td><td>Coinbase Advanced Trade API key. Setting this enables the Coinbase broker.</td></tr>
+      <tr><td>COINBASE_SECRET</td><td>—</td><td>Coinbase API secret.</td></tr>
+      <tr><td>MAX_DAILY_LOSS</td><td>0 (off)</td><td>Negative dollar value. Halts all trading and liquidates all positions when today's P&amp;L reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
+      <tr><td>MAX_POSITION_LOSS</td><td>0 (off)</td><td>Negative dollar value. Closes a single position and blocks its strategy when unrealized loss reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
+      <tr><td>SIGNAL_COOLDOWN_SECS</td><td>10</td><td>Seconds to suppress duplicate signals for the same strategy + ticker + action combination.</td></tr>
+    </table>
+
     <h2>Backtester — Data Sources</h2>
     <table>
       <tr><th>Source</th><th>Max History</th><th>Intervals</th><th>Notes</th></tr>
@@ -284,6 +352,55 @@
         <td>10+ years</td>
         <td>5m, 15m, 30m, 1h, 1d</td>
         <td>Requires connected IB Gateway and a market data subscription. Fetched in chunks to stay within IB API limits.</td>
+      </tr>
+    </table>
+
+    <h2>Recent Updates</h2>
+    <table>
+      <tr><th>Area</th><th>What changed</th></tr>
+      <tr>
+        <td>Risk Management</td>
+        <td>
+          Three new safety guards added: daily max loss circuit breaker, per-position dollar stop,
+          and duplicate signal filter. All are configurable live from the Signal Router risk panel
+          and persist to <code style="font-size:0.82rem;color:#aaa">.env</code> on save.
+        </td>
+      </tr>
+      <tr>
+        <td>Signal Router — Risk Panel</td>
+        <td>
+          New panel at the top of the Signal Router page shows today's P&amp;L, guard status,
+          live open positions with a progress bar toward the per-position limit, and alert cards
+          for any blocked strategies with individual Unblock buttons.
+        </td>
+      </tr>
+      <tr>
+        <td>Broker — Alpaca</td>
+        <td>
+          Added <code style="font-size:0.82rem;color:#aaa">close_position(symbol)</code> for single-position closes triggered by the position stop.
+          Alpaca fill cache TTL and pagination improved for faster dashboard load.
+        </td>
+      </tr>
+      <tr>
+        <td>Broker — IB</td>
+        <td>
+          Added <code style="font-size:0.82rem;color:#aaa">get_positions()</code> (via <code style="font-size:0.82rem;color:#aaa">portfolio()</code> for live unrealized P&amp;L)
+          and <code style="font-size:0.82rem;color:#aaa">close_position(symbol, qty)</code> for position-stop support on both paper and live gateways.
+        </td>
+      </tr>
+      <tr>
+        <td>Dashboard</td>
+        <td>
+          Trade feed is now paginated. Alpaca fills are pre-warmed into a cache on startup to eliminate
+          the first-load delay.
+        </td>
+      </tr>
+      <tr>
+        <td>IB Execution Sync</td>
+        <td>
+          Soft-delete added to <code style="font-size:0.82rem;color:#aaa">ib_executions</code> so dismissed fills are never re-inserted by the periodic sync.
+          P&amp;L pairing now groups trades by (strategy, ticker) rather than ticker alone to avoid cross-strategy P&amp;L contamination.
+        </td>
       </tr>
     </table>
 
