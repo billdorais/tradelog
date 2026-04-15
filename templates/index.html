@@ -712,6 +712,8 @@
       const stats = buildStatsFromClosed(closedTrades);
       const lineColor = (stats.equity_curve.length ? stats.equity_curve[stats.equity_curve.length-1].value : 0) >= 0 ? '#5fe0a0' : '#ef5350';
       renderStats(stats, lineColor, tradesForScatter);
+      // Overwrite net-daily bar with true per-day sums (not cumulative diff)
+      drawNetDailyChart(closedTrades);
       if (!closedTrades.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
@@ -1234,16 +1236,30 @@
       drawTimeScatter(stats.equity_curve || [], tradesForScatter);
     }
 
-    function drawNetDailyChart(equityCurve) {
-      // Compute per-day net P&L (day-over-day change in cumulative equity)
-      const dayMap = {};
-      for (const p of equityCurve) {
-        const day = p.time.slice(0, 10);
-        dayMap[day] = p.value;
+    function drawNetDailyChart(equityCurveOrTrades) {
+      // Accept either a closedTrades array [{time, pnl}] for direct summing,
+      // or an equityCurve [{time, value}] for cumulative-diff approach.
+      let labels, netValues;
+      if (equityCurveOrTrades.length && 'pnl' in equityCurveOrTrades[0]) {
+        // Direct sum: group pnl by close date
+        const dayPnl = {};
+        for (const t of equityCurveOrTrades) {
+          const day = (t.time || '').slice(0, 10);
+          if (day) dayPnl[day] = (dayPnl[day] || 0) + t.pnl;
+        }
+        labels    = Object.keys(dayPnl).sort();
+        netValues = labels.map(d => parseFloat(dayPnl[d].toFixed(2)));
+      } else {
+        // Diff of cumulative equity curve
+        const dayMap = {};
+        for (const p of equityCurveOrTrades) {
+          const day = p.time.slice(0, 10);
+          dayMap[day] = p.value;
+        }
+        labels = Object.keys(dayMap).sort();
+        const cumValues = labels.map(d => dayMap[d]);
+        netValues = cumValues.map((v, i) => i === 0 ? v : parseFloat((v - cumValues[i - 1]).toFixed(2)));
       }
-      const labels = Object.keys(dayMap).sort();
-      const cumValues = labels.map(d => dayMap[d]);
-      const netValues = cumValues.map((v, i) => i === 0 ? v : parseFloat((v - cumValues[i - 1]).toFixed(2)));
 
       if (netDailyChartInstance) { netDailyChartInstance.destroy(); netDailyChartInstance = null; }
       if (!netValues.length) return;
@@ -1590,6 +1606,7 @@
     }
 
     async function applyEquityFilter() {
+      if (activeTab === 'alpaca') { renderAlpacaStats(); return; }
       const strategy = document.getElementById('equityStrategyFilter').value;
       const fromDate  = document.getElementById('equityFromDate').value;
       const stats = await fetch(buildStatsUrl(strategy, fromDate)).then(r => r.json());
@@ -1597,6 +1614,7 @@
     }
 
     async function applyDailyFilter() {
+      if (activeTab === 'alpaca') { renderAlpacaStats(); return; }
       const strategy = document.getElementById('dailyStrategyFilter').value;
       const fromDate  = document.getElementById('equityFromDate').value;
       const stats = await fetch(buildStatsUrl(strategy, fromDate)).then(r => r.json());
