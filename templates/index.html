@@ -629,12 +629,13 @@
         filter.style.display     = '';
         label.textContent        = 'Cumulative P&L from closed trades';
         applyEquityFilter();
+        renderTable(allTrades, selectedStrategy); // restore signals stat counts
       } else if (tab === 'alpaca') {
         alpacaBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer';
         note.style.display      = 'flex';
         note.textContent        = 'Cumulative realized P&L from Alpaca fills.';
         label.textContent       = 'Cumulative realized P&L from Alpaca fills';
-        loadAlpacaEquity();
+        renderAlpacaStats();
       } else {
         ibBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #4a90d9;background:rgba(74,144,217,0.15);color:#4a90d9;cursor:pointer';
         note.style.display  = 'flex';
@@ -658,16 +659,14 @@
       }
     }
 
-    function loadAlpacaEquity() {
-      // Build cumulative P&L from allAlpacaExecs using same FIFO pairing as pairAlpacaExecs
-      const execs = [...allAlpacaExecs];
-      // Deduplicate
+    function _pairAlpacaFills(allExecs) {
+      // Deduplicate and FIFO-pair Alpaca fills.
+      // Returns { closedTrades: [{time, pnl}], tradesForScatter: [trade-like objects] }
       const seen = new Set();
-      const deduped = execs.filter(e => {
+      const deduped = [...allExecs].filter(e => {
         const key = `${e.symbol}|${e.side}|${e.time}|${e.shares}`;
         if (seen.has(key)) return false; seen.add(key); return true;
       });
-      // Parse UTC time robustly
       const toMs = e => {
         let raw = (e.time || '');
         let fixed = raw.includes('-') ? raw : raw.replace(/^(\d{4})(\d{2})(\d{2})\s+/, '$1-$2-$3T');
@@ -675,37 +674,45 @@
         return new Date(fixed);
       };
       const sorted = [...deduped].sort((a, b) => toMs(a) - toMs(b));
-      // FIFO match buys to sells per symbol
       const longs = {}, shorts = {};
-      const trades = [];
+      const closedTrades = [], tradesForScatter = [];
       for (const e of sorted) {
         const sym = (e.symbol || '').toUpperCase();
+        const d   = toMs(e);
+        const ts  = d.toISOString();
         if (e.side === 'BOT') {
           if (shorts[sym] && shorts[sym].length) {
             const entry = shorts[sym].shift();
-            trades.push({ time: toMs(e), pnl: (entry.price - e.price) * e.shares });
+            closedTrades.push({ time: ts, pnl: (entry.price - e.price) * e.shares });
+            tradesForScatter.push({ action:'SELL', ticker:sym, price:entry.price, quantity:e.shares, received_at:toMs(entry).toISOString(), strategy:'', id:null });
+            tradesForScatter.push({ action:'BUY',  ticker:sym, price:e.price,     quantity:e.shares, received_at:ts,                        strategy:'', id:null });
           } else { if (!longs[sym]) longs[sym] = []; longs[sym].push(e); }
         } else if (e.side === 'SLD') {
           if (longs[sym] && longs[sym].length) {
             const entry = longs[sym].shift();
-            trades.push({ time: toMs(e), pnl: (e.price - entry.price) * e.shares });
+            closedTrades.push({ time: ts, pnl: (e.price - entry.price) * e.shares });
+            tradesForScatter.push({ action:'BUY',  ticker:sym, price:entry.price, quantity:e.shares, received_at:toMs(entry).toISOString(), strategy:'', id:null });
+            tradesForScatter.push({ action:'SELL', ticker:sym, price:e.price,     quantity:e.shares, received_at:ts,                        strategy:'', id:null });
           } else { if (!shorts[sym]) shorts[sym] = []; shorts[sym].push(e); }
         }
       }
-      trades.sort((a, b) => a.time - b.time);
-      // Build cumulative series
-      let cum = 0;
-      const labels = [], values = [];
-      for (const t of trades) {
-        cum += t.pnl;
-        labels.push(t.time.toLocaleString('en-US', { timeZone: 'America/New_York', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false }));
-        values.push(parseFloat(cum.toFixed(2)));
-      }
-      const finalVal  = values.length ? values[values.length - 1] : 0;
-      const lineColor = finalVal >= 0 ? '#5fe0a0' : '#ef5350';
-      drawChart(labels, values, lineColor);
+      closedTrades.sort((a, b) => new Date(a.time) - new Date(b.time));
+      return { closedTrades, tradesForScatter, deduped };
+    }
 
-      if (!values.length) {
+    function renderAlpacaStats() {
+      const { closedTrades, tradesForScatter, deduped } = _pairAlpacaFills(allAlpacaExecs);
+      // Update top stat counts
+      document.getElementById('statTotal').textContent    = deduped.length;
+      document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
+      document.getElementById('statSells').textContent    = deduped.filter(e => e.side === 'SLD').length;
+      document.getElementById('statTickers').textContent  = new Set(deduped.map(e => e.symbol).filter(Boolean)).size;
+      document.getElementById('statExecuted').textContent = closedTrades.length;
+      document.getElementById('statErrors').textContent   = '—';
+      const stats = buildStatsFromClosed(closedTrades);
+      const lineColor = (stats.equity_curve.length ? stats.equity_curve[stats.equity_curve.length-1].value : 0) >= 0 ? '#5fe0a0' : '#ef5350';
+      renderStats(stats, lineColor, tradesForScatter);
+      if (!closedTrades.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
         c.fillText('No closed Alpaca trades yet', document.getElementById('equityChart').width / 2, 60);
@@ -744,6 +751,38 @@
       if (n === null || n === undefined) return '—';
       const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       return (n < 0 ? '-' : '') + prefix + s;
+    }
+
+    function buildStatsFromClosed(closedTrades) {
+      if (!closedTrades.length) return {
+        completed_trades: 0, win_rate: 0, avg_win: 0, avg_loss: 0,
+        profit_factor: null, max_drawdown: 0, equity_curve: [],
+      };
+      const wins   = closedTrades.filter(t => t.pnl > 0);
+      const losses = closedTrades.filter(t => t.pnl <= 0);
+      const winRate   = Math.round(wins.length / closedTrades.length * 1000) / 10;
+      const avgWin    = wins.length   ? Math.round(wins.reduce((s,t)=>s+t.pnl,0)/wins.length*100)/100 : 0;
+      const avgLoss   = losses.length ? Math.round(losses.reduce((s,t)=>s+t.pnl,0)/losses.length*100)/100 : 0;
+      const grossWin  = wins.reduce((s,t)=>s+t.pnl,0);
+      const grossLoss = Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
+      const pf        = grossLoss > 0 ? Math.round(grossWin/grossLoss*100)/100 : null;
+      let cum = 0, peak = 0, maxDd = 0;
+      const equityCurve = closedTrades.map(t => {
+        cum += t.pnl;
+        if (cum > peak) peak = cum;
+        const dd = peak - cum;
+        if (dd > maxDd) maxDd = dd;
+        return { time: t.time, value: Math.round(cum*100)/100 };
+      });
+      return {
+        completed_trades: closedTrades.length,
+        win_rate:         winRate,
+        avg_win:          avgWin,
+        avg_loss:         avgLoss,
+        profit_factor:    pf,
+        max_drawdown:     Math.round(maxDd*100)/100,
+        equity_curve:     equityCurve,
+      };
     }
 
     function computePnL(trades) {
@@ -1140,7 +1179,8 @@
       });
     }
 
-    function renderStats(stats) {
+    function renderStats(stats, lineColor, tradesForScatter) {
+      lineColor = lineColor || '#a78bfa';
       const noData = !stats.completed_trades;
 
       // Net P&L
@@ -1179,22 +1219,19 @@
       document.getElementById('wlWinSeg').style.width  = (avgWin  / total * 100) + '%';
       document.getElementById('wlLossSeg').style.width = (avgLoss / total * 100) + '%';
 
-      if (activeTab === 'signals') {
-        const labels    = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
-        const values    = (stats.equity_curve || []).map(p => p.value);
-        const tradeIds  = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
-        drawChart(labels, values, '#a78bfa', tradeIds);
-
-        if (!values.length) {
-          const chartCanvas = document.getElementById('equityChart');
-          const c = chartCanvas.getContext('2d');
-          c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
-          c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
-        }
+      const labels   = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
+      const values   = (stats.equity_curve || []).map(p => p.value);
+      const tradeIds = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
+      drawChart(labels, values, lineColor, tradeIds);
+      if (!values.length && activeTab === 'signals') {
+        const chartCanvas = document.getElementById('equityChart');
+        const c = chartCanvas.getContext('2d');
+        c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
+        c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
       }
 
       drawDailyChart(stats.equity_curve || []);
-      drawTimeScatter(stats.equity_curve || []);
+      drawTimeScatter(stats.equity_curve || [], tradesForScatter);
     }
 
     function drawNetDailyChart(equityCurve) {
@@ -1250,16 +1287,15 @@
       });
     }
 
-    function drawTimeScatter(equityCurveArg) {
+    function drawTimeScatter(equityCurveArg, tradesOverride) {
       // Use provided curve or last known curve, filtered by strategy selector
       const curve = equityCurveArg || _lastEquityCurve;
       if (equityCurveArg) _lastEquityCurve = equityCurveArg;
 
       const stratFilter = (document.getElementById('timeScatterStrategyFilter') || {}).value || '';
 
-      // Extract per-trade P&L from consecutive cumulative values
-      // Also populate the strategy filter if we have fresh allTrades data
-      if (equityCurveArg) {
+      // Populate strategy filter dropdown when using allTrades (signals mode)
+      if (equityCurveArg && !tradesOverride) {
         const sel = document.getElementById('timeScatterStrategyFilter');
         if (sel) {
           const strategies = [...new Set(allTrades.map(t => t.strategy).filter(Boolean))].sort();
@@ -1276,10 +1312,10 @@
       const ET_CLOSE_MINUTES = 16 * 60;    // 4:00 PM = 960 min
       const points = [];
 
-      // Filter trades by strategy to get time-of-day
-      const tradesForScatter = stratFilter
-        ? allTrades.filter(t => t.strategy === stratFilter)
-        : allTrades;
+      // Use override (e.g. Alpaca fills) or filter allTrades by strategy
+      const tradesForScatter = tradesOverride
+        ? tradesOverride
+        : (stratFilter ? allTrades.filter(t => t.strategy === stratFilter) : allTrades);
 
       // Re-pair to get per-trade P&L with exit time (for time-of-day)
       const openLongs = {}, openShorts = {};
