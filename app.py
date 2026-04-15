@@ -3008,6 +3008,171 @@ def api_analysis():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/alpaca/analysis")
+def api_alpaca_analysis():
+    """Same analysis as /api/analysis but using Alpaca fills.
+    Strategies are resolved by matching each fill to the closest signal
+    in the trades DB by ticker + direction + time."""
+    try:
+        from datetime import datetime as _dt
+
+        if alpaca_broker is None:
+            return jsonify({"error": "Alpaca not configured"}), 400
+
+        fills = alpaca_broker.get_fills()
+        if not fills:
+            return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": []})
+
+        # Build signal lookup: (ticker, side) → sorted list of (unix_ts, strategy)
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT ticker, action, received_at, strategy FROM trades ORDER BY id ASC")
+        rows = cur.fetchall()
+        trades_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
+        conn.close()
+
+        signal_lookup = {}  # (ticker, 'BOT'|'SLD') → [(ts, strategy)]
+        for t in trades_db:
+            ticker   = (t.get("ticker") or "").strip().upper()
+            action   = (t.get("action") or "").strip().upper()
+            received = t.get("received_at") or ""
+            strategy = (t.get("strategy") or "Unknown").strip()
+            side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
+            if not side or not ticker or not received:
+                continue
+            try:
+                ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            signal_lookup.setdefault((ticker, side), []).append((ts, strategy))
+
+        def _resolve_strategy(symbol, side, fill_time_str):
+            try:
+                fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return "Unknown"
+            candidates = signal_lookup.get((symbol.upper(), side), [])
+            if not candidates:
+                return "Unknown"
+            best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+            return best[1]
+
+        # Deduplicate fills
+        seen = set()
+        deduped = []
+        for f in fills:
+            key = f"{f['symbol']}|{f['side']}|{f['time']}|{f['shares']}"
+            if key not in seen:
+                seen.add(key)
+                deduped.append(f)
+
+        # Sort by time
+        def _parse_ts(f):
+            try:
+                return _dt.fromisoformat((f["time"] or "").replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0
+        deduped.sort(key=_parse_ts)
+
+        # FIFO pair fills, resolving strategy from entry fill
+        open_longs  = {}  # symbol → [(price, qty, time, strategy)]
+        open_shorts = {}
+        closed = []
+
+        for f in deduped:
+            sym      = (f.get("symbol") or "").upper()
+            side     = f.get("side", "")
+            price    = float(f.get("price") or 0)
+            qty      = float(f.get("shares") or 0)
+            fill_ts  = f.get("time", "")
+            date_str = fill_ts[:10] if fill_ts else ""
+            strat    = _resolve_strategy(sym, side, fill_ts)
+
+            if side == "BOT":
+                q = open_shorts.get(sym, [])
+                if q:
+                    ep, eq, et, es = q.pop(0)
+                    pnl = (ep - price) * min(qty, eq)
+                    closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
+                                   "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                else:
+                    open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+            elif side == "SLD":
+                q = open_longs.get(sym, [])
+                if q:
+                    ep, eq, et, es = q.pop(0)
+                    pnl = (price - ep) * min(qty, eq)
+                    closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
+                                   "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                else:
+                    open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+
+        def _stats(tlist):
+            if not tlist: return None
+            wins   = [t["pnl"] for t in tlist if t["pnl"] > 0]
+            losses = [t["pnl"] for t in tlist if t["pnl"] <= 0]
+            gw, gl = sum(wins), abs(sum(losses))
+            return {
+                "trades":        len(tlist),
+                "wins":          len(wins),
+                "losses":        len(losses),
+                "win_rate":      round(len(wins) / len(tlist) * 100, 1),
+                "profit_factor": round(gw / gl, 2) if gl > 0 else None,
+                "total_pnl":     round(gw - gl, 2),
+                "avg_win":       round(gw / len(wins),   2) if wins   else 0,
+                "avg_loss":      round(-gl / len(losses), 2) if losses else 0,
+                "largest_win":   round(max(wins),  2) if wins   else 0,
+                "largest_loss":  round(min(losses), 2) if losses else 0,
+            }
+
+        strat_map = {}
+        for c in closed:
+            strat_map.setdefault(c["strategy"], []).append(c)
+        per_strategy = {s: _stats(tl) for s, tl in strat_map.items() if _stats(tl)}
+
+        ticker_map = {}
+        for c in closed:
+            ticker_map.setdefault(c["ticker"], []).append(c)
+        per_ticker = {tk: _stats(tl) for tk, tl in ticker_map.items() if _stats(tl)}
+
+        daily_map = {}
+        for c in closed:
+            daily_map.setdefault(c["date"] or "unknown", []).append(c["pnl"])
+        daily, cum = [], 0
+        for d in sorted(daily_map):
+            day_pnl = round(sum(daily_map[d]), 2)
+            cum = round(cum + day_pnl, 2)
+            daily.append({"date": d, "pnl": day_pnl, "trades": len(daily_map[d]), "cumulative": cum})
+
+        weekly_map = {}
+        for c in closed:
+            try:
+                dt = _dt.fromisoformat(c["date"])
+                wk = dt.strftime("%Y-W%W")
+                wl = dt.strftime("Week of %b %d, %Y")
+            except Exception:
+                wk = wl = "unknown"
+            weekly_map.setdefault(wk, {"label": wl, "pnl": 0, "trades": 0})
+            weekly_map[wk]["pnl"]    = round(weekly_map[wk]["pnl"] + c["pnl"], 2)
+            weekly_map[wk]["trades"] += 1
+        weekly, cum = [], 0
+        for wk in sorted(weekly_map):
+            w = weekly_map[wk]
+            cum = round(cum + w["pnl"], 2)
+            weekly.append({"week": w["label"], "pnl": w["pnl"], "trades": w["trades"], "cumulative": cum})
+
+        return jsonify({
+            "overall":      _stats(closed) or {},
+            "per_strategy": per_strategy,
+            "per_ticker":   per_ticker,
+            "daily":        daily,
+            "weekly":       weekly,
+        })
+    except Exception as e:
+        log.exception("Alpaca analysis error")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/analysis/suggest", methods=["POST"])
 def api_analysis_suggest():
     """Stream AI suggestions for improving profit factor per strategy."""

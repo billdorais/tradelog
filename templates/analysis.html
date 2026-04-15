@@ -103,8 +103,22 @@
 </header>
 
 <div class="page">
-  <div class="page-title">Trading Performance Analysis</div>
-  <div class="page-sub" id="dataAge">Loading…</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+    <div>
+      <div class="page-title">Trading Performance Analysis</div>
+      <div class="page-sub" id="dataAge" style="margin-bottom:0">Loading…</div>
+    </div>
+    <div style="display:flex;gap:4px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px;padding:3px">
+      <button id="srcSignals" onclick="switchSource('signals')"
+        style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
+        Signals
+      </button>
+      <button id="srcAlpaca" onclick="switchSource('alpaca')"
+        style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+        Alpaca
+      </button>
+    </div>
+  </div>
 
   <!-- Overall stats -->
   <div class="stat-grid" id="overallStats"></div>
@@ -201,15 +215,29 @@
 <script>
   let analysisData = null;
   let sortState    = {};   // tableId → {col, dir}
+  let activeSource = 'signals';
+
+  // ── Source toggle ──────────────────────────────────────────────────────────
+  function switchSource(src) {
+    activeSource = src;
+    document.getElementById('srcSignals').style.background = src === 'signals' ? '#1a1d2e' : 'transparent';
+    document.getElementById('srcSignals').style.color      = src === 'signals' ? '#e0e0e0' : '#666';
+    document.getElementById('srcAlpaca').style.background  = src === 'alpaca'  ? '#1a1d2e' : 'transparent';
+    document.getElementById('srcAlpaca').style.color       = src === 'alpaca'  ? '#e0e0e0' : '#666';
+    load();
+  }
 
   // ── Load data ──────────────────────────────────────────────────────────────
   async function load() {
-    const res  = await fetch('/api/analysis');
+    const endpoint = activeSource === 'alpaca' ? '/api/alpaca/analysis' : '/api/analysis';
+    document.getElementById('dataAge').textContent = 'Loading…';
+    const res  = await fetch(endpoint);
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
+    const srcLabel = activeSource === 'alpaca' ? 'Alpaca fills' : 'signal trades';
     document.getElementById('dataAge').textContent =
-      `${data.overall?.trades || 0} closed trades analysed`;
+      `${data.overall?.trades || 0} closed trades analysed (${srcLabel})`;
     renderOverall(data.overall || {});
     renderStratTable(data.per_strategy || {});
     renderTickerTable(data.per_ticker  || {});
