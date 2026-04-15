@@ -1607,7 +1607,7 @@
       btn.textContent = '…';
       try {
         const res = await fetch(`/api/trades/${id}`, {method:'DELETE'}).then(r => r.json());
-        if (res.success) {
+        if (res.ok) {
           btn.closest('tr').style.opacity = '0.3';
           btn.textContent = 'Deleted';
         } else {
