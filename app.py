@@ -1297,23 +1297,38 @@ def broker_disconnect():
         return jsonify({"error": "IB_HOST not configured"}), 400
 
     global _ib_paused, _ib_live_paused
-    _ib_paused      = True  # stop paper background thread from auto-reconnecting
-    _ib_live_paused = True  # stop live background thread from auto-reconnecting
 
     result = {"connected": False, "status": "disconnected", "gateway_restart": None}
 
-    try:
-        if ib_broker.is_connected():
-            ib_broker.disconnect()
-    except Exception as e:
-        log.warning("IB disconnect error: %s", e)
-
-    if ib_broker_live is not None:
+    # Disconnect must run on the background thread that owns the ib_async event loop.
+    # Set the pause flag first so the thread won't immediately reconnect after disconnect.
+    if _ib_task_queue is not None:
         try:
-            if ib_broker_live.is_connected():
-                ib_broker_live.disconnect()
+            def _do_paper_disconnect():
+                global _ib_paused
+                _ib_paused = True
+                if ib_broker.is_connected():
+                    ib_broker.disconnect()
+            _submit_ib_task(_do_paper_disconnect, _timeout=10)
         except Exception as e:
-            log.warning("IB live disconnect error: %s", e)
+            log.warning("IB paper disconnect task error: %s", e)
+            _ib_paused = True  # fallback: at least stop reconnect attempts
+    else:
+        _ib_paused = True
+
+    if ib_broker_live is not None and _ib_live_task_queue is not None:
+        try:
+            def _do_live_disconnect():
+                global _ib_live_paused
+                _ib_live_paused = True
+                if ib_broker_live.is_connected():
+                    ib_broker_live.disconnect()
+            _submit_ib_live_task(_do_live_disconnect, _timeout=10)
+        except Exception as e:
+            log.warning("IB live disconnect task error: %s", e)
+            _ib_live_paused = True  # fallback
+    else:
+        _ib_live_paused = True
 
     # Suspend IB Gateway service on Railway (immediately kills the process)
     result["gateway_restart"] = _railway_ib_call("serviceInstanceSuspend")
