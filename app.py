@@ -570,7 +570,8 @@ def _check_position_stops():
             log.error("Position stop close failed for %s: %s", symbol, _e)
 
         # Block the strategy for the rest of the session
-        if strategy:
+        # Skip pseudo-strategies like "manual-close" that aren't real signal strategies
+        if strategy and "manual" not in strategy.lower():
             with _risk_lock:
                 _blocked_strategies[strategy] = {
                     "reason":   f"Position stop triggered: {symbol} loss ${upnl:.2f}",
@@ -580,6 +581,8 @@ def _check_position_stops():
                     "broker":   broker,
                 }
             log.error("Strategy '%s' blocked — position stop on %s (loss=$%.2f)", strategy, symbol, upnl)
+        elif strategy and "manual" in strategy.lower():
+            log.warning("Position stop on %s (loss=$%.2f) — skipping block of pseudo-strategy '%s'", symbol, upnl, strategy)
 
 
 def _position_monitor_loop():
