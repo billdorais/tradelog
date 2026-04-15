@@ -29,7 +29,8 @@ _ib_sync_event      = None
 _ib_sync_queue      = None
 _ib_task_queue      = None
 _ib_live_task_queue = None
-_ib_paused          = False   # when True, background thread skips reconnect
+_ib_paused          = False   # when True, paper IB background thread skips reconnect
+_ib_live_paused     = False   # when True, live IB background thread skips reconnect
 eod_close_enabled   = True
 
 # ---------------------------------------------------------------------------
@@ -306,6 +307,10 @@ if os.environ.get("IB_HOST_LIVE"):
         """Connect and maintain the live IB Gateway connection."""
         time.sleep(12)  # stagger slightly from paper connection
         while True:
+            global _ib_live_paused
+            if _ib_live_paused:
+                time.sleep(2)
+                continue
             if not ib_broker_live.is_connected():
                 try:
                     ib_broker_live.connect()
@@ -1272,12 +1277,13 @@ def broker_reconnect():
         abort(401)
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
-    global _ib_paused
+    global _ib_paused, _ib_live_paused
     # Resume the suspended Railway IB Gateway service (best-effort, non-blocking)
     gw = _railway_ib_call("serviceInstanceResume")
     log.info("serviceInstanceResume result: %s", gw)
-    # Re-enable the background reconnect loop — it owns the event loop and will connect
-    _ib_paused = False
+    # Re-enable both background reconnect loops
+    _ib_paused      = False
+    _ib_live_paused = False
     # Return immediately; the JS side polls /api/broker/status until connected
     return jsonify({"started": True, "gateway": gw})
 
@@ -1290,8 +1296,9 @@ def broker_disconnect():
     if ib_broker is None:
         return jsonify({"error": "IB_HOST not configured"}), 400
 
-    global _ib_paused
-    _ib_paused = True  # stop background thread from auto-reconnecting
+    global _ib_paused, _ib_live_paused
+    _ib_paused      = True  # stop paper background thread from auto-reconnecting
+    _ib_live_paused = True  # stop live background thread from auto-reconnecting
 
     result = {"connected": False, "status": "disconnected", "gateway_restart": None}
 
@@ -1300,6 +1307,13 @@ def broker_disconnect():
             ib_broker.disconnect()
     except Exception as e:
         log.warning("IB disconnect error: %s", e)
+
+    if ib_broker_live is not None:
+        try:
+            if ib_broker_live.is_connected():
+                ib_broker_live.disconnect()
+        except Exception as e:
+            log.warning("IB live disconnect error: %s", e)
 
     # Suspend IB Gateway service on Railway (immediately kills the process)
     result["gateway_restart"] = _railway_ib_call("serviceInstanceSuspend")
