@@ -1668,7 +1668,7 @@
     });
 
     async function closeAllPositions() {
-      if (!confirm('Close ALL open IB positions now? This cannot be undone.')) return;
+      if (!confirm('Close ALL open positions on all connected brokers (Alpaca + IB)? This cannot be undone.')) return;
       const token = prompt('Enter your webhook token to confirm:');
       if (!token) return;
       const btn = document.getElementById('closeAllBtn');

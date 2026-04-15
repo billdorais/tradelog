@@ -1180,13 +1180,27 @@ def broker_close_all():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
     if token != WEBHOOK_TOKEN:
         abort(401)
-    if ib_broker is None:
-        return jsonify({"error": "IB_HOST not configured"}), 400
-    try:
-        result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
-        return jsonify({"closed": result})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    results = {}
+    errors  = {}
+    if alpaca_broker is not None:
+        try:
+            results["alpaca"] = alpaca_broker.close_all_positions()
+        except Exception as e:
+            errors["alpaca"] = str(e)
+            log.error("close_all alpaca failed: %s", e)
+    if ib_broker is not None:
+        try:
+            results["ib"] = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
+        except Exception as e:
+            errors["ib"] = str(e)
+            log.error("close_all ib failed: %s", e)
+    if not results and not errors:
+        return jsonify({"error": "No brokers configured"}), 400
+    closed_count = sum(
+        len(v) if isinstance(v, list) else (1 if v else 0)
+        for v in results.values()
+    )
+    return jsonify({"closed": closed_count, "detail": results, "errors": errors})
 
 
 @app.route("/")
