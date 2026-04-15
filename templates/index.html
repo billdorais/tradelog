@@ -1327,19 +1327,22 @@
       if (timeScatterInstance) { timeScatterInstance.destroy(); timeScatterInstance = null; }
       if (!points.length) return;
 
+      const winPoints  = points.filter(p =>  p.win);
+      const lossPoints = points.filter(p => !p.win);
+
       const canvas = document.getElementById('timeScatterChart');
       const ctx    = canvas.getContext('2d');
       timeScatterInstance = new Chart(ctx, {
         type: 'scatter',
         data: {
           datasets: [{
-            data: points.filter(p => p.win).map(p => ({ x: p.x, y: p.y, entryId: p.entryId, exitId: p.exitId })),
+            data: winPoints.map(p => ({ x: p.x, y: p.y })),
             backgroundColor: 'rgba(38,166,91,0.7)',
             pointRadius: 5,
             pointHoverRadius: 7,
             label: 'Win',
           }, {
-            data: points.filter(p => !p.win).map(p => ({ x: p.x, y: p.y, entryId: p.entryId, exitId: p.exitId })),
+            data: lossPoints.map(p => ({ x: p.x, y: p.y })),
             backgroundColor: 'rgba(239,83,80,0.7)',
             pointRadius: 5,
             pointHoverRadius: 7,
@@ -1352,13 +1355,13 @@
             legend: { display: false },
             tooltip: {
               callbacks: {
-                label: ctx => {
-                  const min = ctx.parsed.x;
+                label: item => {
+                  const min = item.parsed.x;
                   const h = Math.floor(min / 60), m = min % 60;
                   const t = `${h}:${String(m).padStart(2,'0')}`;
-                  const pnl = ctx.parsed.y >= 0 ? '+$' + ctx.parsed.y.toFixed(2) : '-$' + Math.abs(ctx.parsed.y).toFixed(2);
-                  const raw = ctx.raw;
-                  const ids = raw ? `  [entry #${raw.entryId ?? '?'} → exit #${raw.exitId ?? '?'}]` : '';
+                  const pnl = item.parsed.y >= 0 ? '+$' + item.parsed.y.toFixed(2) : '-$' + Math.abs(item.parsed.y).toFixed(2);
+                  const pt = item.datasetIndex === 0 ? winPoints[item.dataIndex] : lossPoints[item.dataIndex];
+                  const ids = pt ? `  [entry #${pt.entryId ?? '?'} → exit #${pt.exitId ?? '?'}]` : '';
                   return `${t} ET  ${pnl}${ids}`;
                 },
                 title: () => '',
