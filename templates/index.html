@@ -1746,12 +1746,21 @@
       const btn = document.getElementById('ibDisconnectBtn');
       btn.textContent = 'Disconnecting…';
       btn.disabled = true;
+      let gwResult = null;
       try {
-        await fetch(`/api/broker/disconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        const res = await fetch(`/api/broker/disconnect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        const data = await res.json();
+        gwResult = data.gateway_restart;
       } catch (e) { /* ignore */ }
       btn.textContent = 'Disconnect IB';
       btn.disabled = false;
       await loadTrades();
+      // Tell the user whether the Railway Gateway was actually stopped
+      if (gwResult === 'ok') {
+        alert('IB Gateway suspended on Railway.\nYou can now log into your IB account.');
+      } else if (gwResult && gwResult !== 'ok') {
+        alert('API disconnected, but the IB Gateway service could not be suspended automatically:\n' + gwResult + '\n\nTo fully free your IB session, stop the IB Gateway service manually in your Railway dashboard.');
+      }
     }
 
 
