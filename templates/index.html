@@ -712,8 +712,10 @@
       const stats = buildStatsFromClosed(closedTrades);
       const lineColor = (stats.equity_curve.length ? stats.equity_curve[stats.equity_curve.length-1].value : 0) >= 0 ? '#5fe0a0' : '#ef5350';
       renderStats(stats, lineColor, tradesForScatter);
-      // Overwrite net-daily bar with true per-day sums (not cumulative diff)
+      // Draw daily charts from closedTrades directly (true per-day sums for bar,
+      // cumulative equity curve for right line — skipBar=true avoids redrawing bar)
       drawNetDailyChart(closedTrades);
+      drawDailyChart(stats.equity_curve || [], true);
       if (!closedTrades.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
@@ -1232,7 +1234,7 @@
         c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
       }
 
-      drawDailyChart(stats.equity_curve || []);
+      if (activeTab !== 'alpaca') drawDailyChart(stats.equity_curve || []);
       drawTimeScatter(stats.equity_curve || [], tradesForScatter);
     }
 
@@ -1448,7 +1450,7 @@
       });
     }
 
-    function drawDailyChart(equityCurve) {
+    function drawDailyChart(equityCurve, skipBar) {
       // Bucket the equity curve into daily values (last point per day)
       const dayMap = {};
       for (const p of equityCurve) {
@@ -1458,7 +1460,7 @@
       const labels = Object.keys(dayMap).sort();
       const values = labels.map(d => dayMap[d]);
 
-      drawNetDailyChart(equityCurve);
+      if (!skipBar) drawNetDailyChart(equityCurve);
 
       if (dailyChartInstance) { dailyChartInstance.destroy(); dailyChartInstance = null; }
 
