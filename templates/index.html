@@ -873,7 +873,8 @@
       const normSym = s => (s || '').toUpperCase().replace('/', '');
       const seen = new Set();
       const deduped = execs.filter(e => {
-        const key = `${normSym(e.symbol)}|${e.side}|${e.time}|${e.shares}`;
+        // Deduplicate by order ID first; fall back to symbol|side|time|shares
+        const key = e.exec_id || `${normSym(e.symbol)}|${e.side}|${e.time}|${e.shares}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
