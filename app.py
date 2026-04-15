@@ -373,7 +373,7 @@ def _compute_daily_pnl():
     try:
         conn = get_db()
         cur  = conn.cursor()
-        cur.execute("SELECT action, ticker, strategy, received_at, price, quantity FROM trades ORDER BY id ASC")
+        cur.execute("SELECT action, ticker, strategy, received_at, price, quantity, exec_status FROM trades ORDER BY id ASC")
         rows = cur.fetchall()
         conn.close()
         if DATABASE_URL:
@@ -397,6 +397,9 @@ def _compute_daily_pnl():
             except (ValueError, TypeError):
                 continue
             if not ticker or price == 0:
+                continue
+            exec_status = (t.get("exec_status") or "").lower()
+            if exec_status in ("blocked", "skipped", "error"):
                 continue
 
             key      = (strategy, ticker)
@@ -2667,6 +2670,9 @@ def api_stats():
             continue
         if not ticker or price == 0:
             continue
+        exec_status = (t.get("exec_status") or "").lower()
+        if exec_status in ("blocked", "skipped", "error"):
+            continue
         key = (strategy, ticker)
         if action == "BUY":
             # Closes an open short; otherwise opens a new long
@@ -2766,6 +2772,9 @@ def _build_analysis_stats():
         except (ValueError, TypeError):
             continue
         if not ticker or price == 0:
+            continue
+        exec_status = (t.get("exec_status") or "").lower()
+        if exec_status in ("blocked", "skipped", "error"):
             continue
 
         key = (strategy, ticker)
