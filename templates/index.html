@@ -486,13 +486,13 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px">
-        <button id="tabSignals" onclick="switchTab('signals')"
-          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer">
-          Signals P&amp;L
-        </button>
         <button id="tabAlpaca" onclick="switchTab('alpaca')"
-          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
+          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer">
           Alpaca P&amp;L
+        </button>
+        <button id="tabSignals" onclick="switchTab('signals')"
+          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
+          Signals P&amp;L
         </button>
         <button id="tabIB" onclick="switchTab('ib')"
           style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
@@ -606,7 +606,7 @@
     let _allGroups     = [];
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
-    let activeTab = 'signals';
+    let activeTab = 'alpaca';
 
     function switchTab(tab) {
       activeTab = tab;
@@ -1734,12 +1734,16 @@
 
         try { renderTable(trades, selectedStrategy); } catch(re) { console.error('renderTable error:', re); }
 
-        // Fetch stats respecting the equity curve's own filters
-        const equityStrategy = document.getElementById('equityStrategyFilter').value;
-        const equityFromDate = document.getElementById('equityFromDate').value;
-        const statsUrl = buildStatsUrl(equityStrategy, equityFromDate);
-        const filteredStats = (equityStrategy || equityFromDate) ? await fetch(statsUrl).then(r => r.json()) : stats;
-        renderStats(filteredStats);
+        // Render charts/stats for whichever tab is active
+        if (activeTab === 'alpaca') {
+          renderAlpacaStats();
+        } else {
+          const equityStrategy = document.getElementById('equityStrategyFilter').value;
+          const equityFromDate = document.getElementById('equityFromDate').value;
+          const statsUrl = buildStatsUrl(equityStrategy, equityFromDate);
+          const filteredStats = (equityStrategy || equityFromDate) ? await fetch(statsUrl).then(r => r.json()) : stats;
+          renderStats(filteredStats);
+        }
 
         document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 
