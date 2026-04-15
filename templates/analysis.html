@@ -298,6 +298,15 @@
   function renderDaily(rows) {
     const body = document.getElementById('dailyBody');
     if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
+    const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
+    const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
+    const avgPnlFmt = (avgPnl >= 0 ? '+' : '') + '$' + Math.abs(avgPnl).toFixed(2);
+    const avgPnlCls = avgPnl >= 0 ? 'color:#26a65b' : 'color:#ef5350';
+    document.querySelector('#tab-daily thead tr').innerHTML = `
+      <th>Date</th>
+      <th>Trades <span style="color:#555;font-weight:400">(avg ${avgTrades})</span></th>
+      <th>Day P&amp;L <span style="${avgPnlCls};font-weight:400">(avg ${avgPnlFmt})</span></th>
+      <th>Cumulative P&amp;L</th>`;
     body.innerHTML = [...rows].reverse().map(r => {
       const cls = r.pnl >= 0 ? 'day-pos' : 'day-neg';
       return `<tr class="${cls}">
@@ -312,6 +321,15 @@
   function renderWeekly(rows) {
     const body = document.getElementById('weeklyBody');
     if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
+    const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
+    const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
+    const avgPnlFmt = (avgPnl >= 0 ? '+' : '') + '$' + Math.abs(avgPnl).toFixed(2);
+    const avgPnlCls = avgPnl >= 0 ? 'color:#26a65b' : 'color:#ef5350';
+    document.querySelector('#tab-weekly thead tr').innerHTML = `
+      <th>Week</th>
+      <th>Trades <span style="color:#555;font-weight:400">(avg ${avgTrades})</span></th>
+      <th>Week P&amp;L <span style="${avgPnlCls};font-weight:400">(avg ${avgPnlFmt})</span></th>
+      <th>Cumulative P&amp;L</th>`;
     body.innerHTML = [...rows].reverse().map(r => {
       const cls = r.pnl >= 0 ? 'day-pos' : 'day-neg';
       return `<tr class="${cls}">
