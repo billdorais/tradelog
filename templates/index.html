@@ -888,14 +888,14 @@
         const symbol = (e.symbol || '').toUpperCase().replace('/', '');
         if (e.side === 'BOT') {
           if (shorts[symbol] && shorts[symbol].length) {
-            pairs.push({ entry: shorts[symbol].shift(), exit: e, direction: 'short' });
+            pairs.push({ entry: shorts[symbol].pop(), exit: e, direction: 'short' });
           } else {
             if (!longs[symbol]) longs[symbol] = [];
             longs[symbol].push(e);
           }
         } else if (e.side === 'SLD') {
           if (longs[symbol] && longs[symbol].length) {
-            pairs.push({ entry: longs[symbol].shift(), exit: e, direction: 'long' });
+            pairs.push({ entry: longs[symbol].pop(), exit: e, direction: 'long' });
           } else {
             if (!shorts[symbol]) shorts[symbol] = [];
             shorts[symbol].push(e);
