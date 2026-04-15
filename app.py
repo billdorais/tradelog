@@ -599,9 +599,20 @@ def webhook():
                     opt_broker_mode = n.get("broker_mode") or "alpaca"
                     if opt_broker_mode == "ib":
                         opt_target_prem = float(n.get("ib_target_premium") or 2.0)
-                        opt_expiry_type = n.get("ib_expiry_type") or "weekly"
+                        _ib_exp         = n.get("ib_expiry_type") or "weekly"
                         opt_right_ovr   = n.get("ib_right_override") or None
                         opt_contracts   = int(n.get("ib_contracts") or 1)
+                        sec_type        = "OPT"   # trigger IB options path
+                        if _ib_exp == "0dte":
+                            from datetime import date as _date
+                            opt_expiry_type = "weekly"   # fallback if no 0dte listed
+                            # pass today as explicit override so IB uses 0DTE chain
+                            import datetime as _dt_mod
+                            _today_str = _dt_mod.date.today().strftime("%Y%m%d")
+                            # store in data dict so _place_async picks it up
+                            data["option_expiry"] = _today_str
+                        else:
+                            opt_expiry_type = _ib_exp   # "weekly" or "monthly"
                     else:
                         opt_target_prem = float(n.get("target_premium") or 2.0)
                         opt_expiry_type = n.get("expiry_type") or "friday"
