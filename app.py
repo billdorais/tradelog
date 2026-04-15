@@ -2807,21 +2807,6 @@ def api_orphaned_trades():
     return jsonify(result)
 
 
-@app.route("/api/trades/<int:trade_id>", methods=["DELETE"])
-def delete_trade(trade_id):
-    """Hard-delete a single trade by ID. Used to remove rogue/orphaned entries."""
-    conn = get_db()
-    cur  = conn.cursor()
-    p    = placeholder()
-    cur.execute(f"DELETE FROM trades WHERE id = {p}", (trade_id,))
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
-    if deleted:
-        log.info("Trade %s deleted via API", trade_id)
-        return jsonify({"success": True, "deleted": trade_id})
-    return jsonify({"success": False, "error": "Not found"}), 404
-
 
 # ---------------------------------------------------------------------------
 # Analysis page
