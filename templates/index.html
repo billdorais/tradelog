@@ -1304,9 +1304,9 @@
               const [h, m] = etMs.split(':').map(Number);
               const minOfDay = h * 60 + m;
               if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0 });
+                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
             }
-          } else { if (!openLongs[key]) openLongs[key] = []; openLongs[key].push({ price, qty }); }
+          } else { if (!openLongs[key]) openLongs[key] = []; openLongs[key].push({ price, qty, id: t.id }); }
         } else if (action === 'SELL') {
           const q = openLongs[key];
           if (q && q.length) {
@@ -1318,9 +1318,9 @@
               const [h, m] = etMs.split(':').map(Number);
               const minOfDay = h * 60 + m;
               if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0 });
+                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
             }
-          } else { if (!openShorts[key]) openShorts[key] = []; openShorts[key].push({ price, qty }); }
+          } else { if (!openShorts[key]) openShorts[key] = []; openShorts[key].push({ price, qty, id: t.id }); }
         }
       }
 
@@ -1333,13 +1333,13 @@
         type: 'scatter',
         data: {
           datasets: [{
-            data: points.filter(p => p.win).map(p => ({ x: p.x, y: p.y })),
+            data: points.filter(p => p.win).map(p => ({ x: p.x, y: p.y, entryId: p.entryId, exitId: p.exitId })),
             backgroundColor: 'rgba(38,166,91,0.7)',
             pointRadius: 5,
             pointHoverRadius: 7,
             label: 'Win',
           }, {
-            data: points.filter(p => !p.win).map(p => ({ x: p.x, y: p.y })),
+            data: points.filter(p => !p.win).map(p => ({ x: p.x, y: p.y, entryId: p.entryId, exitId: p.exitId })),
             backgroundColor: 'rgba(239,83,80,0.7)',
             pointRadius: 5,
             pointHoverRadius: 7,
@@ -1357,7 +1357,9 @@
                   const h = Math.floor(min / 60), m = min % 60;
                   const t = `${h}:${String(m).padStart(2,'0')}`;
                   const pnl = ctx.parsed.y >= 0 ? '+$' + ctx.parsed.y.toFixed(2) : '-$' + Math.abs(ctx.parsed.y).toFixed(2);
-                  return `${t} ET  ${pnl}`;
+                  const raw = ctx.raw;
+                  const ids = raw ? `  [entry #${raw.entryId ?? '?'} → exit #${raw.exitId ?? '?'}]` : '';
+                  return `${t} ET  ${pnl}${ids}`;
                 },
                 title: () => '',
               },
