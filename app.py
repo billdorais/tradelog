@@ -596,10 +596,17 @@ def webhook():
                 elif ntype == "ticker":
                     ticker = (n.get("value") or ticker or "").upper() or None
                 elif ntype == "options_config":
-                    opt_target_prem = float(n.get("target_premium") or 2.0)
-                    opt_expiry_type = n.get("expiry_type") or "friday"
-                    opt_right_ovr   = n.get("right_override") or None
-                    opt_contracts   = int(n.get("contracts") or 1)
+                    opt_broker_mode = n.get("broker_mode") or "alpaca"
+                    if opt_broker_mode == "ib":
+                        opt_target_prem = float(n.get("ib_target_premium") or 2.0)
+                        opt_expiry_type = n.get("ib_expiry_type") or "weekly"
+                        opt_right_ovr   = n.get("ib_right_override") or None
+                        opt_contracts   = int(n.get("ib_contracts") or 1)
+                    else:
+                        opt_target_prem = float(n.get("target_premium") or 2.0)
+                        opt_expiry_type = n.get("expiry_type") or "friday"
+                        opt_right_ovr   = n.get("right_override") or None
+                        opt_contracts   = int(n.get("contracts") or 1)
                 elif ntype == "trading_hours":
                     th_start = n.get("start") or "09:30"
                     th_end   = n.get("end")   or "16:00"

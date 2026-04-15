@@ -311,10 +311,15 @@
       }
       case 'ticker':     return node.value || '—';
       case 'options_config': {
+        const bm = node.broker_mode || 'alpaca';
+        if (bm === 'ib') {
+          const expiry = node.ib_expiry_type === '0dte' ? '0DTE' : node.ib_expiry_type === 'monthly' ? 'Monthly' : 'Weekly';
+          const right  = node.ib_right_override === 'C' ? 'Calls' : node.ib_right_override === 'P' ? 'Puts' : 'Auto';
+          return `IB · $${(node.ib_target_premium ?? 2).toFixed(2)} · ${expiry} · ${right} · ${node.ib_contracts ?? 1}x`;
+        }
         const expiry = node.expiry_type === '0dte' ? '0DTE' : 'Friday';
         const right  = node.right_override === 'C' ? 'Calls' : node.right_override === 'P' ? 'Puts' : 'Auto';
-        const qty    = node.contracts ?? 1;
-        return `$${(node.target_premium ?? 2).toFixed(2)} · ${expiry} · ${right} · ${qty}x`;
+        return `Alpaca · $${(node.target_premium ?? 2).toFixed(2)} · ${expiry} · ${right} · ${node.contracts ?? 1}x`;
       }
       case 'trading_hours': {
         const tzLabel = { 'America/New_York': 'ET', 'America/Chicago': 'CT', 'America/Denver': 'MT', 'America/Los_Angeles': 'PT', 'UTC': 'UTC' }[node.tz] || node.tz || 'ET';
@@ -432,6 +437,20 @@
   function closeModal() { document.getElementById('modalOverlay').style.display = 'none'; }
   function closeModalOnOverlay(e) { if (e.target === document.getElementById('modalOverlay')) closeModal(); }
 
+  function switchOptTab(tab) {
+    document.getElementById('f_broker_mode').value = tab;
+    const alpacaBtn = document.getElementById('optTab_alpaca');
+    const ibBtn     = document.getElementById('optTab_ib');
+    const alpacaPanel = document.getElementById('optPanel_alpaca');
+    const ibPanel     = document.getElementById('optPanel_ib');
+    alpacaPanel.style.display = tab === 'alpaca' ? 'block' : 'none';
+    ibPanel.style.display     = tab === 'ib'     ? 'block' : 'none';
+    alpacaBtn.style.borderBottomColor = tab === 'alpaca' ? '#5fe0a0' : 'transparent';
+    alpacaBtn.style.color             = tab === 'alpaca' ? '#5fe0a0' : '#666';
+    ibBtn.style.borderBottomColor     = tab === 'ib'     ? '#4a90d9' : 'transparent';
+    ibBtn.style.color                 = tab === 'ib'     ? '#4a90d9' : '#666';
+  }
+
   function buildModalForm(type, node) {
     const v = node || {};
     switch (type) {
@@ -503,38 +522,90 @@
           </div>
           <p style="font-size:0.78rem;color:#555;margin-top:-8px">Forces this ticker regardless of what TradingView sends.</p>`;
 
-      case 'options_config':
+      case 'options_config': {
+        const obm = v.broker_mode || 'alpaca';
         return `
-          <div class="form-group">
-            <label>Target Premium ($)</label>
-            <input id="f_target_premium" type="number" min="0.01" step="0.25"
-                   value="${v.target_premium ?? 2.00}"
-                   placeholder="e.g. 2.00">
+          <!-- Broker tabs -->
+          <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid #2a2d3e">
+            <button type="button" id="optTab_alpaca"
+              onclick="switchOptTab('alpaca')"
+              style="padding:6px 16px;font-size:0.8rem;border:none;border-bottom:2px solid ${obm==='alpaca'?'#5fe0a0':'transparent'};background:transparent;color:${obm==='alpaca'?'#5fe0a0':'#666'};cursor:pointer">
+              Alpaca
+            </button>
+            <button type="button" id="optTab_ib"
+              onclick="switchOptTab('ib')"
+              style="padding:6px 16px;font-size:0.8rem;border:none;border-bottom:2px solid ${obm==='ib'?'#4a90d9':'transparent'};background:transparent;color:${obm==='ib'?'#4a90d9':'#666'};cursor:pointer">
+              IB
+            </button>
           </div>
-          <p style="font-size:0.78rem;color:#555;margin-top:-10px;margin-bottom:14px">
-            Alpaca scans the chain and picks the strike whose mid-price ((bid+ask)÷2) is closest to this value. Limit order placed at the ask for best fill chance.
-          </p>
-          <div class="form-group">
-            <label>Expiry</label>
-            <select id="f_expiry_type">
-              <option value="0dte"   ${(v.expiry_type||'friday')==='0dte'   ? 'selected':''}>0DTE — Today</option>
-              <option value="friday" ${(v.expiry_type||'friday')==='friday' ? 'selected':''}>This Friday</option>
-            </select>
+          <input type="hidden" id="f_broker_mode" value="${obm}">
+
+          <!-- Alpaca fields -->
+          <div id="optPanel_alpaca" style="display:${obm==='alpaca'?'block':'none'}">
+            <div class="form-group">
+              <label>Target Premium ($)</label>
+              <input id="f_target_premium" type="number" min="0.01" step="0.25"
+                     value="${v.target_premium ?? 2.00}" placeholder="e.g. 2.00">
+            </div>
+            <p style="font-size:0.78rem;color:#555;margin-top:-10px;margin-bottom:14px">
+              Scans the chain and picks the strike whose mid-price is closest to this value. Limit placed at the ask for best fill.
+            </p>
+            <div class="form-group">
+              <label>Expiry</label>
+              <select id="f_expiry_type">
+                <option value="0dte"   ${(v.expiry_type||'friday')==='0dte'   ? 'selected':''}>0DTE — Today</option>
+                <option value="friday" ${(v.expiry_type||'friday')==='friday' ? 'selected':''}>This Friday</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Contracts</label>
+              <input id="f_opt_contracts" type="number" min="1" step="1"
+                     value="${v.contracts ?? 1}" placeholder="1">
+            </div>
+            <div class="form-group">
+              <label>Option Side</label>
+              <select id="f_right_override">
+                <option value=""  ${!v.right_override ? 'selected':''}>Auto — BUY → Call, SELL → Put</option>
+                <option value="C" ${v.right_override==='C' ? 'selected':''}>Always Call</option>
+                <option value="P" ${v.right_override==='P' ? 'selected':''}>Always Put</option>
+              </select>
+            </div>
           </div>
-          <div class="form-group">
-            <label>Contracts</label>
-            <input id="f_opt_contracts" type="number" min="1" step="1"
-                   value="${v.contracts ?? 1}"
-                   placeholder="1">
-          </div>
-          <div class="form-group">
-            <label>Option Side</label>
-            <select id="f_right_override">
-              <option value=""  ${!v.right_override ? 'selected':''}>Auto — BUY signal → Call, SELL → Put</option>
-              <option value="C" ${v.right_override==='C' ? 'selected':''}>Always Call</option>
-              <option value="P" ${v.right_override==='P' ? 'selected':''}>Always Put</option>
-            </select>
+
+          <!-- IB fields -->
+          <div id="optPanel_ib" style="display:${obm==='ib'?'block':'none'}">
+            <div class="form-group">
+              <label>Target Premium ($)</label>
+              <input id="f_ib_target_premium" type="number" min="0.01" step="0.25"
+                     value="${v.ib_target_premium ?? 2.00}" placeholder="e.g. 2.00">
+            </div>
+            <p style="font-size:0.78rem;color:#555;margin-top:-10px;margin-bottom:14px">
+              IB scans the chain and picks the strike whose mid-price is closest to this value.
+            </p>
+            <div class="form-group">
+              <label>Expiry</label>
+              <select id="f_ib_expiry_type">
+                <option value="0dte"    ${(v.ib_expiry_type||'weekly')==='0dte'    ? 'selected':''}>0DTE — Today</option>
+                <option value="weekly"  ${(v.ib_expiry_type||'weekly')==='weekly'  ? 'selected':''}>Weekly — nearest Friday</option>
+                <option value="monthly" ${v.ib_expiry_type==='monthly' ? 'selected':''}>Monthly — third Friday</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Quantity (contracts)</label>
+              <input id="f_ib_opt_contracts" type="number" min="1" step="1"
+                     value="${v.ib_contracts ?? 1}" placeholder="1">
+            </div>
+            <div class="form-group">
+              <label>Option Side</label>
+              <select id="f_ib_right_override">
+                <option value=""  ${!v.ib_right_override ? 'selected':''}>Auto — BUY → Call, SELL → Put</option>
+                <option value="C" ${v.ib_right_override==='C' ? 'selected':''}>Always Call</option>
+                <option value="P" ${v.ib_right_override==='P' ? 'selected':''}>Always Put</option>
+              </select>
+            </div>
+            <p style="font-size:0.78rem;color:#e8962a;margin-top:-8px">IB options routing coming soon.</p>
           </div>`;
+      }
 
       case 'trading_hours':
         return `
@@ -621,10 +692,17 @@
         node.unit   = document.getElementById('f_unit').value;
         break;
       case 'options_config':
+        node.broker_mode     = document.getElementById('f_broker_mode').value || 'alpaca';
+        // Alpaca fields
         node.target_premium  = parseFloat(document.getElementById('f_target_premium').value) || 2.00;
         node.expiry_type     = document.getElementById('f_expiry_type').value;
         node.contracts       = parseInt(document.getElementById('f_opt_contracts').value) || 1;
         node.right_override  = document.getElementById('f_right_override').value || null;
+        // IB fields
+        node.ib_target_premium = parseFloat(document.getElementById('f_ib_target_premium').value) || 2.00;
+        node.ib_expiry_type    = document.getElementById('f_ib_expiry_type').value;
+        node.ib_contracts      = parseInt(document.getElementById('f_ib_opt_contracts').value) || 1;
+        node.ib_right_override = document.getElementById('f_ib_right_override').value || null;
         break;
       case 'trading_hours':
         node.start = document.getElementById('f_th_start').value || '09:30';
