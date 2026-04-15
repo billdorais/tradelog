@@ -635,7 +635,8 @@
         note.style.display      = 'flex';
         note.textContent        = 'Cumulative realized P&L from Alpaca fills.';
         label.textContent       = 'Cumulative realized P&L from Alpaca fills';
-        renderAlpacaStats();
+        document.getElementById('equityFromDate').style.display = '';
+        renderAlpacaStats(document.getElementById('equityFromDate').value);
       } else {
         ibBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #4a90d9;background:rgba(74,144,217,0.15);color:#4a90d9;cursor:pointer';
         note.style.display  = 'flex';
@@ -700,8 +701,12 @@
       return { closedTrades, tradesForScatter, deduped };
     }
 
-    function renderAlpacaStats() {
-      const { closedTrades, tradesForScatter, deduped } = _pairAlpacaFills(allAlpacaExecs);
+    function renderAlpacaStats(fromDate) {
+      let execs = allAlpacaExecs;
+      if (fromDate) {
+        execs = execs.filter(e => e.time && e.time.slice(0, 10) >= fromDate);
+      }
+      const { closedTrades, tradesForScatter, deduped } = _pairAlpacaFills(execs);
       // Update top stat counts
       document.getElementById('statTotal').textContent    = deduped.length;
       document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
@@ -1608,15 +1613,15 @@
     }
 
     async function applyEquityFilter() {
-      if (activeTab === 'alpaca') { renderAlpacaStats(); return; }
+      const fromDate = document.getElementById('equityFromDate').value;
+      if (activeTab === 'alpaca') { renderAlpacaStats(fromDate); return; }
       const strategy = document.getElementById('equityStrategyFilter').value;
-      const fromDate  = document.getElementById('equityFromDate').value;
       const stats = await fetch(buildStatsUrl(strategy, fromDate)).then(r => r.json());
       renderStats(stats);
     }
 
     async function applyDailyFilter() {
-      if (activeTab === 'alpaca') { renderAlpacaStats(); return; }
+      if (activeTab === 'alpaca') { renderAlpacaStats(document.getElementById('equityFromDate').value); return; }
       const strategy = document.getElementById('dailyStrategyFilter').value;
       const fromDate  = document.getElementById('equityFromDate').value;
       const stats = await fetch(buildStatsUrl(strategy, fromDate)).then(r => r.json());
@@ -1756,7 +1761,11 @@
 
         // Render charts/stats for whichever tab is active
         if (activeTab === 'alpaca') {
-          renderAlpacaStats();
+          document.getElementById('equityChartLabel').textContent = 'Cumulative realized P&L from Alpaca fills';
+          document.getElementById('equityFromDate').style.display = '';
+          document.getElementById('ibEquityNote').style.display = 'flex';
+          document.getElementById('ibEquityNote').textContent = 'Cumulative realized P&L from Alpaca fills.';
+          renderAlpacaStats(document.getElementById('equityFromDate').value);
         } else {
           const equityStrategy = document.getElementById('equityStrategyFilter').value;
           const equityFromDate = document.getElementById('equityFromDate').value;
