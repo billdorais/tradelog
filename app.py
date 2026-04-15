@@ -2736,6 +2736,94 @@ def api_stats():
 
 
 # ---------------------------------------------------------------------------
+# Orphaned trades diagnostic
+# ---------------------------------------------------------------------------
+
+@app.route("/api/orphaned_trades")
+def api_orphaned_trades():
+    """Return trades that have no matching pair (stuck open longs/shorts).
+    These are the 'rogue' entries that corrupt the equity curve when a real
+    close later pairs against them at the wrong historical price."""
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT * FROM trades ORDER BY id ASC")
+    rows = cur.fetchall()
+    if DATABASE_URL:
+        cols   = [d[0] for d in cur.description]
+        trades = [dict(zip(cols, r)) for r in rows]
+    else:
+        trades = [dict(r) for r in rows]
+    conn.close()
+
+    # (strategy, ticker) → [(trade_id, price, qty, time)]
+    open_longs  = {}
+    open_shorts = {}
+
+    for t in trades:
+        action   = (t.get("action") or "").strip().upper()
+        ticker   = (t.get("ticker") or "").strip().upper()
+        strategy = (t.get("strategy") or "").strip()
+        received = t.get("received_at") or ""
+        trade_id = t.get("id")
+        exec_status = (t.get("exec_status") or "").lower()
+        if exec_status in ("blocked", "skipped", "error"):
+            continue
+        try:
+            price = float(t.get("price") or 0)
+            qty   = float(t.get("quantity") or 1)
+        except (ValueError, TypeError):
+            continue
+        if not ticker or price == 0:
+            continue
+        key = (strategy, ticker)
+        if action == "BUY":
+            queue = open_shorts.get(key, [])
+            if queue:
+                queue.pop(0)
+            else:
+                open_longs.setdefault(key, []).append((trade_id, price, qty, received))
+        elif action == "SELL":
+            queue = open_longs.get(key, [])
+            if queue:
+                queue.pop(0)
+            else:
+                open_shorts.setdefault(key, []).append((trade_id, price, qty, received))
+
+    result = []
+    for (strategy, ticker), entries in open_longs.items():
+        for (trade_id, price, qty, received) in entries:
+            result.append({
+                "id": trade_id, "side": "BUY", "ticker": ticker,
+                "strategy": strategy, "price": price, "qty": qty, "date": received,
+            })
+    for (strategy, ticker), entries in open_shorts.items():
+        for (trade_id, price, qty, received) in entries:
+            result.append({
+                "id": trade_id, "side": "SELL", "ticker": ticker,
+                "strategy": strategy, "price": price, "qty": qty, "date": received,
+            })
+
+    result.sort(key=lambda x: x["date"])
+    return jsonify(result)
+
+
+@app.route("/api/trades/<int:trade_id>", methods=["DELETE"])
+def delete_trade(trade_id):
+    """Hard-delete a single trade by ID. Used to remove rogue/orphaned entries."""
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    cur.execute(f"DELETE FROM trades WHERE id = {p}", (trade_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    if deleted:
+        log.info("Trade %s deleted via API", trade_id)
+        return jsonify({"success": True, "deleted": trade_id})
+    return jsonify({"success": False, "error": "Not found"}), 404
+
+
+# ---------------------------------------------------------------------------
 # Analysis page
 # ---------------------------------------------------------------------------
 
