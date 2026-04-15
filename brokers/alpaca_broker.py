@@ -323,6 +323,35 @@ class AlpacaBroker:
             log.error("Alpaca close_all_positions failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    def get_portfolio_history(self, period="1M", timeframe="1D"):
+        """Return portfolio equity history from Alpaca.
+        period:    '1D' | '1W' | '1M' | '3M' | '6M' | '1A'
+        timeframe: '1Min' | '5Min' | '15Min' | '1H' | '1D'
+        Returns list of {time, equity, pnl} dicts, one per bar.
+        """
+        self._ensure_client()
+        try:
+            from alpaca.trading.requests import GetPortfolioHistoryRequest
+            req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe, intraday_reporting="market_hours")
+            hist = self._trading.get_portfolio_history(request_params=req)
+            timestamps = getattr(hist, "timestamp", []) or []
+            equities   = getattr(hist, "equity",    []) or []
+            pnls       = getattr(hist, "profit_loss",[]) or []
+            result = []
+            for ts, eq, pl in zip(timestamps, equities, pnls):
+                if eq is None:
+                    continue
+                result.append({
+                    "time":   str(ts) if not isinstance(ts, str) else ts,
+                    "equity": float(eq),
+                    "pnl":    float(pl) if pl is not None else 0.0,
+                })
+            log.info("Alpaca portfolio history: %d points (period=%s timeframe=%s)", len(result), period, timeframe)
+            return result
+        except Exception as e:
+            log.error("Alpaca get_portfolio_history failed: %s", e)
+            return []
+
     def get_fills(self):
         """Return recent filled orders."""
         from alpaca.trading.requests import GetOrdersRequest

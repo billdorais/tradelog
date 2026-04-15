@@ -2605,6 +2605,20 @@ def ib_execution_delete(exec_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/alpaca/portfolio_history")
+def alpaca_portfolio_history():
+    """Return Alpaca portfolio equity history for equity curve and daily P&L bars."""
+    if alpaca_broker is None:
+        return jsonify([])
+    period    = request.args.get("period",    "3M")
+    timeframe = request.args.get("timeframe", "1D")
+    try:
+        return jsonify(alpaca_broker.get_portfolio_history(period=period, timeframe=timeframe))
+    except Exception as e:
+        log.error("alpaca_portfolio_history error: %s", e)
+        return jsonify([])
+
+
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
     """Return filled Alpaca orders, cached for 30s to avoid repeated API calls."""
