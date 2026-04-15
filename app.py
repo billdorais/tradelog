@@ -1253,7 +1253,7 @@ def _railway_ib_call(mutation_name):
             "variables": {"serviceId": ib_service_id, "environmentId": environment_id},
         }).encode()
         req = _urlreq.Request(
-            "https://backboard.railway.app/graphql/v2",
+            "https://backboard.railway.com/graphql/v2",
             data=payload,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {railway_token}"},
