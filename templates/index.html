@@ -489,9 +489,13 @@
           style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer">
           Signals P&amp;L
         </button>
-        <button id="tabIB" onclick="switchTab('ib')"
+        <button id="tabAlpaca" onclick="switchTab('alpaca')"
           style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
           Alpaca P&amp;L
+        </button>
+        <button id="tabIB" onclick="switchTab('ib')"
+          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
+          IB P&amp;L
         </button>
       </div>
       <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
@@ -588,25 +592,50 @@
     function switchTab(tab) {
       activeTab = tab;
       const signalsBtn = document.getElementById('tabSignals');
+      const alpacaBtn  = document.getElementById('tabAlpaca');
       const ibBtn      = document.getElementById('tabIB');
       const filter     = document.getElementById('equityStrategyFilter');
       const note       = document.getElementById('ibEquityNote');
       const label      = document.getElementById('equityChartLabel');
+      const inactive   = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
+
+      signalsBtn.style.cssText = inactive;
+      alpacaBtn.style.cssText  = inactive;
+      ibBtn.style.cssText      = inactive;
+      filter.style.display     = 'none';
+      note.style.display       = 'none';
 
       if (tab === 'signals') {
         signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer';
-        ibBtn.style.cssText      = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
-        filter.style.display = '';
-        note.style.display   = 'none';
-        label.textContent    = 'Cumulative P&L from closed trades';
+        filter.style.display     = '';
+        label.textContent        = 'Cumulative P&L from closed trades';
         applyEquityFilter();
-      } else {
-        ibBtn.style.cssText      = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer';
-        signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
-        filter.style.display = 'none';
-        note.style.display   = 'flex';
-        label.textContent    = 'Cumulative realized P&L from Alpaca fills';
+      } else if (tab === 'alpaca') {
+        alpacaBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer';
+        note.style.display      = 'flex';
+        note.textContent        = 'Cumulative realized P&L from Alpaca fills.';
+        label.textContent       = 'Cumulative realized P&L from Alpaca fills';
         loadAlpacaEquity();
+      } else {
+        ibBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #4a90d9;background:rgba(74,144,217,0.15);color:#4a90d9;cursor:pointer';
+        note.style.display  = 'flex';
+        note.textContent    = 'Cumulative realized P&L from IB fills.';
+        label.textContent   = 'Cumulative realized P&L from IB fills';
+        loadIBEquity();
+      }
+    }
+
+    async function loadIBEquity() {
+      const data = await fetch('/api/ib/equity').then(r => r.json()).catch(() => []);
+      const labels = data.map(p => p.time);
+      const values = data.map(p => p.value);
+      const finalVal  = values.length ? values[values.length - 1] : 0;
+      const lineColor = finalVal >= 0 ? '#4a90d9' : '#ef5350';
+      drawChart(labels, values, lineColor);
+      if (!values.length) {
+        const c = document.getElementById('equityChart').getContext('2d');
+        c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
+        c.fillText('No IB fills yet', document.getElementById('equityChart').width / 2, 60);
       }
     }
 
