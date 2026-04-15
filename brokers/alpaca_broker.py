@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +135,142 @@ class AlpacaBroker:
             }
         except Exception as e:
             log.error("Alpaca order failed for %s %s %s: %s", action, qty, ticker, e)
+            return {"success": False, "error": str(e)}
+
+    def place_option_order(self, underlying, direction, expiry_type="friday", contracts=1, target_premium=2.0):
+        """
+        Buy a call or put option on Alpaca.
+        underlying:    e.g. "TSLA"
+        direction:     "call"/"put" or "BUY"/"SELL" or "LONG"/"SHORT"
+        expiry_type:   "0dte" = today, "friday" = nearest Friday
+        contracts:     number of contracts (each = 100 shares)
+        target_premium: target mid-price; selects the strike whose (bid+ask)/2
+                        is closest to this value; limit placed at ask for best fill
+        """
+        from alpaca.trading.requests import GetOptionContractsRequest, LimitOrderRequest
+        from alpaca.trading.enums import ContractType, OrderSide, TimeInForce
+        self._ensure_client()
+
+        # Resolve direction → call/put
+        d = direction.upper()
+        opt_type = ContractType.CALL if d in ("CALL", "BUY", "LONG") else ContractType.PUT
+
+        # Resolve expiry date
+        today = date.today()
+        if expiry_type == "0dte":
+            expiry = today
+        else:  # friday
+            days_ahead = (4 - today.weekday()) % 7  # 4 = Friday
+            expiry = today + timedelta(days=days_ahead if days_ahead > 0 else 7)
+
+        log.info("Options order: %s %s %s expiry=%s target=$%.2f contracts=%s",
+                 opt_type.value, underlying, expiry_type, expiry, target_premium, contracts)
+
+        # 1. Get option contracts for this underlying / expiry / type
+        try:
+            contract_req = GetOptionContractsRequest(
+                underlying_symbols=[underlying.upper()],
+                expiration_date=expiry,
+                type=opt_type,
+                limit=100,
+            )
+            resp = self._trading.get_option_contracts(contract_req)
+            contract_list = getattr(resp, "option_contracts", None) or []
+        except Exception as e:
+            log.error("get_option_contracts failed: %s", e)
+            return {"success": False, "error": f"Could not fetch option contracts: {e}"}
+
+        if not contract_list:
+            return {"success": False, "error": f"No {opt_type.value} contracts found for {underlying} expiring {expiry}"}
+
+        # 2. Get quotes (bid/ask) via the data client to find best strike
+        try:
+            from alpaca.data.historical.option import OptionHistoricalDataClient
+            from alpaca.data.requests import OptionSnapshotRequest
+            data_client = OptionHistoricalDataClient(
+                api_key=self._key, secret_key=self._secret
+            )
+            symbols = [c.symbol for c in contract_list[:60]]
+            snap_req = OptionSnapshotRequest(symbol_or_symbols=symbols, feed="indicative")
+            snapshots = data_client.get_option_snapshot(snap_req)
+        except Exception as e:
+            log.error("option snapshots failed: %s", e)
+            snapshots = {}
+
+        # 3. Pick the contract whose midpoint is closest to target_premium
+        best_symbol = None
+        best_ask    = None
+        best_mid    = None
+        best_diff   = float("inf")
+
+        for sym, snap in (snapshots or {}).items():
+            try:
+                q   = getattr(snap, "latest_quote", None)
+                bid = float(getattr(q, "bid_price", 0) or 0)
+                ask = float(getattr(q, "ask_price", 0) or 0)
+                if bid <= 0 or ask <= 0:
+                    continue
+                mid  = (bid + ask) / 2
+                diff = abs(mid - target_premium)
+                if diff < best_diff:
+                    best_diff   = diff
+                    best_symbol = sym
+                    best_ask    = ask
+                    best_mid    = mid
+            except Exception:
+                continue
+
+        # Fallback: if no quotes, pick ATM strike by strike price proximity
+        if not best_symbol:
+            log.warning("No option quotes returned — falling back to ATM strike selection")
+            try:
+                # Get current stock price via Coinbase public API as proxy
+                import urllib.request as _ur, json as _jx
+                with _ur.urlopen(
+                    f"https://data.alpaca.markets/v2/stocks/{underlying}/quotes/latest",
+                    timeout=5
+                ) as _r:
+                    _d = _jx.loads(_r.read())
+                    stock_price = float((_d.get("quote") or {}).get("ap") or 0)
+            except Exception:
+                stock_price = 0
+
+            best_contract = min(
+                contract_list,
+                key=lambda c: abs(float(getattr(c, "strike_price", 0) or 0) - stock_price)
+            ) if stock_price else contract_list[len(contract_list) // 2]
+            best_symbol = best_contract.symbol
+            best_ask    = target_premium * 1.10  # estimate: 10% above target
+            best_mid    = target_premium
+
+        # 4. Place limit order at the ask (maximises fill probability)
+        limit_price = round(best_ask, 2)
+        log.info("Selected option %s mid=$%.2f ask=$%.2f (target=$%.2f diff=$%.2f)",
+                 best_symbol, best_mid or 0, best_ask, target_premium, best_diff)
+
+        try:
+            order_req = LimitOrderRequest(
+                symbol        = best_symbol,
+                qty           = int(contracts),
+                side          = OrderSide.BUY,
+                time_in_force = TimeInForce.DAY,
+                limit_price   = limit_price,
+            )
+            order = self._trading.submit_order(order_req)
+            log.info("Alpaca option order submitted: %s x%s @ $%.2f → id=%s status=%s",
+                     best_symbol, contracts, limit_price, order.id, order.status)
+            return {
+                "success":    True,
+                "order_id":   str(order.id),
+                "status":     str(order.status),
+                "symbol":     best_symbol,
+                "contracts":  contracts,
+                "limit_price": limit_price,
+                "mid_price":  round(best_mid, 2) if best_mid else None,
+                "paper":      self._paper,
+            }
+        except Exception as e:
+            log.error("Alpaca option order failed for %s: %s", best_symbol, e)
             return {"success": False, "error": str(e)}
 
     def get_positions(self):

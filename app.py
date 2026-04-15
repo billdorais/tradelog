@@ -529,8 +529,9 @@ def webhook():
     strategy_name    = (data.get("strategy") or "").strip()
     quantity         = data.get("quantity", 1)
     opt_target_prem  = None   # set by options_config node
-    opt_expiry_type  = "weekly"
+    opt_expiry_type  = "friday"
     opt_right_ovr    = None
+    opt_contracts    = 1
     th_start         = None   # set by trading_hours node (HH:MM string)
     th_end           = None
     th_tz            = "America/New_York"
@@ -595,9 +596,10 @@ def webhook():
                 elif ntype == "ticker":
                     ticker = (n.get("value") or ticker or "").upper() or None
                 elif ntype == "options_config":
-                    opt_target_prem = float(n.get("target_premium") or 1.0)
-                    opt_expiry_type = n.get("expiry_type") or "weekly"
+                    opt_target_prem = float(n.get("target_premium") or 2.0)
+                    opt_expiry_type = n.get("expiry_type") or "friday"
                     opt_right_ovr   = n.get("right_override") or None
+                    opt_contracts   = int(n.get("contracts") or 1)
                 elif ntype == "trading_hours":
                     th_start = n.get("start") or "09:30"
                     th_end   = n.get("end")   or "16:00"
@@ -678,14 +680,27 @@ def webhook():
                 exec_detail = f"No order placed for action '{raw_action}'"
             else:
                 try:
-                    result = alpaca_broker.place_order(
-                        ticker   = ticker,
-                        action   = order_action,
-                        quantity = quantity,
-                        price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                        sec_type = sec_type,
-                        currency = currency,
-                    )
+                    if opt_target_prem is not None:
+                        # Options order — direction derived from signal action
+                        opt_direction = "call" if order_action == "BUY" else "put"
+                        if opt_right_ovr:
+                            opt_direction = "call" if opt_right_ovr == "C" else "put"
+                        result = alpaca_broker.place_option_order(
+                            underlying     = ticker,
+                            direction      = opt_direction,
+                            expiry_type    = opt_expiry_type or "friday",
+                            contracts      = opt_contracts,
+                            target_premium = float(opt_target_prem),
+                        )
+                    else:
+                        result = alpaca_broker.place_order(
+                            ticker   = ticker,
+                            action   = order_action,
+                            quantity = quantity,
+                            price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                            sec_type = sec_type,
+                            currency = currency,
+                        )
                     exec_status = "ok" if result.get("success") else "error"
                     exec_detail = json.dumps(result)
                     log.info("Alpaca order %s %s %s: %s", order_action, quantity, ticker, result)
