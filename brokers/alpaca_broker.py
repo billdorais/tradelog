@@ -312,16 +312,18 @@ class AlpacaBroker:
             result = []
             for o in orders:
                 status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
+                side_raw   = o.side.value if hasattr(o.side, 'value') else str(o.side)
+                log.info("Alpaca order: sym=%s status=%s side=%s filled_qty=%s",
+                         o.symbol, status_str, side_raw, o.filled_qty)
                 if status_str != "filled":
                     continue
                 filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
-                side_str  = o.side.value if hasattr(o.side, 'value') else str(o.side)
                 result.append({
                     "exec_id":  str(o.id),
                     "time":     filled_at,
                     "symbol":   o.symbol,
                     "sec_type": "STK",
-                    "side":     "BOT" if side_str == "buy" else "SLD",
+                    "side":     "BOT" if side_raw == "buy" else "SLD",
                     "shares":   float(o.filled_qty or 0),
                     "price":    float(o.filled_avg_price or 0),
                     "order_id": str(o.client_order_id or o.id),
