@@ -751,6 +751,8 @@
       // Net daily bars: diff consecutive portfolio history equity values so each bar
       // shows the day-over-day account change (matches Alpaca's "Daily Change" figure).
       // Fall back to FIFO-paired realized P&L only when portfolio history is unavailable.
+      console.log('[DEBUG] equityCurve:', JSON.stringify(equityCurve));
+      console.log('[DEBUG] closedTrades:', JSON.stringify(closedTrades));
       drawNetDailyChart(equityCurve.length ? equityCurve : closedTrades);
       // Cumulative P&L line: use FIFO-paired equity curve (trade-by-trade realized P&L).
       drawDailyChart(stats.equity_curve.length ? stats.equity_curve : equityCurve, true);
