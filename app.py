@@ -3088,9 +3088,38 @@ def api_alpaca_analysis():
                 return 0
         deduped.sort(key=_parse_ts)
 
-        # Per-day FIFO pairing: pair fills within each calendar day in isolation.
-        # Cross-day positions (buy Mon, sell Tue) are excluded so each day only
-        # shows intraday round-trips — consistent with the dashboard daily chart.
+        # Global FIFO pairing — used for overall stats (total P&L, win rate, etc.)
+        # so they match the main dashboard performance panel.
+        open_longs  = {}
+        open_shorts = {}
+        closed = []
+        for f in deduped:
+            sym      = (f.get("symbol") or "").upper()
+            side     = f.get("side", "")
+            price    = float(f.get("price") or 0)
+            qty      = float(f.get("shares") or 0)
+            fill_ts  = f.get("time", "")
+            date_str = fill_ts[:10] if fill_ts else ""
+            strat    = _resolve_strategy(sym, side, fill_ts)
+            if side == "BOT":
+                q = open_shorts.get(sym, [])
+                if q:
+                    ep, eq, et, es = q.pop(0)
+                    closed.append({"pnl": round((ep - price) * min(qty, eq), 2), "strategy": es,
+                                   "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                else:
+                    open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+            elif side == "SLD":
+                q = open_longs.get(sym, [])
+                if q:
+                    ep, eq, et, es = q.pop(0)
+                    closed.append({"pnl": round((price - ep) * min(qty, eq), 2), "strategy": es,
+                                   "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                else:
+                    open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+
+        # Per-day FIFO pairing — used only for the daily/weekly breakdown so each
+        # bar shows intraday round-trips only (consistent with the dashboard chart).
         from collections import defaultdict
         fills_by_date = defaultdict(list)
         for f in deduped:
@@ -3098,7 +3127,7 @@ def api_alpaca_analysis():
             date_str = fill_ts[:10] if fill_ts else "unknown"
             fills_by_date[date_str].append(f)
 
-        closed = []
+        daily_closed = []
         for date_str, day_fills in sorted(fills_by_date.items()):
             day_longs  = {}
             day_shorts = {}
@@ -3109,23 +3138,20 @@ def api_alpaca_analysis():
                 qty     = float(f.get("shares") or 0)
                 fill_ts = f.get("time", "")
                 strat   = _resolve_strategy(sym, side, fill_ts)
-
                 if side == "BOT":
                     q = day_shorts.get(sym, [])
                     if q:
                         ep, eq, et, es = q.pop(0)
-                        pnl = (ep - price) * min(qty, eq)
-                        closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
-                                       "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                        daily_closed.append({"pnl": round((ep - price) * min(qty, eq), 2), "strategy": es,
+                                             "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
                     else:
                         day_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
                 elif side == "SLD":
                     q = day_longs.get(sym, [])
                     if q:
                         ep, eq, et, es = q.pop(0)
-                        pnl = (price - ep) * min(qty, eq)
-                        closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
-                                       "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                        daily_closed.append({"pnl": round((price - ep) * min(qty, eq), 2), "strategy": es,
+                                             "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
                     else:
                         day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
@@ -3158,7 +3184,7 @@ def api_alpaca_analysis():
         per_ticker = {tk: _stats(tl) for tk, tl in ticker_map.items() if _stats(tl)}
 
         daily_map = {}
-        for c in closed:
+        for c in daily_closed:
             daily_map.setdefault(c["date"] or "unknown", []).append(c["pnl"])
         daily, cum = [], 0
         for d in sorted(daily_map):
@@ -3167,7 +3193,7 @@ def api_alpaca_analysis():
             daily.append({"date": d, "pnl": day_pnl, "trades": len(daily_map[d]), "cumulative": cum})
 
         weekly_map = {}
-        for c in closed:
+        for c in daily_closed:
             try:
                 dt = _dt.fromisoformat(c["date"])
                 wk = dt.strftime("%Y-W%W")
