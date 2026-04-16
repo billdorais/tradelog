@@ -684,16 +684,18 @@
         if (e.side === 'BOT') {
           if (shorts[sym] && shorts[sym].length) {
             const entry = shorts[sym].shift();
-            closedTrades.push({ time: ts, pnl: (entry.price - e.price) * e.shares });
-            tradesForScatter.push({ action:'SELL', ticker:sym, price:entry.price, quantity:e.shares, received_at:toMs(entry).toISOString(), strategy:'', id:null });
-            tradesForScatter.push({ action:'BUY',  ticker:sym, price:e.price,     quantity:e.shares, received_at:ts,                        strategy:'', id:null });
+            const qty = Math.min(e.shares, entry.shares);
+            closedTrades.push({ time: ts, pnl: Math.round((entry.price - e.price) * qty * 100) / 100 });
+            tradesForScatter.push({ action:'SELL', ticker:sym, price:entry.price, quantity:qty, received_at:toMs(entry).toISOString(), strategy:'', id:null });
+            tradesForScatter.push({ action:'BUY',  ticker:sym, price:e.price,     quantity:qty, received_at:ts,                        strategy:'', id:null });
           } else { if (!longs[sym]) longs[sym] = []; longs[sym].push(e); }
         } else if (e.side === 'SLD') {
           if (longs[sym] && longs[sym].length) {
             const entry = longs[sym].shift();
-            closedTrades.push({ time: ts, pnl: (e.price - entry.price) * e.shares });
-            tradesForScatter.push({ action:'BUY',  ticker:sym, price:entry.price, quantity:e.shares, received_at:toMs(entry).toISOString(), strategy:'', id:null });
-            tradesForScatter.push({ action:'SELL', ticker:sym, price:e.price,     quantity:e.shares, received_at:ts,                        strategy:'', id:null });
+            const qty = Math.min(e.shares, entry.shares);
+            closedTrades.push({ time: ts, pnl: Math.round((e.price - entry.price) * qty * 100) / 100 });
+            tradesForScatter.push({ action:'BUY',  ticker:sym, price:entry.price, quantity:qty, received_at:toMs(entry).toISOString(), strategy:'', id:null });
+            tradesForScatter.push({ action:'SELL', ticker:sym, price:e.price,     quantity:qty, received_at:ts,                        strategy:'', id:null });
           } else { if (!shorts[sym]) shorts[sym] = []; shorts[sym].push(e); }
         }
       }
