@@ -366,13 +366,27 @@ _daily_pnl_cache = {"value": None, "ts": 0.0}
 
 
 def _compute_daily_pnl():
-    """Return today's realized P&L by pairing BUY/SELL signals in the trades
-    table — the same algorithm used by the analysis page, so the number shown
-    in the risk panel always matches what the user sees there.
+    """Return today's P&L.
+    When Alpaca is configured, uses alpaca_broker.daily_pnl() (equity minus
+    last close equity) so the number matches what the Alpaca app shows as
+    Daily Change and includes both realized and unrealized moves.
+    Falls back to pairing BUY/SELL signals from the trades table when Alpaca
+    is not configured.
     Result is cached for 60 s to keep the 15 s UI refresh cheap."""
     now_ts = time.time()
     if now_ts - _daily_pnl_cache["ts"] < 60 and _daily_pnl_cache["value"] is not None:
         return _daily_pnl_cache["value"]
+
+    # Prefer live Alpaca account P&L when broker is available
+    if alpaca_broker is not None:
+        try:
+            result = round(alpaca_broker.daily_pnl(), 2)
+            _daily_pnl_cache["value"] = result
+            _daily_pnl_cache["ts"]    = now_ts
+            return result
+        except Exception as _e:
+            log.debug("_compute_daily_pnl Alpaca error: %s", _e)
+            # fall through to signal-based calculation
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     try:
