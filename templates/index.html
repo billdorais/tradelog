@@ -749,10 +749,15 @@
       const stats = buildStatsFromClosed(closedTrades);
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Net daily bars: realized P&L per day from FIFO-paired fills.
-      // This differs from Alpaca's "Daily Change" (which includes unrealized P&L on open
-      // positions). Portfolio history equity diffs are unreliable due to intraday timing.
-      drawNetDailyChart(closedTrades);
+      // Net daily bars: pair fills within each day in isolation so cross-day positions
+      // (buy Monday, sell Tuesday) don't inflate Tuesday's bar.  Only same-day round-trips count.
+      const _dayDates = [...new Set(allAlpacaExecs.map(e => (e.time||'').slice(0,10)).filter(Boolean))].sort();
+      const _perDayPnl = _dayDates.map(day => {
+        const dayExecs = allAlpacaExecs.filter(e => e.time && e.time.slice(0,10) === day);
+        const { closedTrades: dc } = _pairAlpacaFills(dayExecs);
+        return { time: day, pnl: dc.reduce((s,t) => s + t.pnl, 0) };
+      }).filter(d => d.pnl !== 0);
+      drawNetDailyChart(_perDayPnl.length ? _perDayPnl : closedTrades);
       // Cumulative P&L line: use FIFO-paired equity curve (trade-by-trade realized P&L).
       drawDailyChart(stats.equity_curve.length ? stats.equity_curve : equityCurve, true);
 
