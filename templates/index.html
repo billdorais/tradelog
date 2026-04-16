@@ -527,7 +527,7 @@
     </div>
     <div style="display:flex;gap:32px;flex-wrap:wrap">
       <div style="flex:0 0 calc(50% - 16px);min-width:280px">
-        <div style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Net Daily P&amp;L</div>
+        <div style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Realized P&amp;L per Day</div>
         <canvas id="netDailyPnlChart" height="110"></canvas>
       </div>
       <div style="flex:0 0 calc(50% - 16px);min-width:280px">
@@ -749,10 +749,10 @@
       const stats = buildStatsFromClosed(closedTrades);
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Net daily bars: diff consecutive equity values — this is equity[N] - equity[N-1]
-      // which matches Alpaca's own "Daily Change" (equity - last_equity).
-      // Fall back to FIFO-paired realized P&L when portfolio history is unavailable.
-      drawNetDailyChart(equityCurve.length ? equityCurve : closedTrades);
+      // Net daily bars: realized P&L per day from FIFO-paired fills.
+      // This differs from Alpaca's "Daily Change" (which includes unrealized P&L on open
+      // positions). Portfolio history equity diffs are unreliable due to intraday timing.
+      drawNetDailyChart(closedTrades);
       // Cumulative P&L line: use FIFO-paired equity curve (trade-by-trade realized P&L).
       drawDailyChart(stats.equity_curve.length ? stats.equity_curve : equityCurve, true);
 
