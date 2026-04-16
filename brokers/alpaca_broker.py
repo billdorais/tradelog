@@ -332,7 +332,7 @@ class AlpacaBroker:
         self._ensure_client()
         try:
             from alpaca.trading.requests import GetPortfolioHistoryRequest
-            req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe, intraday_reporting="market_hours")
+            req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
             hist = self._trading.get_portfolio_history(request_params=req)
             timestamps = getattr(hist, "timestamp", []) or []
             equities   = getattr(hist, "equity",    []) or []
@@ -358,7 +358,7 @@ class AlpacaBroker:
             log.info("Alpaca portfolio history: %d points (period=%s timeframe=%s)", len(result), period, timeframe)
             return result
         except Exception as e:
-            log.error("Alpaca get_portfolio_history failed: %s", e)
+            log.error("Alpaca get_portfolio_history failed: %s", e, exc_info=True)
             return []
 
     def get_fills(self):
