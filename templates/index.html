@@ -749,9 +749,10 @@
       const stats = buildStatsFromClosed(closedTrades);
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Net daily bars: use profit_loss field directly — Alpaca calculates per-day P&L.
+      // Net daily bars: diff consecutive equity values — this is equity[N] - equity[N-1]
+      // which matches Alpaca's own "Daily Change" (equity - last_equity).
       // Fall back to FIFO-paired realized P&L when portfolio history is unavailable.
-      drawNetDailyChart(dailyTrades.length ? dailyTrades : closedTrades);
+      drawNetDailyChart(equityCurve.length ? equityCurve : closedTrades);
       // Cumulative P&L line: use FIFO-paired equity curve (trade-by-trade realized P&L).
       drawDailyChart(stats.equity_curve.length ? stats.equity_curve : equityCurve, true);
 
