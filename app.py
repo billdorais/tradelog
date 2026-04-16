@@ -2615,8 +2615,8 @@ def alpaca_portfolio_history():
     try:
         return jsonify(alpaca_broker.get_portfolio_history(period=period, timeframe=timeframe))
     except Exception as e:
-        log.error("alpaca_portfolio_history error: %s", e)
-        return jsonify([])
+        log.error("alpaca_portfolio_history error: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/alpaca/trades")
