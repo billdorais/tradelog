@@ -748,9 +748,11 @@
       const stats = buildStatsFromClosed(closedTrades);
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Daily bar + cumulative: prefer portfolio history; fall back to FIFO-paired fills
-      drawNetDailyChart(dailyTrades.length ? dailyTrades : closedTrades);
-      drawDailyChart(equityCurve.length   ? equityCurve : stats.equity_curve, true);
+      // Daily bar + cumulative: use FIFO-paired realized P&L (same approach as Signals tab).
+      // Portfolio history is mark-to-market; diffing it gives account equity change, not
+      // realized P&L per day.  closedTrades/{time,pnl} sums actual wins/losses per day.
+      drawNetDailyChart(closedTrades);
+      drawDailyChart(stats.equity_curve, true);
 
       if (!histFiltered.length) {
         const c = document.getElementById('equityChart').getContext('2d');
