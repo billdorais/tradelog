@@ -706,6 +706,7 @@
       // so numbers match what the user sees in the Alpaca app.
       const history = await fetch('/api/alpaca/portfolio_history?period=3M&timeframe=1D')
         .then(r => r.json()).catch(() => []);
+      console.log('[DEBUG] portfolio history raw (first 3):', JSON.stringify(history.slice(0,3)), 'total:', history.length);
 
       // Build equity curve from portfolio history (equity values)
       const histFiltered = fromDate
