@@ -339,7 +339,7 @@ class AlpacaBroker:
             pnls       = getattr(hist, "profit_loss",[]) or []
             result = []
             for ts, eq, pl in zip(timestamps, equities, pnls):
-                if eq is None:
+                if eq is None or float(eq) == 0:
                     continue
                 # Convert Unix int timestamps → "YYYY-MM-DD" ISO strings so the
                 # frontend date filter (slice(0,10) >= fromDate) works correctly.

@@ -704,7 +704,7 @@
     async function renderAlpacaStats(fromDate) {
       // Equity curve and daily bars: use Alpaca's actual portfolio history (mark-to-market)
       // so numbers match what the user sees in the Alpaca app.
-      const history = await fetch('/api/alpaca/portfolio_history?period=3M&timeframe=1D')
+      const history = await fetch('/api/alpaca/portfolio_history?period=1M&timeframe=1D')
         .then(r => r.json()).catch(() => []);
 
 
@@ -749,10 +749,9 @@
       const stats = buildStatsFromClosed(closedTrades);
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Net daily bars: diff consecutive portfolio history equity values so each bar
-      // shows the day-over-day account change (matches Alpaca's "Daily Change" figure).
-      // Fall back to FIFO-paired realized P&L only when portfolio history is unavailable.
-      drawNetDailyChart(equityCurve.length ? equityCurve : closedTrades);
+      // Net daily bars: use profit_loss field directly — Alpaca calculates per-day P&L.
+      // Fall back to FIFO-paired realized P&L when portfolio history is unavailable.
+      drawNetDailyChart(dailyTrades.length ? dailyTrades : closedTrades);
       // Cumulative P&L line: use FIFO-paired equity curve (trade-by-trade realized P&L).
       drawDailyChart(stats.equity_curve.length ? stats.equity_curve : equityCurve, true);
 
