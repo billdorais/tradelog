@@ -341,8 +341,17 @@ class AlpacaBroker:
             for ts, eq, pl in zip(timestamps, equities, pnls):
                 if eq is None:
                     continue
+                # Convert Unix int timestamps → "YYYY-MM-DD" ISO strings so the
+                # frontend date filter (slice(0,10) >= fromDate) works correctly.
+                if isinstance(ts, int):
+                    from datetime import datetime, timezone
+                    ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                elif isinstance(ts, str):
+                    ts_str = ts
+                else:
+                    ts_str = str(ts)
                 result.append({
-                    "time":   str(ts) if not isinstance(ts, str) else ts,
+                    "time":   ts_str,
                     "equity": float(eq),
                     "pnl":    float(pl) if pl is not None else 0.0,
                 })

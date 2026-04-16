@@ -748,9 +748,9 @@
       const stats = buildStatsFromClosed(closedTrades);
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Daily bar: per-day P&L from portfolio history (matches Alpaca app)
-      drawNetDailyChart(dailyTrades);
-      drawDailyChart(equityCurve, true);
+      // Daily bar + cumulative: prefer portfolio history; fall back to FIFO-paired fills
+      drawNetDailyChart(dailyTrades.length ? dailyTrades : closedTrades);
+      drawDailyChart(equityCurve.length   ? equityCurve : stats.equity_curve, true);
 
       if (!histFiltered.length) {
         const c = document.getElementById('equityChart').getContext('2d');
