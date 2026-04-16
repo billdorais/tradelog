@@ -333,7 +333,9 @@ class AlpacaBroker:
         try:
             from alpaca.trading.requests import GetPortfolioHistoryRequest
             req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
+            log.info("Calling get_portfolio_history period=%s timeframe=%s", period, timeframe)
             hist = self._trading.get_portfolio_history(request_params=req)
+            log.info("get_portfolio_history response type=%s keys=%s", type(hist).__name__, dir(hist))
             timestamps = getattr(hist, "timestamp", []) or []
             equities   = getattr(hist, "equity",    []) or []
             pnls       = getattr(hist, "profit_loss",[]) or []
@@ -359,7 +361,7 @@ class AlpacaBroker:
             return result
         except Exception as e:
             log.error("Alpaca get_portfolio_history failed: %s", e, exc_info=True)
-            return []
+            raise  # propagate so app.py returns the error message
 
     def get_fills(self):
         """Return recent filled orders."""
