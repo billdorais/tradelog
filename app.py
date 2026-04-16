@@ -3088,38 +3088,46 @@ def api_alpaca_analysis():
                 return 0
         deduped.sort(key=_parse_ts)
 
-        # FIFO pair fills, resolving strategy from entry fill
-        open_longs  = {}  # symbol → [(price, qty, time, strategy)]
-        open_shorts = {}
-        closed = []
-
+        # Per-day FIFO pairing: pair fills within each calendar day in isolation.
+        # Cross-day positions (buy Mon, sell Tue) are excluded so each day only
+        # shows intraday round-trips — consistent with the dashboard daily chart.
+        from collections import defaultdict
+        fills_by_date = defaultdict(list)
         for f in deduped:
-            sym      = (f.get("symbol") or "").upper()
-            side     = f.get("side", "")
-            price    = float(f.get("price") or 0)
-            qty      = float(f.get("shares") or 0)
             fill_ts  = f.get("time", "")
-            date_str = fill_ts[:10] if fill_ts else ""
-            strat    = _resolve_strategy(sym, side, fill_ts)
+            date_str = fill_ts[:10] if fill_ts else "unknown"
+            fills_by_date[date_str].append(f)
 
-            if side == "BOT":
-                q = open_shorts.get(sym, [])
-                if q:
-                    ep, eq, et, es = q.pop(0)
-                    pnl = (ep - price) * min(qty, eq)
-                    closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
-                                   "date": date_str, "entry_time": et, "exit_time": fill_ts})
-                else:
-                    open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
-            elif side == "SLD":
-                q = open_longs.get(sym, [])
-                if q:
-                    ep, eq, et, es = q.pop(0)
-                    pnl = (price - ep) * min(qty, eq)
-                    closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
-                                   "date": date_str, "entry_time": et, "exit_time": fill_ts})
-                else:
-                    open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+        closed = []
+        for date_str, day_fills in sorted(fills_by_date.items()):
+            day_longs  = {}
+            day_shorts = {}
+            for f in day_fills:
+                sym     = (f.get("symbol") or "").upper()
+                side    = f.get("side", "")
+                price   = float(f.get("price") or 0)
+                qty     = float(f.get("shares") or 0)
+                fill_ts = f.get("time", "")
+                strat   = _resolve_strategy(sym, side, fill_ts)
+
+                if side == "BOT":
+                    q = day_shorts.get(sym, [])
+                    if q:
+                        ep, eq, et, es = q.pop(0)
+                        pnl = (ep - price) * min(qty, eq)
+                        closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
+                                       "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                    else:
+                        day_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                elif side == "SLD":
+                    q = day_longs.get(sym, [])
+                    if q:
+                        ep, eq, et, es = q.pop(0)
+                        pnl = (price - ep) * min(qty, eq)
+                        closed.append({"pnl": round(pnl, 2), "strategy": es, "ticker": sym,
+                                       "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                    else:
+                        day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
         def _stats(tlist):
             if not tlist: return None
