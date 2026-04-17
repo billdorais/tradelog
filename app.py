@@ -3247,6 +3247,15 @@ def api_alpaca_analysis():
                 "largest_loss":  round(min(losses), 2) if losses else 0,
             }
 
+        # Apply frontend exclusions (localStorage keys: "exit_time|ticker")
+        exclude_param = request.args.get("exclude", "").strip()
+        if exclude_param:
+            excluded_keys = set(exclude_param.split(","))
+            daily_closed = [
+                c for c in daily_closed
+                if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
+            ]
+
         strat_map = {}
         for c in daily_closed:
             strat_map.setdefault(c["strategy"], []).append(c)

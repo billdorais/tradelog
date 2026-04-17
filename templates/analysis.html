@@ -229,15 +229,28 @@
 
   // ── Load data ──────────────────────────────────────────────────────────────
   async function load() {
-    const endpoint = activeSource === 'alpaca' ? '/api/alpaca/analysis' : '/api/analysis';
+    let endpoint = activeSource === 'alpaca' ? '/api/alpaca/analysis' : '/api/analysis';
+    if (activeSource === 'alpaca') {
+      // Apply the same trade exclusions stored by the dashboard
+      try {
+        const excl = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]');
+        if (excl.length) endpoint += '?exclude=' + encodeURIComponent(excl.join(','));
+      } catch(e) {}
+    }
     document.getElementById('dataAge').textContent = 'Loading…';
     const res  = await fetch(endpoint);
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
     const srcLabel = activeSource === 'alpaca' ? 'Alpaca fills' : 'signal trades';
+    const exclNote = (activeSource === 'alpaca') ? (() => {
+      try {
+        const n = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]').length;
+        return n ? ` · ${n} trade${n>1?'s':''} excluded` : '';
+      } catch(e) { return ''; }
+    })() : '';
     document.getElementById('dataAge').textContent =
-      `${data.overall?.trades || 0} closed trades analysed (${srcLabel})`;
+      `${data.overall?.trades || 0} closed trades analysed (${srcLabel})${exclNote}`;
     renderOverall(data.overall || {});
     renderStratTable(data.per_strategy || {});
     renderTickerTable(data.per_ticker  || {});

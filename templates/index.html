@@ -788,6 +788,8 @@
       const params = new URLSearchParams();
       if (fromDate) params.set('from_date', fromDate);
       if (toDate)   params.set('to_date',   toDate);
+      const exclArr = [..._loadExclusions()];
+      if (exclArr.length) params.set('exclude', exclArr.join(','));
       if (params.toString()) url += '?' + params.toString();
 
       const data = await fetch(url).then(r => r.json()).catch(() => ({}));
@@ -847,13 +849,14 @@
       // Render performance panel; pass equityCurve as scatter source so
       // drawTimeScatter uses the fast path (pre-computed {time, pnl} items)
       // instead of the JS FIFO re-pairing which has date-format issues.
-      renderStats(stats, lineColor, equityCurve);
+      // Pass displayCurve so scatter and daily charts also respect exclusions.
+      renderStats(stats, lineColor, displayCurve);
 
       // Daily bar: sum per-trade pnl from equity curve by day
-      drawNetDailyChart(equityCurve.length ? equityCurve : closedTrades);
-      drawDailyChart(equityCurve, true);
+      drawNetDailyChart(displayCurve.length ? displayCurve : closedTrades);
+      drawDailyChart(displayCurve, true);
 
-      if (!equityCurve.length) {
+      if (!displayCurve.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
         c.fillText('No closed Alpaca trades yet', document.getElementById('equityChart').width / 2, 60);
