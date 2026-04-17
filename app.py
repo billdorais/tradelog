@@ -3160,8 +3160,10 @@ def api_alpaca_analysis():
                 return 0
         deduped.sort(key=_parse_ts)
 
-        # Global FIFO pairing — used for overall stats (total P&L, win rate, etc.)
-        # so they match the main dashboard performance panel.
+        # LIFO pairing — matches each sell to the most recent preceding buy for that
+        # symbol.  This correctly pairs intraday round-trips from algo signals even
+        # when older open positions exist in the queue (FIFO would assign the sell to
+        # the oldest buy, inflating or deflating P&L vs what the signal actually did).
         open_longs  = {}
         open_shorts = {}
         closed = []
@@ -3176,7 +3178,7 @@ def api_alpaca_analysis():
             if side == "BOT":
                 q = open_shorts.get(sym, [])
                 if q:
-                    ep, eq, et, es = q.pop(0)
+                    ep, eq, et, es = q.pop(-1)  # LIFO: most recent short
                     closed.append({"pnl": round((ep - price) * min(qty, eq), 2), "strategy": es,
                                    "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
                 else:
@@ -3184,7 +3186,7 @@ def api_alpaca_analysis():
             elif side == "SLD":
                 q = open_longs.get(sym, [])
                 if q:
-                    ep, eq, et, es = q.pop(0)
+                    ep, eq, et, es = q.pop(-1)  # LIFO: most recent long
                     closed.append({"pnl": round((price - ep) * min(qty, eq), 2), "strategy": es,
                                    "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
                 else:
