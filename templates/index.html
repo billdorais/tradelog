@@ -1312,10 +1312,14 @@
       document.getElementById('wlWinSeg').style.width  = (avgWin  / total * 100) + '%';
       document.getElementById('wlLossSeg').style.width = (avgLoss / total * 100) + '%';
 
-      const labels   = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
-      const values   = (stats.equity_curve || []).map(p => p.value);
-      const tradeIds = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
-      drawChart(labels, values, lineColor, tradeIds);
+      // Only draw the equity chart from FIFO data on non-Alpaca tabs;
+      // the Alpaca tab draws its own chart from portfolio history before calling renderStats.
+      if (activeTab !== 'alpaca') {
+        const labels   = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
+        const values   = (stats.equity_curve || []).map(p => p.value);
+        const tradeIds = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
+        drawChart(labels, values, lineColor, tradeIds);
+      }
       if (!values.length && activeTab === 'signals') {
         const chartCanvas = document.getElementById('equityChart');
         const c = chartCanvas.getContext('2d');
