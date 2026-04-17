@@ -2741,6 +2741,7 @@ def ib_equity():
 def api_stats():
     strategy_filter = request.args.get("strategy")
     from_date       = request.args.get("from_date")  # "YYYY-MM-DD" — only emit closes on/after this date
+    to_date         = request.args.get("to_date")    # "YYYY-MM-DD" — only emit closes on/before this date
     conn = get_db()
     cur  = conn.cursor()
     p    = placeholder()
@@ -2780,7 +2781,8 @@ def api_stats():
         if exec_status in ("blocked", "skipped", "error"):
             continue
         key = (strategy, ticker)
-        in_window = (not from_date) or (received[:10] >= from_date)
+        in_window = ((not from_date) or (received[:10] >= from_date)) and \
+                    ((not to_date)   or (received[:10] <= to_date))
         if action == "BUY":
             # Closes an open short; otherwise opens a new long
             queue = open_shorts.get(key, [])
