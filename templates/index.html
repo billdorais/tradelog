@@ -536,8 +536,15 @@
       </div>
     </div>
     <canvas id="equityChart" height="90"></canvas>
-    <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555;margin-top:6px">
-      Cumulative realized P&amp;L from Alpaca fills.
+    <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
+      <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555">
+        Cumulative realized P&amp;L from Alpaca fills.
+      </div>
+      <button id="alpacaResetExcluded" onclick="resetAlpacaExclusions()"
+        style="display:none;padding:2px 10px;font-size:0.72rem;background:transparent;
+               border:1px solid #ef5350;color:#ef5350;border-radius:4px;cursor:pointer">
+        Reset excluded trades
+      </button>
     </div>
   </div>
 
@@ -744,6 +751,36 @@
       return { closedTrades, tradesForScatter, deduped };
     }
 
+    // ── Alpaca trade exclusion helpers ─────────────────────────────────────
+    const _EXCL_KEY = 'alpaca_excluded_trades';
+    function _loadExclusions() {
+      try { return new Set(JSON.parse(localStorage.getItem(_EXCL_KEY) || '[]')); }
+      catch(e) { return new Set(); }
+    }
+    function _saveExclusions(set) {
+      localStorage.setItem(_EXCL_KEY, JSON.stringify([...set]));
+      const btn = document.getElementById('alpacaResetExcluded');
+      if (btn) btn.style.display = set.size ? '' : 'none';
+    }
+    function _tradeKey(p) { return `${p.time}|${p.ticker}`; }
+    function _filterEquityCurve(curve) {
+      const excl = _loadExclusions();
+      if (!excl.size) return curve;
+      const filtered = curve.filter(p => !excl.has(_tradeKey(p)));
+      let cum = 0;
+      return filtered.map(p => {
+        cum = Math.round((cum + (p.pnl || 0)) * 100) / 100;
+        return { ...p, value: cum };
+      });
+    }
+    function resetAlpacaExclusions() {
+      _saveExclusions(new Set());
+      const fromDate = document.getElementById('equityFromDate').value;
+      const toDate   = document.getElementById('equityToDate').value;
+      renderAlpacaStats(fromDate, toDate);
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
     async function renderAlpacaStats(fromDate, toDate) {
       // Use the backend FIFO pairing (Python, handles partial fills correctly)
       // which mirrors exactly how the Signals P&L tab works.
@@ -774,8 +811,15 @@
       document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
       document.getElementById('statErrors').textContent   = '—';
 
+      // Apply exclusions — filter out user-removed trades and recalc cumulative
+      const displayCurve = _filterEquityCurve(equityCurve);
+      // Keep reset button visible if any exclusions are active
+      const excl = _loadExclusions();
+      const resetBtn = document.getElementById('alpacaResetExcluded');
+      if (resetBtn) resetBtn.style.display = excl.size ? '' : 'none';
+
       // Build stats object in the same shape as /api/stats so renderStats works
-      const lastVal   = equityCurve.length ? equityCurve[equityCurve.length - 1].value : 0;
+      const lastVal   = displayCurve.length ? displayCurve[displayCurve.length - 1].value : 0;
       const lineColor = lastVal >= 0 ? '#5fe0a0' : '#ef5350';
       const stats = {
         completed_trades: overall.trades      || 0,
@@ -784,14 +828,21 @@
         avg_loss:         overall.avg_loss     || 0,
         profit_factor:    overall.profit_factor,
         max_drawdown:     0,
-        equity_curve:     equityCurve,
+        equity_curve:     displayCurve,
       };
 
-      // Draw equity curve (per-trade, from backend FIFO)
-      const labels    = equityCurve.map(p => fmtET(p.time) || p.time);
-      const values    = equityCurve.map(p => p.value);
-      const tickerIds = equityCurve.map(p => ({ ticker: p.ticker, pnl: p.pnl }));
-      drawChart(labels, values, lineColor, tickerIds);
+      // Draw equity curve — clicking a point excludes it from the chart
+      const labels    = displayCurve.map(p => fmtET(p.time) || p.time);
+      const values    = displayCurve.map(p => p.value);
+      const tickerIds = displayCurve.map(p => ({ ticker: p.ticker, pnl: p.pnl, time: p.time }));
+      drawChart(labels, values, lineColor, tickerIds, (idx) => {
+        const pt = displayCurve[idx];
+        if (!pt) return;
+        const ex = _loadExclusions();
+        ex.add(_tradeKey(pt));
+        _saveExclusions(ex);
+        renderAlpacaStats(fromDate, toDate);
+      });
 
       // Render performance panel; pass equityCurve as scatter source so
       // drawTimeScatter uses the fast path (pre-computed {time, pnl} items)
@@ -1644,7 +1695,7 @@
       });
     }
 
-    function drawChart(labels, values, lineColor, tradeIds) {
+    function drawChart(labels, values, lineColor, tradeIds, onPointClick) {
       if (equityChartInstance) equityChartInstance.destroy();
       const ctx = document.getElementById('equityChart').getContext('2d');
       equityChartInstance = new Chart(ctx, {
@@ -1656,6 +1707,7 @@
             borderColor: lineColor,
             borderWidth: 2,
             pointRadius: values.length > 50 ? 0 : 3,
+            pointHoverRadius: onPointClick ? 6 : 4,
             fill: true,
             tension: 0.2,
             backgroundColor: function(context) {
@@ -1676,6 +1728,12 @@
         },
         options: {
           animation: false,
+          onClick: onPointClick ? (event, elements) => {
+            if (elements.length > 0) onPointClick(elements[0].index);
+          } : undefined,
+          onHover: onPointClick ? (event, elements) => {
+            event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+          } : undefined,
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -1691,6 +1749,7 @@
                       const tpnl = ids.pnl != null ? ids.pnl : 0;
                       const tsign = tpnl >= 0 ? '+' : '';
                       idStr = `  [${ids.ticker}  trade: ${tsign}$${Math.abs(tpnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}]`;
+                      if (onPointClick) idStr += '  ✕ click to remove';
                     } else {
                       idStr = `  [entry #${ids.entry ?? '?'} → exit #${ids.exit ?? '?'}]`;
                     }
