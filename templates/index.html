@@ -793,12 +793,13 @@
       const tickerIds = equityCurve.map(p => ({ ticker: p.ticker, pnl: p.pnl }));
       drawChart(labels, values, lineColor, tickerIds);
 
-      // Render performance panel (win rate, drawdown, etc.) — skip equity redraw
-      renderStats(stats, lineColor, tradesForScatter);
+      // Render performance panel; pass equityCurve as scatter source so
+      // drawTimeScatter uses the fast path (pre-computed {time, pnl} items)
+      // instead of the JS FIFO re-pairing which has date-format issues.
+      renderStats(stats, lineColor, equityCurve);
 
-      // Daily bar: intraday-only P&L from per-day FIFO (backend daily array)
-      const dailyArr = (data.daily || []).map(d => ({ time: d.date, pnl: d.pnl }));
-      drawNetDailyChart(dailyArr.length ? dailyArr : closedTrades);
+      // Daily bar: sum per-trade pnl from equity curve by day
+      drawNetDailyChart(equityCurve.length ? equityCurve : closedTrades);
       drawDailyChart(equityCurve, true);
 
       if (!equityCurve.length) {
@@ -1422,51 +1423,71 @@
       const ET_CLOSE_MINUTES = 16 * 60;    // 4:00 PM = 960 min
       const points = [];
 
+      // Helper: parse a time string safely regardless of whether it already has a Z/offset
+      function parseTradeTime(raw) {
+        const s = (raw || '').replace(' ', 'T');
+        return new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
+      }
+
       // Use override (e.g. Alpaca fills) or filter allTrades by strategy
       const tradesForScatter = tradesOverride
         ? tradesOverride
         : (stratFilter ? allTrades.filter(t => t.strategy === stratFilter) : allTrades);
 
-      // Re-pair to get per-trade P&L with exit time (for time-of-day)
-      const openLongs = {}, openShorts = {};
-      const sorted = [...tradesForScatter].sort((a, b) => a.id - b.id);
-      for (const t of sorted) {
-        const action = (t.action || '').trim().toUpperCase();
-        const ticker = (t.ticker || '').trim().toUpperCase();
-        const strat  = (t.strategy || '').trim();
-        const price  = parseFloat(t.price);
-        const qty    = parseFloat(t.quantity) || 1;
-        const time   = t.received_at || '';
-        if (!ticker || isNaN(price) || price === 0) continue;
-        const key = strat + '|' + ticker;
-        if (action === 'BUY') {
-          const q = openShorts[key];
-          if (q && q.length) {
-            const e = q.shift();
-            const pnl = (e.price - price) * Math.min(qty, e.qty);
-            const d = new Date((time || '').replace(' ', 'T') + (time.includes('+') ? '' : 'Z'));
-            if (!isNaN(d)) {
-              const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
-              const [h, m] = etMs.split(':').map(Number);
-              const minOfDay = h * 60 + m;
-              if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
-            }
-          } else { if (!openLongs[key]) openLongs[key] = []; openLongs[key].push({ price, qty, id: t.id }); }
-        } else if (action === 'SELL') {
-          const q = openLongs[key];
-          if (q && q.length) {
-            const e = q.shift();
-            const pnl = (price - e.price) * Math.min(qty, e.qty);
-            const d = new Date((time || '').replace(' ', 'T') + (time.includes('+') ? '' : 'Z'));
-            if (!isNaN(d)) {
-              const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
-              const [h, m] = etMs.split(':').map(Number);
-              const minOfDay = h * 60 + m;
-              if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-                points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
-            }
-          } else { if (!openShorts[key]) openShorts[key] = []; openShorts[key].push({ price, qty, id: t.id }); }
+      // Fast path: backend equity curve items already have {time, pnl} pre-computed
+      if (tradesForScatter.length && 'pnl' in tradesForScatter[0]) {
+        for (const t of tradesForScatter) {
+          const d = parseTradeTime(t.time);
+          if (!isNaN(d)) {
+            const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
+            const [h, m] = etMs.split(':').map(Number);
+            const minOfDay = h * 60 + m;
+            if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
+              points.push({ x: minOfDay, y: parseFloat((t.pnl || 0).toFixed(2)), win: (t.pnl || 0) > 0 });
+          }
+        }
+      } else {
+        // Re-pair to get per-trade P&L with exit time (for time-of-day)
+        const openLongs = {}, openShorts = {};
+        const sorted = [...tradesForScatter].sort((a, b) => (a.id || 0) - (b.id || 0));
+        for (const t of sorted) {
+          const action = (t.action || '').trim().toUpperCase();
+          const ticker = (t.ticker || '').trim().toUpperCase();
+          const strat  = (t.strategy || '').trim();
+          const price  = parseFloat(t.price);
+          const qty    = parseFloat(t.quantity) || 1;
+          const time   = t.received_at || '';
+          if (!ticker || isNaN(price) || price === 0) continue;
+          const key = strat + '|' + ticker;
+          if (action === 'BUY') {
+            const q = openShorts[key];
+            if (q && q.length) {
+              const e = q.shift();
+              const pnl = (e.price - price) * Math.min(qty, e.qty);
+              const d = parseTradeTime(time);
+              if (!isNaN(d)) {
+                const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
+                const [h, m] = etMs.split(':').map(Number);
+                const minOfDay = h * 60 + m;
+                if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
+                  points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
+              }
+            } else { if (!openLongs[key]) openLongs[key] = []; openLongs[key].push({ price, qty, id: t.id }); }
+          } else if (action === 'SELL') {
+            const q = openLongs[key];
+            if (q && q.length) {
+              const e = q.shift();
+              const pnl = (price - e.price) * Math.min(qty, e.qty);
+              const d = parseTradeTime(time);
+              if (!isNaN(d)) {
+                const etMs = d.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'numeric', hour12:false});
+                const [h, m] = etMs.split(':').map(Number);
+                const minOfDay = h * 60 + m;
+                if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
+                  points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
+              }
+            } else { if (!openShorts[key]) openShorts[key] = []; openShorts[key].push({ price, qty, id: t.id }); }
+          }
         }
       }
 
