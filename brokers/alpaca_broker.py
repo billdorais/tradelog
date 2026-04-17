@@ -22,6 +22,27 @@ class AlpacaBroker:
         self._paper  = paper  if paper is not None else ALPACA_PAPER
         self._client = None
         self._trading = None
+        # Positions cache: avoids a blocking API call on every SELL signal.
+        # Invalidated after any order is placed so the next check is fresh.
+        self._pos_cache     = None   # list of positions or None
+        self._pos_cache_ts  = 0.0
+        _POS_CACHE_TTL      = 20     # seconds
+
+    _POS_CACHE_TTL = 20  # seconds
+
+    def _get_positions_cached(self):
+        """Return open positions, using a 20-second cache to avoid blocking the
+        webhook handler on every signal.  Invalidated after any order is placed."""
+        now = time.time()
+        if self._pos_cache is not None and (now - self._pos_cache_ts) < self._POS_CACHE_TTL:
+            return self._pos_cache
+        self._pos_cache    = self._trading.get_all_positions()
+        self._pos_cache_ts = now
+        return self._pos_cache
+
+    def _invalidate_pos_cache(self):
+        self._pos_cache    = None
+        self._pos_cache_ts = 0.0
 
     def _ensure_client(self):
         if self._trading is not None:
@@ -90,7 +111,7 @@ class AlpacaBroker:
         # log it rather than Alpaca silently opening a short position.
         if not is_crypto and side == OrderSide.SELL:
             try:
-                positions = self._trading.get_all_positions()
+                positions = self._get_positions_cached()
                 pos = next((p for p in positions if p.symbol.upper() == ticker.upper()), None)
                 held_qty = float(pos.qty) if pos else 0.0
                 if held_qty <= 0:
@@ -121,7 +142,7 @@ class AlpacaBroker:
             try:
                 # Scan all positions — Alpaca may store symbol as ETHUSD or ETH/USD
                 base = ticker.split("/")[0].upper()  # "ETH" from "ETH/USD"
-                positions = self._trading.get_all_positions()
+                positions = self._get_positions_cached()
                 pos = next((p for p in positions if base in p.symbol.upper()), None)
                 if pos is None:
                     all_syms = [p.symbol for p in positions]
@@ -158,6 +179,7 @@ class AlpacaBroker:
                     time_in_force= tif,
                 )
             order = self._trading.submit_order(req)
+            self._invalidate_pos_cache()  # position state changed
             log.info("Alpaca order submitted: %s %s %s → id=%s status=%s",
                      action, qty, ticker, order.id, order.status)
             return {
@@ -312,7 +334,7 @@ class AlpacaBroker:
     def get_positions(self):
         self._ensure_client()
         try:
-            positions = self._trading.get_all_positions()
+            positions = self._get_positions_cached()
             return [
                 {
                     "symbol": p.symbol,
@@ -332,6 +354,7 @@ class AlpacaBroker:
         self._ensure_client()
         try:
             order = self._trading.close_position(symbol)
+            self._invalidate_pos_cache()
             log.info("Alpaca close_position %s → id=%s status=%s", symbol, order.id, order.status)
             return {
                 "success":  True,
@@ -347,6 +370,7 @@ class AlpacaBroker:
         self._ensure_client()
         try:
             self._trading.close_all_positions(cancel_orders=True)
+            self._invalidate_pos_cache()
             log.info("Alpaca: all positions closed")
             return {"success": True}
         except Exception as e:
