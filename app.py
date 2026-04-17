@@ -2635,7 +2635,7 @@ def alpaca_portfolio_history():
 
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
-    """Return filled Alpaca orders, cached for 30s to avoid repeated API calls."""
+    """Return filled Alpaca orders with resolved strategy names, cached for 30s."""
     global _alpaca_fills_cache
     if alpaca_broker is None:
         return jsonify([])
@@ -2644,6 +2644,50 @@ def alpaca_trades():
         return jsonify(_alpaca_fills_cache["data"])
     try:
         fills = alpaca_broker.get_fills()
+        # Resolve strategy for each fill by matching time+ticker against signals DB
+        try:
+            from datetime import datetime as _dt
+            conn = get_db()
+            cur  = conn.cursor()
+            cur.execute("SELECT ticker, action, received_at, strategy FROM trades ORDER BY id ASC")
+            rows = cur.fetchall()
+            conn.close()
+            sig_rows = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
+            # Build lookup: (ticker, side) → sorted list of (unix_ts, strategy)
+            sig_lookup = {}
+            for t in sig_rows:
+                ticker   = (t.get("ticker") or "").strip().upper()
+                action   = (t.get("action") or "").strip().upper()
+                received = t.get("received_at") or ""
+                strategy = (t.get("strategy") or "").strip()
+                if not ticker or not received or not strategy:
+                    continue
+                side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
+                if not side:
+                    continue
+                try:
+                    ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                sig_lookup.setdefault((ticker, side), []).append((ts, strategy))
+            # Annotate each fill with the closest matching strategy
+            for f in fills:
+                sym  = (f.get("symbol") or "").upper().replace("/", "").replace("USD", "")
+                side = f.get("side", "")
+                fill_time = f.get("time") or ""
+                try:
+                    fill_ts = _dt.fromisoformat(fill_time.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                # Try exact symbol first, then strip USD suffix for crypto
+                candidates = sig_lookup.get((sym, side), []) or sig_lookup.get((f.get("symbol","").upper(), side), [])
+                if candidates:
+                    best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+                    # Only assign if signal is within 5 minutes of the fill
+                    if abs(best[0] - fill_ts) <= 300:
+                        f["strategy"] = best[1]
+        except Exception as _e:
+            log.debug("alpaca_trades strategy resolution error: %s", _e)
         _alpaca_fills_cache = {"data": fills, "ts": now}
         return jsonify(fills)
     except Exception as e:

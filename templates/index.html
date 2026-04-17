@@ -1139,13 +1139,16 @@
         const sentiment  = alpaca.direction === 'short' ? 'Short' : 'Long';
         const alpTs = f => f?.time;
         const dur   = en ? tradeDuration(alpTs(en), alpTs(ex)) : '—';
+        // Strategy: use paired TV signal's strategy if available, otherwise fall back to
+        // the strategy resolved server-side and stored on the fill itself.
+        const alpStrat = (tv?.entry?.strategy) || (tv?.exit?.strategy) || ref.strategy || null;
         rows.push(`<tr class="group-second">
           <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
           <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
           <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(sentiment)}</td>
-          <td><span style="color:#444">—</span></td>
+          <td>${alpStrat ? `<span class="strategy-tag">${alpStrat}</span>` : '<span style="color:#444">—</span>'}</td>
           <td><strong>${ref.symbol ?? '—'}</strong></td>
           ${pnlCell(pnl)}
           <td>${qty ?? '—'}</td>
