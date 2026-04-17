@@ -739,73 +739,65 @@
     }
 
     async function renderAlpacaStats(fromDate, toDate) {
-      // Equity curve and daily bars: use Alpaca's actual portfolio history (mark-to-market)
-      // so numbers match what the user sees in the Alpaca app.
-      const history = await fetch('/api/alpaca/portfolio_history?period=1M&timeframe=1D')
-        .then(r => r.json()).catch(() => []);
+      // Use the backend FIFO pairing (Python, handles partial fills correctly)
+      // which mirrors exactly how the Signals P&L tab works.
+      let url = '/api/alpaca/analysis';
+      const params = new URLSearchParams();
+      if (fromDate) params.set('from_date', fromDate);
+      if (toDate)   params.set('to_date',   toDate);
+      if (params.toString()) url += '?' + params.toString();
 
+      const data = await fetch(url).then(r => r.json()).catch(() => ({}));
+      const equityCurve = data.equity_curve || [];
+      const overall     = data.overall      || {};
 
-      // Build equity curve from portfolio history (equity values)
-      const histFiltered = history.filter(h => {
-        const d = h.time && h.time.slice(0, 10);
-        return (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
-      });
-
-      // Equity curve: normalise to P&L relative to start of the filtered window
-      const baseEquity = histFiltered.length ? histFiltered[0].equity : 0;
-      const equityCurve = histFiltered.map(h => ({
-        time:  h.time,
-        value: Math.round((h.equity - baseEquity) * 100) / 100,
-      }));
-
-      // Daily bars: use the pnl field from portfolio history (day-over-day change)
-      const dailyTrades = histFiltered.map(h => ({
-        time: h.time,
-        pnl:  h.pnl,
-      }));
-
-      // Fill count stats still come from FIFO-paired fills
+      // Fill count stats from raw fills
       let execs = allAlpacaExecs;
-      execs = execs.filter(e => {
-        const d = e.time && e.time.slice(0, 10);
-        return (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
-      });
+      if (fromDate || toDate) {
+        execs = execs.filter(e => {
+          const d = e.time && e.time.slice(0, 10);
+          return (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
+        });
+      }
       const { closedTrades, tradesForScatter, deduped } = _pairAlpacaFills(execs);
 
       document.getElementById('statTotal').textContent    = deduped.length;
       document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
       document.getElementById('statSells').textContent    = deduped.filter(e => e.side === 'SLD').length;
       document.getElementById('statTickers').textContent  = new Set(deduped.map(e => e.symbol).filter(Boolean)).size;
-      document.getElementById('statExecuted').textContent = closedTrades.length;
+      document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
       document.getElementById('statErrors').textContent   = '—';
 
-      // Render equity curve from portfolio history
+      // Build stats object in the same shape as /api/stats so renderStats works
       const lastVal   = equityCurve.length ? equityCurve[equityCurve.length - 1].value : 0;
       const lineColor = lastVal >= 0 ? '#5fe0a0' : '#ef5350';
-      const labels    = equityCurve.map(p => p.time);
-      const values    = equityCurve.map(p => p.value);
+      const stats = {
+        completed_trades: overall.trades      || 0,
+        win_rate:         overall.win_rate     || 0,
+        avg_win:          overall.avg_win      || 0,
+        avg_loss:         overall.avg_loss     || 0,
+        profit_factor:    overall.profit_factor,
+        max_drawdown:     0,
+        equity_curve:     equityCurve,
+      };
+
+      // Draw equity curve (per-trade, from backend FIFO)
+      const labels = equityCurve.map(p => fmtET(p.time) || p.time);
+      const values = equityCurve.map(p => p.value);
       drawChart(labels, values, lineColor, []);
 
-      // Render performance stats from FIFO pairs (win rate, profit factor, etc.)
-      const stats = buildStatsFromClosed(closedTrades);
+      // Render performance panel (win rate, drawdown, etc.) — skip equity redraw
       renderStats(stats, lineColor, tradesForScatter);
 
-      // Net daily bars: pair fills within each day in isolation so cross-day positions
-      // (buy Monday, sell Tuesday) don't inflate Tuesday's bar.  Only same-day round-trips count.
-      const _dayDates = [...new Set(allAlpacaExecs.map(e => (e.time||'').slice(0,10)).filter(Boolean))].sort();
-      const _perDayPnl = _dayDates.map(day => {
-        const dayExecs = allAlpacaExecs.filter(e => e.time && e.time.slice(0,10) === day);
-        const { closedTrades: dc } = _pairAlpacaFills(dayExecs);
-        return { time: day, pnl: dc.reduce((s,t) => s + t.pnl, 0) };
-      }).filter(d => d.pnl !== 0);
-      drawNetDailyChart(_perDayPnl.length ? _perDayPnl : closedTrades);
-      // Cumulative P&L line: use FIFO-paired equity curve (trade-by-trade realized P&L).
-      drawDailyChart(stats.equity_curve.length ? stats.equity_curve : equityCurve, true);
+      // Daily bar: intraday-only P&L from per-day FIFO (backend daily array)
+      const dailyArr = (data.daily || []).map(d => ({ time: d.date, pnl: d.pnl }));
+      drawNetDailyChart(dailyArr.length ? dailyArr : closedTrades);
+      drawDailyChart(equityCurve, true);
 
-      if (!histFiltered.length) {
+      if (!equityCurve.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
-        c.fillText('No Alpaca portfolio history available', document.getElementById('equityChart').width / 2, 60);
+        c.fillText('No closed Alpaca trades yet', document.getElementById('equityChart').width / 2, 60);
       }
     }
 

@@ -3093,9 +3093,21 @@ def api_alpaca_analysis():
         if alpaca_broker is None:
             return jsonify({"error": "Alpaca not configured"}), 400
 
+        from_date = request.args.get("from_date", "")
+        to_date   = request.args.get("to_date",   "")
+
         fills = alpaca_broker.get_fills()
         if not fills:
-            return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": []})
+            return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
+
+        # Filter by date range if requested
+        if from_date or to_date:
+            def _fill_date(f):
+                t = f.get("time") or ""
+                return t[:10] if t else ""
+            fills = [f for f in fills if
+                     (not from_date or _fill_date(f) >= from_date) and
+                     (not to_date   or _fill_date(f) <= to_date)]
 
         # Build signal lookup: (ticker, side) → sorted list of (unix_ts, strategy)
         conn = get_db()
@@ -3269,12 +3281,25 @@ def api_alpaca_analysis():
             cum = round(cum + w["pnl"], 2)
             weekly.append({"week": w["label"], "pnl": w["pnl"], "trades": w["trades"], "cumulative": cum})
 
+        # Build per-trade equity curve (one point per closed pair, sorted by exit time)
+        cum_pnl = 0
+        equity_curve = []
+        for c in sorted(closed, key=lambda x: x["exit_time"]):
+            cum_pnl = round(cum_pnl + c["pnl"], 2)
+            equity_curve.append({
+                "time":   c["exit_time"],
+                "value":  cum_pnl,
+                "pnl":    c["pnl"],
+                "ticker": c["ticker"],
+            })
+
         return jsonify({
             "overall":      _stats(closed) or {},
             "per_strategy": per_strategy,
             "per_ticker":   per_ticker,
             "daily":        daily,
             "weekly":       weekly,
+            "equity_curve": equity_curve,
         })
     except Exception as e:
         log.exception("Alpaca analysis error")
