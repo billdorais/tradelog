@@ -3248,12 +3248,12 @@ def api_alpaca_analysis():
             }
 
         strat_map = {}
-        for c in closed:
+        for c in daily_closed:
             strat_map.setdefault(c["strategy"], []).append(c)
         per_strategy = {s: _stats(tl) for s, tl in strat_map.items() if _stats(tl)}
 
         ticker_map = {}
-        for c in closed:
+        for c in daily_closed:
             ticker_map.setdefault(c["ticker"], []).append(c)
         per_ticker = {tk: _stats(tl) for tk, tl in ticker_map.items() if _stats(tl)}
 
@@ -3283,10 +3283,13 @@ def api_alpaca_analysis():
             cum = round(cum + w["pnl"], 2)
             weekly.append({"week": w["label"], "pnl": w["pnl"], "trades": w["trades"], "cumulative": cum})
 
-        # Build per-trade equity curve (one point per closed pair, sorted by exit time)
+        # Build per-trade equity curve from day-scoped pairs (daily_closed).
+        # Using day-scoped pairing avoids cross-day mismatches: each sell is only
+        # ever paired with a buy from the same calendar day, which correctly
+        # captures intraday round-trips regardless of open multi-day positions.
         cum_pnl = 0
         equity_curve = []
-        for c in sorted(closed, key=lambda x: x["exit_time"]):
+        for c in sorted(daily_closed, key=lambda x: x["exit_time"]):
             cum_pnl = round(cum_pnl + c["pnl"], 2)
             equity_curve.append({
                 "time":   c["exit_time"],
@@ -3296,7 +3299,7 @@ def api_alpaca_analysis():
             })
 
         return jsonify({
-            "overall":      _stats(closed) or {},
+            "overall":      _stats(daily_closed) or {},
             "per_strategy": per_strategy,
             "per_ticker":   per_ticker,
             "daily":        daily,
