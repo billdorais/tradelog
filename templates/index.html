@@ -1319,12 +1319,12 @@
         const values   = (stats.equity_curve || []).map(p => p.value);
         const tradeIds = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
         drawChart(labels, values, lineColor, tradeIds);
-      }
-      if (!values.length && activeTab === 'signals') {
-        const chartCanvas = document.getElementById('equityChart');
-        const c = chartCanvas.getContext('2d');
-        c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
-        c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
+        if (!values.length && activeTab === 'signals') {
+          const chartCanvas = document.getElementById('equityChart');
+          const c = chartCanvas.getContext('2d');
+          c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
+          c.fillText('Equity curve will appear once trades are closed', chartCanvas.width / 2, 60);
+        }
       }
 
       if (activeTab !== 'alpaca') drawDailyChart(stats.equity_curve || []);
