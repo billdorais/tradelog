@@ -671,6 +671,12 @@
         label.textContent       = 'Cumulative realized P&L from Alpaca fills';
         document.getElementById('equityFromDate').style.display = '';
         document.getElementById('equityToDate').style.display   = '';
+        // Default to last 30 days if no date filter set
+        const fromEl = document.getElementById('equityFromDate');
+        if (!fromEl.value) {
+          const d30 = new Date(); d30.setDate(d30.getDate() - 30);
+          fromEl.value = d30.toISOString().slice(0, 10);
+        }
         renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
       } else {
         ibBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #4a90d9;background:rgba(74,144,217,0.15);color:#4a90d9;cursor:pointer';
@@ -782,9 +788,10 @@
       };
 
       // Draw equity curve (per-trade, from backend FIFO)
-      const labels = equityCurve.map(p => fmtET(p.time) || p.time);
-      const values = equityCurve.map(p => p.value);
-      drawChart(labels, values, lineColor, []);
+      const labels    = equityCurve.map(p => fmtET(p.time) || p.time);
+      const values    = equityCurve.map(p => p.value);
+      const tickerIds = equityCurve.map(p => ({ ticker: p.ticker, pnl: p.pnl }));
+      drawChart(labels, values, lineColor, tickerIds);
 
       // Render performance panel (win rate, drawdown, etc.) — skip equity redraw
       renderStats(stats, lineColor, tradesForScatter);
@@ -1656,9 +1663,17 @@
                   const v = ctx.parsed.y;
                   const sign = v >= 0 ? '+' : '';
                   const ids = tradeIds && tradeIds[ctx.dataIndex];
-                  const idStr = ids
-                    ? `  [entry #${ids.entry ?? '?'} → exit #${ids.exit ?? '?'}]`
-                    : '';
+                  let idStr = '';
+                  if (ids) {
+                    if (ids.ticker != null) {
+                      // Alpaca mode: show ticker + trade P&L
+                      const tpnl = ids.pnl != null ? ids.pnl : 0;
+                      const tsign = tpnl >= 0 ? '+' : '';
+                      idStr = `  [${ids.ticker}  trade: ${tsign}$${Math.abs(tpnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}]`;
+                    } else {
+                      idStr = `  [entry #${ids.entry ?? '?'} → exit #${ids.exit ?? '?'}]`;
+                    }
+                  }
                   return sign + '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + idStr;
                 },
               },
@@ -1871,6 +1886,12 @@
           document.getElementById('equityToDate').style.display   = '';
           document.getElementById('ibEquityNote').style.display = 'flex';
           document.getElementById('ibEquityNote').textContent = 'Cumulative realized P&L from Alpaca fills.';
+          // Default to last 30 days on initial load if no date set
+          const fromEl = document.getElementById('equityFromDate');
+          if (!fromEl.value) {
+            const d30 = new Date(); d30.setDate(d30.getDate() - 30);
+            fromEl.value = d30.toISOString().slice(0, 10);
+          }
           renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
         } else {
           const equityStrategy = document.getElementById('equityStrategyFilter').value;
