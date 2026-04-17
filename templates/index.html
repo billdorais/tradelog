@@ -568,6 +568,15 @@
     <select id="strategyFilter" onchange="applyFilter()">
       <option value="">All Strategies</option>
     </select>
+    <div style="display:flex;align-items:center;gap:6px;margin-left:16px">
+      <span style="font-size:0.75rem;color:#555">Source:</span>
+      <button id="feedFilterTV" onclick="toggleFeedFilter('tv')"
+        style="padding:3px 10px;font-size:0.75rem;border-radius:4px;cursor:pointer;
+               border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9">TV</button>
+      <button id="feedFilterAlpaca" onclick="toggleFeedFilter('alpaca')"
+        style="padding:3px 10px;font-size:0.75rem;border-radius:4px;cursor:pointer;
+               border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0">Alpaca</button>
+    </div>
   </div>
   <div class="table-wrap">
     <table>
@@ -604,6 +613,7 @@
     let allAlpacaExecs = [];
     let selectedStrategy = '';
     let _allGroups     = [];
+    let _feedFilter    = { tv: true, alpaca: true };
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
     let activeTab = 'alpaca';
@@ -1074,7 +1084,7 @@
     function _groupToRows(g) {
       const rows = [];
       const { tv, ib, alpaca } = g;
-      if (tv) {
+      if (tv && _feedFilter.tv) {
         const en = tv.entry, ex = tv.exit;
         const ref        = en || ex;
         const entryPrice = en ? en.price : null;
@@ -1115,7 +1125,7 @@
         </tr>`);
       }
       // IB rows hidden — not currently using IB
-      if (alpaca) {
+      if (alpaca && _feedFilter.alpaca) {
         const en = alpaca.entry, ex = alpaca.exit;
         const ref        = en || ex;
         const entryPrice = en ? en.price : null;
@@ -1642,6 +1652,27 @@
       if (strategy) p.set('strategy', strategy);
       if (fromDate) p.set('from_date', fromDate);
       return '/api/stats' + (p.toString() ? '?' + p.toString() : '');
+    }
+
+    function toggleFeedFilter(src) {
+      _feedFilter[src] = !_feedFilter[src];
+      const btn = document.getElementById(src === 'tv' ? 'feedFilterTV' : 'feedFilterAlpaca');
+      const on  = _feedFilter[src];
+      if (src === 'tv') {
+        btn.style.background = on ? 'rgba(74,144,217,0.2)'  : 'transparent';
+        btn.style.color      = on ? '#4a90d9' : '#444';
+        btn.style.borderColor= on ? '#4a90d9' : '#2a2d3e';
+      } else {
+        btn.style.background = on ? 'rgba(95,224,160,0.15)' : 'transparent';
+        btn.style.color      = on ? '#5fe0a0' : '#444';
+        btn.style.borderColor= on ? '#5fe0a0' : '#2a2d3e';
+      }
+      // Re-render the feed with current groups (no need to re-fetch)
+      const body = document.getElementById('tradeBody');
+      _shownGroups = 0;
+      body.innerHTML = '';
+      if (_allGroups.length) _renderGroups();
+      else body.innerHTML = '<tr><td colspan="12" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
     }
 
     async function applyFilter() {
