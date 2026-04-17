@@ -85,6 +85,36 @@ class AlpacaBroker:
         is_crypto = "/" in ticker
         tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
 
+        # For stock SELL: verify a long position exists to avoid unintended shorts.
+        # If no long is held, skip the order and return an error so the caller can
+        # log it rather than Alpaca silently opening a short position.
+        if not is_crypto and side == OrderSide.SELL:
+            try:
+                positions = self._trading.get_all_positions()
+                pos = next((p for p in positions if p.symbol.upper() == ticker.upper()), None)
+                held_qty = float(pos.qty) if pos else 0.0
+                if held_qty <= 0:
+                    log.warning(
+                        "Alpaca SELL %s skipped — no long position held (qty=%.4f). "
+                        "Order would open an unintended short; ignoring.",
+                        ticker, held_qty,
+                    )
+                    return {
+                        "success": False,
+                        "skipped": True,
+                        "error":   f"No long position in {ticker} to sell (held qty={held_qty}). "
+                                   "Sell skipped to prevent unintended short.",
+                    }
+                # Clamp sell qty to what is actually held
+                if int(qty) > int(held_qty):
+                    log.warning(
+                        "Alpaca SELL %s: requested %s shares but only %s held; clamping.",
+                        ticker, qty, int(held_qty),
+                    )
+                    qty = int(held_qty)
+            except Exception as _pe:
+                log.warning("Alpaca position check failed for %s SELL: %s — proceeding anyway", ticker, _pe)
+
         # For crypto SELL: close the position via Alpaca's close_position API
         # (Alpaca doesn't support shorting crypto — this closes whatever is held)
         if is_crypto and side == OrderSide.SELL:
