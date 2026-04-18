@@ -416,34 +416,56 @@ class AlpacaBroker:
             return []
 
     def get_fills(self):
-        """Return recent filled orders."""
+        """Return all filled orders via paginated requests (500 per page, newest-first)."""
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         self._ensure_client()
         try:
-            req    = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=500)
-            orders = self._trading.get_orders(filter=req)
-            result = []
-            for o in orders:
-                status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
-                side_raw   = o.side.value if hasattr(o.side, 'value') else str(o.side)
-                if status_str != "filled":
-                    continue
-                filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
-                result.append({
-                    "exec_id":  str(o.id),
-                    "time":     filled_at,
-                    "symbol":   o.symbol,
-                    "sec_type": "STK",
-                    "side":     "BOT" if side_raw == "buy" else "SLD",
-                    "shares":   float(o.filled_qty or 0),
-                    "price":    float(o.filled_avg_price or 0),
-                    "order_id": str(o.client_order_id or o.id),
-                    "account":  "",
-                    "exchange": "",
-                    "pnl":      None,
-                })
-            log.info("Alpaca get_fills: returned %d filled orders", len(result))
+            result    = []
+            until_ts  = None  # pagination cursor: fetch orders older than this
+            seen_ids  = set()
+            while True:
+                kwargs = dict(status=QueryOrderStatus.CLOSED, limit=500)
+                if until_ts:
+                    kwargs["until"] = until_ts
+                req    = GetOrdersRequest(**kwargs)
+                orders = self._trading.get_orders(filter=req)
+                if not orders:
+                    break
+                new_rows  = 0
+                oldest_ts = None
+                for o in orders:
+                    oid = str(o.id)
+                    if oid in seen_ids:
+                        continue
+                    seen_ids.add(oid)
+                    status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
+                    side_raw   = o.side.value if hasattr(o.side, 'value') else str(o.side)
+                    if status_str != "filled":
+                        continue
+                    filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
+                    if oldest_ts is None or (o.filled_at and o.filled_at < oldest_ts):
+                        oldest_ts = o.filled_at
+                    result.append({
+                        "exec_id":  oid,
+                        "time":     filled_at,
+                        "symbol":   o.symbol,
+                        "sec_type": "STK",
+                        "side":     "BOT" if side_raw == "buy" else "SLD",
+                        "shares":   float(o.filled_qty or 0),
+                        "price":    float(o.filled_avg_price or 0),
+                        "order_id": str(o.client_order_id or o.id),
+                        "account":  "",
+                        "exchange": "",
+                        "pnl":      None,
+                    })
+                    new_rows += 1
+                # Stop if last page (fewer than 500 returned) or no new fills found
+                if len(orders) < 500 or new_rows == 0:
+                    break
+                # Next page: fetch orders before the oldest timestamp in this batch
+                until_ts = oldest_ts
+            log.info("Alpaca get_fills: returned %d filled orders total", len(result))
             return result
         except Exception as e:
             log.error("Alpaca get_fills failed: %s", e)

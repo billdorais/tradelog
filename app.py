@@ -342,7 +342,7 @@ if os.environ.get("IB_HOST_LIVE"):
 
 alpaca_broker = None
 _alpaca_fills_cache = {"data": [], "ts": 0.0}
-ALPACA_CACHE_TTL = 30  # seconds
+ALPACA_CACHE_TTL = 120  # seconds — paginated fetch can be slow, cache longer
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
