@@ -3171,9 +3171,8 @@ def api_alpaca_analysis():
             ticker   = (t.get("ticker") or "").strip().upper()
             action   = (t.get("action") or "").strip().upper()
             received = t.get("received_at") or ""
-            strategy = (t.get("strategy") or "Unknown").strip()
-            exec_st  = (t.get("exec_status") or "").lower()
-            if exec_st in ("blocked", "skipped", "error"):
+            strategy = (t.get("strategy") or "").strip()
+            if not strategy:
                 continue
             side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
             if not side or not ticker or not received:
@@ -3307,18 +3306,24 @@ def api_alpaca_analysis():
         exclude_param = request.args.get("exclude", "").strip()
         if exclude_param:
             excluded_keys = set(exclude_param.split(","))
+            closed = [
+                c for c in closed
+                if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
+            ]
             daily_closed = [
                 c for c in daily_closed
                 if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
             ]
 
+        # per_strategy and per_ticker use the global LIFO pairs so overnight
+        # positions (bought one day, sold the next) are captured correctly.
         strat_map = {}
-        for c in daily_closed:
+        for c in closed:
             strat_map.setdefault(c["strategy"], []).append(c)
         per_strategy = {s: _stats(tl) for s, tl in strat_map.items() if _stats(tl)}
 
         ticker_map = {}
-        for c in daily_closed:
+        for c in closed:
             ticker_map.setdefault(c["ticker"], []).append(c)
         per_ticker = {tk: _stats(tl) for tk, tl in ticker_map.items() if _stats(tl)}
 
