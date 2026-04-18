@@ -421,7 +421,7 @@ class AlpacaBroker:
         from alpaca.trading.enums import QueryOrderStatus
         self._ensure_client()
         try:
-            req    = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=200)
+            req    = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=500)
             orders = self._trading.get_orders(filter=req)
             result = []
             for o in orders:

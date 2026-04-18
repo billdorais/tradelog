@@ -3193,6 +3193,8 @@ def api_alpaca_analysis():
             if not candidates:
                 return "Unknown"
             best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+            if abs(best[0] - fill_ts) > 300:
+                return "Unknown"
             return best[1]
 
         # Deduplicate fills
