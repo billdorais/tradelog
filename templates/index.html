@@ -813,8 +813,9 @@
       // which mirrors exactly how the Signals P&L tab works.
       let url = '/api/alpaca/analysis';
       const params = new URLSearchParams();
-      if (fromDate) params.set('from_date', fromDate);
-      if (toDate)   params.set('to_date',   toDate);
+      if (fromDate)    params.set('from_date',    fromDate);
+      if (toDate)      params.set('to_date',       toDate);
+      if (_signalsOnly) params.set('signals_only', '1');
       const exclArr = [..._loadExclusions()];
       if (exclArr.length) params.set('exclude', exclArr.join(','));
       if (params.toString()) url += '?' + params.toString();

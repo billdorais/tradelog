@@ -3109,10 +3109,12 @@ def api_alpaca_analysis():
                      (not from_date or _fill_date(f) >= from_date) and
                      (not to_date   or _fill_date(f) <= to_date)]
 
+        signals_only = request.args.get("signals_only", "0") == "1"
+
         # Build signal lookup: (ticker, side) → sorted list of (unix_ts, strategy)
         conn = get_db()
         cur  = conn.cursor()
-        cur.execute("SELECT ticker, action, received_at, strategy FROM trades ORDER BY id ASC")
+        cur.execute("SELECT ticker, action, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
         rows = cur.fetchall()
         trades_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
         conn.close()
@@ -3123,6 +3125,9 @@ def api_alpaca_analysis():
             action   = (t.get("action") or "").strip().upper()
             received = t.get("received_at") or ""
             strategy = (t.get("strategy") or "Unknown").strip()
+            exec_st  = (t.get("exec_status") or "").lower()
+            if exec_st in ("blocked", "skipped", "error"):
+                continue
             side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
             if not side or not ticker or not received:
                 continue
@@ -3301,18 +3306,135 @@ def api_alpaca_analysis():
         def _is_matched(s):
             return bool(s) and s != "Unknown"
 
-        cum_pnl = 0
-        equity_curve = []
-        for c in sorted(daily_closed, key=lambda x: x["exit_time"]):
-            cum_pnl = round(cum_pnl + c["pnl"], 2)
-            equity_curve.append({
-                "time":          c["exit_time"],
-                "value":         cum_pnl,
-                "pnl":           c["pnl"],
-                "ticker":        c["ticker"],
-                "strategy":      c.get("strategy", "Unknown"),
-                "both_matched":  _is_matched(c.get("entry_strategy")) and _is_matched(c.get("exit_strategy")),
-            })
+        # ── TV-signal-aligned equity curve (signals_only mode) ──────────────
+        # When signals_only is requested, bypass FIFO entirely. Instead, pair
+        # each Alpaca fill directly to its closest TV signal (same ticker +
+        # direction within ±5 min), then match entry↔exit signal pairs. This
+        # gives a 1-to-1 correspondence with the TV trade log using actual
+        # Alpaca fill prices — no cross-signal phantom pairs possible.
+        if signals_only:
+            MATCH_WINDOW = 300  # seconds
+
+            # Build Alpaca fill lookup: (ticker, side) → [fill] sorted by time
+            fill_lookup = {}
+            for f in deduped:
+                sym  = (f.get("symbol") or "").upper()
+                side = f.get("side", "")
+                try:
+                    ts = _dt.fromisoformat((f["time"] or "").replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                fill_lookup.setdefault((sym, side), []).append((ts, f))
+
+            # Build TV signal pairs: BUY → SELL per (strategy, ticker)
+            # Reuse trades_db but need exec_status already filtered above
+            tv_open = {}   # (strategy, ticker) → [(ts, received_at)]
+            tv_pairs_aligned = []
+            for t in trades_db:
+                ticker   = (t.get("ticker") or "").strip().upper()
+                action   = (t.get("action") or "").strip().upper()
+                received = t.get("received_at") or ""
+                strategy = (t.get("strategy") or "Unknown").strip()
+                exec_st  = (t.get("exec_status") or "").lower()
+                if exec_st in ("blocked", "skipped", "error"):
+                    continue
+                try:
+                    ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                key = (strategy, ticker)
+                if action == "BUY":
+                    tv_open.setdefault(key, []).append((ts, received))
+                elif action == "SELL":
+                    queue = tv_open.get(key, [])
+                    if queue:
+                        entry_ts, entry_time = queue.pop(0)
+                        tv_pairs_aligned.append({
+                            "ticker":     ticker,
+                            "strategy":   strategy,
+                            "entry_ts":   entry_ts,
+                            "entry_time": entry_time,
+                            "exit_ts":    ts,
+                            "exit_time":  received,
+                        })
+
+            # Match each TV pair to Alpaca fills; mark fills as used
+            used_fills = set()
+            sv_closed = []
+
+            def _find_fill(ticker, side, target_ts):
+                candidates = fill_lookup.get((ticker, side), [])
+                best = None
+                best_diff = MATCH_WINDOW
+                best_idx  = None
+                for idx, (fts, f) in enumerate(candidates):
+                    uid = f.get("exec_id") or f.get("time") or str(idx)
+                    if uid in used_fills:
+                        continue
+                    diff = abs(fts - target_ts)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best = f
+                        best_idx = uid
+                return best, best_idx
+
+            for p in tv_pairs_aligned:
+                ticker = p["ticker"]
+                entry_fill, entry_uid = _find_fill(ticker, "BOT", p["entry_ts"])
+                exit_fill,  exit_uid  = _find_fill(ticker, "SLD", p["exit_ts"])
+                if not entry_fill or not exit_fill:
+                    continue
+                used_fills.add(entry_uid)
+                used_fills.add(exit_uid)
+                ep  = float(entry_fill.get("price") or 0)
+                xp  = float(exit_fill.get("price")  or 0)
+                qty = float(entry_fill.get("shares") or 0)
+                pnl = round((xp - ep) * qty, 2)
+                date_str = p["exit_time"][:10]
+                sv_closed.append({
+                    "pnl":            pnl,
+                    "strategy":       p["strategy"],
+                    "entry_strategy": p["strategy"],
+                    "exit_strategy":  p["strategy"],
+                    "ticker":         ticker,
+                    "date":           date_str,
+                    "entry_time":     entry_fill.get("time", ""),
+                    "exit_time":      exit_fill.get("time", ""),
+                })
+
+            # Apply exclusions to TV-aligned pairs
+            if exclude_param:
+                sv_closed = [
+                    c for c in sv_closed
+                    if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
+                ]
+
+            cum_pnl = 0
+            equity_curve = []
+            for c in sorted(sv_closed, key=lambda x: x["exit_time"]):
+                cum_pnl = round(cum_pnl + c["pnl"], 2)
+                equity_curve.append({
+                    "time":         c["exit_time"],
+                    "value":        cum_pnl,
+                    "pnl":          c["pnl"],
+                    "ticker":       c["ticker"],
+                    "strategy":     c["strategy"],
+                    "both_matched": True,
+                })
+
+        else:
+            cum_pnl = 0
+            equity_curve = []
+            for c in sorted(daily_closed, key=lambda x: x["exit_time"]):
+                cum_pnl = round(cum_pnl + c["pnl"], 2)
+                equity_curve.append({
+                    "time":          c["exit_time"],
+                    "value":         cum_pnl,
+                    "pnl":           c["pnl"],
+                    "ticker":        c["ticker"],
+                    "strategy":      c.get("strategy", "Unknown"),
+                    "both_matched":  _is_matched(c.get("entry_strategy")) and _is_matched(c.get("exit_strategy")),
+                })
 
         return jsonify({
             "overall":      _stats(daily_closed) or {},
