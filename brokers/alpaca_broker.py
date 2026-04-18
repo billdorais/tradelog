@@ -416,28 +416,26 @@ class AlpacaBroker:
             return []
 
     def get_fills(self):
-        """Return all filled orders, paginating forward from 2 years ago in 500-order pages."""
+        """Return all filled orders, paginating newest-first using until= cursor."""
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
-        from alpaca.trading.enums import Sort
         self._ensure_client()
         try:
             result   = []
             seen_ids = set()
-            # Start from 2 years ago and page forward (ascending) so we never miss
-            # orders that fall outside a backwards-pagination window.
-            after_ts = datetime.now(timezone.utc) - timedelta(days=730)
+            # Use 'after' to cast a wide net back 2 years, then page backwards
+            # using 'until' when there are more than 500 results.
+            after_ts  = datetime.now(timezone.utc) - timedelta(days=730)
+            until_ts  = None
             while True:
-                req    = GetOrdersRequest(
-                    status    = QueryOrderStatus.CLOSED,
-                    limit     = 500,
-                    after     = after_ts,
-                    direction = Sort.ASC,
-                )
+                kwargs = dict(status=QueryOrderStatus.CLOSED, limit=500, after=after_ts)
+                if until_ts:
+                    kwargs["until"] = until_ts
+                req    = GetOrdersRequest(**kwargs)
                 orders = self._trading.get_orders(filter=req)
                 if not orders:
                     break
-                newest_submitted = None
+                oldest_sub = None
                 for o in orders:
                     oid = str(o.id)
                     if oid in seen_ids:
@@ -445,32 +443,28 @@ class AlpacaBroker:
                     seen_ids.add(oid)
                     status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
                     side_raw   = o.side.value if hasattr(o.side, 'value') else str(o.side)
-                    if status_str != "filled":
-                        pass  # still track submitted_at for pagination cursor
-                    else:
-                        filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
-                        result.append({
-                            "exec_id":  oid,
-                            "time":     filled_at,
-                            "symbol":   o.symbol,
-                            "sec_type": "STK",
-                            "side":     "BOT" if side_raw == "buy" else "SLD",
-                            "shares":   float(o.filled_qty or 0),
-                            "price":    float(o.filled_avg_price or 0),
-                            "order_id": str(o.client_order_id or o.id),
-                            "account":  "",
-                            "exchange": "",
-                            "pnl":      None,
-                        })
                     sub = getattr(o, 'submitted_at', None) or getattr(o, 'created_at', None)
-                    if sub and (newest_submitted is None or sub > newest_submitted):
-                        newest_submitted = sub
-                # Last page if fewer than 500 orders returned
-                if len(orders) < 500:
+                    if sub and (oldest_sub is None or sub < oldest_sub):
+                        oldest_sub = sub
+                    if status_str != "filled":
+                        continue
+                    filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
+                    result.append({
+                        "exec_id":  oid,
+                        "time":     filled_at,
+                        "symbol":   o.symbol,
+                        "sec_type": "STK",
+                        "side":     "BOT" if side_raw == "buy" else "SLD",
+                        "shares":   float(o.filled_qty or 0),
+                        "price":    float(o.filled_avg_price or 0),
+                        "order_id": str(o.client_order_id or o.id),
+                        "account":  "",
+                        "exchange": "",
+                        "pnl":      None,
+                    })
+                if len(orders) < 500 or oldest_sub is None:
                     break
-                if newest_submitted is None:
-                    break
-                after_ts = newest_submitted
+                until_ts = oldest_sub
             log.info("Alpaca get_fills: returned %d filled orders total", len(result))
             return result
         except Exception as e:
