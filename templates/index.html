@@ -540,6 +540,12 @@
       <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555">
         Cumulative realized P&amp;L from Alpaca fills.
       </div>
+      <button id="alpacaSignalsOnly" onclick="toggleSignalsOnly()"
+        title="Show only trades matched to a TradingView signal — hides manual/unrecognised fills"
+        style="padding:2px 10px;font-size:0.72rem;background:transparent;
+               border:1px solid #2a2d3e;color:#555;border-radius:4px;cursor:pointer">
+        Signals only
+      </button>
       <button id="alpacaResetExcluded" onclick="resetAlpacaExclusions()"
         style="display:none;padding:2px 10px;font-size:0.72rem;background:transparent;
                border:1px solid #ef5350;color:#ef5350;border-radius:4px;cursor:pointer">
@@ -751,8 +757,10 @@
       return { closedTrades, tradesForScatter, deduped };
     }
 
-    // ── Alpaca trade exclusion helpers ─────────────────────────────────────
+    // ── Alpaca trade exclusion + filter helpers ────────────────────────────
     const _EXCL_KEY = 'alpaca_excluded_trades';
+    let _signalsOnly = false;
+
     function _loadExclusions() {
       try { return new Set(JSON.parse(localStorage.getItem(_EXCL_KEY) || '[]')); }
       catch(e) { return new Set(); }
@@ -763,16 +771,35 @@
       if (btn) btn.style.display = set.size ? '' : 'none';
     }
     function _tradeKey(p) { return `${p.time}|${p.ticker}`; }
-    function _filterEquityCurve(curve) {
+
+    function _filterEquityCurve(curve, strategyFilter) {
       const excl = _loadExclusions();
-      if (!excl.size) return curve;
-      const filtered = curve.filter(p => !excl.has(_tradeKey(p)));
+      let filtered = curve;
+      // Exclusions (manually clicked away)
+      if (excl.size) filtered = filtered.filter(p => !excl.has(_tradeKey(p)));
+      // Signals-only: hide trades with no matched strategy
+      if (_signalsOnly) filtered = filtered.filter(p => p.strategy && p.strategy !== 'Unknown');
+      // Strategy dropdown
+      if (strategyFilter) filtered = filtered.filter(p => p.strategy === strategyFilter);
+      // Recalculate cumulative after any filtering
       let cum = 0;
       return filtered.map(p => {
         cum = Math.round((cum + (p.pnl || 0)) * 100) / 100;
         return { ...p, value: cum };
       });
     }
+
+    function toggleSignalsOnly() {
+      _signalsOnly = !_signalsOnly;
+      const btn = document.getElementById('alpacaSignalsOnly');
+      btn.style.borderColor = _signalsOnly ? '#5fe0a0' : '#2a2d3e';
+      btn.style.color       = _signalsOnly ? '#5fe0a0' : '#555';
+      btn.style.background  = _signalsOnly ? 'rgba(95,224,160,0.1)' : 'transparent';
+      const fromDate = document.getElementById('equityFromDate').value;
+      const toDate   = document.getElementById('equityToDate').value;
+      renderAlpacaStats(fromDate, toDate);
+    }
+
     function resetAlpacaExclusions() {
       _saveExclusions(new Set());
       const fromDate = document.getElementById('equityFromDate').value;
@@ -813,8 +840,9 @@
       document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
       document.getElementById('statErrors').textContent   = '—';
 
-      // Apply exclusions — filter out user-removed trades and recalc cumulative
-      const displayCurve = _filterEquityCurve(equityCurve);
+      // Apply exclusions, signals-only, and strategy filter — recalc cumulative
+      const strategyFilter = document.getElementById('equityStrategyFilter').value;
+      const displayCurve = _filterEquityCurve(equityCurve, strategyFilter);
       // Keep reset button visible if any exclusions are active
       const excl = _loadExclusions();
       const resetBtn = document.getElementById('alpacaResetExcluded');

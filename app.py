@@ -3301,10 +3301,11 @@ def api_alpaca_analysis():
         for c in sorted(daily_closed, key=lambda x: x["exit_time"]):
             cum_pnl = round(cum_pnl + c["pnl"], 2)
             equity_curve.append({
-                "time":   c["exit_time"],
-                "value":  cum_pnl,
-                "pnl":    c["pnl"],
-                "ticker": c["ticker"],
+                "time":     c["exit_time"],
+                "value":    cum_pnl,
+                "pnl":      c["pnl"],
+                "ticker":   c["ticker"],
+                "strategy": c.get("strategy", "Unknown"),
             })
 
         return jsonify({
