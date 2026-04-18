@@ -752,7 +752,52 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # App settings table (persists risk limits across restarts)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    conn.commit()
+
     conn.close()
+
+
+def _load_setting(key, default=None):
+    """Read a persisted app setting from the DB."""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key = %s" % placeholder(), (key,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+
+def _save_setting(key, value):
+    """Upsert an app setting to the DB."""
+    p = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO app_settings (key, value) VALUES ({p}, {p}) "
+                f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                (key, str(value)),
+            )
+        else:
+            cur.execute(
+                f"INSERT OR REPLACE INTO app_settings (key, value) VALUES ({p}, {p})",
+                (key, str(value)),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as _e:
+        log.warning("Failed to save setting %s: %s", key, _e)
 
 
 def _insert_trade(cur, row):
@@ -1440,6 +1485,7 @@ def risk_set_limit():
         except (TypeError, ValueError):
             return jsonify({"error": "max_daily_loss must be a number"}), 400
         _update_env_file("MAX_DAILY_LOSS", f"{MAX_DAILY_LOSS:g}")
+        _save_setting("MAX_DAILY_LOSS", f"{MAX_DAILY_LOSS:g}")
         log.info("MAX_DAILY_LOSS updated to %g", MAX_DAILY_LOSS)
         changed.append("max_daily_loss")
     if "max_position_loss" in data:
@@ -1448,6 +1494,7 @@ def risk_set_limit():
         except (TypeError, ValueError):
             return jsonify({"error": "max_position_loss must be a number"}), 400
         _update_env_file("MAX_POSITION_LOSS", f"{MAX_POSITION_LOSS:g}")
+        _save_setting("MAX_POSITION_LOSS", f"{MAX_POSITION_LOSS:g}")
         log.info("MAX_POSITION_LOSS updated to %g", MAX_POSITION_LOSS)
         changed.append("max_position_loss")
     return jsonify({
@@ -3519,6 +3566,28 @@ def api_analysis_suggest():
 # ---------------------------------------------------------------------------
 
 init_db()
+
+# Load persisted risk limits from DB if env vars weren't explicitly set
+def _restore_risk_settings():
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS
+    if MAX_DAILY_LOSS == 0:
+        stored = _load_setting("MAX_DAILY_LOSS")
+        if stored is not None:
+            try:
+                MAX_DAILY_LOSS = float(stored)
+                log.info("Restored MAX_DAILY_LOSS=%g from DB", MAX_DAILY_LOSS)
+            except (TypeError, ValueError):
+                pass
+    if MAX_POSITION_LOSS == 0:
+        stored = _load_setting("MAX_POSITION_LOSS")
+        if stored is not None:
+            try:
+                MAX_POSITION_LOSS = float(stored)
+                log.info("Restored MAX_POSITION_LOSS=%g from DB", MAX_POSITION_LOSS)
+            except (TypeError, ValueError):
+                pass
+
+_restore_risk_settings()
 
 if __name__ == "__main__":
     app.run(debug=True)
