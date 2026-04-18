@@ -777,8 +777,8 @@
       let filtered = curve;
       // Exclusions (manually clicked away)
       if (excl.size) filtered = filtered.filter(p => !excl.has(_tradeKey(p)));
-      // Signals-only: hide trades with no matched strategy
-      if (_signalsOnly) filtered = filtered.filter(p => p.strategy && p.strategy !== 'Unknown');
+      // Signals-only: hide trades where either leg has no matched TV signal
+      if (_signalsOnly) filtered = filtered.filter(p => p.both_matched === true);
       // Strategy dropdown
       if (strategyFilter) filtered = filtered.filter(p => p.strategy === strategyFilter);
       // Recalculate cumulative after any filtering

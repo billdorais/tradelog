@@ -3217,6 +3217,7 @@ def api_alpaca_analysis():
                     if q:
                         ep, eq, et, es = q.pop(0)
                         daily_closed.append({"pnl": round((ep - price) * min(qty, eq), 2), "strategy": es,
+                                             "entry_strategy": es, "exit_strategy": strat,
                                              "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
                     else:
                         day_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
@@ -3225,6 +3226,7 @@ def api_alpaca_analysis():
                     if q:
                         ep, eq, et, es = q.pop(0)
                         daily_closed.append({"pnl": round((price - ep) * min(qty, eq), 2), "strategy": es,
+                                             "entry_strategy": es, "exit_strategy": strat,
                                              "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
                     else:
                         day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
@@ -3296,16 +3298,20 @@ def api_alpaca_analysis():
         # Using day-scoped pairing avoids cross-day mismatches: each sell is only
         # ever paired with a buy from the same calendar day, which correctly
         # captures intraday round-trips regardless of open multi-day positions.
+        def _is_matched(s):
+            return bool(s) and s != "Unknown"
+
         cum_pnl = 0
         equity_curve = []
         for c in sorted(daily_closed, key=lambda x: x["exit_time"]):
             cum_pnl = round(cum_pnl + c["pnl"], 2)
             equity_curve.append({
-                "time":     c["exit_time"],
-                "value":    cum_pnl,
-                "pnl":      c["pnl"],
-                "ticker":   c["ticker"],
-                "strategy": c.get("strategy", "Unknown"),
+                "time":          c["exit_time"],
+                "value":         cum_pnl,
+                "pnl":           c["pnl"],
+                "ticker":        c["ticker"],
+                "strategy":      c.get("strategy", "Unknown"),
+                "both_matched":  _is_matched(c.get("entry_strategy")) and _is_matched(c.get("exit_strategy")),
             })
 
         return jsonify({
