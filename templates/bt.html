@@ -287,12 +287,13 @@
     strategyParams = await paramsRes.json();
     const meta     = await metaRes.json();  // [{slug, name}, ...]
     userStrategies = {};
-    meta.forEach(m => userStrategies[m.slug] = m);
+    meta.filter(m => m.user).forEach(m => userStrategies[m.slug] = m);
 
     const grp = document.getElementById('userGroup');
     grp.innerHTML = '';
-    if (meta.length > 0) {
-      meta.forEach(m => {
+    const userMeta = meta.filter(m => m.user);
+    if (userMeta.length > 0) {
+      userMeta.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m.slug;
         opt.textContent = m.name;

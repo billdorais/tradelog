@@ -288,7 +288,7 @@
     ]);
     allParams  = pr;
     userStrats = {};
-    mr.forEach(m => { userStrats[m.slug] = m.name; });
+    mr.filter(m => m.user).forEach(m => { userStrats[m.slug] = m.name; });
 
     const grp = document.getElementById('userGroup');
     grp.innerHTML = '';
