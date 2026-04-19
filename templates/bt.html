@@ -166,6 +166,16 @@
           </div>
         </div>
         <textarea class="code-view" id="generatedCode" spellcheck="false"></textarea>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <input type="text" id="saveStrategyName" placeholder="Strategy name…"
+                 style="flex:1;max-width:260px;background:#13152a;border:1px solid #2a2d3e;border-radius:6px;
+                        color:#e0e0e0;padding:7px 10px;font-size:0.88rem;font-family:inherit">
+          <button class="code-action-btn" onclick="saveStrategy()"
+                  style="padding:7px 14px;border-color:#6c5ce7;color:#6c5ce7">
+            &#10003; Save as Strategy
+          </button>
+          <span id="saveStatus" style="font-size:0.8rem;color:#888"></span>
+        </div>
       </div>
     </div>
   </div>
@@ -175,14 +185,24 @@
     <div class="card">
       <div class="strategy-select-wrap">
         <label>Strategy</label>
-        <select class="strategy-select" id="strategySelect" onchange="loadStrategyParams()">
-          <option value="camarilla">Camarilla H4/L4 Breakout Failure</option>
-          <option value="sma_cross">SMA Crossover (Golden/Death Cross)</option>
-          <option value="ema_cross">EMA Crossover</option>
-          <option value="rsi">RSI Mean Reversion</option>
-          <option value="bollinger">Bollinger Band Breakout</option>
-          <option value="macd">MACD Crossover</option>
-        </select>
+        <div style="display:flex;align-items:center;gap:8px">
+          <select class="strategy-select" id="strategySelect" onchange="onStrategyChange()">
+            <optgroup label="Built-in" id="builtinGroup">
+              <option value="camarilla">Camarilla H4/L4 Breakout Failure</option>
+              <option value="sma_cross">SMA Crossover (Golden/Death Cross)</option>
+              <option value="ema_cross">EMA Crossover</option>
+              <option value="rsi">RSI Mean Reversion</option>
+              <option value="bollinger">Bollinger Band Breakout</option>
+              <option value="macd">MACD Crossover</option>
+            </optgroup>
+            <optgroup label="My Strategies" id="userGroup" style="display:none"></optgroup>
+          </select>
+          <button id="deleteStratBtn" onclick="deleteStrategy()" title="Delete this strategy"
+                  style="display:none;background:transparent;border:1px solid #ef5350;color:#ef5350;
+                         border-radius:6px;padding:6px 10px;font-size:0.82rem;cursor:pointer;font-family:inherit">
+            &#128465; Delete
+          </button>
+        </div>
       </div>
       <div class="params-grid" id="paramsGrid"></div>
     </div>
@@ -243,7 +263,8 @@
 
 <script>
   let currentMode    = 'pine';
-  let strategyParams = {};   // name → [{id, label, type, default, ...}]
+  let strategyParams = {};   // slug → [{id, label, ...}]
+  let userStrategies = {};   // slug → {name, slug}
   let generatedCode  = '';
 
   // ── Mode toggle ──────────────────────────────────────────────────────────
@@ -253,15 +274,50 @@
     document.getElementById('builtinSection').style.display = mode === 'builtin' ? '' : 'none';
     document.getElementById('tabPine').classList.toggle('active',    mode === 'pine');
     document.getElementById('tabBuiltin').classList.toggle('active', mode === 'builtin');
+    if (mode === 'builtin') refreshStrategyList();
   }
 
-  // ── Load built-in strategy params from API ───────────────────────────────
+  // ── Load strategies from API (built-in + user) ───────────────────────────
+  async function refreshStrategyList() {
+    const [paramsRes, metaRes] = await Promise.all([
+      fetch('/api/bt/strategies'),
+      fetch('/api/bt/strategies/meta'),
+    ]);
+    strategyParams = await paramsRes.json();
+    const meta     = await metaRes.json();  // [{slug, name}, ...]
+    userStrategies = {};
+    meta.forEach(m => userStrategies[m.slug] = m);
+
+    const grp = document.getElementById('userGroup');
+    grp.innerHTML = '';
+    if (meta.length > 0) {
+      meta.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.slug;
+        opt.textContent = m.name;
+        grp.appendChild(opt);
+      });
+      grp.style.display = '';
+    } else {
+      grp.style.display = 'none';
+    }
+    onStrategyChange();
+  }
+
+  function onStrategyChange() {
+    const sel  = document.getElementById('strategySelect');
+    const slug = sel.value;
+    const isUser = slug in userStrategies;
+    document.getElementById('deleteStratBtn').style.display = isUser ? '' : 'none';
+    renderParams(slug);
+  }
+
   async function loadStrategyParams() {
     if (Object.keys(strategyParams).length === 0) {
-      const res  = await fetch('/api/bt/strategies');
-      strategyParams = await res.json();
+      await refreshStrategyList();
+    } else {
+      onStrategyChange();
     }
-    renderParams(document.getElementById('strategySelect').value);
   }
 
   function renderParams(name) {
@@ -343,6 +399,46 @@
     document.getElementById('codeSection').style.display = 'none';
   }
 
+  async function saveStrategy() {
+    const name = document.getElementById('saveStrategyName').value.trim();
+    const code = document.getElementById('generatedCode').value.trim();
+    const statusEl = document.getElementById('saveStatus');
+    if (!name) { statusEl.textContent = 'Enter a name first.'; statusEl.style.color = '#ef5350'; return; }
+    if (!code) { statusEl.textContent = 'No code to save.';    statusEl.style.color = '#ef5350'; return; }
+    statusEl.textContent = 'Saving…'; statusEl.style.color = '#888';
+    try {
+      const res  = await fetch('/api/bt/strategies/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, code }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      statusEl.textContent = '✓ Saved — visible in Built-in tab';
+      statusEl.style.color = '#26a65b';
+      strategyParams = {};  // force reload next time built-in tab opens
+    } catch (e) {
+      statusEl.textContent = '✗ ' + e.message;
+      statusEl.style.color = '#ef5350';
+    }
+  }
+
+  async function deleteStrategy() {
+    const slug = document.getElementById('strategySelect').value;
+    const info = userStrategies[slug];
+    if (!info) return;
+    if (!confirm(`Delete "${info.name}"?`)) return;
+    try {
+      const res  = await fetch(`/api/bt/strategies/${slug}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      strategyParams = {};  // force reload
+      await refreshStrategyList();
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
+    }
+  }
+
   // ── Run backtest ─────────────────────────────────────────────────────────
   async function runBacktest() {
     const btn      = document.getElementById('runBtn');
@@ -362,15 +458,16 @@
       payload.strategy_type = 'converted';
       payload.strategy_code = code;
     } else {
-      const name   = document.getElementById('strategySelect').value;
-      const params = strategyParams[name] || [];
+      const slug   = document.getElementById('strategySelect').value;
+      const params = strategyParams[slug] || [];
       const p      = {};
       for (const param of params) {
         const el = document.getElementById(`param_${param.id}`);
         if (el) p[param.id] = parseFloat(el.value);
       }
-      payload.strategy_type = 'builtin';
-      payload.strategy_name = name;
+      const isUser = slug in userStrategies;
+      payload.strategy_type = isUser ? 'saved' : 'builtin';
+      payload.strategy_name = slug;
       payload.params        = p;
     }
 

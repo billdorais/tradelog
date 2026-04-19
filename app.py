@@ -761,6 +761,18 @@ def init_db():
     """)
     conn.commit()
 
+    # User-saved backtesting strategies (converted from Pine Script)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_strategies (
+            slug       TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            code       TEXT NOT NULL,
+            params     TEXT NOT NULL,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+
     conn.close()
 
 
@@ -1731,11 +1743,117 @@ def backtest_lib():
     return render_template("bt.html")
 
 
+def _extract_strategy_params(code):
+    """Auto-detect class-level numeric parameters from a backtesting.py Strategy class."""
+    import re
+    params, seen = [], set()
+    for m in re.finditer(r'^    (\w+)\s*=\s*(\d+(?:\.\d+)?)(?:\s*#.*)?$', code, re.MULTILINE):
+        name, val_str = m.group(1), m.group(2)
+        if name in seen or name.startswith('_'):
+            continue
+        seen.add(name)
+        val    = float(val_str)
+        is_int = '.' not in val_str
+        label  = name.replace('_', ' ').title()
+        if is_int:
+            iv = int(val)
+            params.append({"id": name, "label": label, "type": "int",
+                           "default": iv, "min": max(1, iv // 4), "max": max(iv * 4, iv + 10), "step": 1})
+        else:
+            params.append({"id": name, "label": label, "type": "float",
+                           "default": val, "min": round(max(0.1, val / 4), 1),
+                           "max": round(val * 4, 1), "step": 0.1})
+    return params
+
+
 @app.route("/api/bt/strategies")
 def bt_strategies_list():
-    """Return available built-in strategies and their parameter schemas."""
+    """Return built-in + user-saved strategies with their parameter schemas."""
     from strategies.bt_strategies import STRATEGIES
-    return jsonify({name: params for name, (_, params) in STRATEGIES.items()})
+    result = {name: params for name, (_, params) in STRATEGIES.items()}
+    # Append user-saved strategies
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT slug, name, params FROM user_strategies ORDER BY created_at ASC")
+        rows = cur.fetchall()
+        conn.close()
+        for row in rows:
+            r = dict(row) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], row))
+            result[r["slug"]] = json.loads(r["params"])
+    except Exception as _e:
+        log.warning("Failed to load user strategies: %s", _e)
+    return jsonify(result)
+
+
+@app.route("/api/bt/strategies/save", methods=["POST"])
+def bt_strategy_save():
+    """Save a converted Pine Script strategy to the DB."""
+    import re
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    code = (body.get("code") or "").strip()
+    if not name or not code:
+        return jsonify({"error": "name and code are required"}), 400
+    slug   = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') or "strategy"
+    params = _extract_strategy_params(code)
+    p      = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO user_strategies (slug, name, code, params, created_at) "
+                f"VALUES ({p},{p},{p},{p},{p}) "
+                f"ON CONFLICT (slug) DO UPDATE SET name=EXCLUDED.name, code=EXCLUDED.code, params=EXCLUDED.params",
+                (slug, name, code, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            )
+        else:
+            cur.execute(
+                f"INSERT OR REPLACE INTO user_strategies (slug, name, code, params, created_at) "
+                f"VALUES ({p},{p},{p},{p},{p})",
+                (slug, name, code, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            )
+        conn.commit()
+        conn.close()
+        return jsonify({"slug": slug, "name": name, "params": params})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bt/strategies/<slug>", methods=["DELETE"])
+def bt_strategy_delete(slug):
+    """Delete a user-saved strategy."""
+    p = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"DELETE FROM user_strategies WHERE slug = {p}", (slug,))
+        conn.commit()
+        conn.close()
+        return jsonify({"deleted": slug})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bt/strategies/meta")
+def bt_strategies_meta():
+    """Return display names + slugs for all strategies (built-in + user)."""
+    from strategies.bt_strategies import STRATEGIES
+    result = [{"slug": k, "name": k.replace('_', ' ').title(), "user": False}
+              for k in STRATEGIES]
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT slug, name FROM user_strategies ORDER BY created_at ASC")
+        rows = cur.fetchall()
+        conn.close()
+        for row in rows:
+            r = dict(row) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], row))
+            result.append({"slug": r["slug"], "name": r["name"], "user": True})
+    except Exception:
+        pass
+    return jsonify(result)
 
 
 @app.route("/api/bt/convert", methods=["POST"])
@@ -1807,13 +1925,23 @@ def bt_run():
     start_date     = body.get("start_date", "2022-01-01")
     end_date       = body.get("end_date",   "2024-12-31")
     cash           = float(body.get("cash", 10000))
-    strategy_type  = body.get("strategy_type", "builtin")   # "builtin" | "converted"
+    strategy_type  = body.get("strategy_type", "builtin")   # "builtin" | "converted" | "saved"
     strategy_name  = body.get("strategy_name", "camarilla")
     strategy_code  = body.get("strategy_code", "")
     strategy_params = body.get("params", {})
 
     # ── Resolve strategy class ────────────────────────────────────────────────
     strategy_cls = None
+    if strategy_type == "saved":
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"SELECT code FROM user_strategies WHERE slug = {placeholder()}", (strategy_name,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": f"Saved strategy not found: {strategy_name}"}), 404
+        strategy_code = row[0]
+        strategy_type = "converted"  # reuse converted exec path
     if strategy_type == "converted" and strategy_code:
         try:
             from backtesting import Strategy as _Strategy
