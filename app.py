@@ -2014,7 +2014,8 @@ def bt_run():
 
     # ── Run backtest ──────────────────────────────────────────────────────────
     try:
-        bt    = Backtest(df, strategy_cls, cash=cash, commission=0.001, exclusive_orders=True)
+        bt    = Backtest(df, strategy_cls, cash=cash, commission=0.001, exclusive_orders=True,
+                        trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
         # Cast params to correct types
         typed_params = {}
         for k, v in strategy_params.items():

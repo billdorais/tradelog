@@ -191,10 +191,106 @@ class MacdStrategy(Strategy):
             self.position.close(); self.sell(sl=p + stop)
 
 
+class CamarillaEMA8(Strategy):
+    """
+    Exact Python translation of cam_v6 Pine Script.
+
+    Entry: bar closes across H4/L4 (open on wrong side, close on right side)
+           confirmed by 8-period EMA direction filter.
+    Exit:  trail activates after `trail_activation` profit, trails at
+           `trail_offset` distance.  Hard stop at `stop_loss`.
+    All exit values are in price units (dollars for US stocks).
+
+    NOTE: H4/L4 uses the previous bar's H/L/C.  On daily data this equals
+    the previous trading day — matching the Pine Script's RTH logic.
+    On intraday data feed the bars in 1D resolution or resample first.
+    """
+    stop_loss        = 0.50   # hard stop in price units  (Pine: loss=50 pts)
+    trail_activation = 0.40   # profit to activate trail  (Pine: trail_points=40)
+    trail_offset     = 0.20   # trail distance once active (Pine: trail_offset=20)
+    ema_period       = 8
+
+    # Tell bt_run / bt_optimize to use trade_on_close=True (matches Pine Script)
+    _trade_on_close  = True
+
+    def init(self):
+        cl, hi, lo = self.data.Close, self.data.High, self.data.Low
+        self.ema8 = self.I(lambda: _ema(cl, self.ema_period), name="EMA8", overlay=True, color="#ffffff")
+
+        ph = np.roll(hi, 1); ph[0] = np.nan
+        pl = np.roll(lo, 1); pl[0] = np.nan
+        pc = np.roll(cl, 1); pc[0] = np.nan
+        self.h4 = self.I(lambda: pc + (ph - pl) * 1.1 / 2.0, name="H4", overlay=True, color="#ef5350")
+        self.l4 = self.I(lambda: pc - (ph - pl) * 1.1 / 2.0, name="L4", overlay=True, color="#26a65b")
+
+        self._entry    = np.nan
+        self._trail_sl = np.nan
+
+    def next(self):
+        c    = self.data.Close[-1]
+        o    = self.data.Open[-1]
+        h4   = self.h4[-1]
+        l4   = self.l4[-1]
+        ema8 = self.ema8[-1]
+
+        if np.isnan(h4) or np.isnan(l4) or np.isnan(ema8):
+            return
+
+        # ── Manage open long ─────────────────────────────────────
+        if self.position.is_long:
+            profit = c - self._entry
+            if profit <= -self.stop_loss:
+                self.position.close()
+                self._entry = self._trail_sl = np.nan
+                return
+            if profit >= self.trail_activation:
+                new_sl = c - self.trail_offset
+                if np.isnan(self._trail_sl) or new_sl > self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c <= self._trail_sl:
+                self.position.close()
+                self._entry = self._trail_sl = np.nan
+            return
+
+        # ── Manage open short ────────────────────────────────────
+        if self.position.is_short:
+            profit = self._entry - c
+            if profit <= -self.stop_loss:
+                self.position.close()
+                self._entry = self._trail_sl = np.nan
+                return
+            if profit >= self.trail_activation:
+                new_sl = c + self.trail_offset
+                if np.isnan(self._trail_sl) or new_sl < self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c >= self._trail_sl:
+                self.position.close()
+                self._entry = self._trail_sl = np.nan
+            return
+
+        # ── No position — check entries ──────────────────────────
+        self._entry = self._trail_sl = np.nan
+        if c > h4 and o < h4 and ema8 < c:
+            self.buy()
+            self._entry = c
+        elif c < l4 and o > l4 and ema8 > c:
+            self.sell()
+            self._entry = c
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 # Maps strategy_name → (class, [{id, label, type, default, min, max, step}])
 
 STRATEGIES = {
+    "cam_ema8": (
+        CamarillaEMA8,
+        [
+            {"id": "stop_loss",        "label": "Stop Loss ($)",       "type": "float", "default": 0.50, "min": 0.10, "max": 2.00, "step": 0.05},
+            {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.10, "max": 2.00, "step": 0.05},
+            {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.05, "max": 1.00, "step": 0.05},
+            {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 3,    "max": 50,   "step": 1},
+        ],
+    ),
     "camarilla": (
         CamarillaBreakoutFailure,
         [
