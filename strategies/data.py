@@ -102,6 +102,67 @@ def fetch_bars(ticker, start, end, interval="1d"):
     return bars
 
 
+def fetch_bars_alpaca(ticker, start, end, interval="1d"):
+    """
+    Fetch OHLCV bars from Alpaca Data API.
+    interval: '1d', '1h', '30m', '15m', '5m'
+    Requires ALPACA_KEY + ALPACA_SECRET env vars.
+    """
+    import os
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    from datetime import datetime as _dt
+
+    _TF = {
+        "1d":  TimeFrame.Day,
+        "1h":  TimeFrame.Hour,
+        "30m": TimeFrame(30, TimeFrameUnit.Minute),
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
+        "5m":  TimeFrame(5,  TimeFrameUnit.Minute),
+    }
+    tf = _TF.get(interval, TimeFrame.Day)
+
+    key    = os.environ.get("ALPACA_KEY",    "")
+    secret = os.environ.get("ALPACA_SECRET", "")
+    client = StockHistoricalDataClient(api_key=key or None, secret_key=secret or None)
+
+    req = StockBarsRequest(
+        symbol_or_symbols=ticker,
+        timeframe=tf,
+        start=_dt.fromisoformat(start),
+        end=_dt.fromisoformat(end),
+        adjustment="all",
+    )
+    df = client.get_stock_bars(req).df
+
+    if df is None or df.empty:
+        raise ValueError(f"No Alpaca data returned for {ticker} ({start}→{end}, {interval})")
+
+    # Drop symbol level from MultiIndex if present
+    if hasattr(df.index, "levels"):
+        df = df.xs(ticker, level="symbol")
+
+    bars = []
+    for ts, row in df.iterrows():
+        dt = ts.to_pydatetime().replace(tzinfo=None) if hasattr(ts, "to_pydatetime") else ts
+        o = float(row.get("open",  0) or 0)
+        c = float(row.get("close", 0) or 0)
+        if not (o and c):
+            continue
+        bars.append({
+            "time":  dt,
+            "open":  o,
+            "high":  float(row.get("high",   0) or 0),
+            "low":   float(row.get("low",    0) or 0),
+            "close": c,
+        })
+
+    log.info(f"Alpaca {ticker}: {len(bars)} bars ({interval})")
+    bars.sort(key=lambda b: b["time"])
+    return bars
+
+
 def fetch_bars_ib(ib_broker, ticker, start, end, interval="1h", on_chunk=None):
     """
     Fetch historical bars via Interactive Brokers.
