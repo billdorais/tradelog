@@ -2313,8 +2313,9 @@
       try {
         const res  = await fetch('/api/alpaca/positions');
         if (!res.ok) { console.warn('refreshLivePnl: endpoint returned', res.status); return; }
-        const positions = await res.json();
-        console.log('refreshLivePnl: positions =', positions, '| open rows =', openRows.length);
+        const data = await res.json();
+        const positions = Array.isArray(data) ? data : (data.positions || []);
+        console.log('refreshLivePnl: debug =', data._debug, '| positions =', positions, '| open rows =', openRows.length);
         const bySymbol  = {};
         for (const p of positions) bySymbol[(p.symbol || '').toUpperCase()] = p;
         openRows.forEach(row => {
