@@ -2135,6 +2135,8 @@ def bt_run():
             )
             if strategy_cls is None:
                 return jsonify({"error": "No Strategy subclass found in converted code"}), 400
+            strategy_cls.__module__ = "__main__"
+            strategy_cls.__qualname__ = strategy_cls.__name__
         except Exception as e:
             return jsonify({"error": f"Strategy code error: {e}"}), 400
     else:
@@ -2318,6 +2320,9 @@ def bt_optimize():
                 yield _sse({"type": "error", "msg": f"Strategy code error: {e}"}); return
             strategy_cls = next(
                 (v for v in ns.values() if isinstance(v, type) and issubclass(v, _Strategy) and v is not _Strategy), None)
+            if strategy_cls is not None:
+                strategy_cls.__module__ = "__main__"
+                strategy_cls.__qualname__ = strategy_cls.__name__
         else:
             entry = STRATEGIES.get(strategy_name)
             if entry:
