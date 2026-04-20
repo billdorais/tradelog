@@ -343,18 +343,22 @@ class AlpacaBroker:
         self._ensure_client()
         try:
             positions = self._get_positions_cached()
-            return [
-                {
-                    "symbol": p.symbol,
-                    "qty":    float(p.qty),
-                    "side":   p.side.value if hasattr(p.side, "value") else str(p.side),
-                    "market_value": float(p.market_value),
-                    "unrealized_pnl": float(p.unrealized_pl),
-                }
-                for p in positions
-            ]
+            result = []
+            for p in positions:
+                try:
+                    result.append({
+                        "symbol":        p.symbol,
+                        "qty":           float(p.qty or 0),
+                        "side":          p.side.value if hasattr(p.side, "value") else str(p.side),
+                        "market_value":  float(p.market_value or 0),
+                        "unrealized_pnl": float(p.unrealized_pl) if p.unrealized_pl is not None else 0.0,
+                        "current_price": float(p.current_price or 0),
+                    })
+                except Exception as _pe:
+                    log.warning("Alpaca get_positions: skipping %s due to field error: %s", getattr(p, 'symbol', '?'), _pe)
+            return result
         except Exception as e:
-            log.error("Alpaca get_positions failed: %s", e)
+            log.error("Alpaca get_positions failed: %s", e, exc_info=True)
             return []
 
     def close_position(self, symbol):
