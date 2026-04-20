@@ -1137,6 +1137,21 @@ def webhook():
                     exec_status = "ok" if result.get("success") else "error"
                     exec_detail = json.dumps(result)
                     log.info("Alpaca order %s %s %s: %s", order_action, quantity, ticker, result)
+                    # If we cancelled a pending BUY, mark the original BUY trade record
+                    # as "cancelled" so it doesn't appear as an orphaned/open trade.
+                    if result.get("cancelled_buy") and result.get("cancelled_order_ids") and conn:
+                        _p = placeholder()
+                        for cid in result["cancelled_order_ids"]:
+                            try:
+                                cur.execute(
+                                    f"UPDATE trades SET exec_status={_p}, exec_detail={_p}"
+                                    f" WHERE exec_detail LIKE {_p} AND exec_status='ok'",
+                                    ("cancelled", f"BUY order {cid} cancelled by SELL signal", f"%{cid}%"),
+                                )
+                                if cur.rowcount:
+                                    log.info("Marked BUY trade with order_id %s as cancelled", cid)
+                            except Exception as _me:
+                                log.warning("Could not mark BUY trade cancelled for order %s: %s", cid, _me)
                 except Exception as e:
                     exec_status = "error"
                     exec_detail = str(e)
@@ -3346,7 +3361,7 @@ def api_orphaned_trades():
         received = t.get("received_at") or ""
         trade_id = t.get("id")
         exec_status = (t.get("exec_status") or "").lower()
-        if exec_status in ("blocked", "skipped", "error"):
+        if exec_status in ("blocked", "skipped", "error", "cancelled"):
             continue
         try:
             price = float(t.get("price") or 0)

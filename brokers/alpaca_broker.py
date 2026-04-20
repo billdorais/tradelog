@@ -121,9 +121,11 @@ class AlpacaBroker:
                     if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
                 ]
                 if pending_buys:
+                    cancelled_ids = []
                     for o in pending_buys:
                         try:
                             self._trading.cancel_order_by_id(o.id)
+                            cancelled_ids.append(str(o.id))
                             log.warning(
                                 "Alpaca SELL %s: cancelled pending BUY order %s "
                                 "(exit signal arrived before entry filled — not entering trade).",
@@ -133,10 +135,11 @@ class AlpacaBroker:
                             log.warning("Alpaca cancel order %s failed: %s", o.id, _ce)
                     self._invalidate_pos_cache()
                     return {
-                        "success":  False,
-                        "skipped":  True,
-                        "cancelled_buy": True,
-                        "error":    f"Pending BUY for {ticker} cancelled — exit signal arrived before fill.",
+                        "success":          False,
+                        "skipped":          True,
+                        "cancelled_buy":    True,
+                        "cancelled_order_ids": cancelled_ids,
+                        "error":            f"Pending BUY for {ticker} cancelled — exit signal arrived before fill.",
                     }
             except Exception as _oe:
                 log.warning("Alpaca open-order check for %s SELL failed: %s — continuing", ticker, _oe)
