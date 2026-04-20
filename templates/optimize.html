@@ -222,15 +222,20 @@
 
   <!-- ── Param ranges ──────────────────────────────────────────── -->
   <div class="card" id="paramsCard">
-    <div class="card-title">Parameter Ranges <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">&nbsp;— set min / max / step for each param to sweep</span></div>
+    <div class="card-title">Parameter Ranges
+      <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">
+        &nbsp;— &#9745; check params to sweep &nbsp;&#9744; uncheck to hold at default
+      </span>
+    </div>
     <div id="paramsBody">
       <div class="no-params">Loading params…</div>
     </div>
   </div>
 
   <!-- ── Run ───────────────────────────────────────────────────── -->
-  <div style="display:flex;gap:12px;align-items:center;margin-bottom:24px">
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:24px">
     <button class="btn-run" id="runBtn" onclick="runOptimize()">&#9654; Run Optimizer</button>
+    <button class="btn-ghost" id="benchBtn" onclick="runBenchmark()">&#9711; Benchmark (defaults)</button>
     <button class="btn-ghost" onclick="clearResults()">Clear Results</button>
     <span id="runStatus" style="font-size:0.85rem;color:#555"></span>
   </div>
@@ -319,19 +324,33 @@
     body.innerHTML = `
       <table class="param-table">
         <thead><tr>
+          <th style="width:32px"></th>
           <th>Parameter</th><th>Min</th><th>Max</th><th>Step</th><th>Default</th>
         </tr></thead>
         <tbody>
           ${params.map(p => `
-            <tr>
+            <tr id="pr_row_${p.id}">
+              <td><input type="checkbox" id="pr_chk_${p.id}" checked
+                         onchange="toggleParamRow('${p.id}')"
+                         style="width:16px;height:16px;cursor:pointer;accent-color:#2962ff"></td>
               <td><span class="param-name">${p.label}</span></td>
-              <td><input type="number" id="pr_min_${p.id}" value="${p.min}"  step="${p.step}"></td>
-              <td><input type="number" id="pr_max_${p.id}" value="${p.max}"  step="${p.step}"></td>
+              <td><input type="number" id="pr_min_${p.id}"  value="${p.min}"  step="${p.step}"></td>
+              <td><input type="number" id="pr_max_${p.id}"  value="${p.max}"  step="${p.step}"></td>
               <td><input type="number" id="pr_step_${p.id}" value="${p.step}" step="${p.step}"></td>
               <td class="param-default">${p.default}</td>
             </tr>`).join('')}
         </tbody>
       </table>`;
+  }
+
+  function toggleParamRow(id) {
+    const checked = document.getElementById(`pr_chk_${id}`).checked;
+    const row     = document.getElementById(`pr_row_${id}`);
+    row.style.opacity = checked ? '1' : '0.35';
+    ['pr_min_','pr_max_','pr_step_'].forEach(pfx => {
+      const el = document.getElementById(pfx + id);
+      if (el) el.disabled = !checked;
+    });
   }
 
   // ── Timeframe toggle ────────────────────────────────────────────
@@ -354,6 +373,8 @@
 
     const paramRanges = {};
     for (const p of params) {
+      const chk = document.getElementById(`pr_chk_${p.id}`);
+      if (chk && !chk.checked) continue;   // skip unchecked params
       paramRanges[p.id] = {
         min:  parseFloat(document.getElementById(`pr_min_${p.id}`)?.value  ?? p.min),
         max:  parseFloat(document.getElementById(`pr_max_${p.id}`)?.value  ?? p.max),
@@ -474,17 +495,18 @@
 
     const tbody = document.getElementById('resultsBody');
     tbody.innerHTML = sorted.map((r, i) => {
-      const isBest = i === 0 && sortKey === 'score';
-      const pStr   = Object.entries(r.params || {})
-                       .map(([k, v]) => `${k}=${v}`).join(' · ') || '—';
+      const isBase = !!r.baseline;
+      const isBest = i === 0 && sortKey === 'score' && !isBase;
+      const pStr   = isBase ? '<span style="color:#f0ad4e;font-size:0.75rem">DEFAULT PARAMS</span>'
+                             : (Object.entries(r.params || {}).map(([k, v]) => `${k}=${v}`).join(' · ') || '—');
       const ret    = r.stats['Return [%]'] || 0;
       const dd     = r.stats['Max. Drawdown [%]'] || 0;
-      return `<tr class="${isBest ? 'best-row' : ''}">
-        <td class="${isBest ? 'rank-1' : ''}">${i + 1}${isBest ? ' ★' : ''}</td>
-        <td><span class="badge badge-blue">${r.ticker}</span></td>
+      return `<tr class="${isBest ? 'best-row' : ''}" style="${isBase ? 'border-left:3px solid #f0ad4e' : ''}">
+        <td class="${isBest ? 'rank-1' : ''}">${isBase ? '—' : i + 1}${isBest ? ' ★' : ''}</td>
+        <td><span class="badge ${isBase ? '' : 'badge-blue'}" style="${isBase ? 'background:rgba(240,173,78,0.15);color:#f0ad4e' : ''}">${r.ticker}</span></td>
         <td><span class="badge badge-gray">${r.timeframe}</span></td>
         <td style="font-size:0.78rem;color:#888">${pStr}</td>
-        <td style="font-weight:700;color:#5c8eff">${r.score}</td>
+        <td style="font-weight:700;color:${isBase ? '#f0ad4e' : '#5c8eff'}">${typeof r.score === 'number' ? r.score.toFixed(4) : r.score}</td>
         <td class="${ret >= 0 ? 'pos' : 'neg'}">${ret.toFixed(2)}%</td>
         <td>${(r.stats['Sharpe Ratio'] || 0).toFixed(3)}</td>
         <td class="${dd <= -10 ? 'neg' : ''}">${dd.toFixed(2)}%</td>
@@ -495,6 +517,74 @@
 
     // Update sort arrows
     document.querySelectorAll('table.results th').forEach(th => th.classList.remove('sorted'));
+  }
+
+  // ── Benchmark (run default params, no sweep) ───────────────────
+  async function runBenchmark() {
+    const slug       = document.getElementById('stratSelect').value;
+    const tickers    = document.getElementById('tickers').value
+                         .split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+    const timeframes = [...document.querySelectorAll('.tf-btn.active')].map(b => b.dataset.tf);
+    if (!tickers.length || !timeframes.length) { alert('Set tickers and timeframes first.'); return; }
+
+    const isUser   = slug in userStrats;
+    const btn      = document.getElementById('benchBtn');
+    const statusEl = document.getElementById('runStatus');
+    btn.disabled   = true;
+    btn.textContent = '⏳ Benchmarking…';
+    document.getElementById('progressSection').style.display = '';
+    setProgress(0);
+
+    const total = tickers.length * timeframes.length;
+    let done = 0;
+    for (const ticker of tickers) {
+      for (const tf of timeframes) {
+        done++;
+        logLine(`Benchmark ${ticker} / ${tf}  (${done}/${total})`);
+        setProgress(Math.round((done - 1) / total * 100));
+        try {
+          const res  = await fetch('/api/bt/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              strategy_type: isUser ? 'saved' : 'builtin',
+              strategy_name: slug,
+              ticker,
+              start_date: document.getElementById('startDate').value,
+              end_date:   document.getElementById('endDate').value,
+              cash:       parseFloat(document.getElementById('cash').value),
+              params: {},
+            }),
+          });
+          const data = await res.json();
+          if (data.error) { logLine('⚠ ' + data.error, 'warn'); continue; }
+          const s = data.stats || {};
+          results.push({
+            type: 'result', baseline: true,
+            run_id: 'baseline', strategy: slug,
+            ticker, timeframe: tf,
+            params: {},
+            stats: {
+              'Return [%]':        s['Return [%]']        ?? 0,
+              'Sharpe Ratio':      s['Sharpe Ratio']      ?? 0,
+              'Max. Drawdown [%]': s['Max. Drawdown [%]'] ?? 0,
+              'Win Rate [%]':      s['Win Rate [%]']      ?? 0,
+              '# Trades':          s['# Trades']          ?? 0,
+              'Profit Factor':     s['Profit Factor']     ?? 0,
+              'Calmar Ratio':      s['Calmar Ratio']      ?? 0,
+            },
+            maximize: document.getElementById('maximize').value,
+            score: s[document.getElementById('maximize').value] ?? 0,
+          });
+          renderResults();
+        } catch (e) { logLine('⚠ ' + e, 'warn'); }
+      }
+    }
+    setProgress(100);
+    logLine('✓ Benchmark done', 'ok');
+    statusEl.textContent = 'Benchmark complete';
+    btn.disabled    = false;
+    btn.textContent = '⊙ Benchmark (defaults)';
   }
 
   function clearResults() {
