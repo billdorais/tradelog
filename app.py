@@ -2039,7 +2039,12 @@ def bt_convert():
         "9. Always guard against NaN at the start of next() before trading\n"
         "10. The class name must end in 'Strategy'\n"
         "11. If the Pine Script uses intraday sessions or repainting, simplify to daily bar logic\n"
-        "12. Include a short docstring describing the strategy"
+        "12. Include a short docstring describing the strategy\n"
+        "13. NEVER use self.position.entry_price - it does not exist. Track entry price manually: "
+        "set self._entry = self.data.Close[-1] when entering, then read self._entry in next()\n"
+        "14. NEVER use self.position.size to get fill price. Use self._entry as above\n"
+        "15. Valid Position attributes: .is_long .is_short .pl .pl_pct .close() only\n"
+        "16. Set class attribute _trade_on_close = True so trades execute on bar close like Pine Script"
     )
 
     def generate():
