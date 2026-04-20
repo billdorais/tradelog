@@ -1830,6 +1830,22 @@ def broker_close_all():
     return jsonify({"closed": closed_count, "detail": results, "errors": errors})
 
 
+@app.route("/api/alpaca/close/<symbol>", methods=["POST"])
+def alpaca_close_position(symbol):
+    """Manually close a single Alpaca position by symbol."""
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    if alpaca_broker is None:
+        return jsonify({"success": False, "error": "Alpaca broker not initialised"}), 400
+    symbol = symbol.upper()
+    result = alpaca_broker.close_position(symbol)
+    if result.get("success"):
+        log.info("Manual close: %s position closed via UI", symbol)
+        return jsonify(result)
+    return jsonify(result), 400
+
+
 @app.route("/")
 def dashboard():
     return render_template("index.html")

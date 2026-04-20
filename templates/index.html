@@ -1261,6 +1261,14 @@
         // Strategy: use paired TV signal's strategy if available, otherwise fall back to
         // the strategy resolved server-side and stored on the fill itself.
         const alpStrat = (tv?.entry?.strategy) || (tv?.exit?.strategy) || ref.strategy || null;
+        const isOpen   = en && !ex;
+        const statusCell = isOpen
+          ? `<button onclick="closeAlpacaPosition('${ref.symbol}',this)"
+               style="padding:2px 9px;font-size:0.72rem;background:transparent;
+                      border:1px solid #ef5350;color:#ef5350;border-radius:4px;cursor:pointer">
+               Close
+             </button>`
+          : `<span class="exec-ok">✓ Filled</span>`;
         rows.push(`<tr class="group-second">
           <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
           <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
@@ -1273,7 +1281,7 @@
           <td>${qty ?? '—'}</td>
           <td>${priceCell(entryPrice)}</td>
           <td>${priceCell(exitPrice)}</td>
-          <td><span class="exec-ok">✓ Filled</span></td>
+          <td>${statusCell}</td>
         </tr>`);
       }
       return rows.join('');
@@ -2138,6 +2146,32 @@
       } catch (e) {
         alert('Error: ' + e);
       } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function closeAlpacaPosition(symbol, btn) {
+      const token = prompt(`Enter webhook token to close ${symbol} position on Alpaca:`);
+      if (!token) return;
+      const orig = btn.textContent;
+      btn.textContent = '...';
+      btn.disabled = true;
+      try {
+        const res  = await fetch(`/api/alpaca/close/${encodeURIComponent(symbol)}?token=${encodeURIComponent(token)}`, { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          btn.textContent = 'Closed';
+          btn.style.borderColor = '#5fe0a0';
+          btn.style.color = '#5fe0a0';
+          setTimeout(loadTrades, 2000);
+        } else {
+          alert('Close failed: ' + (data.error || 'Unknown error'));
+          btn.textContent = orig;
+          btn.disabled = false;
+        }
+      } catch (e) {
+        alert('Error: ' + e);
+        btn.textContent = orig;
         btn.disabled = false;
       }
     }
