@@ -218,27 +218,27 @@
     <div class="form-row" style="margin-bottom:16px">
       <div class="field" style="grid-column:span 3">
         <label>Tickers (comma-separated)</label>
-        <input type="text" id="tickers" value="AAPL, MSFT" placeholder="AAPL, MSFT, PLTR, NVDA">
+        <input type="text" id="tickers" value="TSLA" placeholder="AAPL, MSFT, PLTR, NVDA">
       </div>
     </div>
     <div class="field">
       <label style="margin-bottom:8px">Timeframes</label>
       <div class="tf-grid" id="tfGrid">
-        <div class="tf-btn active" data-tf="1d"  onclick="toggleTf(this)">1D</div>
+        <div class="tf-btn"        data-tf="1d"  onclick="toggleTf(this)">1D</div>
         <div class="tf-btn"        data-tf="1h"  onclick="toggleTf(this)">1H</div>
         <div class="tf-btn"        data-tf="30m" onclick="toggleTf(this)">30M</div>
         <div class="tf-btn"        data-tf="15m" onclick="toggleTf(this)">15M</div>
-        <div class="tf-btn"        data-tf="5m"  onclick="toggleTf(this)">5M</div>
+        <div class="tf-btn active" data-tf="5m"  onclick="toggleTf(this)">5M</div>
       </div>
     </div>
     <div class="form-row" style="margin-top:16px">
       <div class="field">
         <label>Start Date</label>
-        <input type="date" id="startDate" value="2022-01-01">
+        <input type="date" id="startDate" value="2026-01-01">
       </div>
       <div class="field">
         <label>End Date</label>
-        <input type="date" id="endDate" value="2024-12-31">
+        <input type="date" id="endDate">
       </div>
     </div>
   </div>
@@ -341,6 +341,7 @@
 
   // ── Init ───────────────────────────────────────────────────────
   (async function init() {
+    document.getElementById('endDate').value = new Date().toISOString().slice(0, 10);
     await loadStrategies();
   })();
 
