@@ -661,6 +661,21 @@ def placeholder():
     return "%s" if DATABASE_URL else "?"
 
 
+_INTRADAY_TF = {"5m", "15m", "30m", "1h"}
+
+def _filter_rth(df):
+    """Filter a DataFrame with naive-UTC DatetimeIndex to RTH bars only (9:30-16:00 ET)."""
+    import pandas as _pd
+    try:
+        idx_et = df.index.tz_localize("UTC").tz_convert("America/New_York")
+        rth = ((idx_et.hour > 9) | ((idx_et.hour == 9) & (idx_et.minute >= 30))) & (idx_et.hour < 16)
+        df = df[rth.values].copy()
+        df.index = df.index.tz_localize(None)
+    except Exception as _e:
+        log.warning("RTH filter skipped: %s", _e)
+    return df
+
+
 def init_db():
     conn = get_db()
     cur  = conn.cursor()
@@ -2139,6 +2154,8 @@ def bt_run():
         df.columns = [c.title() for c in df.columns]
         df = df[["Open", "High", "Low", "Close"]].dropna()
         df["Volume"] = 0
+        if timeframe in _INTRADAY_TF:
+            df = _filter_rth(df)
     except Exception as e:
         return jsonify({"error": f"Data fetch failed: {e}"}), 500
 
@@ -2351,6 +2368,8 @@ def bt_optimize():
                     df.columns = [c.title() for c in df.columns]
                     df = df[["Open", "High", "Low", "Close"]].dropna()
                     df["Volume"] = 0
+                    if tf in _INTRADAY_TF:
+                        df = _filter_rth(df)
 
                 except Exception as e:
                     yield _sse({"type": "warning", "msg": f"{ticker}/{tf} data error: {e}"})
