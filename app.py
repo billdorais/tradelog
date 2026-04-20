@@ -1887,6 +1887,580 @@ def strategies():
     return render_template("strategies.html")
 
 
+
+@app.route("/optimize")
+def optimize_page():
+    return render_template("optimize.html")
+
+
+def _extract_strategy_params(code):
+    """Auto-detect class-level numeric parameters from a backtesting.py Strategy class."""
+    import re
+    params, seen = [], set()
+    for m in re.finditer(r'^    (\w+)\s*=\s*(\d+(?:\.\d+)?)(?:\s*#.*)?$', code, re.MULTILINE):
+        name, val_str = m.group(1), m.group(2)
+        if name in seen or name.startswith('_'):
+            continue
+        seen.add(name)
+        val    = float(val_str)
+        is_int = '.' not in val_str
+        label  = name.replace('_', ' ').title()
+        if is_int:
+            iv = int(val)
+            params.append({"id": name, "label": label, "type": "int",
+                           "default": iv, "min": max(1, iv // 4), "max": max(iv * 4, iv + 10), "step": 1})
+        else:
+            params.append({"id": name, "label": label, "type": "float",
+                           "default": val, "min": round(max(0.1, val / 4), 1),
+                           "max": round(val * 4, 1), "step": 0.1})
+    return params
+
+
+@app.route("/api/bt/strategies")
+def bt_strategies_list():
+    """Return built-in + user-saved strategies with their parameter schemas."""
+    from strategies.bt_strategies import STRATEGIES
+    result = {name: params for name, (_, params) in STRATEGIES.items()}
+    # Append user-saved strategies
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT slug, name, params FROM user_strategies ORDER BY created_at ASC")
+        rows = cur.fetchall()
+        conn.close()
+        for row in rows:
+            r = dict(row) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], row))
+            result[r["slug"]] = json.loads(r["params"])
+    except Exception as _e:
+        log.warning("Failed to load user strategies: %s", _e)
+    return jsonify(result)
+
+
+@app.route("/api/bt/strategies/save", methods=["POST"])
+def bt_strategy_save():
+    """Save a converted Pine Script strategy to the DB."""
+    import re
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    code = (body.get("code") or "").strip()
+    if not name or not code:
+        return jsonify({"error": "name and code are required"}), 400
+    slug   = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') or "strategy"
+    params = _extract_strategy_params(code)
+    p      = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO user_strategies (slug, name, code, params, created_at) "
+                f"VALUES ({p},{p},{p},{p},{p}) "
+                f"ON CONFLICT (slug) DO UPDATE SET name=EXCLUDED.name, code=EXCLUDED.code, params=EXCLUDED.params",
+                (slug, name, code, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            )
+        else:
+            cur.execute(
+                f"INSERT OR REPLACE INTO user_strategies (slug, name, code, params, created_at) "
+                f"VALUES ({p},{p},{p},{p},{p})",
+                (slug, name, code, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            )
+        conn.commit()
+        conn.close()
+        return jsonify({"slug": slug, "name": name, "params": params})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bt/strategies/<slug>", methods=["DELETE"])
+def bt_strategy_delete(slug):
+    """Delete a user-saved strategy."""
+    p = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"DELETE FROM user_strategies WHERE slug = {p}", (slug,))
+        conn.commit()
+        conn.close()
+        return jsonify({"deleted": slug})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bt/strategies/meta")
+def bt_strategies_meta():
+    """Return display names + slugs for all strategies (built-in + user)."""
+    from strategies.bt_strategies import STRATEGIES
+    result = [{"slug": k, "name": k.replace('_', ' ').title(), "user": False}
+              for k in STRATEGIES]
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT slug, name FROM user_strategies ORDER BY created_at ASC")
+        rows = cur.fetchall()
+        conn.close()
+        for row in rows:
+            r = dict(row) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], row))
+            result.append({"slug": r["slug"], "name": r["name"], "user": True})
+    except Exception:
+        pass
+    return jsonify(result)
+
+
+@app.route("/api/bt/convert", methods=["POST"])
+def bt_convert():
+    """Stream a Pine Script â†’ backtesting.py Strategy class via Claude."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    body        = request.get_json(silent=True) or {}
+    pine_script = (body.get("pine_script") or "").strip()
+    if not pine_script:
+        return jsonify({"error": "No Pine Script provided"}), 400
+
+    system = (
+        "You are an expert in both TradingView Pine Script and the Python backtesting.py library.\n"
+        "Convert the given Pine Script strategy to a complete, runnable backtesting.py Strategy class.\n\n"
+        "STRICT RULES:\n"
+        "1. Output ONLY valid Python code â€” no markdown fences, no explanation text\n"
+        "2. Start with: from backtesting import Strategy\\nimport numpy as np\\nimport pandas as pd\n"
+        "3. Do NOT import ta-lib, pandas_ta, or any library not in the standard library / numpy / pandas\n"
+        "4. Implement ALL indicators manually using numpy/pandas rolling/ewm/etc.\n"
+        "5. All indicator arrays must be wrapped in self.I() inside init()\n"
+        "6. All tuneable parameters must be class-level attributes with sensible defaults\n"
+        "7. Entry: self.buy(...) / self.sell(...) with sl= and tp= where applicable\n"
+        "8. Exit: self.position.close()\n"
+        "9. Always guard against NaN at the start of next() before trading\n"
+        "10. The class name must end in 'Strategy'\n"
+        "11. If the Pine Script uses intraday sessions or repainting, simplify to daily bar logic\n"
+        "12. Include a short docstring describing the strategy"
+    )
+
+    def generate():
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=3000,
+                system=system,
+                messages=[{"role": "user", "content":
+                    f"Convert this Pine Script strategy to backtesting.py:\n\n{pine_script}"}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'msg': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/bt/run", methods=["POST"])
+def bt_run():
+    import math
+    import pandas as _pd
+    try:
+        from backtesting import Backtest
+        from strategies.bt_strategies import STRATEGIES
+    except ImportError as e:
+        return jsonify({"error": f"Missing dependency: {e}"}), 503
+
+    body           = request.get_json(silent=True) or {}
+    ticker         = (body.get("ticker") or "AAPL").strip().upper()
+    start_date     = body.get("start_date", "2022-01-01")
+    end_date       = body.get("end_date",   "2024-12-31")
+    cash           = float(body.get("cash", 10000))
+    commission     = float(body.get("commission", 0.0))
+    strategy_type  = body.get("strategy_type", "builtin")   # "builtin" | "converted" | "saved"
+    strategy_name  = body.get("strategy_name", "camarilla")
+    strategy_code  = body.get("strategy_code", "")
+    strategy_params = body.get("params", {})
+
+    # â”€â”€ Resolve strategy class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    strategy_cls = None
+    if strategy_type == "saved":
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"SELECT code FROM user_strategies WHERE slug = {placeholder()}", (strategy_name,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": f"Saved strategy not found: {strategy_name}"}), 404
+        strategy_code = row[0]
+        strategy_type = "converted"  # reuse converted exec path
+    if strategy_type == "converted" and strategy_code:
+        try:
+            from backtesting import Strategy as _Strategy
+            import numpy as _np, pandas as _pd
+            ns = {"Strategy": _Strategy, "np": _np, "numpy": _np, "pd": _pd, "pandas": _pd}
+            exec(strategy_code, ns)
+            strategy_cls = next(
+                (v for v in ns.values()
+                 if isinstance(v, type) and issubclass(v, _Strategy) and v is not _Strategy),
+                None,
+            )
+            if strategy_cls is None:
+                return jsonify({"error": "No Strategy subclass found in converted code"}), 400
+        except Exception as e:
+            return jsonify({"error": f"Strategy code error: {e}"}), 400
+    else:
+        entry = STRATEGIES.get(strategy_name)
+        if not entry:
+            return jsonify({"error": f"Unknown strategy: {strategy_name}"}), 400
+        strategy_cls = entry[0]
+
+    # â”€â”€ Fetch data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    try:
+        import yfinance as yf
+        raw = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
+        if raw.empty:
+            return jsonify({"error": f"No data returned for {ticker}"}), 400
+        if hasattr(raw.columns, "levels"):
+            raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
+        df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        if len(df) < 30:
+            return jsonify({"error": f"Only {len(df)} bars â€” need at least 30"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Data fetch failed: {e}"}), 500
+
+    # â”€â”€ Run backtest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    try:
+        bt    = Backtest(df, strategy_cls, cash=cash, commission=commission, exclusive_orders=True,
+                        trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
+        # Cast params to correct types
+        typed_params = {}
+        for k, v in strategy_params.items():
+            try:
+                default = getattr(strategy_cls, k, v)
+                typed_params[k] = type(default)(v)
+            except Exception:
+                typed_params[k] = v
+        stats = bt.run(**typed_params)
+
+        def _safe(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            try:
+                import pandas as _pd
+                if isinstance(v, (_pd.Series, _pd.DataFrame)):
+                    return None
+            except Exception:
+                pass
+            try:
+                json.dumps(v); return v
+            except Exception:
+                return str(v)
+
+        stats_dict = {k: _safe(v) for k, v in stats.items()
+                      if k not in ("_strategy", "_trades", "_equity_curve")}
+
+        trades_list = []
+        trades_df = stats.get("_trades")
+        if trades_df is not None and not trades_df.empty:
+            for _, row in trades_df.iterrows():
+                trades_list.append({
+                    "entry_time":  str(row.get("EntryTime",  "")),
+                    "exit_time":   str(row.get("ExitTime",   "")),
+                    "direction":   "Long" if row.get("Size", 0) > 0 else "Short",
+                    "size":        abs(int(row.get("Size", 0))),
+                    "entry_price": round(float(row.get("EntryPrice", 0)), 4),
+                    "exit_price":  round(float(row.get("ExitPrice",  0)), 4),
+                    "pnl":         round(float(row.get("PnL", 0)), 2),
+                    "return_pct":  round(float(row.get("ReturnPct", 0)) * 100, 2),
+                })
+
+        eq_curve = []
+        if "_equity_curve" in stats:
+            eq      = stats["_equity_curve"]["Equity"]
+            step_eq = max(1, len(eq) // 600)
+            for t, v in eq.iloc[::step_eq].items():
+                try:    ts_int = int(t.timestamp())
+                except Exception: ts_int = int(_pd.Timestamp(t).timestamp())
+                eq_curve.append({"time": ts_int, "value": round(float(v), 2)})
+
+        # OHLCV bars for Lightweight Charts (capped at 1500 candles)
+        ohlcv_list = []
+        step_bars = max(1, len(df) // 1500)
+        for ts, row in df.iloc[::step_bars].iterrows():
+            try:    t_int = int(ts.timestamp())
+            except Exception: t_int = int(_pd.Timestamp(ts).timestamp())
+            ohlcv_list.append({
+                "time":  t_int,
+                "open":  round(float(row["Open"]),  4),
+                "high":  round(float(row["High"]),  4),
+                "low":   round(float(row["Low"]),   4),
+                "close": round(float(row["Close"]), 4),
+            })
+
+        return jsonify({"stats": stats_dict, "trades": trades_list,
+                        "equity": eq_curve, "ohlcv": ohlcv_list, "ticker": ticker})
+
+    except Exception as e:
+        log.exception("bt_run error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bt/optimize", methods=["POST"])
+def bt_optimize():
+    """
+    Streaming SSE endpoint.  For each ticker Ã— timeframe, runs backtesting.py
+    bt.optimize() over the supplied param ranges and streams each result row.
+    """
+    from flask import Response, stream_with_context
+    import json as _json
+
+    body           = request.get_json(silent=True) or {}
+    strategy_type  = body.get("strategy_type", "builtin")
+    strategy_name  = body.get("strategy_name", "camarilla")
+    tickers        = [t.strip().upper() for t in body.get("tickers", ["AAPL"]) if t.strip()]
+    timeframes     = body.get("timeframes", ["1d"])
+    start_date     = body.get("start_date", "2022-01-01")
+    end_date       = body.get("end_date",   "2024-12-31")
+    cash           = float(body.get("cash", 10000))
+    commission     = float(body.get("commission", 0.0))
+    data_source    = body.get("data_source", "yfinance")
+    maximize       = body.get("maximize",    "Sharpe Ratio")
+    param_ranges   = body.get("param_ranges", {})
+    strategy_code  = body.get("strategy_code", "")
+
+    class _NpEnc(_json.JSONEncoder):
+        def default(self, o):
+            import numpy as _np
+            if isinstance(o, _np.integer): return int(o)
+            if isinstance(o, _np.floating): return float(o)
+            if isinstance(o, _np.ndarray): return o.tolist()
+            return super().default(o)
+
+    def _sse(obj):
+        return f"data: {_json.dumps(obj, cls=_NpEnc)}\n\n"
+
+    def generate():
+        try:
+            from backtesting import Backtest, Strategy as _Strategy
+            from strategies.bt_strategies import STRATEGIES
+            import numpy as _np
+            import pandas as _pd
+        except ImportError as e:
+            yield _sse({"type": "error", "msg": f"Missing dependency: {e}"})
+            return
+
+        # â”€â”€ Resolve strategy class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        strategy_cls = None
+        if strategy_type == "saved":
+            conn = get_db(); cur = conn.cursor()
+            cur.execute(f"SELECT code FROM user_strategies WHERE slug = {placeholder()}", (strategy_name,))
+            row = cur.fetchone(); conn.close()
+            if not row:
+                yield _sse({"type": "error", "msg": f"Strategy not found: {strategy_name}"}); return
+            exec_code = row[0]
+        elif strategy_type == "converted" and strategy_code:
+            exec_code = strategy_code
+        else:
+            exec_code = None
+
+        if exec_code:
+            ns = {"Strategy": _Strategy, "np": _np, "numpy": _np, "pd": _pd, "pandas": _pd}
+            try:
+                exec(exec_code, ns)
+            except Exception as e:
+                yield _sse({"type": "error", "msg": f"Strategy code error: {e}"}); return
+            strategy_cls = next(
+                (v for v in ns.values() if isinstance(v, type) and issubclass(v, _Strategy) and v is not _Strategy), None)
+        else:
+            entry = STRATEGIES.get(strategy_name)
+            if entry:
+                strategy_cls = entry[0]
+
+        if strategy_cls is None:
+            yield _sse({"type": "error", "msg": "Could not resolve strategy class"}); return
+
+        # â”€â”€ Build param sequences â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        opt_kwargs = {}
+        for pname, prange in param_ranges.items():
+            pmin  = float(prange.get("min",  1))
+            pmax  = float(prange.get("max",  10))
+            pstep = float(prange.get("step", 1))
+            vals, v = [], pmin
+            while v <= pmax + 1e-9:
+                is_int = (pstep == int(pstep) and pmin == int(pmin))
+                vals.append(int(round(v)) if is_int else round(v, 4))
+                v += pstep
+            if vals:
+                opt_kwargs[pname] = vals
+
+        total  = len(tickers) * len(timeframes)
+        done   = 0
+        run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+        for ticker in tickers:
+            for tf in timeframes:
+                done += 1
+                pct = int((done - 1) / total * 100)
+                yield _sse({"type": "progress", "msg": f"Fetching {ticker} / {tf}  ({done}/{total})", "pct": pct})
+
+                # â”€â”€ Cap date range for intraday to keep bar count manageable â”€
+                _MAX_DAYS = {"5m": 30, "15m": 60, "30m": 90, "1h": 180}
+                _MAX_TRIES = {"5m": 20, "15m": 25, "30m": 30, "1h": 40, "1d": 50}
+                tf_max_days  = _MAX_DAYS.get(tf)
+                tf_max_tries = _MAX_TRIES.get(tf, 50)
+                eff_start = start_date
+                eff_end   = end_date
+                if tf_max_days:
+                    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                    today    = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                    earliest = (_dt.now(_tz.utc) - _td(days=tf_max_days)).strftime("%Y-%m-%d")
+                    eff_end  = today
+                    if start_date < earliest:
+                        eff_start = earliest
+                    yield _sse({"type": "progress", "msg": f"  {tf} capped to {eff_start} â†’ {eff_end}", "pct": pct})
+
+                # â”€â”€ Fetch data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                try:
+                    if data_source == "alpaca":
+                        from strategies.data import fetch_bars_alpaca
+                        raw = fetch_bars_alpaca(ticker, eff_start, eff_end, tf)
+                    else:
+                        from strategies.data import fetch_bars
+                        raw = fetch_bars(ticker, eff_start, eff_end, tf)
+
+                    if len(raw) < 30:
+                        yield _sse({"type": "warning", "msg": f"{ticker}/{tf}: only {len(raw)} bars â€” skipped"})
+                        continue
+
+                    df = _pd.DataFrame(raw).set_index("time")
+                    df.index = _pd.to_datetime(df.index)
+                    df.columns = [c.title() for c in df.columns]
+                    df = df[["Open", "High", "Low", "Close"]].dropna()
+                    df["Volume"] = 0
+
+                except Exception as e:
+                    yield _sse({"type": "warning", "msg": f"{ticker}/{tf} data error: {e}"})
+                    continue
+
+                # â”€â”€ Run optimize â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                try:
+                    import itertools as _it
+
+                    def _f(v, n=2):
+                        try: return round(float(v or 0), n)
+                        except Exception: return 0
+
+                    def _make_stats(s):
+                        return {
+                            "Return [%]":        _f(s.get("Return [%]")),
+                            "Sharpe Ratio":      _f(s.get("Sharpe Ratio"), 3),
+                            "Max. Drawdown [%]": _f(s.get("Max. Drawdown [%]")),
+                            "Win Rate [%]":      _f(s.get("Win Rate [%]")),
+                            "# Trades":          int(s.get("# Trades") or 0),
+                            "Profit Factor":     _f(s.get("Profit Factor"), 3),
+                            "Calmar Ratio":      _f(s.get("Calmar Ratio"), 3),
+                        }
+
+                    bt = Backtest(df, strategy_cls, cash=cash, commission=commission, exclusive_orders=True,
+                                  trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
+
+                    combo_results = []   # list of (params_dict, stats)
+
+                    if opt_kwargs:
+                        grid_size = 1
+                        for vals in opt_kwargs.values():
+                            grid_size *= len(vals)
+
+                        yield _sse({"type": "progress",
+                                    "msg": f"Optimizing {ticker}/{tf} â€” {grid_size} combosâ€¦",
+                                    "pct": pct + 1})
+
+                        if grid_size <= 500:
+                            # Full grid â€” every combination, full stats
+                            for combo in _it.product(*opt_kwargs.values()):
+                                p_ov = dict(zip(opt_kwargs.keys(), combo))
+                                combo_results.append((p_ov, bt.run(**p_ov)))
+                        else:
+                            # Sambo smart search â†’ full stats for each trial
+                            try:
+                                _, heatmap = bt.optimize(
+                                    **opt_kwargs, maximize=maximize,
+                                    return_heatmap=True, max_tries=tf_max_tries, method="sambo")
+                            except Exception:
+                                _, heatmap = bt.optimize(
+                                    **opt_kwargs, maximize=maximize,
+                                    return_heatmap=True, max_tries=tf_max_tries)
+                            for idx in heatmap.index:
+                                idx_t = idx if isinstance(idx, tuple) else (idx,)
+                                p_ov  = dict(zip(opt_kwargs.keys(), idx_t))
+                                combo_results.append((p_ov, bt.run(**p_ov)))
+                    else:
+                        yield _sse({"type": "progress",
+                                    "msg": f"Running {ticker}/{tf} at defaultsâ€¦", "pct": pct + 1})
+                        combo_results.append(({}, bt.run()))
+
+                    # Sort descending by maximize metric
+                    combo_results.sort(
+                        key=lambda x: float(x[1].get(maximize) or 0), reverse=True)
+
+                    p_ph = placeholder()
+                    for rank, (p_ov, s) in enumerate(combo_results):
+                        sd    = _make_stats(s)
+                        score = _f(s.get(maximize), 4)
+                        row   = {
+                            "type": "result",
+                            "run_id": run_id, "strategy": strategy_name,
+                            "ticker": ticker,  "timeframe": tf,
+                            "params": p_ov,    "stats": sd,
+                            "maximize": maximize, "score": score,
+                            "rank": rank + 1,
+                        }
+                        if rank < 10:   # persist only top-10 per ticker/tf
+                            try:
+                                conn = get_db(); cur = conn.cursor()
+                                cur.execute(
+                                    f"INSERT INTO bt_results (run_id,strategy,ticker,timeframe,params,stats,maximize,score,created_at)"
+                                    f" VALUES ({p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph})",
+                                    (run_id, strategy_name, ticker, tf,
+                                     _json.dumps(p_ov), _json.dumps(sd),
+                                     maximize, score,
+                                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+                                conn.commit(); conn.close()
+                            except Exception as db_e:
+                                log.warning(f"bt_results DB error: {db_e}")
+                        yield _sse(row)
+
+                except Exception as e:
+                    log.exception(f"Optimize error {ticker}/{tf}")
+                    yield _sse({"type": "warning", "msg": f"{ticker}/{tf} optimize failed: {e}"})
+
+        yield _sse({"type": "done", "run_id": run_id})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/bt/results", methods=["GET"])
+def bt_results_history():
+    """Return last N optimization runs grouped by run_id."""
+    try:
+        p    = placeholder()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(
+            f"SELECT run_id,strategy,ticker,timeframe,params,stats,maximize,score,created_at"
+            f" FROM bt_results ORDER BY created_at DESC LIMIT {p}", (200,))
+        rows = cur.fetchall(); conn.close()
+        out = []
+        for r in rows:
+            out.append({
+                "run_id": r[0], "strategy": r[1], "ticker": r[2], "timeframe": r[3],
+                "params": json.loads(r[4] or "{}"), "stats": json.loads(r[5] or "{}"),
+                "maximize": r[6], "score": r[7], "created_at": r[8],
+            })
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/ib/clear", methods=["POST"])
 def ib_clear_fills():
     """Delete all IB fill data so a fresh sync can rebuild it cleanly."""

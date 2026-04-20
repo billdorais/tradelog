@@ -71,6 +71,16 @@
     .log-warn { color: #f0ad4e; }
     .log-ok   { color: #26a65b; }
 
+    /* ── TV-style summary banner ─────────────────────────────── */
+    .tv-summary { display: flex; gap: 0; border: 1px solid #1e2130; border-radius: 8px;
+                  overflow: hidden; margin-bottom: 16px; background: #0d0d0d; }
+    .tv-stat { flex: 1; padding: 14px 18px; border-right: 1px solid #1e2130; min-width: 0; }
+    .tv-stat:last-child { border-right: none; }
+    .tv-stat-label { font-size: 0.68rem; color: #666; text-transform: uppercase;
+                     letter-spacing: 0.05em; margin-bottom: 5px; font-weight: 600; white-space: nowrap; }
+    .tv-stat-value { font-size: 1.05rem; font-weight: 700; color: #e0e0e0; white-space: nowrap; }
+    .tv-stat-sub   { font-size: 0.75rem; color: #555; margin-top: 2px; }
+
     /* ── Results table ───────────────────────────────────────── */
     .results-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
     .results-header h2 { font-size: 1rem; font-weight: 700; color: #fff; }
@@ -86,8 +96,9 @@
     table.results th.sorted .sort-arrow { color: #2962ff; }
     table.results td { padding: 9px 12px; border-bottom: 1px solid #0d0d0d; }
     table.results tr:last-child td { border-bottom: none; }
-    table.results tr:hover td { background: rgba(255,255,255,0.02); }
+    table.results tr:hover td { background: rgba(255,255,255,0.02); cursor: pointer; }
     table.results tr.best-row td { background: rgba(41,98,255,0.06); }
+    table.results tr.selected-row td { background: rgba(41,98,255,0.12) !important; }
 
     .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
     .badge-blue  { background: rgba(41,98,255,0.15); color: #5c8eff; }
@@ -123,8 +134,6 @@
       <a href="/routing">&#128257; Signal Router</a>
       <a href="/analysis">&#128300; Analysis</a>
       <a href="/strategies">&#128200; Strategies</a>
-      <a href="/backtester">&#9889; Agent Backtester</a>
-      <a href="/backtest-lib">&#128202; Backtest</a>
       <a href="/optimize">&#128269; Optimizer</a>
       <a href="/about">&#8505; About</a>
     </div>
@@ -186,6 +195,11 @@
       <div class="field">
         <label>Starting Cash ($)</label>
         <input type="number" id="cash" value="10000" min="1000" step="1000">
+      </div>
+      <div class="field">
+        <label>Commission %</label>
+        <input type="number" id="commission" value="0.0" min="0" max="5" step="0.05"
+               title="Per-trade commission. TradingView default is 0. Set to 0.1 for realistic broker costs.">
       </div>
     </div>
   </div>
@@ -251,6 +265,33 @@
 
   <!-- ── Results ───────────────────────────────────────────────── -->
   <div id="resultsSection" style="display:none" class="card">
+    <!-- TV-style summary banner for selected row -->
+    <div class="tv-summary" id="tvSummary">
+      <div class="tv-stat">
+        <div class="tv-stat-label">Total P&amp;L</div>
+        <div class="tv-stat-value" id="sv-pnl">—</div>
+        <div class="tv-stat-sub"  id="sv-ret">—</div>
+      </div>
+      <div class="tv-stat">
+        <div class="tv-stat-label">Max Equity Drawdown</div>
+        <div class="tv-stat-value" id="sv-dd">—</div>
+        <div class="tv-stat-sub"  id="sv-dd-dur">—</div>
+      </div>
+      <div class="tv-stat">
+        <div class="tv-stat-label">Total Trades</div>
+        <div class="tv-stat-value" id="sv-trades">—</div>
+      </div>
+      <div class="tv-stat">
+        <div class="tv-stat-label">Profitable Trades</div>
+        <div class="tv-stat-value" id="sv-wr">—</div>
+        <div class="tv-stat-sub"  id="sv-wr-frac">—</div>
+      </div>
+      <div class="tv-stat">
+        <div class="tv-stat-label">Profit Factor</div>
+        <div class="tv-stat-value" id="sv-pf">—</div>
+      </div>
+    </div>
+
     <div class="results-header">
       <h2>Results</h2>
       <span class="results-count" id="resultsCount"></span>
@@ -267,7 +308,8 @@
             <th onclick="sortBy('ret')">Return %<span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('sharpe')">Sharpe<span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('dd')">Max DD %<span class="sort-arrow">↕</span></th>
-            <th onclick="sortBy('wr')">Win Rate<span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('wr')">Profitable<span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('pf')">Prof. Factor<span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('trades')"># Trades<span class="sort-arrow">↕</span></th>
           </tr>
         </thead>
@@ -285,6 +327,7 @@
   let results      = [];
   let sortKey      = 'score';
   let sortDir      = -1;    // -1 = desc
+  let selectedIdx  = null;  // index in sorted array
 
   // ── Init ───────────────────────────────────────────────────────
   (async function init() {
@@ -390,6 +433,7 @@
       start_date:  document.getElementById('startDate').value,
       end_date:    document.getElementById('endDate').value,
       cash:        parseFloat(document.getElementById('cash').value),
+      commission:  parseFloat(document.getElementById('commission').value) / 100,
       data_source: document.getElementById('dataSource').value,
       maximize:    document.getElementById('maximize').value,
       param_ranges: paramRanges,
@@ -475,6 +519,7 @@
     score: r => r.score, ret: r => r.stats['Return [%]'] || 0,
     sharpe: r => r.stats['Sharpe Ratio'] || 0, dd: r => r.stats['Max. Drawdown [%]'] || 0,
     wr: r => r.stats['Win Rate [%]'] || 0, trades: r => r.stats['# Trades'] || 0,
+    pf: r => r.stats['Profit Factor'] || 0,
   };
 
   function renderResults() {
@@ -489,8 +534,6 @@
     });
 
     document.getElementById('resultsCount').textContent = `${sorted.length} combination(s)`;
-
-    const maximize = sorted[0]?.maximize || 'Sharpe Ratio';
     document.getElementById('paramsHeader').textContent = 'Best Params';
 
     const tbody = document.getElementById('resultsBody');
@@ -501,7 +544,15 @@
                              : (Object.entries(r.params || {}).map(([k, v]) => `${k}=${v}`).join(' · ') || '—');
       const ret    = r.stats['Return [%]'] || 0;
       const dd     = r.stats['Max. Drawdown [%]'] || 0;
-      return `<tr class="${isBest ? 'best-row' : ''}" style="${isBase ? 'border-left:3px solid #f0ad4e' : ''}">
+      const wr     = r.stats['Win Rate [%]'] || 0;
+      const nTrades = r.stats['# Trades'] || 0;
+      const wins   = Math.round(wr / 100 * nTrades);
+      const pf     = r.stats['Profit Factor'];
+      const pfStr  = (pf == null || pf === Infinity || pf > 999) ? '∞' : pf.toFixed(3);
+      const selClass = selectedIdx === i ? 'selected-row' : '';
+      return `<tr class="${isBest ? 'best-row' : ''} ${selClass}"
+                  style="${isBase ? 'border-left:3px solid #f0ad4e' : ''}"
+                  onclick="selectRow(${i}, event)">
         <td class="${isBest ? 'rank-1' : ''}">${isBase ? '—' : i + 1}${isBest ? ' ★' : ''}</td>
         <td><span class="badge ${isBase ? '' : 'badge-blue'}" style="${isBase ? 'background:rgba(240,173,78,0.15);color:#f0ad4e' : ''}">${r.ticker}</span></td>
         <td><span class="badge badge-gray">${r.timeframe}</span></td>
@@ -510,13 +561,59 @@
         <td class="${ret >= 0 ? 'pos' : 'neg'}">${ret.toFixed(2)}%</td>
         <td>${(r.stats['Sharpe Ratio'] || 0).toFixed(3)}</td>
         <td class="${dd <= -10 ? 'neg' : ''}">${dd.toFixed(2)}%</td>
-        <td>${(r.stats['Win Rate [%]'] || 0).toFixed(1)}%</td>
-        <td>${r.stats['# Trades'] || 0}</td>
+        <td><span class="${wr >= 50 ? 'pos' : 'neg'}">${wr.toFixed(2)}%</span>
+            <span style="color:#555;font-size:0.75rem"> ${wins}/${nTrades}</span></td>
+        <td>${pfStr}</td>
+        <td>${nTrades.toLocaleString()}</td>
       </tr>`;
     }).join('');
 
-    // Update sort arrows
     document.querySelectorAll('table.results th').forEach(th => th.classList.remove('sorted'));
+
+    // Auto-select best row on first render
+    if (selectedIdx === null && sorted.length > 0) selectRow(0);
+    else updateSummaryBanner(sorted[selectedIdx] || sorted[0]);
+  }
+
+  function selectRow(idx, e) {
+    selectedIdx = idx;
+    const sorted = [...results].sort((a, b) => {
+      const fn = SORT_KEYS[sortKey] || (r => r.score);
+      const av = fn(a), bv = fn(b);
+      return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
+    });
+    document.querySelectorAll('table.results tbody tr').forEach((tr, i) => {
+      tr.classList.toggle('selected-row', i === idx);
+    });
+    updateSummaryBanner(sorted[idx]);
+  }
+
+  function updateSummaryBanner(r) {
+    if (!r) return;
+    const cash   = parseFloat(document.getElementById('cash').value) || 10000;
+    const eq     = r.stats['Equity Final [$]'] || cash;
+    const pnl    = eq - cash;
+    const ret    = r.stats['Return [%]'] || 0;
+    const dd     = r.stats['Max. Drawdown [%]'] || 0;
+    const ddDur  = r.stats['Max. Drawdown Duration'] || '';
+    const nTrades = r.stats['# Trades'] || 0;
+    const wr     = r.stats['Win Rate [%]'] || 0;
+    const wins   = Math.round(wr / 100 * nTrades);
+    const pf     = r.stats['Profit Factor'];
+    const pfStr  = (pf == null || pf === Infinity || pf > 999) ? '∞' : pf.toFixed(3);
+
+    const sign = pnl >= 0 ? '+' : '';
+    document.getElementById('sv-pnl').textContent     = `${sign}${pnl.toFixed(2)} USD`;
+    document.getElementById('sv-pnl').className       = 'tv-stat-value ' + (pnl >= 0 ? 'pos' : 'neg');
+    document.getElementById('sv-ret').textContent     = `${sign}${ret.toFixed(2)}%`;
+    document.getElementById('sv-dd').textContent      = `${dd.toFixed(2)}%`;
+    document.getElementById('sv-dd').className        = 'tv-stat-value ' + (dd < -10 ? 'neg' : '');
+    document.getElementById('sv-dd-dur').textContent  = ddDur ? String(ddDur).split(' ')[0] + ' days' : '';
+    document.getElementById('sv-trades').textContent  = nTrades.toLocaleString();
+    document.getElementById('sv-wr').textContent      = `${wr.toFixed(2)}%`;
+    document.getElementById('sv-wr').className        = 'tv-stat-value ' + (wr >= 50 ? 'pos' : 'neg');
+    document.getElementById('sv-wr-frac').textContent = `${wins}/${nTrades}`;
+    document.getElementById('sv-pf').textContent      = pfStr;
   }
 
   // ── Benchmark (run default params, no sweep) ───────────────────
@@ -550,9 +647,11 @@
               strategy_type: isUser ? 'saved' : 'builtin',
               strategy_name: slug,
               ticker,
-              start_date: document.getElementById('startDate').value,
-              end_date:   document.getElementById('endDate').value,
-              cash:       parseFloat(document.getElementById('cash').value),
+              timeframe: tf,
+              start_date:  document.getElementById('startDate').value,
+              end_date:    document.getElementById('endDate').value,
+              cash:        parseFloat(document.getElementById('cash').value),
+              commission:  parseFloat(document.getElementById('commission').value) / 100,
               params: {},
             }),
           });
@@ -589,6 +688,7 @@
 
   function clearResults() {
     results = [];
+    selectedIdx = null;
     document.getElementById('resultsSection').style.display = 'none';
     document.getElementById('progressSection').style.display = 'none';
     document.getElementById('runStatus').textContent = '';
