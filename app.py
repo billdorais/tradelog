@@ -2210,11 +2210,11 @@ def bt_optimize():
                         try:
                             best, heatmap = bt.optimize(
                                 **opt_kwargs, maximize=maximize,
-                                return_heatmap=True, max_tries=300, method="sambo")
+                                return_heatmap=True, max_tries=50, method="sambo")
                         except Exception:
                             best, heatmap = bt.optimize(
                                 **opt_kwargs, maximize=maximize,
-                                return_heatmap=True, method="grid")
+                                return_heatmap=True, max_tries=50)
                         best_params = {k: getattr(best._strategy, k, None) for k in opt_kwargs}
                     else:
                         best = bt.run()

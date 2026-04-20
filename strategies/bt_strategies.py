@@ -285,10 +285,10 @@ STRATEGIES = {
     "cam_ema8": (
         CamarillaEMA8,
         [
-            {"id": "stop_loss",        "label": "Stop Loss ($)",       "type": "float", "default": 0.50, "min": 0.10, "max": 2.00, "step": 0.05},
-            {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.10, "max": 2.00, "step": 0.05},
-            {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.05, "max": 1.00, "step": 0.05},
-            {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 3,    "max": 50,   "step": 1},
+            {"id": "stop_loss",        "label": "Stop Loss ($)",       "type": "float", "default": 0.50, "min": 0.20, "max": 1.50, "step": 0.10},
+            {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.20, "max": 1.50, "step": 0.10},
+            {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.10, "max": 0.80, "step": 0.10},
+            {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 5,    "max": 21,   "step": 1},
         ],
     ),
     "camarilla": (
