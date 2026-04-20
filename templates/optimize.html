@@ -692,6 +692,7 @@
           const data = await res.json();
           if (data.error) { logLine('⚠ ' + data.error, 'warn'); continue; }
           const s = data.stats || {};
+          if (s._conversion_warning) logLine('⚠ ' + s._conversion_warning, 'warn');
           results.push({
             type: 'result', baseline: true,
             run_id: 'baseline', strategy: slug,

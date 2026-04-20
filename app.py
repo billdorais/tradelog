@@ -2059,7 +2059,12 @@ def bt_convert():
         "set self._entry = self.data.Close[-1] when entering, then read self._entry in next()\n"
         "14. NEVER use self.position.size to get fill price. Use self._entry as above\n"
         "15. Valid Position attributes: .is_long .is_short .pl .pl_pct .close() only\n"
-        "16. Set class attribute _trade_on_close = True so trades execute on bar close like Pine Script"
+        "16. Set class attribute _trade_on_close = True so trades execute on bar close like Pine Script\n"
+        "17. CRITICAL - Entry must be a CROSSOVER, not a level comparison. "
+        "For breakout above a level L: long_cond = (self.data.Open[-1] < L) and (self.data.Close[-1] > L). "
+        "For breakdown below a level L: short_cond = (self.data.Open[-1] > L) and (self.data.Close[-1] < L). "
+        "NEVER use just 'close > L' as an entry — that enters on every bar above the level and generates thousands of false trades.\n"
+        "18. Only enter a new position on the BAR that crosses the level (crossover bar), not on subsequent bars"
     )
 
     def generate():
@@ -2173,6 +2178,16 @@ def bt_run():
                 typed_params[k] = v
         stats = bt.run(**typed_params)
 
+        n_trades = int(stats.get("# Trades") or 0)
+        n_days   = max(1, len(df) // (78 if timeframe in _INTRADAY_TF else 1))
+        if timeframe in _INTRADAY_TF and n_trades > n_days * 5:
+            stats_dict_warn = {"_conversion_warning":
+                f"WARNING: {n_trades} trades over ~{n_days} days ({n_trades/n_days:.1f}/day) suggests the "
+                f"converted strategy is entering on every bar above the level rather than only on crossover bars. "
+                f"Re-upload your Pine Script — ensure entry uses open<level AND close>level (crossover), not just close>level."}
+        else:
+            stats_dict_warn = {}
+
         def _safe(v):
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 return None
@@ -2189,6 +2204,7 @@ def bt_run():
 
         stats_dict = {k: _safe(v) for k, v in stats.items()
                       if k not in ("_strategy", "_trades", "_equity_curve")}
+        stats_dict.update(stats_dict_warn)
 
         trades_list = []
         trades_df = stats.get("_trades")
