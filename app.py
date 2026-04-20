@@ -2111,8 +2111,16 @@ def bt_optimize():
     param_ranges   = body.get("param_ranges", {})
     strategy_code  = body.get("strategy_code", "")
 
+    class _NpEnc(_json.JSONEncoder):
+        def default(self, o):
+            import numpy as _np
+            if isinstance(o, _np.integer): return int(o)
+            if isinstance(o, _np.floating): return float(o)
+            if isinstance(o, _np.ndarray): return o.tolist()
+            return super().default(o)
+
     def _sse(obj):
-        return f"data: {_json.dumps(obj)}\n\n"
+        return f"data: {_json.dumps(obj, cls=_NpEnc)}\n\n"
 
     def generate():
         try:
