@@ -1567,9 +1567,13 @@ def alpaca_positions():
         log.warning("alpaca_positions: broker is None")
         return jsonify([])
     try:
+        alpaca_broker._ensure_client()
         alpaca_broker._invalidate_pos_cache()
         raw = alpaca_broker._trading.get_all_positions()
-        log.info("alpaca_positions: raw count=%d", len(raw) if raw else 0)
+        log.info("alpaca_positions: paper=%s raw_count=%d", alpaca_broker._paper, len(raw) if raw else 0)
+        if raw:
+            for p in raw:
+                log.info("  position: symbol=%s qty=%s upnl=%s", p.symbol, p.qty, p.unrealized_pl)
         positions = alpaca_broker.get_positions()
         log.info("alpaca_positions: returning %d positions", len(positions))
         return jsonify(positions)
