@@ -562,7 +562,7 @@ def _check_position_stops():
     open_symbols = {p["symbol"].upper() for p in all_positions}
     with _risk_lock:
         stale = {s for s in _auto_closed_symbols if s.upper() not in open_symbols}
-        _auto_closed_symbols -= stale
+        _auto_closed_symbols.difference_update(stale)
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
 
