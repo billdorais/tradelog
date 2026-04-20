@@ -1564,13 +1564,17 @@ def eod_close_toggle():
 def alpaca_positions():
     """Return current open Alpaca positions with live unrealized P&L."""
     if alpaca_broker is None:
+        log.warning("alpaca_positions: broker is None")
         return jsonify([])
     try:
         alpaca_broker._invalidate_pos_cache()
+        raw = alpaca_broker._trading.get_all_positions()
+        log.info("alpaca_positions: raw count=%d", len(raw) if raw else 0)
         positions = alpaca_broker.get_positions()
+        log.info("alpaca_positions: returning %d positions", len(positions))
         return jsonify(positions)
     except Exception as e:
-        log.error("alpaca_positions failed: %s", e)
+        log.error("alpaca_positions failed: %s", e, exc_info=True)
         return jsonify([])
 
 
