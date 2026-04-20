@@ -416,7 +416,7 @@
             preview.scrollTop = preview.scrollHeight;
           } else if (msg.type === 'done') {
             status.textContent = 'Done — review the code below then save.';
-            saveBtn.style.display = '';
+            saveBtn.style.display = 'inline-block';
           } else if (msg.type === 'error') {
             status.textContent = 'Error: ' + msg.msg;
           }
