@@ -106,6 +106,41 @@ class AlpacaBroker:
         is_crypto = "/" in ticker
         tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
 
+        # For stock SELL: first cancel any pending BUY orders for this ticker.
+        # This handles the race where an exit signal arrives before the entry fill:
+        # rather than dropping the exit (leaving the position open), we cancel the
+        # pending entry so we never enter at all.
+        if not is_crypto and side == OrderSide.SELL:
+            try:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums import QueryOrderStatus, OrderSide as _OS
+                open_req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
+                open_orders = self._trading.get_orders(filter=open_req)
+                pending_buys = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
+                ]
+                if pending_buys:
+                    for o in pending_buys:
+                        try:
+                            self._trading.cancel_order_by_id(o.id)
+                            log.warning(
+                                "Alpaca SELL %s: cancelled pending BUY order %s "
+                                "(exit signal arrived before entry filled — not entering trade).",
+                                ticker, o.id,
+                            )
+                        except Exception as _ce:
+                            log.warning("Alpaca cancel order %s failed: %s", o.id, _ce)
+                    self._invalidate_pos_cache()
+                    return {
+                        "success":  False,
+                        "skipped":  True,
+                        "cancelled_buy": True,
+                        "error":    f"Pending BUY for {ticker} cancelled — exit signal arrived before fill.",
+                    }
+            except Exception as _oe:
+                log.warning("Alpaca open-order check for %s SELL failed: %s — continuing", ticker, _oe)
+
         # For stock SELL: verify a long position exists to avoid unintended shorts.
         # If no long is held, skip the order and return an error so the caller can
         # log it rather than Alpaca silently opening a short position.
