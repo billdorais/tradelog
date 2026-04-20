@@ -530,6 +530,8 @@ def _check_position_stops():
 
     if alpaca_broker:
         try:
+            # Bypass the position cache here — risk checks need fresh data.
+            alpaca_broker._invalidate_pos_cache()
             for p in alpaca_broker.get_positions():
                 p["broker"] = "alpaca"
                 all_positions.append(p)
@@ -554,6 +556,15 @@ def _check_position_stops():
 
     with _risk_lock:
         _latest_positions = all_positions
+
+    # Clear _auto_closed_symbols for any symbol no longer showing an open position.
+    # This allows the monitor to protect new entries in the same symbol later in the session.
+    open_symbols = {p["symbol"].upper() for p in all_positions}
+    with _risk_lock:
+        stale = {s for s in _auto_closed_symbols if s.upper() not in open_symbols}
+        _auto_closed_symbols -= stale
+    if stale:
+        log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
 
     for pos in all_positions:
         upnl   = float(pos.get("unrealized_pnl") or 0)
@@ -605,7 +616,7 @@ def _check_position_stops():
 
 
 def _position_monitor_loop():
-    """Background thread: poll positions every 30s, close any that breach MAX_POSITION_LOSS."""
+    """Background thread: poll positions every 10s, close any that breach MAX_POSITION_LOSS."""
     time.sleep(25)  # stagger from risk monitor
     while True:
         if MAX_POSITION_LOSS < 0:
@@ -613,7 +624,7 @@ def _position_monitor_loop():
                 _check_position_stops()
             except Exception as _e:
                 log.warning("Position monitor error: %s", _e)
-        time.sleep(30)
+        time.sleep(10)
 
 
 threading.Thread(target=_position_monitor_loop, daemon=True).start()
