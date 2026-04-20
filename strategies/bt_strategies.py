@@ -217,11 +217,28 @@ class CamarillaEMA8(Strategy):
         cl, hi, lo = self.data.Close, self.data.High, self.data.Low
         self.ema8 = self.I(lambda: _ema(cl, self.ema_period), name="EMA8", overlay=True, color="#ffffff")
 
-        ph = np.roll(hi, 1); ph[0] = np.nan
-        pl = np.roll(lo, 1); pl[0] = np.nan
-        pc = np.roll(cl, 1); pc[0] = np.nan
-        self.h4 = self.I(lambda: pc + (ph - pl) * 1.1 / 2.0, name="H4", overlay=True, color="#ef5350")
-        self.l4 = self.I(lambda: pc - (ph - pl) * 1.1 / 2.0, name="L4", overlay=True, color="#26a65b")
+        # Detect intraday: if index has time component, resample to daily first
+        # so H4/L4 use the previous CALENDAR DAY's H/L/C — matching TradingView's
+        # prevRTHHigh/prevRTHLow/prevRTHClose logic.
+        idx = self.data.index
+        is_intraday = hasattr(idx[0], 'hour') and len(set(t.date() for t in idx)) < len(idx)
+
+        if is_intraday:
+            daily = pd.DataFrame({'h': hi, 'l': lo, 'c': cl}, index=idx)
+            daily = daily.resample('1D').agg({'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
+            # Shift by 1 day to get previous day's values
+            prev = daily.shift(1)
+            # Reindex back to intraday frequency (forward-fill within each day)
+            ph_s = prev['h'].reindex(idx, method='ffill').to_numpy()
+            pl_s = prev['l'].reindex(idx, method='ffill').to_numpy()
+            pc_s = prev['c'].reindex(idx, method='ffill').to_numpy()
+        else:
+            ph_s = np.roll(hi, 1); ph_s[0] = np.nan
+            pl_s = np.roll(lo, 1); pl_s[0] = np.nan
+            pc_s = np.roll(cl, 1); pc_s[0] = np.nan
+
+        self.h4 = self.I(lambda: pc_s + (ph_s - pl_s) * 1.1 / 2.0, name="H4", overlay=True, color="#ef5350")
+        self.l4 = self.I(lambda: pc_s - (ph_s - pl_s) * 1.1 / 2.0, name="L4", overlay=True, color="#26a65b")
 
         self._entry    = np.nan
         self._trail_sl = np.nan

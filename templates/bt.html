@@ -94,8 +94,8 @@
     .stat-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 8px; padding: 13px 15px; }
     .stat-lbl { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
     .stat-val { font-size: 1.05rem; font-weight: 700; }
-    .stat-val.pos { color: #26a65b; }
-    .stat-val.neg { color: #ef5350; }
+    .stat-val.pos, .pos { color: #26a65b; }
+    .stat-val.neg, .neg { color: #ef5350; }
 
     /* Charts */
     .chart-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
@@ -147,8 +147,9 @@
 
   <!-- Mode toggle -->
   <div class="mode-tabs">
-    <button class="mode-tab active" onclick="setMode('pine')" id="tabPine">📄 Pine Script (AI)</button>
-    <button class="mode-tab" onclick="setMode('builtin')" id="tabBuiltin">📦 Built-in Strategies</button>
+    <button class="mode-tab active" onclick="setMode('pine')"    id="tabPine">📄 Pine Script (AI)</button>
+    <button class="mode-tab"        onclick="setMode('builtin')" id="tabBuiltin">📦 Built-in Strategies</button>
+    <button class="mode-tab"        onclick="setMode('validate')" id="tabValidate">🔍 TV Validator</button>
   </div>
 
   <!-- ── Pine Script mode ─────────────────────────────── -->
@@ -207,6 +208,65 @@
         </div>
       </div>
       <div class="params-grid" id="paramsGrid"></div>
+    </div>
+  </div>
+
+  <!-- ── TV Validator mode ────────────────────────────── -->
+  <div id="validateSection" style="display:none">
+    <div class="card">
+      <div style="font-size:0.75rem;color:#888;margin-bottom:14px;font-weight:600">
+        PINE SCRIPT REFERENCE
+        <span style="font-weight:400;color:#555"> — paste your live strategy for reference</span>
+      </div>
+      <textarea id="tvPineRef" spellcheck="false"
+                style="width:100%;height:180px;background:#0d0f1e;border:1px solid #2a2d3e;border-radius:6px;
+                       color:#a8d8a8;padding:12px;font-size:0.78rem;font-family:'Courier New',monospace;
+                       resize:vertical;line-height:1.5"
+                placeholder="Paste your Pine Script here for reference…"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="code-action-btn" onclick="savePineRef()">Save Reference</button>
+        <span id="pineRefStatus" style="font-size:0.78rem;color:#555;align-self:center"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:0.75rem;color:#888;margin-bottom:14px;font-weight:600">
+        TRADINGVIEW BACKTEST RESULTS
+        <span style="font-weight:400;color:#555"> — enter your TV stats to compare with Python</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:16px">
+        <div class="field"><label>Net Profit %</label>     <input type="number" id="tv_ret"     step="0.01" placeholder="e.g. 12.5"></div>
+        <div class="field"><label>Max Drawdown %</label>   <input type="number" id="tv_dd"      step="0.01" placeholder="e.g. -8.3"></div>
+        <div class="field"><label>Win Rate %</label>       <input type="number" id="tv_wr"      step="0.1"  placeholder="e.g. 54.2"></div>
+        <div class="field"><label># Trades</label>         <input type="number" id="tv_trades"  step="1"    placeholder="e.g. 47"></div>
+        <div class="field"><label>Profit Factor</label>    <input type="number" id="tv_pf"      step="0.01" placeholder="e.g. 1.34"></div>
+        <div class="field"><label>Sharpe Ratio</label>     <input type="number" id="tv_sharpe"  step="0.01" placeholder="e.g. 0.82"></div>
+        <div class="field"><label>Ticker</label>           <input type="text"   id="tv_ticker"  placeholder="e.g. PLTR"></div>
+        <div class="field"><label>Timeframe</label>
+          <select id="tv_tf" style="width:100%;background:#13152a;border:1px solid #2a2d3e;border-radius:6px;color:#e0e0e0;padding:7px 10px;font-size:0.88rem;font-family:inherit">
+            <option value="5m">5 min</option><option value="15m">15 min</option>
+            <option value="1h">1 hour</option><option value="1d">Daily</option>
+          </select>
+        </div>
+      </div>
+      <button class="run-btn" onclick="runValidation()" id="validateBtn">▶ Run Python &amp; Compare</button>
+    </div>
+
+    <!-- Comparison table -->
+    <div class="card" id="compareCard" style="display:none">
+      <div style="font-size:0.75rem;color:#888;margin-bottom:14px;font-weight:600">COMPARISON</div>
+      <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#555;font-size:0.72rem;text-transform:uppercase">Metric</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#26a65b;font-size:0.72rem">TradingView</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#4a90d9;font-size:0.72rem">Python</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#888;font-size:0.72rem">Delta</th>
+          </tr>
+        </thead>
+        <tbody id="compareBody"></tbody>
+      </table>
+      <div id="compareNotes" style="margin-top:14px;font-size:0.8rem;color:#666;line-height:1.7"></div>
     </div>
   </div>
 
@@ -272,11 +332,121 @@
   // ── Mode toggle ──────────────────────────────────────────────────────────
   function setMode(mode) {
     currentMode = mode;
-    document.getElementById('pineSection').style.display    = mode === 'pine'    ? '' : 'none';
-    document.getElementById('builtinSection').style.display = mode === 'builtin' ? '' : 'none';
-    document.getElementById('tabPine').classList.toggle('active',    mode === 'pine');
-    document.getElementById('tabBuiltin').classList.toggle('active', mode === 'builtin');
+    document.getElementById('pineSection').style.display     = mode === 'pine'     ? '' : 'none';
+    document.getElementById('builtinSection').style.display  = mode === 'builtin'  ? '' : 'none';
+    document.getElementById('validateSection').style.display = mode === 'validate' ? '' : 'none';
+    document.getElementById('tabPine').classList.toggle('active',     mode === 'pine');
+    document.getElementById('tabBuiltin').classList.toggle('active',  mode === 'builtin');
+    document.getElementById('tabValidate').classList.toggle('active', mode === 'validate');
     if (mode === 'builtin') refreshStrategyList();
+    if (mode === 'validate') {
+      const saved = localStorage.getItem('tvPineRef');
+      if (saved) document.getElementById('tvPineRef').value = saved;
+    }
+  }
+
+  // ── TV Validator ─────────────────────────────────────────────────────────
+  function savePineRef() {
+    const val = document.getElementById('tvPineRef').value;
+    localStorage.setItem('tvPineRef', val);
+    const st = document.getElementById('pineRefStatus');
+    st.textContent = '✓ Saved';
+    st.style.color = '#26a65b';
+    setTimeout(() => { st.textContent = ''; }, 2000);
+  }
+
+  async function runValidation() {
+    const ticker = (document.getElementById('tv_ticker').value || '').trim().toUpperCase();
+    const tf     = document.getElementById('tv_tf').value;
+    if (!ticker) { alert('Enter a Ticker in the TradingView Results section.'); return; }
+
+    const tvStats = {
+      ret:    parseFloat(document.getElementById('tv_ret').value)    || null,
+      dd:     parseFloat(document.getElementById('tv_dd').value)     || null,
+      wr:     parseFloat(document.getElementById('tv_wr').value)     || null,
+      trades: parseFloat(document.getElementById('tv_trades').value) || null,
+      pf:     parseFloat(document.getElementById('tv_pf').value)     || null,
+      sharpe: parseFloat(document.getElementById('tv_sharpe').value) || null,
+    };
+
+    const btn = document.getElementById('validateBtn');
+    const statusEl = document.getElementById('status');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Running Python…';
+    statusEl.className = 'status info';
+    statusEl.innerHTML = '<span class="spinner"></span> Running cam_ema8 on ' + ticker + '/' + tf + '…';
+    document.getElementById('compareCard').style.display = 'none';
+
+    const today = new Date().toISOString().split('T')[0];
+    const daysBack = { '5m': 30, '15m': 60, '30m': 90, '1h': 180, '1d': 730 };
+    const startDate = new Date(Date.now() - (daysBack[tf] || 365) * 86400000).toISOString().split('T')[0];
+
+    try {
+      const res = await fetch('/api/bt/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker, start_date: startDate, end_date: today,
+          cash: 10000,
+          strategy_type: 'builtin',
+          strategy_name: 'cam_ema8',
+          params: {},
+          data_source: 'alpaca',
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      statusEl.style.display = 'none';
+      renderComparison(tvStats, data.stats, ticker, tf, startDate, today);
+    } catch (e) {
+      statusEl.className   = 'status error';
+      statusEl.textContent = 'Error: ' + e.message;
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = '▶ Run Python & Compare';
+    }
+  }
+
+  function renderComparison(tv, py, ticker, tf, startDate, endDate) {
+    const METRICS = [
+      { label: 'Net Return %',    tv: tv.ret,    py: py['Return [%]'],        pyKey: 'Return [%]',       dec: 2, negBad: false },
+      { label: 'Max Drawdown %',  tv: tv.dd,     py: py['Max. Drawdown [%]'], pyKey: 'Max. Drawdown [%]',dec: 2, negBad: true  },
+      { label: 'Win Rate %',      tv: tv.wr,     py: py['Win Rate [%]'],      pyKey: 'Win Rate [%]',     dec: 1, negBad: false },
+      { label: '# Trades',        tv: tv.trades, py: py['# Trades'],          pyKey: '# Trades',         dec: 0, negBad: false },
+      { label: 'Profit Factor',   tv: tv.pf,     py: py['Profit Factor'],     pyKey: 'Profit Factor',    dec: 2, negBad: false },
+      { label: 'Sharpe Ratio',    tv: tv.sharpe, py: py['Sharpe Ratio'],      pyKey: 'Sharpe Ratio',     dec: 2, negBad: false },
+    ];
+
+    const tbody = document.getElementById('compareBody');
+    tbody.innerHTML = METRICS.map(m => {
+      const tvVal  = m.tv  != null ? m.tv  : null;
+      const pyVal  = m.py  != null ? m.py  : null;
+      const delta  = (tvVal != null && pyVal != null) ? (pyVal - tvVal) : null;
+      const fmtNum = (v, d) => v != null ? (+v).toFixed(d) : '—';
+      let deltaClass = '';
+      if (delta != null) {
+        const sigDiff = Math.abs(delta) > (m.dec === 0 ? 2 : 0.5);
+        deltaClass = sigDiff ? (m.negBad ? (delta < 0 ? 'pos' : 'neg') : (delta > 0 ? 'pos' : 'neg')) : '';
+      }
+      const deltaStr = delta != null ? (delta > 0 ? '+' : '') + delta.toFixed(m.dec) : '—';
+      return `<tr style="border-bottom:1px solid #1e2130">
+        <td style="padding:8px 12px;color:#ccc">${m.label}</td>
+        <td style="padding:8px 12px;text-align:right;color:#26a65b">${fmtNum(tvVal, m.dec)}</td>
+        <td style="padding:8px 12px;text-align:right;color:#4a90d9">${fmtNum(pyVal, m.dec)}</td>
+        <td style="padding:8px 12px;text-align:right" class="${deltaClass}">${deltaStr}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('compareNotes').innerHTML = [
+      '<strong style="color:#888">Known differences between TradingView and Python backtests:</strong>',
+      '• <b>Date range:</b> Python used ' + startDate + ' → ' + endDate + ' (Alpaca data). TradingView may use a different range or session filter.',
+      '• <b>Stop evaluation:</b> backtesting.py checks stops at bar close; TradingView evaluates tick-by-tick. Stops/trails may fire at different prices.',
+      '• <b>Commission:</b> Python uses 0.1% per trade by default. Verify TV uses the same.',
+      '• <b>H4/L4 levels:</b> Python uses previous calendar day\'s H/L/C resampled from Alpaca OHLC. TradingView uses previous RTH session.',
+      '• <b>Trade fill price:</b> Python fills at next open (or close with trade_on_close). Check TV\'s "Process orders on close" setting.',
+    ].join('<br>');
+
+    document.getElementById('compareCard').style.display = '';
   }
 
   // ── Load strategies from API (built-in + user) ───────────────────────────
