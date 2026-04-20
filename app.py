@@ -577,7 +577,8 @@ def _check_position_stops():
         with _risk_lock:
             if symbol in _auto_closed_symbols:
                 continue
-            _auto_closed_symbols.add(symbol)
+            # Don't add to _auto_closed_symbols yet — only add after a successful close
+            # so that a failed close is retried on the next poll rather than silently dropped.
 
         strategy = _find_strategy_for_symbol(symbol)
 
@@ -587,17 +588,31 @@ def _check_position_stops():
             symbol, upnl, MAX_POSITION_LOSS, broker, strategy,
         )
 
-        # Close the position
+        # Close the position — only mark as handled if the order is successfully submitted
+        close_ok = False
         try:
             if broker == "alpaca":
-                alpaca_broker.close_position(symbol)
+                res = alpaca_broker.close_position(symbol)
+                close_ok = res.get("success", False)
+                if not close_ok:
+                    log.error("Position stop close failed for %s: %s", symbol, res.get("error"))
             elif broker == "ib" and _ib_task_queue is not None:
                 _submit_ib_task(ib_broker.close_position, symbol, pos.get("qty", 0), _timeout=30)
+                close_ok = True
             elif broker == "ib-live" and _ib_live_task_queue is not None:
                 _submit_ib_live_task(ib_broker_live.close_position, symbol, pos.get("qty", 0), _timeout=30)
-            log.info("Position stop: %s closed on %s", symbol, broker)
+                close_ok = True
         except Exception as _e:
             log.error("Position stop close failed for %s: %s", symbol, _e)
+
+        if close_ok:
+            log.info("Position stop: %s close order submitted on %s", symbol, broker)
+            with _risk_lock:
+                _auto_closed_symbols.add(symbol)
+        else:
+            # Close failed — leave symbol out of _auto_closed_symbols so it retries next poll
+            log.warning("Position stop: close order for %s failed — will retry next poll", symbol)
+            continue
 
         # Block the strategy for the rest of the session
         # Skip pseudo-strategies like "manual-close" that aren't real signal strategies
