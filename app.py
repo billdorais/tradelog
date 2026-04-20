@@ -1560,6 +1560,20 @@ def eod_close_toggle():
     return jsonify({"eod_close_enabled": eod_close_enabled})
 
 
+@app.route("/api/alpaca/positions")
+def alpaca_positions():
+    """Return current open Alpaca positions with live unrealized P&L."""
+    if alpaca_broker is None:
+        return jsonify([])
+    try:
+        alpaca_broker._invalidate_pos_cache()
+        positions = alpaca_broker.get_positions()
+        return jsonify(positions)
+    except Exception as e:
+        log.error("alpaca_positions failed: %s", e)
+        return jsonify([])
+
+
 @app.route("/api/risk/status")
 def risk_status():
     pnl = _compute_daily_pnl()

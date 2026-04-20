@@ -1269,7 +1269,7 @@
                Close
              </button>`
           : `<span class="exec-ok">✓ Filled</span>`;
-        rows.push(`<tr class="group-second">
+        rows.push(`<tr class="group-second"${isOpen ? ` data-open-symbol="${ref.symbol}"` : ''}>
           <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
           <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
           <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
@@ -1277,7 +1277,7 @@
           <td>${sentimentBadge(sentiment)}</td>
           <td>${alpStrat ? `<span class="strategy-tag">${alpStrat}</span>` : '<span style="color:#444">—</span>'}</td>
           <td><strong>${ref.symbol ?? '—'}</strong></td>
-          ${pnlCell(pnl)}
+          ${isOpen ? '<td class="live-pnl-cell"><span style="color:#555">—</span></td>' : pnlCell(pnl)}
           <td>${qty ?? '—'}</td>
           <td>${priceCell(entryPrice)}</td>
           <td>${priceCell(exitPrice)}</td>
@@ -2271,8 +2271,37 @@
     flatpickr('#equityFromDate', _fpCfg);
     flatpickr('#equityToDate',   _fpCfg);
 
+    // Poll live Alpaca unrealized P&L for open positions every 10 s
+    async function refreshLivePnl() {
+      const openRows = document.querySelectorAll('tr[data-open-symbol]');
+      if (!openRows.length) return;
+      try {
+        const res  = await fetch('/api/alpaca/positions');
+        if (!res.ok) return;
+        const positions = await res.json();
+        const bySymbol  = {};
+        for (const p of positions) bySymbol[(p.symbol || '').toUpperCase()] = p;
+        openRows.forEach(row => {
+          const sym  = (row.dataset.openSymbol || '').toUpperCase();
+          const pos  = bySymbol[sym];
+          const cell = row.querySelector('.live-pnl-cell');
+          if (!cell) return;
+          if (!pos) { cell.innerHTML = '<span style="color:#555">—</span>'; return; }
+          const upnl  = parseFloat(pos.unrealized_pnl ?? 0);
+          const color = upnl > 0 ? '#26a65b' : upnl < 0 ? '#ef5350' : '#888';
+          const sign  = upnl > 0 ? '+' : '';
+          const fmt   = upnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          cell.innerHTML = `<span style="color:${color};font-weight:600" title="Unrealized P&L">${sign}$${fmt}</span>`
+                         + `<span style="color:#555;font-size:0.68rem;margin-left:3px">unrlz</span>`;
+        });
+      } catch (_) {}
+    }
+
     loadTrades();
     setInterval(loadTrades, 30000);
+    setInterval(refreshLivePnl, 10000);
+    // Also run once shortly after the feed renders
+    setTimeout(refreshLivePnl, 1500);
   </script>
 </body>
 </html>
