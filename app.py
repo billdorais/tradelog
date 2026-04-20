@@ -2186,14 +2186,27 @@ def bt_optimize():
                 pct = int((done - 1) / total * 100)
                 yield _sse({"type": "progress", "msg": f"Fetching {ticker} / {tf}  ({done}/{total})", "pct": pct})
 
+                # ── Cap date range for intraday to keep bar count manageable ─
+                _MAX_DAYS = {"5m": 30, "15m": 60, "30m": 90, "1h": 180}
+                _MAX_TRIES = {"5m": 20, "15m": 25, "30m": 30, "1h": 40, "1d": 50}
+                tf_max_days  = _MAX_DAYS.get(tf)
+                tf_max_tries = _MAX_TRIES.get(tf, 50)
+                eff_start = start_date
+                if tf_max_days:
+                    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                    earliest = (_dt.now(_tz.utc) - _td(days=tf_max_days)).strftime("%Y-%m-%d")
+                    if start_date < earliest:
+                        eff_start = earliest
+                        yield _sse({"type": "progress", "msg": f"  {tf} capped to last {tf_max_days} days ({eff_start})", "pct": pct})
+
                 # ── Fetch data ────────────────────────────────────────────────
                 try:
                     if data_source == "alpaca":
                         from strategies.data import fetch_bars_alpaca
-                        raw = fetch_bars_alpaca(ticker, start_date, end_date, tf)
+                        raw = fetch_bars_alpaca(ticker, eff_start, end_date, tf)
                     else:
                         from strategies.data import fetch_bars
-                        raw = fetch_bars(ticker, start_date, end_date, tf)
+                        raw = fetch_bars(ticker, eff_start, end_date, tf)
 
                     if len(raw) < 30:
                         yield _sse({"type": "warning", "msg": f"{ticker}/{tf}: only {len(raw)} bars — skipped"})
@@ -2218,11 +2231,11 @@ def bt_optimize():
                         try:
                             best, heatmap = bt.optimize(
                                 **opt_kwargs, maximize=maximize,
-                                return_heatmap=True, max_tries=50, method="sambo")
+                                return_heatmap=True, max_tries=tf_max_tries, method="sambo")
                         except Exception:
                             best, heatmap = bt.optimize(
                                 **opt_kwargs, maximize=maximize,
-                                return_heatmap=True, max_tries=50)
+                                return_heatmap=True, max_tries=tf_max_tries)
                         best_params = {k: getattr(best._strategy, k, None) for k in opt_kwargs}
                     else:
                         best = bt.run()
