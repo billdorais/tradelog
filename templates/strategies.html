@@ -173,6 +173,47 @@
       white-space: nowrap;
       width: 40%;
     }
+
+    /* ── Upload card ───────────────────────────────────────── */
+    .upload-card {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 28px 32px;
+      margin-bottom: 32px;
+    }
+    .upload-card h2 { margin-top: 0; }
+    .field-label { font-size: 0.72rem; color: #666; text-transform: uppercase;
+                   letter-spacing: 0.05em; font-weight: 600; margin-bottom: 6px; display: block; }
+    .upload-card input[type=text] {
+      width: 100%; background: #0a0a0a; border: 1px solid #2a2d3e; border-radius: 6px;
+      color: #e0e0e0; padding: 9px 12px; font-size: 0.88rem; font-family: inherit;
+      margin-bottom: 14px;
+    }
+    .upload-card input[type=text]:focus { outline: none; border-color: #2962ff; }
+    .pine-textarea {
+      width: 100%; min-height: 200px; background: #060606; border: 1px solid #2a2d3e;
+      border-radius: 6px; color: #c8c8c8; padding: 12px 14px; font-size: 0.82rem;
+      font-family: 'Courier New', monospace; resize: vertical; margin-bottom: 14px;
+    }
+    .pine-textarea:focus { outline: none; border-color: #2962ff; }
+    .btn-convert { background: #2962ff; color: #fff; border: none; border-radius: 7px;
+                   padding: 10px 28px; font-size: 0.9rem; font-weight: 700; cursor: pointer;
+                   font-family: inherit; }
+    .btn-convert:hover { background: #1a4fd8; }
+    .btn-convert:disabled { background: #1e2130; color: #444; cursor: not-allowed; }
+    .convert-status { font-size: 0.83rem; color: #555; margin-left: 12px; }
+    .code-preview { display: none; margin-top: 16px; background: #060606; border: 1px solid #1e2130;
+                    border-radius: 6px; padding: 14px; font-size: 0.78rem; font-family: monospace;
+                    color: #aaa; max-height: 260px; overflow-y: auto; white-space: pre; }
+    .save-row { margin-top: 12px; display: flex; align-items: center; gap: 10px; }
+    .btn-save { background: #26a65b; color: #fff; border: none; border-radius: 7px;
+                padding: 9px 24px; font-size: 0.88rem; font-weight: 700; cursor: pointer;
+                font-family: inherit; display: none; }
+    .btn-save:hover { background: #1e8449; }
+    .save-msg { font-size: 0.83rem; }
+    .save-ok  { color: #26a65b; }
+    .save-err { color: #ef5350; }
   </style>
 </head>
 <body>
@@ -195,6 +236,24 @@
   </header>
 
   <div class="content">
+
+    <!-- ── Pine Script Upload ──────────────────────────────── -->
+    <div class="upload-card">
+      <h2>Upload Pine Script Strategy</h2>
+      <label class="field-label" for="stratName">Strategy Name</label>
+      <input type="text" id="stratName" placeholder="e.g. My TSLA 5m Strategy">
+      <label class="field-label" for="pineInput">Pine Script</label>
+      <textarea class="pine-textarea" id="pineInput" placeholder="Paste your Pine Script strategy here…"></textarea>
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+        <button class="btn-convert" id="convertBtn" onclick="convertScript()">Convert &amp; Preview</button>
+        <span class="convert-status" id="convertStatus"></span>
+      </div>
+      <div class="code-preview" id="codePreview"></div>
+      <div class="save-row">
+        <button class="btn-save" id="saveBtn" onclick="saveStrategy()">&#10003; Save to Optimizer</button>
+        <span class="save-msg" id="saveMsg"></span>
+      </div>
+    </div>
 
     <div class="strategy-card">
       <div class="strategy-title">Camarilla Strategy <span style="font-size:0.75rem;font-weight:400;color:#555;margin-left:8px">cam_v6</span></div>
@@ -302,6 +361,110 @@
     const menu = document.getElementById('navMenu');
     if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
   });
+
+  let _convertedCode = '';
+
+  async function convertScript() {
+    const pine = document.getElementById('pineInput').value.trim();
+    if (!pine) { alert('Paste your Pine Script first.'); return; }
+
+    const btn = document.getElementById('convertBtn');
+    const status = document.getElementById('convertStatus');
+    const preview = document.getElementById('codePreview');
+    const saveBtn = document.getElementById('saveBtn');
+    const saveMsg = document.getElementById('saveMsg');
+
+    btn.disabled = true;
+    btn.textContent = 'Converting…';
+    status.textContent = 'Sending to AI…';
+    preview.style.display = 'none';
+    preview.textContent = '';
+    saveBtn.style.display = 'none';
+    saveMsg.textContent = '';
+    _convertedCode = '';
+
+    try {
+      const res = await fetch('/api/bt/convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pine_script: pine }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        status.textContent = 'Error: ' + (err.error || res.status);
+        btn.disabled = false; btn.textContent = 'Convert & Preview';
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      preview.style.display = 'block';
+      status.textContent = 'Converting…';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const msg = JSON.parse(line.slice(6));
+          if (msg.type === 'chunk') {
+            _convertedCode += msg.text;
+            preview.textContent = _convertedCode;
+            preview.scrollTop = preview.scrollHeight;
+          } else if (msg.type === 'done') {
+            status.textContent = 'Done — review the code below then save.';
+            saveBtn.style.display = '';
+          } else if (msg.type === 'error') {
+            status.textContent = 'Error: ' + msg.msg;
+          }
+        }
+      }
+    } catch (e) {
+      status.textContent = 'Error: ' + e;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Convert & Preview';
+    }
+  }
+
+  async function saveStrategy() {
+    const name = document.getElementById('stratName').value.trim();
+    if (!name) { alert('Enter a strategy name first.'); return; }
+    if (!_convertedCode) { alert('Convert the script first.'); return; }
+
+    const saveBtn = document.getElementById('saveBtn');
+    const saveMsg = document.getElementById('saveMsg');
+    saveBtn.disabled = true;
+
+    try {
+      const res = await fetch('/api/bt/strategies/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, code: _convertedCode }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        saveMsg.className = 'save-msg save-ok';
+        saveMsg.textContent = `Saved "${data.name}" — go to Optimizer to run it.`;
+        document.getElementById('pineInput').value = '';
+        document.getElementById('stratName').value = '';
+        document.getElementById('codePreview').style.display = 'none';
+        _convertedCode = '';
+        saveBtn.style.display = 'none';
+      } else {
+        saveMsg.className = 'save-msg save-err';
+        saveMsg.textContent = 'Save failed: ' + (data.error || res.status);
+      }
+    } catch (e) {
+      saveMsg.className = 'save-msg save-err';
+      saveMsg.textContent = 'Error: ' + e;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
 </script>
 </body>
 </html>
