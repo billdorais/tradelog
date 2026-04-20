@@ -108,6 +108,25 @@
 
     .empty { text-align: center; padding: 60px 20px; color: #333; font-size: 0.9rem; }
 
+    /* ── Strategy picker ─────────────────────────────────────── */
+    .strat-list { display: flex; flex-direction: column; gap: 6px; }
+    .strat-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+                  background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
+                  cursor: pointer; transition: border-color 0.12s; user-select: none; }
+    .strat-item:hover { border-color: #2962ff; }
+    .strat-item.active { border-color: #2962ff; background: rgba(41,98,255,0.07); }
+    .strat-item .strat-dot { width: 8px; height: 8px; border-radius: 50%; background: #1e2130;
+                              border: 2px solid #444; flex-shrink: 0; transition: all 0.12s; }
+    .strat-item.active .strat-dot { background: #2962ff; border-color: #2962ff; }
+    .strat-item .strat-name { flex: 1; font-size: 0.88rem; color: #ccc; }
+    .strat-item.active .strat-name { color: #fff; }
+    .strat-del { background: transparent; border: none; color: #333; cursor: pointer;
+                 font-size: 1rem; padding: 0 2px; line-height: 1; transition: color 0.1s; }
+    .strat-del:hover { color: #ef5350; }
+    .strat-empty { padding: 20px 0; color: #444; font-size: 0.88rem; }
+    .strat-empty a { color: #2962ff; text-decoration: none; }
+    .strat-empty a:hover { text-decoration: underline; }
+
     /* ── Hamburger nav ────────────────────────────────────────── */
     #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
                  font-size: 0.9rem; border-bottom: 1px solid #1e2130; transition: background 0.1s; }
@@ -158,28 +177,19 @@
 
   <!-- ── Config ──────────────────────────────────────────────── -->
   <div class="card">
-    <div class="card-title">Strategy &amp; Data</div>
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+      <span>My Pine Script Strategies</span>
+      <a href="/strategies" style="font-size:0.75rem;color:#2962ff;text-decoration:none;font-weight:600;text-transform:none;letter-spacing:0">+ Upload Strategy</a>
+    </div>
+    <div id="stratListWrap" style="margin-bottom:18px">
+      <div class="strat-empty">Loading strategies…</div>
+    </div>
     <div class="form-row">
-      <div class="field" style="grid-column:span 2">
-        <label>Strategy</label>
-        <select id="stratSelect" onchange="onStratChange()">
-          <optgroup label="Built-in" id="builtinGroup">
-            <option value="cam_ema8">Camarilla H4/L4 + EMA8 (cam_v6)</option>
-            <option value="camarilla">Camarilla H4/L4 Breakout Failure</option>
-            <option value="sma_cross">SMA Crossover</option>
-            <option value="ema_cross">EMA Crossover</option>
-            <option value="rsi">RSI Mean Reversion</option>
-            <option value="bollinger">Bollinger Band Breakout</option>
-            <option value="macd">MACD Crossover</option>
-          </optgroup>
-          <optgroup label="My Strategies" id="userGroup" style="display:none"></optgroup>
-        </select>
-      </div>
       <div class="field">
         <label>Data Source</label>
         <select id="dataSource">
-          <option value="alpaca">Alpaca</option>
-          <option value="yfinance">Yahoo Finance</option>
+          <option value="alpaca">Alpaca (more history)</option>
+          <option value="yfinance">Yahoo Finance (limited intraday)</option>
         </select>
       </div>
       <div class="field">
@@ -199,7 +209,7 @@
       <div class="field">
         <label>Commission %</label>
         <input type="number" id="commission" value="0.0" min="0" max="5" step="0.05"
-               title="Per-trade commission. TradingView default is 0. Set to 0.1 for realistic broker costs.">
+               title="TradingView default is 0. Set to 0.1 for realistic broker costs.">
       </div>
     </div>
   </div>
@@ -323,45 +333,70 @@
 <script>
   // ── State ──────────────────────────────────────────────────────
   let allParams    = {};    // slug → [{id, label, default, min, max, step}]
-  let userStrats   = {};    // slug → name
+  let userStrats   = [];    // [{slug, name}]
+  let activeSlug   = null;
   let results      = [];
   let sortKey      = 'score';
-  let sortDir      = -1;    // -1 = desc
-  let selectedIdx  = null;  // index in sorted array
+  let sortDir      = -1;
+  let selectedIdx  = null;
 
   // ── Init ───────────────────────────────────────────────────────
   (async function init() {
+    await loadStrategies();
+  })();
+
+  async function loadStrategies() {
     const [pr, mr] = await Promise.all([
       fetch('/api/bt/strategies').then(r => r.json()),
       fetch('/api/bt/strategies/meta').then(r => r.json()),
     ]);
     allParams  = pr;
-    userStrats = {};
-    mr.filter(m => m.user).forEach(m => { userStrats[m.slug] = m.name; });
+    userStrats = mr.filter(m => m.user);
+    renderStratList();
+  }
 
-    const grp = document.getElementById('userGroup');
-    grp.innerHTML = '';
-    if (mr.length > 0) {
-      mr.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.slug; opt.textContent = m.name;
-        grp.appendChild(opt);
-      });
-      grp.style.display = '';
+  function renderStratList() {
+    const wrap = document.getElementById('stratListWrap');
+    if (!userStrats.length) {
+      wrap.innerHTML = `<div class="strat-empty">No strategies uploaded yet — <a href="/strategies">go to Strategies</a> to convert a Pine Script.</div>`;
+      activeSlug = null;
+      renderParamRanges(null);
+      return;
     }
-    renderParamRanges(document.getElementById('stratSelect').value);
-  })();
+    if (!activeSlug || !userStrats.find(s => s.slug === activeSlug)) {
+      activeSlug = userStrats[0].slug;
+    }
+    wrap.innerHTML = `<div class="strat-list">${userStrats.map(s => `
+      <div class="strat-item${s.slug === activeSlug ? ' active' : ''}" onclick="selectStrat('${s.slug}')">
+        <div class="strat-dot"></div>
+        <span class="strat-name">${s.name}</span>
+        <button class="strat-del" onclick="event.stopPropagation();deleteStrategy('${s.slug}')" title="Delete strategy">×</button>
+      </div>`).join('')}</div>`;
+    renderParamRanges(activeSlug);
+  }
 
-  // ── Strategy change ────────────────────────────────────────────
-  function onStratChange() {
-    renderParamRanges(document.getElementById('stratSelect').value);
+  function selectStrat(slug) {
+    activeSlug = slug;
+    renderStratList();
+  }
+
+  async function deleteStrategy(slug) {
+    const strat = userStrats.find(s => s.slug === slug);
+    if (!strat) return;
+    if (!confirm(`Delete "${strat.name}"? This cannot be undone.`)) return;
+    const res = await fetch(`/api/bt/strategies/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (res.ok) {
+      await loadStrategies();
+    } else {
+      alert('Delete failed');
+    }
   }
 
   function renderParamRanges(slug) {
-    const params = allParams[slug] || [];
+    const params = slug ? (allParams[slug] || []) : [];
     const body   = document.getElementById('paramsBody');
     if (!params.length) {
-      body.innerHTML = '<div class="no-params">No tunable parameters detected for this strategy.</div>';
+      body.innerHTML = `<div class="no-params">${slug ? 'No tunable parameters detected for this strategy.' : 'Select a strategy above.'}</div>`;
       return;
     }
     body.innerHTML = `
@@ -405,7 +440,8 @@
 
   // ── Run ────────────────────────────────────────────────────────
   async function runOptimize() {
-    const slug       = document.getElementById('stratSelect').value;
+    const slug       = activeSlug;
+    if (!slug) { alert('Select a strategy first.'); return; }
     const params     = allParams[slug] || [];
     const tickers    = document.getElementById('tickers').value
                          .split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
@@ -417,7 +453,7 @@
     const paramRanges = {};
     for (const p of params) {
       const chk = document.getElementById(`pr_chk_${p.id}`);
-      if (chk && !chk.checked) continue;   // skip unchecked params
+      if (chk && !chk.checked) continue;
       paramRanges[p.id] = {
         min:  parseFloat(document.getElementById(`pr_min_${p.id}`)?.value  ?? p.min),
         max:  parseFloat(document.getElementById(`pr_max_${p.id}`)?.value  ?? p.max),
@@ -425,9 +461,8 @@
       };
     }
 
-    const isUser = slug in userStrats;
     const payload = {
-      strategy_type:  isUser ? 'saved' : 'builtin',
+      strategy_type:  'saved',
       strategy_name:  slug,
       tickers, timeframes,
       start_date:  document.getElementById('startDate').value,
@@ -618,13 +653,12 @@
 
   // ── Benchmark (run default params, no sweep) ───────────────────
   async function runBenchmark() {
-    const slug       = document.getElementById('stratSelect').value;
+    const slug       = activeSlug;
+    if (!slug) { alert('Select a strategy first.'); return; }
     const tickers    = document.getElementById('tickers').value
                          .split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
     const timeframes = [...document.querySelectorAll('.tf-btn.active')].map(b => b.dataset.tf);
     if (!tickers.length || !timeframes.length) { alert('Set tickers and timeframes first.'); return; }
-
-    const isUser   = slug in userStrats;
     const btn      = document.getElementById('benchBtn');
     const statusEl = document.getElementById('runStatus');
     btn.disabled   = true;
@@ -644,10 +678,11 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              strategy_type: isUser ? 'saved' : 'builtin',
+              strategy_type: 'saved',
               strategy_name: slug,
               ticker,
               timeframe: tf,
+              data_source: document.getElementById('dataSource').value,
               start_date:  document.getElementById('startDate').value,
               end_date:    document.getElementById('endDate').value,
               cash:        parseFloat(document.getElementById('cash').value),

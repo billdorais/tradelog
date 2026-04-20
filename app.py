@@ -2076,8 +2076,10 @@ def bt_run():
     ticker         = (body.get("ticker") or "AAPL").strip().upper()
     start_date     = body.get("start_date", "2022-01-01")
     end_date       = body.get("end_date",   "2024-12-31")
+    timeframe      = body.get("timeframe",  "1d")
     cash           = float(body.get("cash", 10000))
     commission     = float(body.get("commission", 0.0))
+    data_source    = body.get("data_source", "yfinance")
     strategy_type  = body.get("strategy_type", "builtin")   # "builtin" | "converted" | "saved"
     strategy_name  = body.get("strategy_name", "camarilla")
     strategy_code  = body.get("strategy_code", "")
@@ -2118,17 +2120,22 @@ def bt_run():
 
     # â”€â”€ Fetch data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
-        import yfinance as yf
-        raw = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
-        if raw.empty:
-            return jsonify({"error": f"No data returned for {ticker}"}), 400
-        if hasattr(raw.columns, "levels"):
-            raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
-        df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna()
-        if len(df) < 30:
-            return jsonify({"error": f"Only {len(df)} bars â€” need at least 30"}), 400
+        import pandas as _pd
+        if data_source == “alpaca”:
+            from strategies.data import fetch_bars_alpaca
+            raw_bars = fetch_bars_alpaca(ticker, start_date, end_date, timeframe)
+        else:
+            from strategies.data import fetch_bars
+            raw_bars = fetch_bars(ticker, start_date, end_date, timeframe)
+        if len(raw_bars) < 30:
+            return jsonify({“error”: f”Only {len(raw_bars)} bars - need at least 30 (yfinance caps intraday: 5m=60d, 1h=730d)”}), 400
+        df = _pd.DataFrame(raw_bars).set_index(“time”)
+        df.index = _pd.to_datetime(df.index)
+        df.columns = [c.title() for c in df.columns]
+        df = df[[“Open”, “High”, “Low”, “Close”]].dropna()
+        df[“Volume”] = 0
     except Exception as e:
-        return jsonify({"error": f"Data fetch failed: {e}"}), 500
+        return jsonify({“error”: f”Data fetch failed: {e}”}), 500
 
     # â”€â”€ Run backtest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
