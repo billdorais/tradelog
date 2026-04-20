@@ -2028,7 +2028,7 @@ def bt_convert():
         "You are an expert in both TradingView Pine Script and the Python backtesting.py library.\n"
         "Convert the given Pine Script strategy to a complete, runnable backtesting.py Strategy class.\n\n"
         "STRICT RULES:\n"
-        "1. Output ONLY valid Python code â€” no markdown fences, no explanation text\n"
+        "1. Output ONLY valid Python code - no markdown fences, no explanation text\n"
         "2. Start with: from backtesting import Strategy\\nimport numpy as np\\nimport pandas as pd\n"
         "3. Do NOT import ta-lib, pandas_ta, or any library not in the standard library / numpy / pandas\n"
         "4. Implement ALL indicators manually using numpy/pandas rolling/ewm/etc.\n"
@@ -2085,7 +2085,7 @@ def bt_run():
     strategy_code  = body.get("strategy_code", "")
     strategy_params = body.get("params", {})
 
-    # â”€â”€ Resolve strategy class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Resolve strategy class â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     strategy_cls = None
     if strategy_type == "saved":
         conn = get_db()
@@ -2118,26 +2118,26 @@ def bt_run():
             return jsonify({"error": f"Unknown strategy: {strategy_name}"}), 400
         strategy_cls = entry[0]
 
-    # â”€â”€ Fetch data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Fetch data â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     try:
         import pandas as _pd
-        if data_source == “alpaca”:
+        if data_source == "alpaca":
             from strategies.data import fetch_bars_alpaca
             raw_bars = fetch_bars_alpaca(ticker, start_date, end_date, timeframe)
         else:
             from strategies.data import fetch_bars
             raw_bars = fetch_bars(ticker, start_date, end_date, timeframe)
         if len(raw_bars) < 30:
-            return jsonify({“error”: f”Only {len(raw_bars)} bars - need at least 30 (yfinance caps intraday: 5m=60d, 1h=730d)”}), 400
-        df = _pd.DataFrame(raw_bars).set_index(“time”)
+            return jsonify({"error": f"Only {len(raw_bars)} bars - need at least 30 (yfinance caps intraday: 5m=60d, 1h=730d)"}), 400
+        df = _pd.DataFrame(raw_bars).set_index("time")
         df.index = _pd.to_datetime(df.index)
         df.columns = [c.title() for c in df.columns]
-        df = df[[“Open”, “High”, “Low”, “Close”]].dropna()
-        df[“Volume”] = 0
+        df = df[["Open", "High", "Low", "Close"]].dropna()
+        df["Volume"] = 0
     except Exception as e:
-        return jsonify({“error”: f”Data fetch failed: {e}”}), 500
+        return jsonify({"error": f"Data fetch failed: {e}"}), 500
 
-    # â”€â”€ Run backtest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Run backtest â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     try:
         bt    = Backtest(df, strategy_cls, cash=cash, commission=commission, exclusive_orders=True,
                         trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
@@ -2258,7 +2258,7 @@ def bt_optimize():
             yield _sse({"type": "error", "msg": f"Missing dependency: {e}"})
             return
 
-        # â”€â”€ Resolve strategy class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Resolve strategy class â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         strategy_cls = None
         if strategy_type == "saved":
             conn = get_db(); cur = conn.cursor()
@@ -2288,7 +2288,7 @@ def bt_optimize():
         if strategy_cls is None:
             yield _sse({"type": "error", "msg": "Could not resolve strategy class"}); return
 
-        # â”€â”€ Build param sequences â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Build param sequences â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         opt_kwargs = {}
         for pname, prange in param_ranges.items():
             pmin  = float(prange.get("min",  1))
@@ -2312,7 +2312,7 @@ def bt_optimize():
                 pct = int((done - 1) / total * 100)
                 yield _sse({"type": "progress", "msg": f"Fetching {ticker} / {tf}  ({done}/{total})", "pct": pct})
 
-                # â”€â”€ Cap date range for intraday to keep bar count manageable â”€
+                # â"€â"€ Cap date range for intraday to keep bar count manageable â"€
                 _MAX_DAYS = {"5m": 30, "15m": 60, "30m": 90, "1h": 180}
                 _MAX_TRIES = {"5m": 20, "15m": 25, "30m": 30, "1h": 40, "1d": 50}
                 tf_max_days  = _MAX_DAYS.get(tf)
@@ -2328,7 +2328,7 @@ def bt_optimize():
                         eff_start = earliest
                     yield _sse({"type": "progress", "msg": f"  {tf} capped to {eff_start} â†’ {eff_end}", "pct": pct})
 
-                # â”€â”€ Fetch data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # â"€â"€ Fetch data â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
                 try:
                     if data_source == "alpaca":
                         from strategies.data import fetch_bars_alpaca
@@ -2338,7 +2338,7 @@ def bt_optimize():
                         raw = fetch_bars(ticker, eff_start, eff_end, tf)
 
                     if len(raw) < 30:
-                        yield _sse({"type": "warning", "msg": f"{ticker}/{tf}: only {len(raw)} bars â€” skipped"})
+                        yield _sse({"type": "warning", "msg": f"{ticker}/{tf}: only {len(raw)} bars - skipped"})
                         continue
 
                     df = _pd.DataFrame(raw).set_index("time")
@@ -2351,7 +2351,7 @@ def bt_optimize():
                     yield _sse({"type": "warning", "msg": f"{ticker}/{tf} data error: {e}"})
                     continue
 
-                # â”€â”€ Run optimize â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # â"€â"€ Run optimize â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
                 try:
                     import itertools as _it
 
@@ -2381,11 +2381,11 @@ def bt_optimize():
                             grid_size *= len(vals)
 
                         yield _sse({"type": "progress",
-                                    "msg": f"Optimizing {ticker}/{tf} â€” {grid_size} combosâ€¦",
+                                    "msg": f"Optimizing {ticker}/{tf} - {grid_size} combosâ€¦",
                                     "pct": pct + 1})
 
                         if grid_size <= 500:
-                            # Full grid â€” every combination, full stats
+                            # Full grid - every combination, full stats
                             for combo in _it.product(*opt_kwargs.values()):
                                 p_ov = dict(zip(opt_kwargs.keys(), combo))
                                 combo_results.append((p_ov, bt.run(**p_ov)))
