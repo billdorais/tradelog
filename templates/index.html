@@ -2189,7 +2189,7 @@
           btn.textContent = 'Closed';
           btn.style.borderColor = '#5fe0a0';
           btn.style.color = '#5fe0a0';
-          setTimeout(loadTrades, 2000);
+          setTimeout(loadTrades, 4000);  // wait for market order fill to land on Alpaca
         } else {
           const errMsg = data.error || 'Unknown error';
           // Position already gone on Alpaca — auto-dismiss the stale row

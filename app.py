@@ -1863,6 +1863,8 @@ def alpaca_close_position(symbol):
     result = alpaca_broker.close_position(symbol)
     if result.get("success"):
         log.info("Manual close: %s position closed via UI", symbol)
+        global _alpaca_fills_cache
+        _alpaca_fills_cache = {"data": [], "ts": 0.0}  # force fresh fetch on next load
         return jsonify(result)
     return jsonify(result), 400
 
