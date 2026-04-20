@@ -1328,6 +1328,7 @@
         body.innerHTML = '<tr><td colspan="12" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
       } else {
         _renderGroups();
+        refreshLivePnl();
       }
 
       document.getElementById('statTotal').textContent    = filtered.length;
@@ -2300,8 +2301,6 @@
     loadTrades();
     setInterval(loadTrades, 30000);
     setInterval(refreshLivePnl, 10000);
-    // Also run once shortly after the feed renders
-    setTimeout(refreshLivePnl, 1500);
   </script>
 </body>
 </html>

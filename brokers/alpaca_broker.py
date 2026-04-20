@@ -347,7 +347,7 @@ class AlpacaBroker:
                 {
                     "symbol": p.symbol,
                     "qty":    float(p.qty),
-                    "side":   p.side,
+                    "side":   p.side.value if hasattr(p.side, "value") else str(p.side),
                     "market_value": float(p.market_value),
                     "unrealized_pnl": float(p.unrealized_pl),
                 }
