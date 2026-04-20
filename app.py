@@ -2227,60 +2227,91 @@ def bt_optimize():
 
                 # ── Run optimize ──────────────────────────────────────────────
                 try:
-                    yield _sse({"type": "progress", "msg": f"Optimizing {ticker} / {tf}…", "pct": pct + 1})
-                    bt = Backtest(df, strategy_cls, cash=cash, commission=0.001, exclusive_orders=True)
-
-                    if opt_kwargs:
-                        try:
-                            best, heatmap = bt.optimize(
-                                **opt_kwargs, maximize=maximize,
-                                return_heatmap=True, max_tries=tf_max_tries, method="sambo")
-                        except Exception:
-                            best, heatmap = bt.optimize(
-                                **opt_kwargs, maximize=maximize,
-                                return_heatmap=True, max_tries=tf_max_tries)
-                        best_params = {k: getattr(best._strategy, k, None) for k in opt_kwargs}
-                    else:
-                        best = bt.run()
-                        best_params = {}
+                    import itertools as _it
 
                     def _f(v, n=2):
                         try: return round(float(v or 0), n)
                         except Exception: return 0
 
-                    stats_dict = {
-                        "Return [%]":        _f(best.get("Return [%]")),
-                        "Sharpe Ratio":      _f(best.get("Sharpe Ratio"), 3),
-                        "Max. Drawdown [%]": _f(best.get("Max. Drawdown [%]")),
-                        "Win Rate [%]":      _f(best.get("Win Rate [%]")),
-                        "# Trades":          int(best.get("# Trades") or 0),
-                        "Profit Factor":     _f(best.get("Profit Factor"), 3),
-                        "Calmar Ratio":      _f(best.get("Calmar Ratio"), 3),
-                    }
-                    score = _f(best.get(maximize), 4)
+                    def _make_stats(s):
+                        return {
+                            "Return [%]":        _f(s.get("Return [%]")),
+                            "Sharpe Ratio":      _f(s.get("Sharpe Ratio"), 3),
+                            "Max. Drawdown [%]": _f(s.get("Max. Drawdown [%]")),
+                            "Win Rate [%]":      _f(s.get("Win Rate [%]")),
+                            "# Trades":          int(s.get("# Trades") or 0),
+                            "Profit Factor":     _f(s.get("Profit Factor"), 3),
+                            "Calmar Ratio":      _f(s.get("Calmar Ratio"), 3),
+                        }
 
-                    row_data = {
-                        "type": "result",
-                        "run_id": run_id, "strategy": strategy_name,
-                        "ticker": ticker, "timeframe": tf,
-                        "params": best_params, "stats": stats_dict,
-                        "maximize": maximize, "score": score,
-                    }
+                    bt = Backtest(df, strategy_cls, cash=cash, commission=0.001, exclusive_orders=True,
+                                  trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
 
-                    p = placeholder()
-                    try:
-                        conn = get_db(); cur = conn.cursor()
-                        cur.execute(
-                            f"INSERT INTO bt_results (run_id,strategy,ticker,timeframe,params,stats,maximize,score,created_at)"
-                            f" VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})",
-                            (run_id, strategy_name, ticker, tf,
-                             _json.dumps(best_params), _json.dumps(stats_dict),
-                             maximize, score, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
-                        conn.commit(); conn.close()
-                    except Exception as db_e:
-                        log.warning(f"bt_results DB error: {db_e}")
+                    combo_results = []   # list of (params_dict, stats)
 
-                    yield _sse(row_data)
+                    if opt_kwargs:
+                        grid_size = 1
+                        for vals in opt_kwargs.values():
+                            grid_size *= len(vals)
+
+                        yield _sse({"type": "progress",
+                                    "msg": f"Optimizing {ticker}/{tf} — {grid_size} combos…",
+                                    "pct": pct + 1})
+
+                        if grid_size <= 500:
+                            # Full grid — every combination, full stats
+                            for combo in _it.product(*opt_kwargs.values()):
+                                p_ov = dict(zip(opt_kwargs.keys(), combo))
+                                combo_results.append((p_ov, bt.run(**p_ov)))
+                        else:
+                            # Sambo smart search → full stats for each trial
+                            try:
+                                _, heatmap = bt.optimize(
+                                    **opt_kwargs, maximize=maximize,
+                                    return_heatmap=True, max_tries=tf_max_tries, method="sambo")
+                            except Exception:
+                                _, heatmap = bt.optimize(
+                                    **opt_kwargs, maximize=maximize,
+                                    return_heatmap=True, max_tries=tf_max_tries)
+                            for idx in heatmap.index:
+                                idx_t = idx if isinstance(idx, tuple) else (idx,)
+                                p_ov  = dict(zip(opt_kwargs.keys(), idx_t))
+                                combo_results.append((p_ov, bt.run(**p_ov)))
+                    else:
+                        yield _sse({"type": "progress",
+                                    "msg": f"Running {ticker}/{tf} at defaults…", "pct": pct + 1})
+                        combo_results.append(({}, bt.run()))
+
+                    # Sort descending by maximize metric
+                    combo_results.sort(
+                        key=lambda x: float(x[1].get(maximize) or 0), reverse=True)
+
+                    p_ph = placeholder()
+                    for rank, (p_ov, s) in enumerate(combo_results):
+                        sd    = _make_stats(s)
+                        score = _f(s.get(maximize), 4)
+                        row   = {
+                            "type": "result",
+                            "run_id": run_id, "strategy": strategy_name,
+                            "ticker": ticker,  "timeframe": tf,
+                            "params": p_ov,    "stats": sd,
+                            "maximize": maximize, "score": score,
+                            "rank": rank + 1,
+                        }
+                        if rank < 10:   # persist only top-10 per ticker/tf
+                            try:
+                                conn = get_db(); cur = conn.cursor()
+                                cur.execute(
+                                    f"INSERT INTO bt_results (run_id,strategy,ticker,timeframe,params,stats,maximize,score,created_at)"
+                                    f" VALUES ({p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph},{p_ph})",
+                                    (run_id, strategy_name, ticker, tf,
+                                     _json.dumps(p_ov), _json.dumps(sd),
+                                     maximize, score,
+                                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+                                conn.commit(); conn.close()
+                            except Exception as db_e:
+                                log.warning(f"bt_results DB error: {db_e}")
+                        yield _sse(row)
 
                 except Exception as e:
                     log.exception(f"Optimize error {ticker}/{tf}")
