@@ -2066,14 +2066,11 @@ def bt_convert():
         "For breakdown BELOW level L: short_cond = (self.data.Close[-2] > L) and (self.data.Close[-1] <= L). "
         "NEVER use self.data.Open[-1] for crossover detection — use Close[-2] instead. "
         "NEVER use just 'close > L' as an entry — that enters on every bar above the level.\n"
-        "18. Only enter a new position on the BAR that crosses the level, not on subsequent bars.\n"
-        "19. CRITICAL - Implement a signal latch to prevent re-entry after stop-outs. "
-        "Declare self._latch_long = False and self._latch_short = False in __init__ (after super().__init__() if present). "
-        "In next(): BEFORE checking entry, update the latch: if not self.position.is_long and self._latch_long and self.data.Close[-1] < L: self._latch_long = False. "
-        "Then entry guard: if not self.position.is_long and not self._latch_long and <crossover condition>: self.buy(...); self._latch_long = True. "
-        "This mirrors TradingView's behaviour where ta.crossover() fires only once per crossing event — "
-        "not on every subsequent bar while price stays above the level after a stop-out.\n"
-        "20. Always guard len(self.data.Close) >= 2 (i.e. check self.data.Close[-2] exists) before accessing Close[-2]\n"
+        "18. Only enter a new position on the BAR that crosses the level, not on subsequent bars. "
+        "The crossover check itself (Close[-2] < L AND Close[-1] >= L) guarantees this — do NOT add any extra latch or "
+        "cooldown variables. With proper daily-level H4/L4, price will only genuinely cross the level occasionally; "
+        "adding a latch will incorrectly block valid re-entries after stop-outs and produce far fewer trades than TradingView.\n"
+        "19. Always guard len(self.data.Close) >= 2 (i.e. check self.data.Close[-2] exists) before accessing Close[-2]\n"
         "21. CRITICAL - DAILY LEVELS ON INTRADAY BARS (Camarilla, Pivot Points, Daily VWAP, etc.): "
         "If the Pine Script fetches previous-day H/L/C (e.g. request.security(...,'D',...)) to compute levels, "
         "you MUST resample the intraday bar data to daily, shift by 1 day, then forward-fill back to intraday. "
@@ -2210,7 +2207,7 @@ def bt_run():
 
         n_trades = int(stats.get("# Trades") or 0)
         n_days   = max(1, len(df) // (78 if timeframe in _INTRADAY_TF else 1))
-        if timeframe in _INTRADAY_TF and n_trades > n_days * 5:
+        if timeframe in _INTRADAY_TF and n_trades > n_days * 20:
             stats_dict_warn = {"_conversion_warning":
                 f"WARNING: {n_trades} trades over ~{n_days} days ({n_trades/n_days:.1f}/day) suggests the "
                 f"converted strategy is entering on every bar above the level rather than only on crossover bars. "
