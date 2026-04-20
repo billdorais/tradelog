@@ -1098,95 +1098,141 @@ def webhook():
         if t in ("alpaca", "alpaca-paper", "alpaca-live"): return "alpaca"
         return t
 
-    # Fire sync brokers first (Alpaca, Coinbase), then IB last (async, closes conn)
-    sync_targets = [t for t in broker_targets if _broker_family(t) in ("alpaca", "coinbase")]
-    ib_targets   = [t for t in broker_targets if _broker_family(t) == "ib"]
+    # All broker targets are now async — Alpaca/Coinbase fire in a background
+    # thread so the webhook returns immediately and TradingView never times out.
+    coinbase_targets = [t for t in broker_targets if _broker_family(t) == "coinbase"]
+    alpaca_targets   = [t for t in broker_targets if _broker_family(t) == "alpaca"]
+    ib_targets       = [t for t in broker_targets if _broker_family(t) == "ib"]
 
-    for target in sync_targets:
-        if _broker_family(target) == "alpaca":
-            if alpaca_broker is None:
+    # --- Coinbase (sync-only; typically sub-second) ---
+    for target in coinbase_targets:
+        if coinbase_broker is None:
+            exec_status = "error"
+            exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
+            log.warning("Coinbase order skipped: broker not initialised")
+        elif order_action not in ("BUY", "SELL"):
+            exec_status = "skipped"
+            exec_detail = f"No order placed for action '{raw_action}'"
+        else:
+            try:
+                result = coinbase_broker.place_order(
+                    ticker   = ticker,
+                    action   = order_action,
+                    quantity = quantity,
+                    price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                    sec_type = sec_type,
+                    currency = currency,
+                )
+                exec_status = "ok" if result.get("success") else "error"
+                exec_detail = json.dumps(result)
+                log.info("Coinbase order %s %s %s: %s", order_action, quantity, ticker, result)
+            except Exception as e:
                 exec_status = "error"
-                exec_detail = "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars"
-                log.warning("Alpaca order skipped: broker not initialised")
-            elif order_action not in ("BUY", "SELL"):
-                exec_status = "skipped"
-                exec_detail = f"No order placed for action '{raw_action}'"
-            else:
+                exec_detail = str(e)
+                log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+
+    # Commit any sync (Coinbase) results before launching async threads
+    if conn and exec_status is not None:
+        _update_exec(cur, trade_id, exec_status, exec_detail)
+        conn.commit()
+
+    # --- Alpaca (async — order placement can take 1–3 s; we return 200 first) ---
+    for target in alpaca_targets:
+        if alpaca_broker is None:
+            if conn:
+                _update_exec(cur, trade_id, "error",
+                             "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars")
+                conn.commit()
+            log.warning("Alpaca order skipped: broker not initialised")
+        elif order_action not in ("BUY", "SELL"):
+            if conn:
+                _update_exec(cur, trade_id, "skipped", f"No order placed for action '{raw_action}'")
+                conn.commit()
+            log.info("Webhook action '%s' logged but no Alpaca order placed", raw_action)
+        else:
+            # Close DB before handing off — background thread opens its own connection
+            if conn:
+                conn.commit()
+                conn.close()
+                conn = None
+
+            # Capture loop variables for the closure
+            _ticker      = ticker
+            _action      = order_action
+            _raw_action  = raw_action
+            _qty         = quantity
+            _price       = data.get("price") if data.get("order_type") == "LMT" else None
+            _sec_type    = sec_type
+            _currency    = currency
+            _trade_id    = trade_id
+            _opt_prem    = opt_target_prem
+            _opt_exp     = opt_expiry_type
+            _opt_right   = opt_right_ovr
+            _opt_ctrs    = opt_contracts
+
+            def _place_alpaca_async(
+                ticker=_ticker, action=_action, qty=_qty, price=_price,
+                sec_type=_sec_type, currency=_currency, trade_id=_trade_id,
+                opt_prem=_opt_prem, opt_exp=_opt_exp, opt_right=_opt_right, opt_ctrs=_opt_ctrs,
+            ):
+                _exec_status = _exec_detail = None
                 try:
-                    if opt_target_prem is not None:
-                        # Options order — direction derived from signal action
-                        opt_direction = "call" if order_action == "BUY" else "put"
-                        if opt_right_ovr:
-                            opt_direction = "call" if opt_right_ovr == "C" else "put"
+                    if opt_prem is not None:
+                        opt_direction = "call" if action == "BUY" else "put"
+                        if opt_right:
+                            opt_direction = "call" if opt_right == "C" else "put"
                         result = alpaca_broker.place_option_order(
                             underlying     = ticker,
                             direction      = opt_direction,
-                            expiry_type    = opt_expiry_type or "friday",
-                            contracts      = opt_contracts,
-                            target_premium = float(opt_target_prem),
+                            expiry_type    = opt_exp or "friday",
+                            contracts      = opt_ctrs,
+                            target_premium = float(opt_prem),
                         )
                     else:
                         result = alpaca_broker.place_order(
                             ticker   = ticker,
-                            action   = order_action,
-                            quantity = quantity,
-                            price    = data.get("price") if data.get("order_type") == "LMT" else None,
+                            action   = action,
+                            quantity = qty,
+                            price    = price,
                             sec_type = sec_type,
                             currency = currency,
                         )
-                    exec_status = "ok" if result.get("success") else "error"
-                    exec_detail = json.dumps(result)
-                    log.info("Alpaca order %s %s %s: %s", order_action, quantity, ticker, result)
+                    _exec_status = "ok" if result.get("success") else "error"
+                    _exec_detail = json.dumps(result)
+                    log.info("Alpaca order %s %s %s: %s", action, qty, ticker, result)
                     # If we cancelled a pending BUY, mark the original BUY trade record
                     # as "cancelled" so it doesn't appear as an orphaned/open trade.
-                    if result.get("cancelled_buy") and result.get("cancelled_order_ids") and conn:
-                        _p = placeholder()
+                    if result.get("cancelled_buy") and result.get("cancelled_order_ids"):
+                        _ph = placeholder()
                         for cid in result["cancelled_order_ids"]:
                             try:
-                                cur.execute(
-                                    f"UPDATE trades SET exec_status={_p}, exec_detail={_p}"
-                                    f" WHERE exec_detail LIKE {_p} AND exec_status='ok'",
+                                _c2 = get_db()
+                                _cur2 = _c2.cursor()
+                                _cur2.execute(
+                                    f"UPDATE trades SET exec_status={_ph}, exec_detail={_ph}"
+                                    f" WHERE exec_detail LIKE {_ph} AND exec_status='ok'",
                                     ("cancelled", f"BUY order {cid} cancelled by SELL signal", f"%{cid}%"),
                                 )
-                                if cur.rowcount:
-                                    log.info("Marked BUY trade with order_id %s as cancelled", cid)
+                                _c2.commit()
+                                _c2.close()
+                                log.info("Marked BUY trade with order_id %s as cancelled", cid)
                             except Exception as _me:
                                 log.warning("Could not mark BUY trade cancelled for order %s: %s", cid, _me)
                 except Exception as e:
-                    exec_status = "error"
-                    exec_detail = str(e)
-                    log.error("Alpaca order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+                    _exec_status = "error"
+                    _exec_detail = str(e)
+                    log.error("Alpaca order failed for %s %s %s: %s", action, qty, ticker, e)
+                finally:
+                    try:
+                        _c = get_db()
+                        _cur = _c.cursor()
+                        _update_exec(_cur, trade_id, _exec_status, _exec_detail)
+                        _c.commit()
+                        _c.close()
+                    except Exception as e:
+                        log.error("Failed to update exec status for trade %s: %s", trade_id, e)
 
-        elif _broker_family(target) == "coinbase":
-            if coinbase_broker is None:
-                exec_status = "error"
-                exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
-                log.warning("Coinbase order skipped: broker not initialised")
-            elif order_action not in ("BUY", "SELL"):
-                exec_status = "skipped"
-                exec_detail = f"No order placed for action '{raw_action}'"
-            else:
-                try:
-                    result = coinbase_broker.place_order(
-                        ticker   = ticker,
-                        action   = order_action,
-                        quantity = quantity,
-                        price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                        sec_type = sec_type,
-                        currency = currency,
-                    )
-                    exec_status = "ok" if result.get("success") else "error"
-                    exec_detail = json.dumps(result)
-                    log.info("Coinbase order %s %s %s: %s", order_action, quantity, ticker, result)
-                except Exception as e:
-                    exec_status = "error"
-                    exec_detail = str(e)
-                    log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
-
-    # Commit sync results before handing off to IB async thread
-    if conn and exec_status is not None:
-        _update_exec(cur, trade_id, exec_status, exec_detail)
-        conn.commit()
+            threading.Thread(target=_place_alpaca_async, daemon=True).start()
 
     for target in ib_targets:
         _live = (target == "ib-live") or (use_live_broker and target != "ib-paper")
