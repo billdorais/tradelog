@@ -2192,21 +2192,24 @@ def bt_optimize():
                 tf_max_days  = _MAX_DAYS.get(tf)
                 tf_max_tries = _MAX_TRIES.get(tf, 50)
                 eff_start = start_date
+                eff_end   = end_date
                 if tf_max_days:
                     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                    today    = _dt.now(_tz.utc).strftime("%Y-%m-%d")
                     earliest = (_dt.now(_tz.utc) - _td(days=tf_max_days)).strftime("%Y-%m-%d")
+                    eff_end  = today
                     if start_date < earliest:
                         eff_start = earliest
-                        yield _sse({"type": "progress", "msg": f"  {tf} capped to last {tf_max_days} days ({eff_start})", "pct": pct})
+                    yield _sse({"type": "progress", "msg": f"  {tf} capped to {eff_start} → {eff_end}", "pct": pct})
 
                 # ── Fetch data ────────────────────────────────────────────────
                 try:
                     if data_source == "alpaca":
                         from strategies.data import fetch_bars_alpaca
-                        raw = fetch_bars_alpaca(ticker, eff_start, end_date, tf)
+                        raw = fetch_bars_alpaca(ticker, eff_start, eff_end, tf)
                     else:
                         from strategies.data import fetch_bars
-                        raw = fetch_bars(ticker, eff_start, end_date, tf)
+                        raw = fetch_bars(ticker, eff_start, eff_end, tf)
 
                     if len(raw) < 30:
                         yield _sse({"type": "warning", "msg": f"{ticker}/{tf}: only {len(raw)} bars — skipped"})
