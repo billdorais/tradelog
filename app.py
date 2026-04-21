@@ -2492,8 +2492,14 @@ def bt_optimize():
                     import itertools as _it
 
                     def _f(v, n=2):
-                        try: return round(float(v or 0), n)
-                        except Exception: return 0
+                        try:
+                            fv = float(v or 0)
+                            # NaN / Inf are not valid JSON — return None (serialises as null)
+                            if fv != fv or fv == float('inf') or fv == float('-inf'):
+                                return None
+                            return round(fv, n)
+                        except Exception:
+                            return 0
 
                     def _make_stats(s):
                         return {

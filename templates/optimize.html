@@ -620,7 +620,7 @@
       const nTrades = r.stats['# Trades'] || 0;
       const wins   = Math.round(wr / 100 * nTrades);
       const pf     = r.stats['Profit Factor'];
-      const pfStr  = (pf == null || pf === Infinity || pf > 999) ? '∞' : pf.toFixed(3);
+      const pfStr  = (pf == null || pf === Infinity || pf > 999 || isNaN(pf)) ? '∞' : pf.toFixed(3);
       const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + '$' + pnl.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
       const selClass = selectedIdx === i ? 'selected-row' : '';
       return `<tr class="${isBest ? 'best-row' : ''} ${selClass}"
