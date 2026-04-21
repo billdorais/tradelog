@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, abort, jsonify, make_response, render_template, request, stream_with_context
 
 load_dotenv()
 
@@ -789,6 +789,13 @@ def init_db():
 
     try:
         cur.execute("ALTER TABLE routing_rules ADD COLUMN sort_order INTEGER")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # Add pine_code column to user_strategies if not present (migration)
+    try:
+        cur.execute("ALTER TABLE user_strategies ADD COLUMN pine_code TEXT")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1958,8 +1965,9 @@ def bt_strategy_save():
     """Save a converted Pine Script strategy to the DB."""
     import re
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    code = (body.get("code") or "").strip()
+    name      = (body.get("name")      or "").strip()
+    code      = (body.get("code")      or "").strip()
+    pine_code = (body.get("pine_code") or "").strip()
     if not name or not code:
         return jsonify({"error": "name and code are required"}), 400
     slug   = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') or "strategy"
@@ -1970,16 +1978,16 @@ def bt_strategy_save():
         cur  = conn.cursor()
         if DATABASE_URL:
             cur.execute(
-                f"INSERT INTO user_strategies (slug, name, code, params, created_at) "
-                f"VALUES ({p},{p},{p},{p},{p}) "
-                f"ON CONFLICT (slug) DO UPDATE SET name=EXCLUDED.name, code=EXCLUDED.code, params=EXCLUDED.params",
-                (slug, name, code, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                f"INSERT INTO user_strategies (slug, name, code, pine_code, params, created_at) "
+                f"VALUES ({p},{p},{p},{p},{p},{p}) "
+                f"ON CONFLICT (slug) DO UPDATE SET name=EXCLUDED.name, code=EXCLUDED.code, pine_code=EXCLUDED.pine_code, params=EXCLUDED.params",
+                (slug, name, code, pine_code or None, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
             )
         else:
             cur.execute(
-                f"INSERT OR REPLACE INTO user_strategies (slug, name, code, params, created_at) "
-                f"VALUES ({p},{p},{p},{p},{p})",
-                (slug, name, code, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                f"INSERT OR REPLACE INTO user_strategies (slug, name, code, pine_code, params, created_at) "
+                f"VALUES ({p},{p},{p},{p},{p},{p})",
+                (slug, name, code, pine_code or None, json.dumps(params), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
             )
         conn.commit()
         conn.close()
@@ -2001,6 +2009,56 @@ def bt_strategy_delete(slug):
         return jsonify({"deleted": slug})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bt/strategies/<slug>/pine-export", methods=["POST"])
+def bt_pine_export(slug):
+    """
+    Return a modified Pine Script with optimized param values substituted in.
+    Body: { "params": {"stop_loss": 0.50, "ema_period": 12, ...} }
+    """
+    import re as _re
+    body   = request.get_json(silent=True) or {}
+    params = body.get("params", {})
+
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT pine_code, name FROM user_strategies WHERE slug = {placeholder()}", (slug,))
+        row = cur.fetchone(); conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not row:
+        return jsonify({"error": "Strategy not found"}), 404
+
+    pine_code = (row[0] if DATABASE_URL else row["pine_code"]) or ""
+    name      = (row[1] if DATABASE_URL else row["name"])
+
+    if not pine_code:
+        return jsonify({"error": "No original Pine Script stored for this strategy. Re-upload it to save the source."}), 400
+
+    # Substitute optimized param values into Pine Script input() declarations
+    modified = pine_code
+    for param_name, new_val in params.items():
+        val_str = str(int(new_val)) if float(new_val) == int(float(new_val)) else str(round(float(new_val), 4))
+        # Pattern 1: input.float/int(defval=X, ...) or input(defval=X, ...)
+        modified = _re.sub(
+            r'(?<=' + _re.escape(param_name) + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\()(\s*defval\s*=\s*)[^\s,)]+',
+            r'\g<1>' + val_str,
+            modified,
+        )
+        # Pattern 2: positional first arg — input.float(X, ...) or input.int(X, ...)
+        modified = _re.sub(
+            r'(?<=' + _re.escape(param_name) + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\()(\s*)([+-]?[\d.]+)',
+            lambda m, v=val_str: m.group(1) + v,
+            modified,
+        )
+
+    resp = make_response(modified)
+    safe_name = _re.sub(r'[^a-z0-9_]', '_', name.lower())
+    resp.headers['Content-Type'] = 'text/plain; charset=utf-8'
+    resp.headers['Content-Disposition'] = f'attachment; filename="{safe_name}_optimized.pine"'
+    return resp
 
 
 @app.route("/api/bt/strategies/meta")
@@ -2494,6 +2552,20 @@ def bt_optimize():
                     for rank, (p_ov, s) in enumerate(combo_results):
                         sd    = _make_stats(s)
                         score = _f(s.get(maximize), 4)
+                        # Attach equity curve for top-3 results (downsampled to ≤200 pts)
+                        eq_curve = None
+                        if rank < 3:
+                            try:
+                                ec = s._equity_curve["Equity"]
+                                step_ec = max(1, len(ec) // 200)
+                                ec_s = ec.iloc[::step_ec]
+                                eq_curve = {
+                                    "dates":  [str(d)[:10] for d in ec_s.index],
+                                    "values": [round(float(v), 2) for v in ec_s.values],
+                                }
+                            except Exception:
+                                pass
+
                         row   = {
                             "type": "result",
                             "run_id": run_id, "strategy": strategy_name,
@@ -2501,6 +2573,7 @@ def bt_optimize():
                             "params": p_ov,    "stats": sd,
                             "maximize": maximize, "score": score,
                             "rank": rank + 1,
+                            "equity_curve": eq_curve,
                         }
                         if rank < 10:   # persist only top-10 per ticker/tf
                             try:

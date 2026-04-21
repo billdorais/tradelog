@@ -443,7 +443,7 @@
       const res = await fetch('/api/bt/strategies/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, code: _convertedCode }),
+        body: JSON.stringify({ name, code: _convertedCode, pine_code: document.getElementById('pineInput').value.trim() }),
       });
       const data = await res.json();
       if (res.ok) {

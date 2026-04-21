@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Optimizer — Kairos Automata</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -272,6 +273,12 @@
     <div class="progress-log" id="progressLog"></div>
   </div>
 
+  <!-- ── Top-3 Equity Curves ──────────────────────────────────── -->
+  <div id="equitySection" style="display:none" class="card">
+    <div class="card-title">Top-3 Equity Curves <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— best param combos overlaid</span></div>
+    <canvas id="equityChart" height="90"></canvas>
+  </div>
+
   <!-- ── Results ───────────────────────────────────────────────── -->
   <div id="resultsSection" style="display:none" class="card">
     <!-- TV-style summary banner for selected row -->
@@ -303,7 +310,14 @@
 
     <div class="results-header">
       <h2>Results</h2>
-      <span class="results-count" id="resultsCount"></span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="results-count" id="resultsCount"></span>
+        <button id="exportPineBtn" onclick="exportPineScript()"
+                style="display:none;background:rgba(41,98,255,0.12);border:1px solid #2962ff;color:#5c8eff;
+                       border-radius:6px;padding:6px 14px;font-size:0.8rem;font-weight:600;cursor:pointer;font-family:inherit">
+          &#11015; Export Pine Script
+        </button>
+      </div>
     </div>
     <div class="tbl-wrap">
       <table class="results" id="resultsTable">
@@ -403,7 +417,10 @@
       <table class="param-table">
         <thead><tr>
           <th style="width:32px"></th>
-          <th>Parameter</th><th>Min</th><th>Max</th><th>Step</th><th>Default</th>
+          <th>Parameter</th>
+          <th>Min</th><th>Max</th><th>Step</th>
+          <th style="color:#f0ad4e">Fixed Value</th>
+          <th>Default</th>
         </tr></thead>
         <tbody>
           ${params.map(p => `
@@ -412,9 +429,13 @@
                          onchange="toggleParamRow('${p.id}')"
                          style="width:16px;height:16px;cursor:pointer;accent-color:#2962ff"></td>
               <td><span class="param-name">${p.label}</span></td>
-              <td><input type="number" id="pr_min_${p.id}"  value="${p.min}"  step="${p.step}"></td>
-              <td><input type="number" id="pr_max_${p.id}"  value="${p.max}"  step="${p.step}"></td>
-              <td><input type="number" id="pr_step_${p.id}" value="${p.step}" step="${p.step}"></td>
+              <td id="pr_cell_min_${p.id}"><input type="number" id="pr_min_${p.id}"  value="${p.min}"  step="${p.step}"></td>
+              <td id="pr_cell_max_${p.id}"><input type="number" id="pr_max_${p.id}"  value="${p.max}"  step="${p.step}"></td>
+              <td id="pr_cell_step_${p.id}"><input type="number" id="pr_step_${p.id}" value="${p.step}" step="${p.step}"></td>
+              <td id="pr_cell_fix_${p.id}" style="display:none">
+                <input type="number" id="pr_fix_${p.id}" value="${p.default}" step="${p.step}"
+                       style="width:90px;background:#1a1200;border:1px solid #f0ad4e44;border-radius:5px;color:#f0ad4e;padding:5px 8px;font-size:0.83rem;font-family:inherit">
+              </td>
               <td class="param-default">${p.default}</td>
             </tr>`).join('')}
         </tbody>
@@ -422,13 +443,16 @@
   }
 
   function toggleParamRow(id) {
-    const checked = document.getElementById(`pr_chk_${id}`).checked;
-    const row     = document.getElementById(`pr_row_${id}`);
-    row.style.opacity = checked ? '1' : '0.35';
-    ['pr_min_','pr_max_','pr_step_'].forEach(pfx => {
-      const el = document.getElementById(pfx + id);
-      if (el) el.disabled = !checked;
+    const checked  = document.getElementById(`pr_chk_${id}`).checked;
+    const row      = document.getElementById(`pr_row_${id}`);
+    row.style.opacity = checked ? '1' : '0.8';
+    // sweep columns visible when checked; fixed column visible when unchecked
+    ['min','max','step'].forEach(f => {
+      const el = document.getElementById(`pr_cell_${f}_${id}`);
+      if (el) el.style.display = checked ? '' : 'none';
     });
+    const fixCell = document.getElementById(`pr_cell_fix_${id}`);
+    if (fixCell) fixCell.style.display = checked ? 'none' : '';
   }
 
   // ── Timeframe toggle ────────────────────────────────────────────
@@ -453,7 +477,14 @@
     const paramRanges = {};
     for (const p of params) {
       const chk = document.getElementById(`pr_chk_${p.id}`);
-      if (chk && !chk.checked) continue;
+      if (chk && !chk.checked) {
+        // Fixed value — lock at user-specified value rather than skipping
+        const fixVal = parseFloat(document.getElementById(`pr_fix_${p.id}`)?.value ?? p.default);
+        if (!isNaN(fixVal)) {
+          paramRanges[p.id] = { min: fixVal, max: fixVal, step: 1 };
+        }
+        continue;
+      }
       paramRanges[p.id] = {
         min:  parseFloat(document.getElementById(`pr_min_${p.id}`)?.value  ?? p.min),
         max:  parseFloat(document.getElementById(`pr_max_${p.id}`)?.value  ?? p.max),
@@ -521,6 +552,7 @@
     } else if (msg.type === 'result') {
       results.push(msg);
       renderResults();
+      if (msg.equity_curve) renderEquityChart();
     } else if (msg.type === 'done') {
       setProgress(100);
       logLine('✓ Done — ' + results.length + ' result(s)', 'ok');
@@ -621,6 +653,13 @@
       tr.classList.toggle('selected-row', i === idx);
     });
     updateSummaryBanner(sorted[idx]);
+
+    // Show export button only for user strategies (have Pine Script source)
+    const exportBtn = document.getElementById('exportPineBtn');
+    if (exportBtn) {
+      const isUserStrat = userStrats.some(s => s.slug === activeSlug);
+      exportBtn.style.display = (isUserStrat && sorted[idx] && Object.keys(sorted[idx].params || {}).length > 0) ? '' : 'none';
+    }
   }
 
   function updateSummaryBanner(r) {
@@ -722,12 +761,119 @@
     btn.textContent = '⊙ Benchmark (defaults)';
   }
 
+  // ── Pine Script export ─────────────────────────────────────────
+  async function exportPineScript() {
+    const sorted = [...results].sort((a, b) => {
+      const fn = SORT_KEYS[sortKey] || (r => r.score);
+      return (fn(b) - fn(a)) * sortDir;
+    });
+    const row = sorted[selectedIdx ?? 0];
+    if (!row) return;
+
+    const btn = document.getElementById('exportPineBtn');
+    btn.textContent = '⏳ Exporting…';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch(`/api/bt/strategies/${encodeURIComponent(activeSlug)}/pine-export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ params: row.params || {} }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert('Export failed: ' + (err.error || res.status));
+        return;
+      }
+
+      // Trigger download
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/plain' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = (activeSlug || 'strategy') + '_optimized.pine';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Export error: ' + e.message);
+    } finally {
+      btn.textContent = '⬇ Export Pine Script';
+      btn.disabled = false;
+    }
+  }
+
   function clearResults() {
     results = [];
     selectedIdx = null;
     document.getElementById('resultsSection').style.display = 'none';
     document.getElementById('progressSection').style.display = 'none';
+    document.getElementById('equitySection').style.display = 'none';
     document.getElementById('runStatus').textContent = '';
+    if (_equityChart) { _equityChart.destroy(); _equityChart = null; }
+  }
+
+  // ── Equity curve chart ─────────────────────────────────────────
+  let _equityChart = null;
+  const CURVE_COLORS = ['#2962ff', '#26a65b', '#f0ad4e'];
+
+  function renderEquityChart() {
+    // Collect top-3 results that have equity_curve data
+    const sorted = [...results]
+      .filter(r => r.equity_curve)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 3);
+
+    if (!sorted.length) return;
+
+    document.getElementById('equitySection').style.display = '';
+
+    const datasets = sorted.map((r, i) => {
+      const pStr = Object.entries(r.params || {}).map(([k,v]) => `${k}=${v}`).join(' · ') || 'defaults';
+      const label = `#${i+1} ${r.ticker}/${r.timeframe} — ${pStr}`;
+      return {
+        label,
+        data: r.equity_curve.values,
+        borderColor: CURVE_COLORS[i],
+        backgroundColor: CURVE_COLORS[i] + '18',
+        borderWidth: i === 0 ? 2.5 : 1.5,
+        pointRadius: 0,
+        tension: 0.3,
+        fill: i === 0,
+      };
+    });
+
+    // Use dates from the first curve as labels
+    const labels = sorted[0].equity_curve.dates;
+
+    if (_equityChart) _equityChart.destroy();
+    _equityChart = new Chart(document.getElementById('equityChart'), {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        animation: false,
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#888', font: { size: 11 } } },
+          tooltip: {
+            backgroundColor: '#111',
+            borderColor: '#2a2d3e',
+            borderWidth: 1,
+            titleColor: '#aaa',
+            bodyColor: '#e0e0e0',
+            callbacks: {
+              label: ctx => ` ${ctx.dataset.label.split('—')[0].trim()}: $${ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`,
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#555', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: '#111' } },
+          y: { ticks: { color: '#555', font: { size: 10 }, callback: v => '$' + v.toLocaleString() }, grid: { color: '#1a1a1a' } },
+        },
+      }
+    });
   }
 </script>
 </body>
