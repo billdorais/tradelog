@@ -328,6 +328,7 @@
             <th onclick="sortBy('timeframe')">TF<span class="sort-arrow">↕</span></th>
             <th id="paramsHeader">Best Params</th>
             <th onclick="sortBy('score')">Score<span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('pnl')">P&amp;L ($)<span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('ret')">Return %<span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('sharpe')">Sharpe<span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('dd')">Max DD %<span class="sort-arrow">↕</span></th>
@@ -584,6 +585,7 @@
   const SORT_KEYS = {
     rank: r => r.score, ticker: r => r.ticker, timeframe: r => r.timeframe,
     score: r => r.score, ret: r => r.stats['Return [%]'] || 0,
+    pnl: r => (r.stats['Equity Final [$]'] || 0) - (parseFloat(document.getElementById('cash')?.value) || 10000),
     sharpe: r => r.stats['Sharpe Ratio'] || 0, dd: r => r.stats['Max. Drawdown [%]'] || 0,
     wr: r => r.stats['Win Rate [%]'] || 0, trades: r => r.stats['# Trades'] || 0,
     pf: r => r.stats['Profit Factor'] || 0,
@@ -609,6 +611,9 @@
       const isBest = i === 0 && sortKey === 'score' && !isBase;
       const pStr   = isBase ? '<span style="color:#f0ad4e;font-size:0.75rem">DEFAULT PARAMS</span>'
                              : (Object.entries(r.params || {}).map(([k, v]) => `${k}=${v}`).join(' · ') || '—');
+      const startCash = parseFloat(document.getElementById('cash')?.value) || 10000;
+      const equityFinal = r.stats['Equity Final [$]'] || 0;
+      const pnl    = equityFinal ? equityFinal - startCash : null;
       const ret    = r.stats['Return [%]'] || 0;
       const dd     = r.stats['Max. Drawdown [%]'] || 0;
       const wr     = r.stats['Win Rate [%]'] || 0;
@@ -616,6 +621,7 @@
       const wins   = Math.round(wr / 100 * nTrades);
       const pf     = r.stats['Profit Factor'];
       const pfStr  = (pf == null || pf === Infinity || pf > 999) ? '∞' : pf.toFixed(3);
+      const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + '$' + pnl.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
       const selClass = selectedIdx === i ? 'selected-row' : '';
       return `<tr class="${isBest ? 'best-row' : ''} ${selClass}"
                   style="${isBase ? 'border-left:3px solid #f0ad4e' : ''}"
@@ -625,6 +631,7 @@
         <td><span class="badge badge-gray">${r.timeframe}</span></td>
         <td style="font-size:0.78rem;color:#888">${pStr}</td>
         <td style="font-weight:700;color:${isBase ? '#f0ad4e' : '#5c8eff'}">${typeof r.score === 'number' ? r.score.toFixed(4) : r.score}</td>
+        <td class="${pnl != null ? (pnl >= 0 ? 'pos' : 'neg') : ''}">${pnlStr}</td>
         <td class="${ret >= 0 ? 'pos' : 'neg'}">${ret.toFixed(2)}%</td>
         <td>${(r.stats['Sharpe Ratio'] || 0).toFixed(3)}</td>
         <td class="${dd <= -10 ? 'neg' : ''}">${dd.toFixed(2)}%</td>

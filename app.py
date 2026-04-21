@@ -2504,6 +2504,7 @@ def bt_optimize():
                             "# Trades":          int(s.get("# Trades") or 0),
                             "Profit Factor":     _f(s.get("Profit Factor"), 3),
                             "Calmar Ratio":      _f(s.get("Calmar Ratio"), 3),
+                            "Equity Final [$]":  _f(s.get("Equity Final [$]"), 2),
                         }
 
                     bt = Backtest(df, strategy_cls, cash=cash, commission=commission, exclusive_orders=True,
