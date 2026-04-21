@@ -430,12 +430,14 @@
                          onchange="toggleParamRow('${p.id}')"
                          style="width:16px;height:16px;cursor:pointer;accent-color:#2962ff"></td>
               <td><span class="param-name">${p.label}</span></td>
-              <td id="pr_cell_min_${p.id}"><input type="number" id="pr_min_${p.id}"  value="${p.min}"  step="${p.step}"></td>
-              <td id="pr_cell_max_${p.id}"><input type="number" id="pr_max_${p.id}"  value="${p.max}"  step="${p.step}"></td>
-              <td id="pr_cell_step_${p.id}"><input type="number" id="pr_step_${p.id}" value="${p.step}" step="${p.step}"></td>
-              <td id="pr_cell_fix_${p.id}" style="display:none">
+              <td><input type="number" id="pr_min_${p.id}"  value="${p.min}"  step="${p.step}"></td>
+              <td><input type="number" id="pr_max_${p.id}"  value="${p.max}"  step="${p.step}"></td>
+              <td><input type="number" id="pr_step_${p.id}" value="${p.step}" step="${p.step}"></td>
+              <td>
                 <input type="number" id="pr_fix_${p.id}" value="${p.default}" step="${p.step}"
-                       style="width:90px;background:#1a1200;border:1px solid #f0ad4e44;border-radius:5px;color:#f0ad4e;padding:5px 8px;font-size:0.83rem;font-family:inherit">
+                       disabled
+                       style="width:90px;background:#0a0a0a;border:1px solid #1e2130;border-radius:5px;
+                              color:#444;padding:5px 8px;font-size:0.83rem;font-family:inherit;cursor:not-allowed">
               </td>
               <td class="param-default">${p.default}</td>
             </tr>`).join('')}
@@ -444,16 +446,37 @@
   }
 
   function toggleParamRow(id) {
-    const checked  = document.getElementById(`pr_chk_${id}`).checked;
-    const row      = document.getElementById(`pr_row_${id}`);
-    row.style.opacity = checked ? '1' : '0.8';
-    // sweep columns visible when checked; fixed column visible when unchecked
-    ['min','max','step'].forEach(f => {
-      const el = document.getElementById(`pr_cell_${f}_${id}`);
-      if (el) el.style.display = checked ? '' : 'none';
+    const checked = document.getElementById(`pr_chk_${id}`).checked;
+
+    // Sweep inputs — active when checked, grayed out when fixed
+    ['pr_min_','pr_max_','pr_step_'].forEach(pfx => {
+      const el = document.getElementById(pfx + id);
+      if (!el) return;
+      el.disabled = !checked;
+      el.style.color  = checked ? '' : '#555';
+      el.style.cursor = checked ? '' : 'default';
     });
-    const fixCell = document.getElementById(`pr_cell_fix_${id}`);
-    if (fixCell) fixCell.style.display = checked ? 'none' : '';
+
+    // Fixed value input — active (amber) when unchecked
+    const fixEl = document.getElementById(`pr_fix_${id}`);
+    if (fixEl) {
+      if (!checked) {
+        // Seed from current Min value
+        const minVal = document.getElementById(`pr_min_${id}`)?.value;
+        if (minVal !== undefined && minVal !== '') fixEl.value = minVal;
+        fixEl.disabled           = false;
+        fixEl.style.background   = '#1a1200';
+        fixEl.style.borderColor  = '#f0ad4e88';
+        fixEl.style.color        = '#f0ad4e';
+        fixEl.style.cursor       = '';
+      } else {
+        fixEl.disabled           = true;
+        fixEl.style.background   = '#0a0a0a';
+        fixEl.style.borderColor  = '#1e2130';
+        fixEl.style.color        = '#444';
+        fixEl.style.cursor       = 'not-allowed';
+      }
+    }
   }
 
   // ── Timeframe toggle ────────────────────────────────────────────
