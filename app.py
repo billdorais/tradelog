@@ -2050,23 +2050,82 @@ def bt_pine_export(slug):
     if not pine_code:
         return jsonify({"error": "No original Pine Script stored for this strategy. Re-upload it to save the source."}), 400
 
-    # Substitute optimized param values into Pine Script input() declarations
+    # ── Pass 1: substitute existing input() declarations ──────────────────
     modified = pine_code
+    input_subs_made = set()
     for param_name, new_val in params.items():
         val_str = str(int(new_val)) if float(new_val) == int(float(new_val)) else str(round(float(new_val), 4))
         pn = _re.escape(param_name)
-        # Pattern 1: varname = input*(defval=X, ...)  →  replace X
+        before = modified
         modified = _re.sub(
             r'(' + pn + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\(\s*defval\s*=\s*)[^\s,)]+',
-            lambda m, v=val_str: m.group(1) + v,
-            modified,
+            lambda m, v=val_str: m.group(1) + v, modified,
         )
-        # Pattern 2: varname = input*(X, ...)  positional first arg  →  replace X
         modified = _re.sub(
             r'(' + pn + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\(\s*)([+-]?[\d.]+)',
-            lambda m, v=val_str: m.group(1) + v,
-            modified,
+            lambda m, v=val_str: m.group(1) + v, modified,
         )
+        if modified != before:
+            input_subs_made.add(param_name)
+
+    # ── Pass 2: inject input block + replace hardcoded values ─────────────
+    # For params that weren't handled via input() declarations above, inject
+    # a parameterised block and patch the hardcoded values in the script body.
+    remaining = {k: v for k, v in params.items() if k not in input_subs_made and k != 'tick_size'}
+    if remaining:
+        tick_size = float(params.get('tick_size', 0.01)) or 0.01
+
+        lines = []
+        for pname, pval in remaining.items():
+            fval = float(pval)
+            is_int = (fval == int(fval)) and ('period' in pname or 'len' in pname or pname == 'ema_period')
+            if is_int:
+                lines.append(f"_opt_{pname} = input.int({int(fval)}, '{pname.replace('_',' ').title()}', minval=1)")
+            else:
+                lines.append(f"_opt_{pname} = input.float({round(fval,4)}, '{pname.replace('_',' ').title()}', step=0.1)")
+
+        # Dollar-amount params: emit tick conversion helpers (short names)
+        dollar_params = {k: v for k, v in remaining.items() if k.endswith('_dollars')}
+        for pname in dollar_params:
+            short = pname[:-len('_dollars')]  # e.g. trail_points_dollars → trail_points
+            lines.append(f"_opt_{short}_ticks = math.round(_opt_{pname} / syminfo.mintick)")
+
+        inject = (
+            '\n// ── Optimized parameters (from Python backtester) ──────────────\n'
+            + '\n'.join(lines)
+            + '\n// ─────────────────────────────────────────────────────────────────\n'
+        )
+
+        # Insert block after the closing ) of strategy(...) declaration
+        modified = _re.sub(r'(strategy\s*\([^)]*\))', r'\1' + inject, modified, count=1)
+
+        # Now patch hardcoded values in the body
+        for pname, pval in remaining.items():
+            fval = float(pval)
+
+            if pname == 'cam_mult' or 'cam' in pname:
+                # Replace the Camarilla multiplier literal in h4/l4 formulas
+                modified = _re.sub(
+                    r'(\*\s*)[\d.]+(\s*/\s*2\.0)',
+                    lambda m, v=round(fval,4): m.group(1) + str(v) + m.group(2),
+                    modified,
+                )
+            elif pname == 'ema_period':
+                # Replace ta.ema(close, N) period
+                modified = _re.sub(
+                    r'(ta\.ema\s*\(\s*\w+\s*,\s*)\d+',
+                    lambda m, v=int(fval): m.group(1) + str(v),
+                    modified,
+                )
+            elif pname.endswith('_dollars'):
+                pine_key = pname[:-len('_dollars')]  # trail_points_dollars → trail_points
+                tick_var = f'_opt_{pine_key}_ticks'
+                # Replace  trail_points  = <num>  /  loss  = <num>  inside strategy.exit()
+                modified = _re.sub(
+                    r'(' + _re.escape(pine_key) + r'\s*=\s*)\d+',
+                    lambda m, v=tick_var: m.group(1) + v,
+                    modified,
+                )
 
     resp = make_response(modified)
     safe_name = _re.sub(r'[^a-z0-9_]', '_', name.lower())
