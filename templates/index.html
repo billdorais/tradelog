@@ -88,6 +88,28 @@
     button.danger { background: transparent; color: #ef5350; border: 1px solid rgba(239,83,80,0.4); }
     button.danger:hover { background: rgba(239,83,80,0.1); border-color: #ef5350; }
 
+    /* ── Strategy multi-select picker ─────────────────────────────── */
+    .strat-picker-btn {
+      background: #0f1117; color: #e0e0e0; border: 1px solid #2a2d3e;
+      border-radius: 6px; padding: 5px 10px; font-size: 0.8rem; cursor: pointer;
+      min-width: 150px; display: inline-flex; align-items: center; justify-content: space-between;
+      gap: 8px; font-family: inherit; font-weight: normal;
+    }
+    .strat-picker-btn:hover { border-color: #5c8eff; background: #0f1117; }
+    .strat-picker-panel {
+      display: none; position: absolute; right: 0; top: calc(100% + 4px);
+      background: #111; border: 1px solid #2a2d3e; border-radius: 8px; padding: 8px;
+      min-width: 240px; z-index: 200; max-height: 360px; overflow-y: auto;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+    }
+    .strat-picker-row {
+      display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+      border-radius: 5px; cursor: pointer; font-size: 0.82rem; user-select: none;
+    }
+    .strat-picker-row:hover { background: rgba(255,255,255,0.04); }
+    .strat-eye { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
+    .strat-eye.off { opacity: 0.25; }
+
     /* Stat cards */
     .stats {
       max-width: 1200px;
@@ -522,9 +544,19 @@
         Cumulative P&amp;L from closed trades
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <select id="equityStrategyFilter" onchange="applyEquityFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
-          <option value="">All Strategies</option>
-        </select>
+        <div style="position:relative">
+          <button class="strat-picker-btn" id="stratPickerBtn" onclick="toggleStratPicker(event)">
+            <span id="stratPickerLabel">All Strategies</span>
+            <span style="color:#666;font-size:0.7rem">▼</span>
+          </button>
+          <div class="strat-picker-panel" id="stratPickerPanel">
+            <div style="display:flex;gap:14px;padding:2px 8px 8px;border-bottom:1px solid #1e2130;margin-bottom:4px">
+              <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#5c8eff;cursor:pointer">All</span>
+              <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#5c8eff;cursor:pointer">None</span>
+            </div>
+            <div id="stratPickerList"></div>
+          </div>
+        </div>
         <input type="text" id="equityFromDate" placeholder="From date"
           title="Show P&L from this date forward" readonly
           style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer;width:110px">
@@ -557,9 +589,6 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="chart-title" style="margin-bottom:0">Daily P&amp;L</div>
-      <select id="dailyStrategyFilter" onchange="applyDailyFilter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
-        <option value="">All Strategies</option>
-      </select>
     </div>
     <div style="display:flex;gap:32px;flex-wrap:wrap">
       <div style="flex:0 0 calc(50% - 16px);min-width:280px">
@@ -577,9 +606,6 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="chart-title" style="margin-bottom:0">Trade Time Performance</div>
-      <select id="timeScatterStrategyFilter" onchange="drawTimeScatter()" style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer">
-        <option value="">All Strategies</option>
-      </select>
     </div>
     <canvas id="timeScatterChart" height="120"></canvas>
   </div>
@@ -648,7 +674,12 @@
     let allIBExecs     = [];
     let allAlpacaExecs = [];
     let allAlpacaPositions = [];   // authoritative open positions from Alpaca — used to reconcile feed pairing
-    let selectedStrategy = '';
+    let selectedStrategy   = '';
+    let selectedStrategies = new Set();  // empty = all visible
+    let _allStrategyNames  = [];
+    let _cachedFullStats   = null;
+    let _cachedFromDate    = null;
+    let _cachedToDate      = null;
     let _allGroups     = [];
     let _feedFilter    = { tv: true, alpaca: true };
     let _shownGroups   = 0;
@@ -660,7 +691,7 @@
       const signalsBtn = document.getElementById('tabSignals');
       const alpacaBtn  = document.getElementById('tabAlpaca');
       const ibBtn      = document.getElementById('tabIB');
-      const filter     = document.getElementById('equityStrategyFilter');
+      const filter     = document.getElementById('stratPickerWrap');
       const note       = document.getElementById('ibEquityNote');
       const label      = document.getElementById('equityChartLabel');
       const inactive   = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
@@ -772,21 +803,106 @@
     }
     function _tradeKey(p) { return `${p.time}|${p.ticker}`; }
 
-    function _filterEquityCurve(curve, strategyFilter) {
+    function _filterEquityCurve(curve) {
       const excl = _loadExclusions();
       let filtered = curve;
-      // Exclusions (manually clicked away)
-      if (excl.size) filtered = filtered.filter(p => !excl.has(_tradeKey(p)));
-      // Signals-only: hide trades where either leg has no matched TV signal
-      if (_signalsOnly) filtered = filtered.filter(p => p.both_matched === true);
-      // Strategy dropdown
-      if (strategyFilter) filtered = filtered.filter(p => p.strategy === strategyFilter);
-      // Recalculate cumulative after any filtering
+      if (excl.size)               filtered = filtered.filter(p => !excl.has(_tradeKey(p)));
+      if (_signalsOnly)            filtered = filtered.filter(p => p.both_matched === true);
+      if (selectedStrategies.size) filtered = filtered.filter(p => selectedStrategies.has(p.strategy));
       let cum = 0;
       return filtered.map(p => {
         cum = Math.round((cum + (p.pnl || 0)) * 100) / 100;
         return { ...p, value: cum };
       });
+    }
+
+    function _computeStatsFromCurve(curve) {
+      const trades = curve.filter(p => p.pnl != null);
+      if (!trades.length) return { completed_trades: 0, win_rate: 0, profit_factor: null, max_drawdown: 0, avg_win: 0, avg_loss: 0 };
+      const wins   = trades.filter(t => t.pnl > 0);
+      const losses = trades.filter(t => t.pnl < 0);
+      const totWin  = wins.reduce((s, t) => s + t.pnl, 0);
+      const totLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+      let peak = 0, maxDD = 0;
+      for (const p of curve) { if (p.value > peak) peak = p.value; const dd = peak - p.value; if (dd > maxDD) maxDD = dd; }
+      return {
+        completed_trades: trades.length,
+        win_rate:         trades.length   ? Math.round(wins.length / trades.length * 1000) / 10 : 0,
+        profit_factor:    totLoss         ? Math.round(totWin / totLoss * 100) / 100 : null,
+        max_drawdown:     Math.round(maxDD * 100) / 100,
+        avg_win:          wins.length     ? Math.round(totWin   / wins.length   * 100) / 100 : 0,
+        avg_loss:         losses.length   ? Math.round(-totLoss / losses.length * 100) / 100 : 0,
+      };
+    }
+
+    // ── Strategy visibility picker ───────────────────────────────────
+    function toggleStratPicker(e) {
+      e.stopPropagation();
+      const panel = document.getElementById('stratPickerPanel');
+      panel.style.display = panel.style.display === 'none' ? '' : 'none';
+    }
+    document.addEventListener('click', () => {
+      const p = document.getElementById('stratPickerPanel');
+      if (p) p.style.display = 'none';
+    });
+
+    function _populateStratPicker() {
+      const list = document.getElementById('stratPickerList');
+      if (!list) return;
+      list.innerHTML = _allStrategyNames.map(s => {
+        const visible = selectedStrategies.size === 0 || selectedStrategies.has(s);
+        const esc = s.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        return `<div class="strat-picker-row" onclick="toggleStratVis('${esc}', event)">
+          <span class="strat-eye${visible ? '' : ' off'}">👁</span>
+          <span style="color:${visible ? '#e0e0e0' : '#444'}">${s}</span>
+        </div>`;
+      }).join('');
+    }
+
+    function _updateStratPickerBtn() {
+      const lbl = document.getElementById('stratPickerLabel');
+      if (!lbl) return;
+      if (selectedStrategies.size === 0) {
+        lbl.textContent = 'All Strategies';
+      } else if (selectedStrategies.size === 1) {
+        lbl.textContent = [...selectedStrategies][0];
+      } else {
+        lbl.textContent = `${selectedStrategies.size} / ${_allStrategyNames.length} strategies`;
+      }
+    }
+
+    async function toggleStratVis(name, e) {
+      e.stopPropagation();
+      if (selectedStrategies.size === 0) {
+        // All visible — switch to all-except-this
+        selectedStrategies = new Set(_allStrategyNames.filter(s => s !== name));
+      } else if (selectedStrategies.has(name)) {
+        selectedStrategies.delete(name);
+        if (selectedStrategies.size === 0) selectedStrategies = new Set();
+      } else {
+        selectedStrategies.add(name);
+        if (selectedStrategies.size === _allStrategyNames.length) selectedStrategies = new Set();
+      }
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    async function selectAllStrats() {
+      selectedStrategies = new Set();
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    async function clearAllStrats() {
+      selectedStrategies = new Set([_allStrategyNames[0]].filter(Boolean));
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
     }
 
     function toggleSignalsOnly() {
@@ -841,9 +957,8 @@
       document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
       document.getElementById('statErrors').textContent   = '—';
 
-      // Apply exclusions, signals-only, and strategy filter — recalc cumulative
-      const strategyFilter = document.getElementById('equityStrategyFilter').value;
-      const displayCurve = _filterEquityCurve(equityCurve, strategyFilter);
+      // Apply exclusions, signals-only, and strategy visibility filter — recalc cumulative
+      const displayCurve = _filterEquityCurve(equityCurve);
       // Keep reset button visible if any exclusions are active
       const excl = _loadExclusions();
       const resetBtn = document.getElementById('alpacaResetExcluded');
@@ -1567,20 +1682,6 @@
       const curve = equityCurveArg || _lastEquityCurve;
       if (equityCurveArg) _lastEquityCurve = equityCurveArg;
 
-      const stratFilter = (document.getElementById('timeScatterStrategyFilter') || {}).value || '';
-
-      // Populate strategy filter dropdown when using allTrades (signals mode)
-      if (equityCurveArg && !tradesOverride) {
-        const sel = document.getElementById('timeScatterStrategyFilter');
-        if (sel) {
-          const strategies = [...new Set(allTrades.map(t => t.strategy).filter(Boolean))].sort();
-          const prev = sel.value;
-          sel.innerHTML = '<option value="">All Strategies</option>' +
-            strategies.map(s => `<option value="${s}">${s}</option>`).join('');
-          sel.value = prev;
-        }
-      }
-
       // Build individual trade data points from equity curve
       // Each point: { x: minutes since 9:30 ET, y: per-trade P&L }
       const ET_OPEN_MINUTES = 9 * 60 + 30; // 9:30 AM = 570 min
@@ -1593,10 +1694,10 @@
         return new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
       }
 
-      // Use override (e.g. Alpaca fills) or filter allTrades by strategy
+      // Use override (e.g. Alpaca fills) or filter allTrades by strategy visibility
       const tradesForScatter = tradesOverride
         ? tradesOverride
-        : (stratFilter ? allTrades.filter(t => t.strategy === stratFilter) : allTrades);
+        : (selectedStrategies.size ? allTrades.filter(t => selectedStrategies.has(t.strategy)) : allTrades);
 
       // Fast path: backend equity curve items already have {time, pnl} pre-computed
       if (tradesForScatter.length && 'pnl' in tradesForScatter[0]) {
@@ -1915,30 +2016,34 @@
     async function applyFilter() {
       selectedStrategy = document.getElementById('strategyFilter').value;
       renderTable(allTrades, selectedStrategy);
-      // Sync equity curve dropdown to match
-      document.getElementById('equityStrategyFilter').value = selectedStrategy;
-      const fromDate = document.getElementById('equityFromDate').value;
-      const toDate   = document.getElementById('equityToDate').value;
-      const stats = await fetch(buildStatsUrl(selectedStrategy, fromDate, toDate)).then(r => r.json());
-      renderStats(stats);
+      // Sync strategy picker with table filter
+      if (selectedStrategy) {
+        selectedStrategies = new Set([selectedStrategy]);
+      } else {
+        selectedStrategies = new Set();
+      }
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
     }
 
     async function applyEquityFilter() {
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
       if (activeTab === 'alpaca') { renderAlpacaStats(fromDate, toDate); return; }
-      const strategy = document.getElementById('equityStrategyFilter').value;
-      const stats = await fetch(buildStatsUrl(strategy, fromDate, toDate)).then(r => r.json());
-      renderStats(stats);
+      // Always fetch all-strategies data and filter client-side for multi-select support
+      if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
+        _cachedFullStats = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json());
+        _cachedFromDate  = fromDate;
+        _cachedToDate    = toDate;
+      }
+      const curve = _filterEquityCurve(_cachedFullStats.equity_curve || []);
+      renderStats({ ..._computeStatsFromCurve(curve), equity_curve: curve });
     }
 
     async function applyDailyFilter() {
-      const fromDate = document.getElementById('equityFromDate').value;
-      const toDate   = document.getElementById('equityToDate').value;
-      if (activeTab === 'alpaca') { renderAlpacaStats(fromDate, toDate); return; }
-      const strategy = document.getElementById('dailyStrategyFilter').value;
-      const stats = await fetch(buildStatsUrl(strategy, fromDate, toDate)).then(r => r.json());
-      drawDailyChart(stats.equity_curve || []);
+      await applyEquityFilter();
     }
 
     async function loadOrphanedTrades() {
@@ -2051,26 +2156,25 @@
         allTrades = trades;
 
 
-        // --- Populate strategy filter dropdowns (table + equity curve) ---
+        // --- Populate strategy filter (table select + visibility picker) ---
         const strategies = [...new Set(trades.map(t => t.strategy).filter(Boolean))].sort();
-        const options = '<option value="">All Strategies</option>' +
-          strategies.map(s => `<option value="${s}">${s}</option>`).join('');
 
         const sel = document.getElementById('strategyFilter');
         const prevTable = sel.value;
-        sel.innerHTML = options;
+        sel.innerHTML = '<option value="">All Strategies</option>' +
+          strategies.map(s => `<option value="${s}">${s}</option>`).join('');
         sel.value = prevTable;
         selectedStrategy = sel.value;
 
-        const equitySel = document.getElementById('equityStrategyFilter');
-        const prevEquity = equitySel.value;
-        equitySel.innerHTML = options;
-        equitySel.value = prevEquity;
-
-        const dailySel = document.getElementById('dailyStrategyFilter');
-        const prevDaily = dailySel.value;
-        dailySel.innerHTML = options;
-        dailySel.value = prevDaily;
+        // Keep existing visibility selection; add any new strategies as visible
+        const prevNames = new Set(_allStrategyNames);
+        _allStrategyNames = strategies;
+        if (selectedStrategies.size > 0) {
+          // Add newly appearing strategies as visible
+          strategies.filter(s => !prevNames.has(s)).forEach(s => selectedStrategies.add(s));
+        }
+        _populateStratPicker();
+        _updateStratPickerBtn();
 
         try { renderTable(trades, selectedStrategy); } catch(re) { console.error('renderTable error:', re); }
 
@@ -2081,7 +2185,6 @@
           document.getElementById('equityToDate').style.display   = '';
           document.getElementById('ibEquityNote').style.display = 'flex';
           document.getElementById('ibEquityNote').textContent = 'Cumulative realized P&L from Alpaca fills.';
-          // Default to last 30 days on initial load if no date set
           const fromEl = document.getElementById('equityFromDate');
           if (!fromEl.value) {
             const d30 = new Date(); d30.setDate(d30.getDate() - 30);
@@ -2089,12 +2192,15 @@
           }
           renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
         } else {
-          const equityStrategy = document.getElementById('equityStrategyFilter').value;
-          const equityFromDate = document.getElementById('equityFromDate').value;
-          const equityToDate   = document.getElementById('equityToDate').value;
-          const statsUrl = buildStatsUrl(equityStrategy, equityFromDate, equityToDate);
-          const filteredStats = (equityStrategy || equityFromDate || equityToDate) ? await fetch(statsUrl).then(r => r.json()) : stats;
-          renderStats(filteredStats);
+          // Pre-seed cache with the already-fetched full stats (no date filter)
+          const fromDate = document.getElementById('equityFromDate').value;
+          const toDate   = document.getElementById('equityToDate').value;
+          if (!fromDate && !toDate) {
+            _cachedFullStats = stats;
+            _cachedFromDate  = '';
+            _cachedToDate    = '';
+          }
+          await applyEquityFilter();
         }
 
         document.getElementById('status').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
