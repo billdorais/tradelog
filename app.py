@@ -1463,6 +1463,39 @@ def optimize_page():
     return render_template("optimize.html")
 
 
+@app.route("/variants")
+def variants_page():
+    return render_template("variants.html")
+
+
+@app.route("/api/variants/run", methods=["POST"])
+def api_variants_run():
+    """Expand a variants config, backtest each with walk-forward, return pass/fail.
+    Blocking call — one real Alpaca backtest per variant. Callers should expect
+    multi-second latency for grids of more than a few variants."""
+    from tools.provision_variants import (
+        build_routing_nodes, evaluate_variant, expand_variants, variant_name,
+    )
+    cfg = request.get_json(silent=True) or {}
+    gate_cfg = cfg.get("gate", {})
+    start    = cfg.get("start_date", "2024-01-01")
+    end      = cfg.get("end_date",   "2024-12-31")
+    n_folds  = int(cfg.get("n_folds", 1))
+    try:
+        variants = list(expand_variants(cfg))
+    except Exception as e:
+        return jsonify({"error": f"expand_variants: {e}"}), 400
+    results = []
+    for v in variants:
+        r = evaluate_variant(v, start, end, gate_cfg, n_folds=n_folds)
+        r["name"]  = variant_name(v)
+        r["nodes"] = build_routing_nodes(v)
+        # Drop per-fold detail — UI only shows mean IS/OOS stats
+        r.pop("folds", None)
+        results.append(r)
+    return jsonify({"results": results})
+
+
 def _extract_strategy_params(code):
     """Auto-detect class-level numeric parameters from a backtesting.py Strategy class."""
     import re

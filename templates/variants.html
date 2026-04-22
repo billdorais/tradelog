@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Variants — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #000; color: #e0e0e0; min-height: 100vh; padding: 32px 16px; }
+
+    .topbar { max-width: 1200px; margin: 0 auto 28px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-left { display: flex; align-items: center; gap: 10px; }
+    .topbar-left img { height: 36px; width: 36px; image-rendering: pixelated; }
+    .topbar-left span { font-size: 1.1rem; font-weight: 700; color: #fff; }
+
+    .page { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+    .subtitle { font-size: 0.88rem; color: #666; margin-bottom: 28px; }
+
+    .card { background: #111; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
+    .card-title { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 16px; font-weight: 600; }
+
+    textarea { width: 100%; min-height: 380px; background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
+               color: #e0e0e0; padding: 14px; font-size: 0.82rem; font-family: 'Consolas', 'Monaco', monospace;
+               line-height: 1.5; resize: vertical; }
+    textarea:focus { outline: none; border-color: #2962ff; }
+
+    .btn { background: #2962ff; color: #fff; border: none; border-radius: 8px;
+           padding: 11px 32px; font-size: 0.95rem; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .btn:hover { background: #1a4fd8; }
+    .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .btn-sec { background: transparent; border: 1px solid #2a2d3e; color: #aaa; }
+    .btn-sec:hover { background: rgba(255,255,255,0.04); color: #fff; }
+    .btn-apply { background: #26a65b; }
+    .btn-apply:hover { background: #1f8848; }
+
+    .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+    .status-line { font-size: 0.85rem; color: #888; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 6px; }
+    th { padding: 9px 10px; text-align: left; font-size: 0.68rem; color: #666;
+         text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #1e2130; font-weight: 600; }
+    td { padding: 8px 10px; border-bottom: 1px solid #0d0d0d; vertical-align: middle; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.pass  { background: rgba(38,166,91,0.05); }
+    tr.fail  { background: rgba(239,83,80,0.03); }
+    tr.error { background: rgba(255,152,0,0.05); }
+    .badge { display:inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700;
+             letter-spacing: 0.04em; text-transform: uppercase; }
+    .badge.pass  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
+    .badge.fail  { background: rgba(239,83,80,0.18);  color: #ef5350; }
+    .badge.error { background: rgba(255,152,0,0.18);  color: #ff9800; }
+    .reason { color: #888; font-size: 0.8rem; }
+    .tv-note { margin-top: 14px; font-size: 0.82rem; color: #888; line-height: 1.6; }
+    .tv-note code { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 4px; padding: 1px 6px; color: #5fe0a0; font-size: 0.8rem; }
+
+    #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
+                 font-size: 0.9rem; border-bottom: 1px solid #1e2130; }
+    #navMenu a:last-child { border-bottom: none; }
+    #navMenu a:hover { background: rgba(255,255,255,0.04); }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <img src="/static/kariosLogo_128.png" alt="">
+    <span>Kairos Automata — Variants</span>
+  </div>
+  <div style="position:relative;display:inline-block">
+    <button id="navMenuBtn" onclick="toggleNavMenu()"
+            style="background:transparent;border:1px solid #1e2130;color:#aaa;padding:5px 10px;
+                   border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#0d0d0d;
+                              border:1px solid #1e2130;border-radius:8px;min-width:190px;z-index:999;
+                              box-shadow:0 6px 24px rgba(0,0,0,0.6)">
+      <a href="/">&#127968; Dashboard</a>
+      <a href="/routing">&#128257; Signal Router</a>
+      <a href="/analysis">&#128300; Analysis</a>
+      <a href="/strategies">&#128200; Strategies</a>
+      <a href="/optimize">&#128269; Optimizer</a>
+      <a href="/variants">&#127757; Variants</a>
+      <a href="/about">&#8505; About</a>
+    </div>
+  </div>
+</div>
+
+<div class="page">
+  <h1>Variant Grid</h1>
+  <div class="subtitle">Fan out a strategy across tickers and timeframes. Each variant is walk-forward backtested
+    with an in-sample / out-of-sample gate. Survivors become routing rules.</div>
+
+  <div class="card">
+    <div class="card-title">Config (variants.json format)</div>
+    <textarea id="cfg" spellcheck="false"></textarea>
+    <div class="row">
+      <button class="btn" id="runBtn" onclick="runVariants()">Run Backtest</button>
+      <button class="btn btn-sec" onclick="resetConfig()">Reset to default</button>
+      <span class="status-line" id="status"></span>
+    </div>
+  </div>
+
+  <div class="card" id="resultsCard" style="display:none">
+    <div class="card-title">Results</div>
+    <div id="summary" class="status-line" style="margin-bottom: 12px"></div>
+    <div style="overflow-x:auto">
+      <table id="resultsTable">
+        <thead>
+          <tr>
+            <th>Rule name</th>
+            <th>Status</th>
+            <th class="num">IS Sharpe</th>
+            <th class="num">OOS Sharpe</th>
+            <th class="num">IS Trades</th>
+            <th class="num">OOS Trades</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button class="btn btn-apply" id="applyBtn" onclick="applyRules()" disabled>Apply Survivors as Routing Rules</button>
+      <span class="status-line" id="applyStatus"></span>
+    </div>
+    <div class="tv-note" id="tvNote" style="display:none">
+      <strong style="color:#ccc">TradingView setup:</strong>
+      For each survivor, create an alert on the matching ticker/timeframe chart with the alert name set to the rule name
+      (e.g. <code>CAM_AAPL_BREAKOUT_5M</code>). The rule matches by name, so the alert fires the right pipeline.
+    </div>
+  </div>
+</div>
+
+<script>
+const DEFAULT_CFG = {
+  start_date: "2024-01-01",
+  end_date:   "2024-12-31",
+  n_folds:    3,
+  gate: { min_train_sharpe: 1.0, oos_ratio: 0.7, min_trades: 10 },
+  defaults: {
+    cam_breakout: {
+      cam_mult: 1.1, stop_loss: 0.50, trail_activation: 0.40, trail_offset: 0.20, ema_period: 8
+    },
+    cam_h3l3_reversal: {
+      cam_mult: 1.1, ema_period: 8,
+      stop_loss_long: 0.70, trail_activation_long: 0.40, trail_offset_long: 0.01,
+      stop_loss_short: 0.20, trail_activation_short: 0.10, trail_offset_short: 0.01
+    }
+  },
+  variants: [{
+    tickers:    ["AAPL", "PLTR"],
+    tfs:        ["5m"],
+    strategies: ["cam_breakout", "cam_h3l3_reversal"],
+    broker:     "alpaca-paper",
+    quantity:   1
+  }]
+};
+
+let lastResults = [];
+
+function toggleNavMenu() {
+  const m = document.getElementById('navMenu');
+  m.style.display = (m.style.display === 'block') ? 'none' : 'block';
+}
+document.addEventListener('click', e => {
+  if (!document.getElementById('navMenuBtn').contains(e.target) &&
+      !document.getElementById('navMenu').contains(e.target))
+    document.getElementById('navMenu').style.display = 'none';
+});
+
+function resetConfig() {
+  document.getElementById('cfg').value = JSON.stringify(DEFAULT_CFG, null, 2);
+}
+
+function fmtNum(n, digits) {
+  if (n === null || n === undefined || !isFinite(n)) return '—';
+  return Number(n).toFixed(digits);
+}
+
+async function runVariants() {
+  const btn    = document.getElementById('runBtn');
+  const status = document.getElementById('status');
+  let cfg;
+  try {
+    cfg = JSON.parse(document.getElementById('cfg').value);
+  } catch (e) {
+    status.textContent = 'Invalid JSON: ' + e.message;
+    status.style.color = '#ef5350';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  status.style.color = '#888';
+  status.textContent = 'Backtesting (this may take 10–60s per variant)…';
+  try {
+    const res = await fetch('/api/variants/run', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(cfg),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    lastResults = data.results || [];
+    renderResults(lastResults);
+    status.textContent = `Done — ${lastResults.length} variant(s) evaluated.`;
+    status.style.color = '#5fe0a0';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = '#ef5350';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Backtest';
+  }
+}
+
+function renderResults(results) {
+  const body = document.getElementById('resultsBody');
+  body.innerHTML = '';
+  const passed = results.filter(r => r.status === 'pass');
+  document.getElementById('summary').textContent =
+    `${passed.length}/${results.length} passed the gate.`;
+  for (const r of results) {
+    const tr = document.createElement('tr');
+    const statusClass = r.status === 'pass' ? 'pass'
+                      : r.status === 'fail' ? 'fail' : 'error';
+    tr.className = statusClass;
+    const isStats  = r.is  || {};
+    const oosStats = r.oos || {};
+    tr.innerHTML = `
+      <td style="font-weight:600;color:#ccc">${r.name}</td>
+      <td><span class="badge ${statusClass}">${r.status}</span></td>
+      <td class="num">${fmtNum(isStats.sharpe,  2)}</td>
+      <td class="num">${fmtNum(oosStats.sharpe, 2)}</td>
+      <td class="num">${isStats.n_trades  ?? '—'}</td>
+      <td class="num">${oosStats.n_trades ?? '—'}</td>
+      <td class="reason">${r.reason || ''}</td>
+    `;
+    body.appendChild(tr);
+  }
+  document.getElementById('resultsCard').style.display = '';
+  document.getElementById('applyBtn').disabled = passed.length === 0;
+  document.getElementById('tvNote').style.display = passed.length ? '' : 'none';
+}
+
+async function applyRules() {
+  const passed = lastResults.filter(r => r.status === 'pass');
+  if (!passed.length) return;
+  const btn    = document.getElementById('applyBtn');
+  const status = document.getElementById('applyStatus');
+  btn.disabled = true;
+  btn.textContent = 'Applying…';
+  status.style.color = '#888';
+
+  // Fetch existing rules once, then upsert by name
+  let existing;
+  try {
+    existing = await fetch('/api/routing/rules').then(r => r.json());
+  } catch (e) {
+    status.textContent = 'Could not load existing rules: ' + e.message;
+    status.style.color = '#ef5350';
+    btn.disabled = false;
+    btn.textContent = 'Apply Survivors as Routing Rules';
+    return;
+  }
+  const byName = Object.fromEntries(existing.map(r => [r.name, r]));
+  let created = 0, updated = 0, errors = 0;
+  for (const v of passed) {
+    const body = JSON.stringify({ name: v.name, nodes: v.nodes });
+    try {
+      if (byName[v.name]) {
+        await fetch(`/api/routing/rules/${byName[v.name].id}`,
+          { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+        updated++;
+      } else {
+        await fetch('/api/routing/rules',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+        created++;
+      }
+    } catch (e) {
+      errors++;
+    }
+  }
+  status.textContent = `${created} created, ${updated} updated` + (errors ? `, ${errors} failed` : '') + '.';
+  status.style.color = errors ? '#ef5350' : '#5fe0a0';
+  btn.disabled = false;
+  btn.textContent = 'Apply Survivors as Routing Rules';
+}
+
+resetConfig();
+</script>
+</body>
+</html>
