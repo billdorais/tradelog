@@ -797,11 +797,18 @@
 
   // ── Pine Script export ─────────────────────────────────────────
   async function exportPineScript() {
-    const sorted = [...results].sort((a, b) => {
-      const fn = SORT_KEYS[sortKey] || (r => r.score);
-      return (fn(b) - fn(a)) * sortDir;
-    });
-    const row = sorted[selectedIdx ?? 0];
+    // If user clicked a specific row, use that; otherwise best from current run
+    let row;
+    if (selectedIdx != null) {
+      const sorted = [...results].sort((a, b) => {
+        const fn = SORT_KEYS[sortKey] || (r => r.score);
+        return (fn(b) - fn(a)) * sortDir;
+      });
+      row = sorted[selectedIdx];
+    } else {
+      const runResults = currentRunId ? results.filter(r => r.run_id === currentRunId) : results;
+      row = [...runResults].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+    }
     if (!row) return;
 
     const btn = document.getElementById('exportPineBtn');
