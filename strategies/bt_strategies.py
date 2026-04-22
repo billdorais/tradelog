@@ -295,10 +295,220 @@ class CamarillaEMA8(Strategy):
             self._entry = c
 
 
+class CamarillaBreakout(Strategy):
+    """H4/L4 breakout with EMA-direction filter. Matches CAM_*_v6 Pine
+    bar-for-bar (same entry/exit logic as CamarillaEMA8, with cam_mult
+    exposed so the level multiplier can be tuned).
+    """
+    cam_mult         = 1.1
+    stop_loss        = 0.50
+    trail_activation = 0.40
+    trail_offset     = 0.20
+    ema_period       = 8
+    _trade_on_close  = True
+
+    def init(self):
+        cl, hi, lo = self.data.Close, self.data.High, self.data.Low
+        self.ema = self.I(lambda: _ema(cl, self.ema_period), name=f"EMA{self.ema_period}", overlay=True, color="#ffffff")
+
+        idx = self.data.index
+        is_intraday = hasattr(idx[0], 'hour') and len(set(t.date() for t in idx)) < len(idx)
+        if is_intraday:
+            daily = pd.DataFrame({'h': hi, 'l': lo, 'c': cl}, index=idx)
+            daily = daily.resample('1D').agg({'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
+            prev = daily.shift(1)
+            ph = prev['h'].reindex(idx, method='ffill').to_numpy()
+            pl = prev['l'].reindex(idx, method='ffill').to_numpy()
+            pc = prev['c'].reindex(idx, method='ffill').to_numpy()
+        else:
+            ph = np.roll(hi, 1); ph[0] = np.nan
+            pl = np.roll(lo, 1); pl[0] = np.nan
+            pc = np.roll(cl, 1); pc[0] = np.nan
+
+        self.h4 = self.I(lambda: pc + (ph - pl) * self.cam_mult / 2.0, name="H4", overlay=True, color="#ef5350")
+        self.l4 = self.I(lambda: pc - (ph - pl) * self.cam_mult / 2.0, name="L4", overlay=True, color="#26a65b")
+
+        self._entry    = np.nan
+        self._trail_sl = np.nan
+
+    def next(self):
+        c, o = self.data.Close[-1], self.data.Open[-1]
+        h4, l4, ema = self.h4[-1], self.l4[-1], self.ema[-1]
+        if any(np.isnan(x) for x in (h4, l4, ema)):
+            return
+
+        if self.position.is_long:
+            profit = c - self._entry
+            if profit <= -self.stop_loss:
+                self.position.close(); self._entry = self._trail_sl = np.nan; return
+            if profit >= self.trail_activation:
+                new_sl = c - self.trail_offset
+                if np.isnan(self._trail_sl) or new_sl > self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c <= self._trail_sl:
+                self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        if self.position.is_short:
+            profit = self._entry - c
+            if profit <= -self.stop_loss:
+                self.position.close(); self._entry = self._trail_sl = np.nan; return
+            if profit >= self.trail_activation:
+                new_sl = c + self.trail_offset
+                if np.isnan(self._trail_sl) or new_sl < self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c >= self._trail_sl:
+                self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        self._entry = self._trail_sl = np.nan
+        if c > h4 and o < h4 and ema < c:
+            self.buy();  self._entry = c
+        elif c < l4 and o > l4 and ema > c:
+            self.sell(); self._entry = c
+
+
+class CamarillaH3L3Reversal(Strategy):
+    """H3/L3 failed-breakout reversal, matching CAM_H3L3_REV_V01 Pine.
+
+    Entry (fade the level):
+      Long:  low <= l3 and close > l3 and ema8 < close  (wick pierced L3, closed back above)
+      Short: high >= h3 and close < h3 and ema8 > close (wick pierced H3, closed back below)
+
+    Differences from CamarillaBreakout:
+      * H3/L3 levels use divisor 4.0 (not 2.0 for H4/L4)
+      * Asymmetric long/short exit params — the Pine uses tighter stops on shorts
+      * RTH session filter (09:30–16:00) — no entries outside RTH
+      * EOD force-close at `eod_close_hhmm` (default 1555, matching the Pine)
+    """
+    cam_mult               = 1.1
+    ema_period             = 8
+    # Long exits (Pine: loss=70, trail_points=40, trail_offset=1 → dollars)
+    stop_loss_long         = 0.70
+    trail_activation_long  = 0.40
+    trail_offset_long      = 0.01
+    # Short exits (Pine: loss=20, trail_points=10, trail_offset=1 → dollars)
+    stop_loss_short        = 0.20
+    trail_activation_short = 0.10
+    trail_offset_short     = 0.01
+    # Session / EOD
+    rth_start_hhmm         = 930   # inclusive
+    rth_end_hhmm           = 1600  # exclusive (matches Pine's 0930-1600 session)
+    eod_close_hhmm         = 1555  # last completed 5-min bar before close
+    _trade_on_close        = True
+
+    def init(self):
+        cl, hi, lo = self.data.Close, self.data.High, self.data.Low
+        self.ema = self.I(lambda: _ema(cl, self.ema_period), name=f"EMA{self.ema_period}", overlay=True, color="#ffffff")
+
+        idx = self.data.index
+        is_intraday = hasattr(idx[0], 'hour') and len(set(t.date() for t in idx)) < len(idx)
+        if is_intraday:
+            # Pine tracks RTH session OHLC explicitly. On data that's already
+            # RTH-filtered, a daily resample is equivalent; otherwise restrict
+            # the daily aggregate to RTH bars first.
+            ts = pd.Series(1, index=idx)
+            rth_mask = [(self._hhmm(t) >= self.rth_start_hhmm and self._hhmm(t) < self.rth_end_hhmm) for t in idx]
+            rth_mask = pd.Series(rth_mask, index=idx)
+            daily = pd.DataFrame({'h': hi, 'l': lo, 'c': cl}, index=idx)[rth_mask]
+            daily = daily.resample('1D').agg({'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
+            prev = daily.shift(1)
+            ph = prev['h'].reindex(idx, method='ffill').to_numpy()
+            pl = prev['l'].reindex(idx, method='ffill').to_numpy()
+            pc = prev['c'].reindex(idx, method='ffill').to_numpy()
+        else:
+            ph = np.roll(hi, 1); ph[0] = np.nan
+            pl = np.roll(lo, 1); pl[0] = np.nan
+            pc = np.roll(cl, 1); pc[0] = np.nan
+
+        # H3/L3 use divisor 4.0 — Pine: prevRTHClose ± (H - L) * 1.1 / 4.0
+        self.h3 = self.I(lambda: pc + (ph - pl) * self.cam_mult / 4.0, name="H3", overlay=True, color="#ef5350")
+        self.l3 = self.I(lambda: pc - (ph - pl) * self.cam_mult / 4.0, name="L3", overlay=True, color="#26a65b")
+
+        self._entry    = np.nan
+        self._trail_sl = np.nan
+
+    @staticmethod
+    def _hhmm(ts):
+        return ts.hour * 100 + ts.minute
+
+    def next(self):
+        c, o, h, l = self.data.Close[-1], self.data.Open[-1], self.data.High[-1], self.data.Low[-1]
+        h3, l3, ema = self.h3[-1], self.l3[-1], self.ema[-1]
+        idx = self.data.index[-1]
+        hhmm = self._hhmm(idx) if hasattr(idx, 'hour') else 0
+        in_rth = self.rth_start_hhmm <= hhmm < self.rth_end_hhmm
+        is_eod_bar = hhmm == self.eod_close_hhmm
+
+        # EOD flatten (priority over entries, matches Pine ordering)
+        if is_eod_bar and self.position:
+            self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        if np.isnan(h3) or np.isnan(l3) or np.isnan(ema):
+            return
+
+        if self.position.is_long:
+            profit = c - self._entry
+            if profit <= -self.stop_loss_long:
+                self.position.close(); self._entry = self._trail_sl = np.nan; return
+            if profit >= self.trail_activation_long:
+                new_sl = c - self.trail_offset_long
+                if np.isnan(self._trail_sl) or new_sl > self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c <= self._trail_sl:
+                self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        if self.position.is_short:
+            profit = self._entry - c
+            if profit <= -self.stop_loss_short:
+                self.position.close(); self._entry = self._trail_sl = np.nan; return
+            if profit >= self.trail_activation_short:
+                new_sl = c + self.trail_offset_short
+                if np.isnan(self._trail_sl) or new_sl < self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c >= self._trail_sl:
+                self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        if not in_rth or is_eod_bar:
+            return
+
+        self._entry = self._trail_sl = np.nan
+        if l <= l3 and c > l3 and ema < c:
+            self.buy();  self._entry = c
+        elif h >= h3 and c < h3 and ema > c:
+            self.sell(); self._entry = c
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 # Maps strategy_name → (class, [{id, label, type, default, min, max, step}])
 
 STRATEGIES = {
+    "cam_breakout": (
+        CamarillaBreakout,
+        [
+            {"id": "cam_mult",         "label": "Cam Multiplier",       "type": "float", "default": 1.1,  "min": 0.5,  "max": 2.5,  "step": 0.05},
+            {"id": "stop_loss",        "label": "Stop Loss ($)",        "type": "float", "default": 0.50, "min": 0.20, "max": 1.50, "step": 0.10},
+            {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.20, "max": 1.50, "step": 0.10},
+            {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.10, "max": 0.80, "step": 0.10},
+            {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 5,    "max": 21,   "step": 1},
+        ],
+    ),
+    "cam_h3l3_reversal": (
+        CamarillaH3L3Reversal,
+        [
+            {"id": "cam_mult",               "label": "Cam Multiplier",            "type": "float", "default": 1.1,  "min": 0.5,  "max": 2.5,  "step": 0.05},
+            {"id": "ema_period",             "label": "EMA Period",                "type": "int",   "default": 8,    "min": 5,    "max": 21,   "step": 1},
+            {"id": "stop_loss_long",         "label": "Long Stop Loss ($)",        "type": "float", "default": 0.70, "min": 0.10, "max": 2.00, "step": 0.10},
+            {"id": "trail_activation_long",  "label": "Long Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.05, "max": 2.00, "step": 0.05},
+            {"id": "trail_offset_long",      "label": "Long Trail Offset ($)",     "type": "float", "default": 0.01, "min": 0.01, "max": 0.50, "step": 0.01},
+            {"id": "stop_loss_short",        "label": "Short Stop Loss ($)",       "type": "float", "default": 0.20, "min": 0.05, "max": 2.00, "step": 0.05},
+            {"id": "trail_activation_short", "label": "Short Trail Activation ($)","type": "float", "default": 0.10, "min": 0.05, "max": 2.00, "step": 0.05},
+            {"id": "trail_offset_short",     "label": "Short Trail Offset ($)",    "type": "float", "default": 0.01, "min": 0.01, "max": 0.50, "step": 0.01},
+        ],
+    ),
     "cam_ema8": (
         CamarillaEMA8,
         [
