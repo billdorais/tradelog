@@ -275,7 +275,7 @@
 
   <!-- ── Top-3 Equity Curves ──────────────────────────────────── -->
   <div id="equitySection" style="display:none" class="card">
-    <div class="card-title">Top-3 Equity Curves <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— best param combos overlaid</span></div>
+    <div class="card-title">Top-3 Equity Curves <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— best param combos from current run</span></div>
     <canvas id="equityChart" height="90"></canvas>
   </div>
 
@@ -353,6 +353,7 @@
   let sortKey      = 'score';
   let sortDir      = -1;
   let selectedIdx  = null;
+  let currentRunId = null;
 
   // ── Init ───────────────────────────────────────────────────────
   (async function init() {
@@ -529,6 +530,8 @@
       param_ranges: paramRanges,
     };
 
+    currentRunId = null;  // reset so first result sets the new run's ID
+
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
     btn.textContent = '⏳ Running…';
@@ -574,6 +577,7 @@
     } else if (msg.type === 'warning') {
       logLine('⚠ ' + msg.msg, 'warn');
     } else if (msg.type === 'result') {
+      if (msg.run_id && !currentRunId) currentRunId = msg.run_id;
       results.push(msg);
       renderResults();
       if (msg.equity_curve) renderEquityChart();
@@ -849,8 +853,11 @@
   const CURVE_COLORS = ['#2962ff', '#26a65b', '#f0ad4e'];
 
   function renderEquityChart() {
-    // Collect top-3 results that have equity_curve data
-    const sorted = [...results]
+    // Top-3 from the current run only (so sweeping one param shows that param varying)
+    const runResults = currentRunId
+      ? results.filter(r => r.run_id === currentRunId)
+      : results;
+    const sorted = [...runResults]
       .filter(r => r.equity_curve)
       .sort((a, b) => (b.score || 0) - (a.score || 0))
       .slice(0, 3);
