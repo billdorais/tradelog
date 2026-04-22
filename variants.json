@@ -1,0 +1,42 @@
+{
+  "_comment": "Expand tickers × tfs × strategies. Defaults merge into each variant's params (entry.params wins).",
+
+  "start_date": "2024-01-01",
+  "end_date":   "2024-12-31",
+
+  "gate": {
+    "min_train_sharpe": 1.0,
+    "oos_ratio":        0.7,
+    "min_trades":       10
+  },
+
+  "defaults": {
+    "cam_breakout": {
+      "cam_mult":         1.1,
+      "stop_loss":        0.50,
+      "trail_activation": 0.40,
+      "trail_offset":     0.20,
+      "ema_period":       8
+    },
+    "cam_h3l3_reversal": {
+      "cam_mult":               1.1,
+      "ema_period":             8,
+      "stop_loss_long":         0.70,
+      "trail_activation_long":  0.40,
+      "trail_offset_long":      0.01,
+      "stop_loss_short":        0.20,
+      "trail_activation_short": 0.10,
+      "trail_offset_short":     0.01
+    }
+  },
+
+  "variants": [
+    {
+      "tickers":    ["AAPL", "PLTR"],
+      "tfs":        ["5m"],
+      "strategies": ["cam_breakout", "cam_h3l3_reversal"],
+      "broker":     "alpaca-paper",
+      "quantity":   1
+    }
+  ]
+}
