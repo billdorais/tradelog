@@ -496,12 +496,23 @@
   function renderParams(name) {
     const params = strategyParams[name] || [];
     const grid   = document.getElementById('paramsGrid');
-    grid.innerHTML = params.map(p => `
-      <div class="field">
-        <label>${p.label}</label>
-        <input type="number" id="param_${p.id}" value="${p.default}"
-               min="${p.min}" max="${p.max}" step="${p.step}">
-      </div>`).join('');
+    grid.innerHTML = params.map(p => {
+      if (p.type === 'choice') {
+        const opts = (p.choices || []).map(c =>
+          `<option value="${c}"${c === p.default ? ' selected' : ''}>${c}</option>`).join('');
+        return `
+          <div class="field">
+            <label>${p.label}</label>
+            <select id="param_${p.id}" data-type="choice">${opts}</select>
+          </div>`;
+      }
+      return `
+        <div class="field">
+          <label>${p.label}</label>
+          <input type="number" id="param_${p.id}" value="${p.default}"
+                 min="${p.min}" max="${p.max}" step="${p.step}">
+        </div>`;
+    }).join('');
   }
 
   // ── Pine Script → AI conversion ──────────────────────────────────────────
@@ -636,7 +647,8 @@
       const p      = {};
       for (const param of params) {
         const el = document.getElementById(`param_${param.id}`);
-        if (el) p[param.id] = parseFloat(el.value);
+        if (!el) continue;
+        p[param.id] = param.type === 'choice' ? el.value : parseFloat(el.value);
       }
       const isUser = slug in userStrategies;
       payload.strategy_type = isUser ? 'saved' : 'builtin';

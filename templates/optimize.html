@@ -409,7 +409,9 @@
   }
 
   function renderParamRanges(slug) {
-    const params = slug ? (allParams[slug] || []) : [];
+    // Choice-typed params aren't sweepable — drop them from the optimizer UI.
+    // Their default is still sent to the backtester via the /api/bt/optimize payload.
+    const params = (slug ? (allParams[slug] || []) : []).filter(p => p.type !== 'choice');
     const body   = document.getElementById('paramsBody');
     if (!params.length) {
       body.innerHTML = `<div class="no-params">${slug ? 'No tunable parameters detected for this strategy.' : 'Select a strategy above.'}</div>`;

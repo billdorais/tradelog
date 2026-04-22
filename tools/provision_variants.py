@@ -123,8 +123,8 @@ def variant_name(v):
 
 
 def load_bars(ticker, tf, start, end):
-    from strategies.data import fetch_bars
-    raw = fetch_bars(ticker, start, end, tf)
+    from strategies.data import fetch_bars_alpaca
+    raw = fetch_bars_alpaca(ticker, start, end, tf)
     if len(raw) < 60:
         raise RuntimeError(f"only {len(raw)} bars — need ≥60 to split train/test")
     df = pd.DataFrame(raw).set_index("time")
