@@ -2834,6 +2834,10 @@ def api_alpaca_analysis():
         # symbol.  This correctly pairs intraday round-trips from algo signals even
         # when older open positions exist in the queue (FIFO would assign the sell to
         # the oldest buy, inflating or deflating P&L vs what the signal actually did).
+        # Partial-fill loop: if a sell exceeds the top long we close it fully and
+        # keep consuming longs until the sell is exhausted; any residual opens a
+        # short. Without this, oversized fills silently drop shares and stale
+        # longs get mispaired with unrelated later sells.
         open_longs  = {}
         open_shorts = {}
         closed = []
@@ -2846,20 +2850,28 @@ def api_alpaca_analysis():
             date_str = fill_ts[:10] if fill_ts else ""
             strat    = _resolve_strategy(sym, side, fill_ts)
             if side == "BOT":
-                q = open_shorts.get(sym, [])
-                if q:
+                q = open_shorts.setdefault(sym, [])
+                while qty > 0 and q:
                     ep, eq, et, es = q.pop(-1)  # LIFO: most recent short
-                    closed.append({"pnl": round((ep - price) * min(qty, eq), 2), "strategy": es,
+                    m = min(qty, eq)
+                    closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
                                    "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
-                else:
+                    qty -= m
+                    if eq > m:
+                        q.append((ep, eq - m, et, es))   # remainder stays on top (LIFO)
+                if qty > 0:
                     open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
             elif side == "SLD":
-                q = open_longs.get(sym, [])
-                if q:
+                q = open_longs.setdefault(sym, [])
+                while qty > 0 and q:
                     ep, eq, et, es = q.pop(-1)  # LIFO: most recent long
-                    closed.append({"pnl": round((price - ep) * min(qty, eq), 2), "strategy": es,
+                    m = min(qty, eq)
+                    closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
                                    "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
-                else:
+                    qty -= m
+                    if eq > m:
+                        q.append((ep, eq - m, et, es))
+                if qty > 0:
                     open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
         # Per-day FIFO pairing — used only for the daily/weekly breakdown so each
@@ -2883,22 +2895,30 @@ def api_alpaca_analysis():
                 fill_ts = f.get("time", "")
                 strat   = _resolve_strategy(sym, side, fill_ts)
                 if side == "BOT":
-                    q = day_shorts.get(sym, [])
-                    if q:
-                        ep, eq, et, es = q.pop(0)
-                        daily_closed.append({"pnl": round((ep - price) * min(qty, eq), 2), "strategy": es,
+                    q = day_shorts.setdefault(sym, [])
+                    while qty > 0 and q:
+                        ep, eq, et, es = q.pop(0)  # FIFO: oldest short
+                        m = min(qty, eq)
+                        daily_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
                                              "entry_strategy": es, "exit_strategy": strat,
                                              "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
-                    else:
+                        qty -= m
+                        if eq > m:
+                            q.insert(0, (ep, eq - m, et, es))   # remainder stays at front (FIFO)
+                    if qty > 0:
                         day_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
                 elif side == "SLD":
-                    q = day_longs.get(sym, [])
-                    if q:
+                    q = day_longs.setdefault(sym, [])
+                    while qty > 0 and q:
                         ep, eq, et, es = q.pop(0)
-                        daily_closed.append({"pnl": round((price - ep) * min(qty, eq), 2), "strategy": es,
+                        m = min(qty, eq)
+                        daily_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
                                              "entry_strategy": es, "exit_strategy": strat,
                                              "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
-                    else:
+                        qty -= m
+                        if eq > m:
+                            q.insert(0, (ep, eq - m, et, es))
+                    if qty > 0:
                         day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
         def _stats(tlist):
