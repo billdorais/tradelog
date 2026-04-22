@@ -1940,6 +1940,19 @@ def _extract_strategy_params(code):
     return params
 
 
+_PARAM_PRIORITY = {
+    "cam_mult": 1, "camarilla_mult": 1,
+    "loss_dollars": 2, "loss_points": 2, "stop_loss": 2,
+    "trail_points_dollars": 3, "trail_points": 3, "trail_activation": 3,
+    "trail_offset_dollars": 4, "trail_offset": 4,
+    "ema_period": 5,
+    "tick_size": 99,
+}
+
+def _sort_params(params):
+    return sorted(params, key=lambda p: _PARAM_PRIORITY.get(p["id"], 50))
+
+
 @app.route("/api/bt/strategies")
 def bt_strategies_list():
     """Return built-in + user-saved strategies with their parameter schemas."""
@@ -1954,7 +1967,7 @@ def bt_strategies_list():
         conn.close()
         for row in rows:
             r = dict(row) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], row))
-            result[r["slug"]] = json.loads(r["params"])
+            result[r["slug"]] = _sort_params(json.loads(r["params"]))
     except Exception as _e:
         log.warning("Failed to load user strategies: %s", _e)
     return jsonify(result)
