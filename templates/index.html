@@ -967,20 +967,10 @@
       // Build stats object in the same shape as /api/stats so renderStats works
       const lastVal   = displayCurve.length ? displayCurve[displayCurve.length - 1].value : 0;
       const lineColor = lastVal >= 0 ? '#5fe0a0' : '#ef5350';
-      let _peak = 0, _maxDd = 0;
-      for (const p of displayCurve) {
-        if (p.value > _peak) _peak = p.value;
-        const dd = _peak - p.value;
-        if (dd > _maxDd) _maxDd = dd;
-      }
+      const computed  = _computeStatsFromCurve(displayCurve);
       const stats = {
-        completed_trades: overall.trades      || 0,
-        win_rate:         overall.win_rate     || 0,
-        avg_win:          overall.avg_win      || 0,
-        avg_loss:         overall.avg_loss     || 0,
-        profit_factor:    overall.profit_factor,
-        max_drawdown:     Math.round(_maxDd * 100) / 100,
-        equity_curve:     displayCurve,
+        ...computed,
+        equity_curve: displayCurve,
       };
 
       // Draw equity curve — clicking a point excludes it from the chart
