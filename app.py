@@ -2054,15 +2054,16 @@ def bt_pine_export(slug):
     modified = pine_code
     for param_name, new_val in params.items():
         val_str = str(int(new_val)) if float(new_val) == int(float(new_val)) else str(round(float(new_val), 4))
-        # Pattern 1: input.float/int(defval=X, ...) or input(defval=X, ...)
+        pn = _re.escape(param_name)
+        # Pattern 1: varname = input*(defval=X, ...)  →  replace X
         modified = _re.sub(
-            r'(?<=' + _re.escape(param_name) + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\()(\s*defval\s*=\s*)[^\s,)]+',
-            r'\g<1>' + val_str,
+            r'(' + pn + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\(\s*defval\s*=\s*)[^\s,)]+',
+            lambda m, v=val_str: m.group(1) + v,
             modified,
         )
-        # Pattern 2: positional first arg — input.float(X, ...) or input.int(X, ...)
+        # Pattern 2: varname = input*(X, ...)  positional first arg  →  replace X
         modified = _re.sub(
-            r'(?<=' + _re.escape(param_name) + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\()(\s*)([+-]?[\d.]+)',
+            r'(' + pn + r'\s*=\s*input(?:\.(?:float|int|source))?\s*\(\s*)([+-]?[\d.]+)',
             lambda m, v=val_str: m.group(1) + v,
             modified,
         )
