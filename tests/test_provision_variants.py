@@ -8,9 +8,11 @@ import pandas as pd
 from tools.provision_variants import (
     build_routing_nodes,
     expand_variants,
+    gate_walk_forward,
     split_train_test,
     two_stage_gate,
     variant_name,
+    walk_forward_folds,
 )
 
 
@@ -67,6 +69,39 @@ def test_expand_variants_cross_product():
 def test_variant_name_is_self_describing():
     v = {"ticker": "aapl", "tf": "5m", "strategy": "cam_h3l3_reversal", "params": {}}
     assert variant_name(v) == "CAM_AAPL_H3L3_REVERSAL_5M"
+
+
+def test_walk_forward_yields_expected_fold_boundaries():
+    df = pd.DataFrame({"x": range(400)})
+    folds = list(walk_forward_folds(df, n_folds=3, min_fold_bars=30))
+    assert len(folds) == 3
+    # chunk = 400 // 4 = 100 → train_end=100/200/300, test_end=200/300/400
+    assert len(folds[0][0]) == 100 and len(folds[0][1]) == 100
+    assert len(folds[1][0]) == 200 and len(folds[1][1]) == 100
+    assert len(folds[2][0]) == 300 and len(folds[2][1]) == 100
+
+
+def test_walk_forward_falls_back_to_single_split_when_data_thin():
+    """n_folds=3 on only 90 bars → chunk=22 < min_fold_bars=30, fallback."""
+    df = pd.DataFrame({"x": range(90)})
+    folds = list(walk_forward_folds(df, n_folds=3, min_fold_bars=30))
+    assert len(folds) == 1  # fallback to single train/test split
+
+
+def test_gate_walk_forward_fails_if_any_fold_fails():
+    good = {"is": {"sharpe": 1.5, "n_trades": 20, "return": 0, "win_rate": 0, "max_dd": 0},
+            "oos":{"sharpe": 1.2, "n_trades": 15, "return": 0, "win_rate": 0, "max_dd": 0}}
+    bad  = {"is": {"sharpe": 1.5, "n_trades": 20, "return": 0, "win_rate": 0, "max_dd": 0},
+            "oos":{"sharpe": 0.3, "n_trades": 15, "return": 0, "win_rate": 0, "max_dd": 0}}
+    ok, reason = gate_walk_forward([good, bad, good])
+    assert not ok and "fold 1" in reason
+
+
+def test_gate_walk_forward_passes_when_all_folds_pass():
+    fold = {"is": {"sharpe": 1.5, "n_trades": 20, "return": 0, "win_rate": 0, "max_dd": 0},
+            "oos":{"sharpe": 1.2, "n_trades": 15, "return": 0, "win_rate": 0, "max_dd": 0}}
+    ok, _ = gate_walk_forward([fold, fold, fold])
+    assert ok
 
 
 def test_build_routing_nodes_has_all_required_types():

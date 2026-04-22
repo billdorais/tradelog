@@ -56,6 +56,24 @@ def split_train_test(df, train_frac=0.7):
     return df.iloc[:split], df.iloc[split:]
 
 
+def walk_forward_folds(df, n_folds=3, min_fold_bars=30):
+    """Anchored walk-forward split. For n_folds=3 on N bars:
+      fold 0: train [0:N/4],   test [N/4:N/2]
+      fold 1: train [0:N/2],   test [N/2:3N/4]
+      fold 2: train [0:3N/4],  test [3N/4:N]
+    Yields (train_df, test_df). Falls back to a single 70/30 split when
+    there aren't enough bars for `n_folds` windows of `min_fold_bars`."""
+    n = len(df)
+    chunk = n // (n_folds + 1)
+    if n_folds <= 1 or chunk < min_fold_bars:
+        yield split_train_test(df)
+        return
+    for i in range(n_folds):
+        train_end = chunk * (i + 1)
+        test_end  = chunk * (i + 2)
+        yield df.iloc[:train_end], df.iloc[train_end:test_end]
+
+
 def two_stage_gate(is_stats, oos_stats, min_train_sharpe=1.0, oos_ratio=0.7, min_trades=10):
     """Return (passed, reason). IS must clear min_train_sharpe with enough
     trades; OOS must retain at least `oos_ratio` of the IS Sharpe. The OOS
@@ -67,6 +85,20 @@ def two_stage_gate(is_stats, oos_stats, min_train_sharpe=1.0, oos_ratio=0.7, min
     threshold = oos_ratio * is_stats["sharpe"]
     if oos_stats["sharpe"] < threshold:
         return False, f"OOS Sharpe={oos_stats['sharpe']:.2f} < {oos_ratio}×IS={threshold:.2f}"
+    return True, "OK"
+
+
+def gate_walk_forward(folds, min_train_sharpe=1.0, oos_ratio=0.7, min_trades=10):
+    """Every fold must pass the two-stage gate. A single bad fold fails
+    the variant — the strictness is what catches overfits."""
+    for i, fold in enumerate(folds):
+        ok, reason = two_stage_gate(
+            fold["is"], fold["oos"],
+            min_train_sharpe=min_train_sharpe,
+            oos_ratio=oos_ratio, min_trades=min_trades,
+        )
+        if not ok:
+            return False, f"fold {i}: {reason}"
     return True, "OK"
 
 
@@ -103,22 +135,32 @@ def load_bars(ticker, tf, start, end):
     return df
 
 
-def evaluate_variant(v, start, end, gate_cfg):
+def evaluate_variant(v, start, end, gate_cfg, n_folds=1):
     strategy_cls = STRATEGIES[v["strategy"]][0]
     try:
         df = load_bars(v["ticker"], v["tf"], start, end)
     except Exception as e:
         return {**v, "status": "data-error", "reason": str(e)}
-    train_df, test_df = split_train_test(df)
+    folds = []
     try:
-        is_stats  = backtest_window(train_df, strategy_cls, v["params"])
-        oos_stats = backtest_window(test_df,  strategy_cls, v["params"])
+        for train_df, test_df in walk_forward_folds(df, n_folds=n_folds):
+            folds.append({
+                "is":  backtest_window(train_df, strategy_cls, v["params"]),
+                "oos": backtest_window(test_df,  strategy_cls, v["params"]),
+            })
     except Exception as e:
         return {**v, "status": "run-error", "reason": str(e)}
-    passed, reason = two_stage_gate(is_stats, oos_stats, **gate_cfg)
+
+    passed, reason = gate_walk_forward(folds, **gate_cfg)
+    # Aggregate for display — means across folds
+    def _mean(key, side):
+        vals = [f[side][key] for f in folds]
+        return sum(vals) / len(vals) if vals else 0.0
     return {
-        **v, "status": "pass" if passed else "fail",
-        "reason": reason, "is": is_stats, "oos": oos_stats,
+        **v, "status": "pass" if passed else "fail", "reason": reason,
+        "is":    {k: _mean(k, "is")  for k in folds[0]["is"]},
+        "oos":   {k: _mean(k, "oos") for k in folds[0]["oos"]},
+        "folds": folds,
     }
 
 
@@ -133,14 +175,36 @@ def build_routing_nodes(v):
     ]
 
 
-def post_rule(api_base, name, nodes):
+def find_rule_by_name(api_base, name):
+    req = urllib.request.Request(
+        f"{api_base.rstrip('/')}/api/routing/rules", method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        rules = json.loads(r.read())
+    return next((rule for rule in rules if rule.get("name") == name), None)
+
+
+def upsert_rule(api_base, name, nodes):
+    """Create-or-update by name. Rerunning the driver doesn't pile up
+    duplicate rules — the rule with the same name gets its nodes
+    overwritten."""
+    existing = find_rule_by_name(api_base, name)
     body = json.dumps({"name": name, "nodes": nodes}).encode("utf-8")
-    req  = urllib.request.Request(
+    if existing:
+        req = urllib.request.Request(
+            f"{api_base.rstrip('/')}/api/routing/rules/{existing['id']}",
+            data=body, headers={"Content-Type": "application/json"}, method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+        return {"id": existing["id"], "action": "updated"}
+    req = urllib.request.Request(
         f"{api_base.rstrip('/')}/api/routing/rules",
         data=body, headers={"Content-Type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read())
+        resp = json.loads(r.read())
+    return {"id": resp.get("id"), "action": "created"}
 
 
 def print_summary(results, apply_mode):
@@ -173,16 +237,18 @@ def run(config_path, apply=False, api_base="http://localhost:5000"):
     gate_cfg = config.get("gate", {})
     start    = config.get("start_date", "2024-01-01")
     end      = config.get("end_date",   "2024-12-31")
+    n_folds  = int(config.get("n_folds", 1))
 
-    results = [evaluate_variant(v, start, end, gate_cfg) for v in expand_variants(config)]
+    results = [evaluate_variant(v, start, end, gate_cfg, n_folds=n_folds)
+               for v in expand_variants(config)]
     print_summary(results, apply_mode=apply)
 
     if apply:
         for r in (r for r in results if r["status"] == "pass"):
             name = variant_name(r)
             try:
-                resp = post_rule(api_base, name, build_routing_nodes(r))
-                print(f"  ✓ {name}  id={resp.get('id')}")
+                resp = upsert_rule(api_base, name, build_routing_nodes(r))
+                print(f"  ✓ {name}  {resp['action']}  id={resp['id']}")
             except urllib.error.URLError as e:
                 print(f"  ✗ {name}  {e}", file=sys.stderr)
     return results
@@ -192,7 +258,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="variants.json")
     ap.add_argument("--apply", action="store_true",
-                    help="Create routing rules via /api/routing/rules (default: dry-run)")
+                    help="Create/update routing rules via /api/routing/rules (default: dry-run)")
     ap.add_argument("--api-base", default="http://localhost:5000",
                     help="Base URL of the tradelog API (used with --apply)")
     args = ap.parse_args()

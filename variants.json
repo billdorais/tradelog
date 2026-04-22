@@ -3,6 +3,7 @@
 
   "start_date": "2024-01-01",
   "end_date":   "2024-12-31",
+  "n_folds":    3,
 
   "gate": {
     "min_train_sharpe": 1.0,
