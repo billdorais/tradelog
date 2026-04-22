@@ -1468,6 +1468,44 @@ def variants_page():
     return render_template("variants.html")
 
 
+def _resolve_variant_strategy(slug):
+    """Return a Strategy class for `slug` — built-in first, then user_strategies DB.
+    Returns (cls, None) on success or (None, error_message)."""
+    from strategies.bt_strategies import STRATEGIES as _BUILTIN
+    entry = _BUILTIN.get(slug)
+    if entry:
+        return entry[0], None
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"SELECT code FROM user_strategies WHERE slug = {placeholder()}", (slug,))
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        return None, f"DB lookup failed: {e}"
+    if not row:
+        return None, f"unknown strategy '{slug}' (not built-in, not saved)"
+    code = row[0]
+    try:
+        from backtesting import Strategy as _Strategy
+        import numpy as _np, pandas as _pd
+        ns = {"Strategy": _Strategy, "np": _np, "numpy": _np, "pd": _pd, "pandas": _pd}
+        exec(code, ns)
+        cls = next(
+            (v for v in ns.values()
+             if isinstance(v, type) and issubclass(v, _Strategy) and v is not _Strategy),
+            None,
+        )
+        if cls is None:
+            return None, f"saved strategy '{slug}' has no Strategy subclass"
+        cls.__module__ = "__main__"
+        cls.__qualname__ = cls.__name__
+        setattr(sys.modules["__main__"], cls.__name__, cls)
+        return cls, None
+    except Exception as e:
+        return None, f"saved strategy '{slug}' exec failed: {e}"
+
+
 @app.route("/api/variants/run", methods=["POST"])
 def api_variants_run():
     """Expand a variants config, backtest each with walk-forward, return pass/fail.
@@ -1487,7 +1525,11 @@ def api_variants_run():
         return jsonify({"error": f"expand_variants: {e}"}), 400
     results = []
     for v in variants:
-        r = evaluate_variant(v, start, end, gate_cfg, n_folds=n_folds)
+        cls, err = _resolve_variant_strategy(v["strategy"])
+        if err:
+            r = {**v, "status": "run-error", "reason": err}
+        else:
+            r = evaluate_variant(v, start, end, gate_cfg, n_folds=n_folds, strategy_cls=cls)
         r["name"]  = variant_name(v)
         r["nodes"] = build_routing_nodes(v)
         # Drop per-fold detail — UI only shows mean IS/OOS stats

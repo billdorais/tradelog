@@ -92,6 +92,17 @@
     with an in-sample / out-of-sample gate. Survivors become routing rules.</div>
 
   <div class="card">
+    <div class="card-title">Available strategies</div>
+    <div id="stratList" class="status-line" style="line-height:1.7">Loading…</div>
+    <div class="tv-note" style="margin-top:10px">
+      Use any slug above as a <code>strategies:</code> entry in the config.
+      To add a brand-new strategy: go to <a href="/bt" style="color:#5fe0a0">Backtester</a>,
+      paste Pine or Python code, click <strong>Save strategy</strong>, then reference its
+      slug here. Saved strategies live in the <code>user_strategies</code> DB table.
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Config (variants.json format)</div>
     <textarea id="cfg" spellcheck="false"></textarea>
     <div class="row">
@@ -287,7 +298,24 @@ async function applyRules() {
   btn.textContent = 'Apply Survivors as Routing Rules';
 }
 
+async function loadStrategies() {
+  const el = document.getElementById('stratList');
+  try {
+    const r = await fetch('/api/bt/strategies');
+    const data = await r.json();
+    const slugs = Object.keys(data).sort();
+    if (!slugs.length) { el.textContent = '(none)'; return; }
+    el.innerHTML = slugs.map(s =>
+      `<code style="background:#0a0a0a;border:1px solid #1e2130;border-radius:4px;padding:1px 7px;margin:0 4px 4px 0;display:inline-block;color:#5fe0a0;font-size:0.8rem">${s}</code>`
+    ).join('');
+  } catch (e) {
+    el.textContent = 'Failed to load strategies: ' + e.message;
+    el.style.color = '#ef5350';
+  }
+}
+
 resetConfig();
+loadStrategies();
 </script>
 </body>
 </html>

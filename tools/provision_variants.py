@@ -135,8 +135,9 @@ def load_bars(ticker, tf, start, end):
     return df
 
 
-def evaluate_variant(v, start, end, gate_cfg, n_folds=1):
-    strategy_cls = STRATEGIES[v["strategy"]][0]
+def evaluate_variant(v, start, end, gate_cfg, n_folds=1, strategy_cls=None):
+    if strategy_cls is None:
+        strategy_cls = STRATEGIES[v["strategy"]][0]
     try:
         df = load_bars(v["ticker"], v["tf"], start, end)
     except Exception as e:
