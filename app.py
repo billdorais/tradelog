@@ -2519,21 +2519,10 @@ def bt_optimize():
                 pct = int((done - 1) / total * 100)
                 yield _sse({"type": "progress", "msg": f"Fetching {ticker} / {tf}  ({done}/{total})", "pct": pct})
 
-                # â"€â"€ Cap date range for intraday to keep bar count manageable â"€
-                _MAX_DAYS = {"5m": 30, "15m": 60, "30m": 90, "1h": 180}
                 _MAX_TRIES = {"5m": 20, "15m": 25, "30m": 30, "1h": 40, "1d": 50}
-                tf_max_days  = _MAX_DAYS.get(tf)
                 tf_max_tries = _MAX_TRIES.get(tf, 50)
                 eff_start = start_date
                 eff_end   = end_date
-                if tf_max_days:
-                    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-                    today    = _dt.now(_tz.utc).strftime("%Y-%m-%d")
-                    earliest = (_dt.now(_tz.utc) - _td(days=tf_max_days)).strftime("%Y-%m-%d")
-                    eff_end  = today
-                    if start_date < earliest:
-                        eff_start = earliest
-                    yield _sse({"type": "progress", "msg": f"  {tf} capped to {eff_start} â†’ {eff_end}", "pct": pct})
 
                 # â"€â"€ Fetch data â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
                 try:
