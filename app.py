@@ -2235,7 +2235,7 @@ def bt_convert():
         try:
             client = _anthropic.Anthropic(api_key=api_key)
             with client.messages.stream(
-                model="claude-sonnet-4-6",
+                model="claude-opus-4-7",
                 max_tokens=3000,
                 system=system,
                 messages=[{"role": "user", "content":
@@ -3618,7 +3618,7 @@ def api_analysis_suggest():
         try:
             client = _anthropic.Anthropic(api_key=api_key)
             with client.messages.stream(
-                model="claude-sonnet-4-6",
+                model="claude-opus-4-7",
                 max_tokens=1500,
                 system=(
                     "You are a quantitative trading analyst reviewing live trading results. "
