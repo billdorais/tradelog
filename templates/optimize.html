@@ -531,6 +531,9 @@
     };
 
     currentRunId = null;  // reset so first result sets the new run's ID
+    results      = [];    // clear previous run's results so table shows only current run
+    selectedIdx  = null;
+    document.getElementById('resultsSection').style.display = 'none';
 
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
