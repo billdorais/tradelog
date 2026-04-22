@@ -426,22 +426,28 @@ def _compute_daily_pnl():
             is_today = received[:10] == today
 
             if action in ("BUY", "LONG", "EXIT_SHORT"):
-                queue = open_shorts.get(key, [])
-                if queue:
+                queue = open_shorts.setdefault(key, [])
+                while qty > 0 and queue:
                     entry_price, entry_qty = queue.pop(0)
-                    pnl = (entry_price - price) * min(qty, entry_qty)
+                    m = min(qty, entry_qty)
                     if is_today:
-                        today_pnl += pnl
-                else:
+                        today_pnl += (entry_price - price) * m
+                    qty -= m
+                    if entry_qty > m:
+                        queue.insert(0, (entry_price, entry_qty - m))
+                if qty > 0:
                     open_longs.setdefault(key, []).append((price, qty))
             elif action in ("SELL", "SHORT", "EXIT_LONG"):
-                queue = open_longs.get(key, [])
-                if queue:
+                queue = open_longs.setdefault(key, [])
+                while qty > 0 and queue:
                     entry_price, entry_qty = queue.pop(0)
-                    pnl = (price - entry_price) * min(qty, entry_qty)
+                    m = min(qty, entry_qty)
                     if is_today:
-                        today_pnl += pnl
-                else:
+                        today_pnl += (price - entry_price) * m
+                    qty -= m
+                    if entry_qty > m:
+                        queue.insert(0, (entry_price, entry_qty - m))
+                if qty > 0:
                     open_shorts.setdefault(key, []).append((price, qty))
 
         result = round(today_pnl, 2)
@@ -2449,23 +2455,31 @@ def api_stats():
                     ((not to_date)   or (received[:10] <= to_date))
         if action == "BUY":
             # Closes an open short; otherwise opens a new long
-            queue = open_shorts.get(key, [])
-            if queue:
-                entry_price, entry_qty, _, entry_id = queue.pop(0)
-                pnl = (entry_price - price) * min(qty, entry_qty)
+            queue = open_shorts.setdefault(key, [])
+            while qty > 0 and queue:
+                entry_price, entry_qty, entry_time, entry_id = queue.pop(0)
+                m = min(qty, entry_qty)
                 if in_window:
-                    closed.append({"pnl": pnl, "time": received, "entry_id": entry_id, "exit_id": trade_id})
-            else:
+                    closed.append({"pnl": (entry_price - price) * m, "time": received,
+                                   "entry_id": entry_id, "exit_id": trade_id})
+                qty -= m
+                if entry_qty > m:
+                    queue.insert(0, (entry_price, entry_qty - m, entry_time, entry_id))
+            if qty > 0:
                 open_longs.setdefault(key, []).append((price, qty, received, trade_id))
         elif action == "SELL":
             # Closes an open long; otherwise opens a new short
-            queue = open_longs.get(key, [])
-            if queue:
-                entry_price, entry_qty, _, entry_id = queue.pop(0)
-                pnl = (price - entry_price) * min(qty, entry_qty)
+            queue = open_longs.setdefault(key, [])
+            while qty > 0 and queue:
+                entry_price, entry_qty, entry_time, entry_id = queue.pop(0)
+                m = min(qty, entry_qty)
                 if in_window:
-                    closed.append({"pnl": pnl, "time": received, "entry_id": entry_id, "exit_id": trade_id})
-            else:
+                    closed.append({"pnl": (price - entry_price) * m, "time": received,
+                                   "entry_id": entry_id, "exit_id": trade_id})
+                qty -= m
+                if entry_qty > m:
+                    queue.insert(0, (entry_price, entry_qty - m, entry_time, entry_id))
+            if qty > 0:
                 open_shorts.setdefault(key, []).append((price, qty, received, trade_id))
 
     if not closed:
@@ -2634,22 +2648,30 @@ def _build_analysis_stats():
         date_str = received[:10] if received else ""
 
         if action == "BUY":
-            queue = open_shorts.get(key, [])
-            if queue:
+            queue = open_shorts.setdefault(key, [])
+            while qty > 0 and queue:
                 entry_price, entry_qty, entry_time = queue.pop(0)
-                pnl = (entry_price - price) * min(qty, entry_qty)
-                closed.append({"pnl": round(pnl, 2), "strategy": strategy, "ticker": ticker,
-                                "date": date_str, "entry_time": entry_time, "exit_time": received})
-            else:
+                m = min(qty, entry_qty)
+                closed.append({"pnl": round((entry_price - price) * m, 2), "strategy": strategy,
+                               "ticker": ticker, "date": date_str,
+                               "entry_time": entry_time, "exit_time": received})
+                qty -= m
+                if entry_qty > m:
+                    queue.insert(0, (entry_price, entry_qty - m, entry_time))
+            if qty > 0:
                 open_longs.setdefault(key, []).append((price, qty, received))
         elif action == "SELL":
-            queue = open_longs.get(key, [])
-            if queue:
+            queue = open_longs.setdefault(key, [])
+            while qty > 0 and queue:
                 entry_price, entry_qty, entry_time = queue.pop(0)
-                pnl = (price - entry_price) * min(qty, entry_qty)
-                closed.append({"pnl": round(pnl, 2), "strategy": strategy, "ticker": ticker,
-                                "date": date_str, "entry_time": entry_time, "exit_time": received})
-            else:
+                m = min(qty, entry_qty)
+                closed.append({"pnl": round((price - entry_price) * m, 2), "strategy": strategy,
+                               "ticker": ticker, "date": date_str,
+                               "entry_time": entry_time, "exit_time": received})
+                qty -= m
+                if entry_qty > m:
+                    queue.insert(0, (entry_price, entry_qty - m, entry_time))
+            if qty > 0:
                 open_shorts.setdefault(key, []).append((price, qty, received))
 
     def _stats_from_trades(trade_list):
