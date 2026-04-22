@@ -1775,6 +1775,67 @@ def bt_strategies_meta():
     return jsonify(result)
 
 
+def _extract_strategy_summary(code, pine_code):
+    """Heuristic: pull a short description + direction flags from saved code.
+    Tries Python docstring first, falls back to leading Pine // comments."""
+    import re as _re
+    description = ""
+    m = _re.search(r'class\s+\w+\s*\([^)]*\)\s*:\s*\n\s*"""(.*?)"""', code, _re.DOTALL)
+    if m:
+        description = _re.sub(r'\s+', ' ', m.group(1)).strip()
+    elif pine_code:
+        lines = []
+        for line in pine_code.splitlines():
+            s = line.strip()
+            if not s:
+                if lines: break
+                continue
+            if s.startswith("//"):
+                cleaned = s.lstrip("/").strip()
+                if cleaned and not cleaned.startswith(("@", "version=")):
+                    lines.append(cleaned)
+            elif lines:
+                break
+        description = " ".join(lines[:4]).strip()
+    if len(description) > 240:
+        description = description[:237].rstrip() + "…"
+    has_long  = bool(_re.search(r'self\.buy\s*\(',  code))
+    has_short = bool(_re.search(r'self\.sell\s*\(', code))
+    return description, has_long, has_short
+
+
+@app.route("/api/bt/strategies/cards")
+def bt_strategies_cards():
+    """Return condensed card data for user-saved strategies."""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT slug, name, code, pine_code, params, created_at "
+                    "FROM user_strategies ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    out = []
+    for row in rows:
+        r = dict(zip([d[0] for d in cur.description], row)) if DATABASE_URL else dict(row)
+        desc, has_long, has_short = _extract_strategy_summary(r.get("code") or "", r.get("pine_code") or "")
+        try:
+            params = json.loads(r.get("params") or "[]")
+        except Exception:
+            params = []
+        out.append({
+            "slug":        r["slug"],
+            "name":        r["name"],
+            "description": desc,
+            "long":        has_long,
+            "short":       has_short,
+            "params":      params,
+            "created_at":  r.get("created_at"),
+        })
+    return jsonify(out)
+
+
 @app.route("/api/bt/convert", methods=["POST"])
 def bt_convert():
     """Stream a Pine Script â†’ backtesting.py Strategy class via Claude."""

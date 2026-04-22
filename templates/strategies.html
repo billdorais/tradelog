@@ -41,9 +41,60 @@
     a.nav-link:hover { color: #e0e0e0; border-color: #555; }
 
     .content {
-      max-width: 900px;
+      max-width: 1000px;
       margin: 0 auto;
+      padding: 0 16px;
     }
+
+    /* ── Saved-strategy mini card grid ───────────────────── */
+    .mini-section-title {
+      font-size: 0.85rem; font-weight: 600; color: #888;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin: 8px 0 14px;
+    }
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    @media (max-width: 720px) { .mini-grid { grid-template-columns: 1fr; } }
+    .mini-card {
+      background: #0d0d0d;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+    }
+    .mini-card .mc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .mini-card .mc-name { font-size: 0.98rem; font-weight: 700; color: #fff; line-height: 1.25; }
+    .mini-card .mc-slug { font-size: 0.7rem; color: #555; font-family: monospace; margin-top: 2px; }
+    .mini-card .mc-desc { font-size: 0.82rem; color: #a0a0a0; line-height: 1.5; }
+    .mini-card .mc-desc.empty { color: #555; font-style: italic; }
+    .mini-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .mini-badge {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.04em;
+      text-transform: uppercase; padding: 2px 8px; border-radius: 3px;
+    }
+    .mini-badge.long  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
+    .mini-badge.short { background: rgba(239,83,80,0.18);  color: #ef5350; }
+    .mini-params {
+      font-size: 0.76rem;
+      display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
+      font-family: monospace;
+    }
+    .mini-params .k { color: #888; }
+    .mini-params .v { color: #c8c8c8; font-variant-numeric: tabular-nums; }
+    .mini-params.empty { color: #555; font-style: italic; font-family: inherit; font-size: 0.78rem; }
+    .mc-del {
+      background: transparent; border: 1px solid #2a2d3e; color: #777;
+      padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; cursor: pointer;
+      font-family: inherit;
+    }
+    .mc-del:hover { border-color: #ef5350; color: #ef5350; }
 
     /* Strategy card */
     .strategy-card {
@@ -256,6 +307,12 @@
       <div class="code-preview" id="codePreview"></div>
     </div>
 
+    <!-- ── Saved-strategy mini cards (auto-generated) ──────────────── -->
+    <div id="savedStratsWrap" style="display:none">
+      <div class="mini-section-title">Your saved strategies</div>
+      <div class="mini-grid" id="savedStratsGrid"></div>
+    </div>
+
     <div class="strategy-card">
       <div class="strategy-title">Camarilla Strategy <span style="font-size:0.75rem;font-weight:400;color:#555;margin-left:8px">cam_v6</span></div>
       <div class="strategy-subtitle">RTH pivot level breakout with EMA trend filter — Intraday</div>
@@ -363,6 +420,8 @@
     if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
   });
 
+  document.addEventListener('DOMContentLoaded', () => { loadSavedStrategies(); });
+
   let _convertedCode = '';
 
   async function convertScript() {
@@ -431,6 +490,77 @@
     }
   }
 
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  function fmtParamVal(v) {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(2);
+    return esc(String(v));
+  }
+
+  async function loadSavedStrategies() {
+    const wrap = document.getElementById('savedStratsWrap');
+    const grid = document.getElementById('savedStratsGrid');
+    let cards;
+    try {
+      const r = await fetch('/api/bt/strategies/cards');
+      cards = await r.json();
+      if (!Array.isArray(cards)) throw new Error(cards.error || 'bad response');
+    } catch (e) {
+      wrap.style.display = 'none';
+      return;
+    }
+    if (!cards.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    grid.innerHTML = cards.map(c => {
+      const badges = [
+        c.long  ? '<span class="mini-badge long">Long</span>'  : '',
+        c.short ? '<span class="mini-badge short">Short</span>' : '',
+      ].join('');
+      const desc = c.description
+        ? `<div class="mc-desc">${esc(c.description)}</div>`
+        : `<div class="mc-desc empty">No description available — add comments to your Pine Script or a class docstring.</div>`;
+      const params = (c.params || []).slice(0, 6);
+      const paramsHtml = params.length
+        ? `<div class="mini-params">${params.map(p =>
+             `<span class="k">${esc(p.label || p.id)}</span><span class="v">${fmtParamVal(p.default)}</span>`
+           ).join('')}</div>`
+        : `<div class="mini-params empty">No tunable parameters detected.</div>`;
+      return `
+        <div class="mini-card" data-slug="${esc(c.slug)}">
+          <div class="mc-head">
+            <div>
+              <div class="mc-name">${esc(c.name)}</div>
+              <div class="mc-slug">${esc(c.slug)}</div>
+            </div>
+            <button class="mc-del" onclick="deleteStrategy('${esc(c.slug)}', '${esc(c.name)}')">Delete</button>
+          </div>
+          <div class="mini-badges">${badges}</div>
+          ${desc}
+          ${paramsHtml}
+        </div>`;
+    }).join('');
+  }
+
+  async function deleteStrategy(slug, name) {
+    if (!confirm(`Delete "${name}" (${slug})? This cannot be undone.`)) return;
+    try {
+      const r = await fetch(`/api/bt/strategies/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert('Delete failed: ' + (err.error || r.status));
+        return;
+      }
+      loadSavedStrategies();
+    } catch (e) {
+      alert('Delete error: ' + e);
+    }
+  }
+
   async function saveStrategy() {
     const name = document.getElementById('stratName').value.trim();
     if (!name) { alert('Enter a strategy name first.'); return; }
@@ -455,6 +585,7 @@
         document.getElementById('codePreview').style.display = 'none';
         _convertedCode = '';
         saveBtn.style.display = 'none';
+        loadSavedStrategies();
       } else {
         saveMsg.className = 'save-msg save-err';
         saveMsg.textContent = 'Save failed: ' + (data.error || res.status);
