@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import threading
 from zoneinfo import ZoneInfo
 import time
@@ -2301,6 +2302,10 @@ def bt_run():
                 return jsonify({"error": "No Strategy subclass found in converted code"}), 400
             strategy_cls.__module__ = "__main__"
             strategy_cls.__qualname__ = strategy_cls.__name__
+            # Register on __main__ so pickle can resolve the class if
+            # backtesting.py's Pool ever falls back to a real subprocess
+            # pool (spawn/fork). Without this, only ThreadPool paths work.
+            setattr(sys.modules["__main__"], strategy_cls.__name__, strategy_cls)
         except Exception as e:
             return jsonify({"error": f"Strategy code error: {e}"}), 400
     else:
@@ -2487,6 +2492,7 @@ def bt_optimize():
             if strategy_cls is not None:
                 strategy_cls.__module__ = "__main__"
                 strategy_cls.__qualname__ = strategy_cls.__name__
+                setattr(sys.modules["__main__"], strategy_cls.__name__, strategy_cls)
         else:
             entry = STRATEGIES.get(strategy_name)
             if entry:
