@@ -646,6 +646,7 @@
     let allTrades      = [];
     let allIBExecs     = [];
     let allAlpacaExecs = [];
+    let allAlpacaPositions = [];   // authoritative open positions from Alpaca — used to reconcile feed pairing
     let selectedStrategy = '';
     let _allGroups     = [];
     let _feedFilter    = { tv: true, alpaca: true };
@@ -1148,6 +1149,56 @@
       return pairs.sort((a, b) => pairMs(b) - pairMs(a));
     }
 
+    // Reconcile fill-paired Alpaca rows against Alpaca's authoritative open
+    // positions. FIFO pairing of fills can drift from reality when positions
+    // close outside the signal path (EOD close, position-stop, manual close).
+    // Rule: open pairs must be backed by a real position; positions with no
+    // feed row get a synthetic entry so the feed mirrors Kairos.
+    function reconcileAlpacaPairs(pairs, positions) {
+      if (!Array.isArray(positions)) return pairs;   // transient fetch failure — don't wipe display
+      const normSym = s => (s || '').toUpperCase().replace('/', '');
+      const posBySymbol = {};
+      for (const p of positions) {
+        if (p && p.symbol) posBySymbol[normSym(p.symbol)] = p;
+      }
+      const matchedSymbols = new Set();
+      const reconciled = [];
+      for (const pair of pairs) {
+        if (pair.exit) { reconciled.push(pair); continue; }
+        const sym = normSym((pair.entry || pair.exit).symbol);
+        if (posBySymbol[sym]) {
+          reconciled.push(pair);
+          matchedSymbols.add(sym);
+        }
+        // else: Alpaca says flat — drop the stale "Open" row.
+      }
+      for (const sym of Object.keys(posBySymbol)) {
+        if (matchedSymbols.has(sym)) continue;
+        const pos = posBySymbol[sym];
+        const qtySigned = parseFloat(pos.qty) || 0;
+        const qty       = Math.abs(qtySigned);
+        const direction = (pos.side === 'short' || qtySigned < 0) ? 'short' : 'long';
+        const entryPx   = parseFloat(pos.avg_entry_price);
+        reconciled.push({
+          entry: {
+            symbol:  pos.symbol,
+            price:   isFinite(entryPx) ? entryPx : null,
+            shares:  qty,
+            time:    null,
+            exec_id: 'alpaca-pos-' + sym,
+          },
+          exit: null,
+          direction,
+        });
+      }
+      const pairMs = p => {
+        const raw = ((p.entry || p.exit)?.time || '');
+        if (!raw) return Number.MAX_SAFE_INTEGER;   // synthetic → top of list
+        return new Date(raw.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1')).getTime();
+      };
+      return reconciled.sort((a, b) => pairMs(b) - pairMs(a));
+    }
+
     // Build groups: TV → IB first, then TV → Alpaca, then unmatched
     function buildGroups(tvPairs, ibPairs, alpacaPairs) {
       // Filter out open Alpaca rows the user has manually dismissed
@@ -1330,7 +1381,7 @@
 
       const tvPairs     = pairSignals(filtered);
       const ibPairs     = pairIBExecs(allIBExecs);
-      const alpacaPairs = pairAlpacaExecs(allAlpacaExecs);
+      const alpacaPairs = reconcileAlpacaPairs(pairAlpacaExecs(allAlpacaExecs), allAlpacaPositions);
       const groups      = buildGroups(tvPairs, ibPairs, alpacaPairs);
       const body     = document.getElementById('tradeBody');
 
@@ -1951,12 +2002,13 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpacaPosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
           fetch('/api/ib/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
@@ -1964,6 +2016,7 @@
         const brokers = await brokerRes.json();
         allIBExecs     = ibExecsRes;
         allAlpacaExecs = alpacaExecsRes;
+        allAlpacaPositions = Array.isArray(alpacaPosRes) ? alpacaPosRes : (alpacaPosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 

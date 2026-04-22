@@ -354,6 +354,7 @@ class AlpacaBroker:
                         "market_value":  float(p.market_value or 0),
                         "unrealized_pnl": float(p.unrealized_pl) if p.unrealized_pl is not None else 0.0,
                         "current_price": float(p.current_price or 0),
+                        "avg_entry_price": float(p.avg_entry_price) if getattr(p, "avg_entry_price", None) is not None else None,
                     })
                 except Exception as _pe:
                     log.warning("Alpaca get_positions: skipping %s due to field error: %s", getattr(p, 'symbol', '?'), _pe)
