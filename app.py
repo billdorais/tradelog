@@ -2597,6 +2597,7 @@ def api_stats():
                 m = min(qty, entry_qty)
                 if in_window:
                     closed.append({"pnl": (entry_price - price) * m, "time": received,
+                                   "strategy": strategy, "ticker": ticker,
                                    "entry_id": entry_id, "exit_id": trade_id})
                 qty -= m
                 if entry_qty > m:
@@ -2611,6 +2612,7 @@ def api_stats():
                 m = min(qty, entry_qty)
                 if in_window:
                     closed.append({"pnl": (price - entry_price) * m, "time": received,
+                                   "strategy": strategy, "ticker": ticker,
                                    "entry_id": entry_id, "exit_id": trade_id})
                 qty -= m
                 if entry_qty > m:
@@ -2641,6 +2643,9 @@ def api_stats():
         equity_curve.append({
             "time":     c["time"],
             "value":    round(cumulative, 2),
+            "pnl":      round(c["pnl"], 2),
+            "strategy": c.get("strategy"),
+            "ticker":   c.get("ticker"),
             "entry_id": c.get("entry_id"),
             "exit_id":  c.get("exit_id"),
         })
