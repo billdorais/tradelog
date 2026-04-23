@@ -114,11 +114,22 @@
 
     <h2>Overview</h2>
     <p>
-      Kairos Automata is an automated trade execution and logging system created by Bill Dorais.
-      TradingView sends trade signals as webhooks, which pass through a configurable
-      Signal Router pipeline before being forwarded to one of three supported brokers —
-      Interactive Brokers, Alpaca, or Coinbase — for execution.
-      Results are displayed on the dashboard with paired TV + broker rows, P&amp;L, equity curves, and execution status.
+      Kairos Automata is an automated trade execution, logging, and analysis platform built by Bill Dorais.
+      TradingView alerts are received as webhooks and routed through a configurable Signal Router pipeline
+      before being forwarded to a supported broker — Interactive Brokers, Alpaca, or Coinbase — for execution.
+      The dashboard displays paired TV&nbsp;+&nbsp;broker rows, cumulative P&amp;L, equity curves,
+      and per-strategy performance metrics, with a multi-select visibility picker for filtering the
+      view to any combination of strategies.
+    </p>
+    <p>
+      Beyond live trading, the platform includes a full backtesting and optimisation suite.
+      The <strong>Backtester</strong> runs a single strategy over historical data (Yahoo Finance or Alpaca)
+      and produces equity curves and performance stats. The <strong>Optimizer</strong> sweeps parameter
+      ranges across multiple tickers and timeframes using grid search or SAMBO smart search, exports
+      the best result as a ready-to-use Pine Script, and compares Python vs TradingView results
+      side-by-side. The <strong>Variants</strong> browser fans a single optimised strategy out across
+      tickers and timeframes, applies an IS/OOS walk-forward gate, and provisions approved variants
+      directly into the signal router.
     </p>
 
     <h2>Supported Brokers</h2>
@@ -251,15 +262,21 @@
     <h2>Key Files</h2>
     <table>
       <tr><th>File</th><th>Purpose</th></tr>
-      <tr><td>app.py</td><td>Main Flask app — webhook handler, signal router, API routes, database logic, multi-broker orchestration</td></tr>
+      <tr><td>app.py</td><td>Main Flask app — signal router, API routes, backtester/optimizer endpoints, database logic, multi-broker orchestration</td></tr>
+      <tr><td>routes/webhook.py</td><td>Webhook handler Blueprint — receives TradingView alerts, validates token, runs signal router pipeline</td></tr>
       <tr><td>brokers/ib_broker.py</td><td>IB connection, order placement, fill sync, and options contract selection via ib_async</td></tr>
       <tr><td>brokers/alpaca_broker.py</td><td>Alpaca integration — stocks and crypto orders, fractional qty, position close, fill history</td></tr>
       <tr><td>brokers/coinbase_broker.py</td><td>Coinbase Advanced Trade integration — market buy/sell for crypto</td></tr>
-      <tr><td>strategies/data.py</td><td>Market data fetchers — yfinance (free, up to 20yr daily) and IB historical bars</td></tr>
-      <tr><td>templates/index.html</td><td>Dashboard — paired TV+broker trade feed, equity curve, performance stats</td></tr>
+      <tr><td>strategies/data.py</td><td>Market data fetchers — yfinance (free, 20yr daily) and Alpaca (intraday, full history)</td></tr>
+      <tr><td>strategies/bt_strategies.py</td><td>Built-in backtesting.py strategies — Camarilla (unified cam_ema8), BreakOut, H3L3 Reversal, SMA/EMA cross, RSI, Bollinger, MACD</td></tr>
+      <tr><td>tools/provision_variants.py</td><td>CLI tool — runs IS/OOS walk-forward gating on candidate variants and writes approved ones to the DB</td></tr>
+      <tr><td>templates/index.html</td><td>Dashboard — paired TV+broker trade feed, equity curve, per-strategy visibility picker, performance stats</td></tr>
       <tr><td>templates/routing.html</td><td>Signal Router UI — build, reorder, and duplicate pipeline chains</td></tr>
-      <tr><td>templates/strategies.html</td><td>Strategy documentation — Camarilla cam_v6 entry/exit rules and alert format</td></tr>
-      <tr><td>strategies/bt_strategies.py</td><td>Built-in backtesting.py strategies (SMA/EMA cross, RSI, Bollinger, MACD, Camarilla)</td></tr>
+      <tr><td>templates/optimize.html</td><td>Optimizer UI — parameter sweep across tickers/timeframes, top-3 equity chart, Pine Script export</td></tr>
+      <tr><td>templates/bt.html</td><td>Backtester UI — single-run backtest with equity curve and TV validation comparison</td></tr>
+      <tr><td>templates/variants.html</td><td>Variants browser — fan out strategies across tickers/timeframes, review IS/OOS results, provision to router</td></tr>
+      <tr><td>templates/strategies.html</td><td>Strategy library — auto-generated cards for all saved user strategies with params and entry/exit rules</td></tr>
+      <tr><td>variants.json</td><td>Approved variant definitions — ticker, timeframe, strategy, and optimised parameter values</td></tr>
       <tr><td>Dockerfile.ib</td><td>Builds the IB Gateway Docker image</td></tr>
       <tr><td>Procfile</td><td>Tells Railway how to start the web service</td></tr>
     </table>
@@ -335,20 +352,26 @@
       <tr><td>SIGNAL_COOLDOWN_SECS</td><td>10</td><td>Seconds to suppress duplicate signals for the same strategy + ticker + action combination.</td></tr>
     </table>
 
-    <h2>Backtester — Data Sources</h2>
+    <h2>Backtester &amp; Optimizer — Data Sources</h2>
     <table>
       <tr><th>Source</th><th>Max History</th><th>Intervals</th><th>Notes</th></tr>
+      <tr>
+        <td>Alpaca</td>
+        <td>Full exchange history</td>
+        <td>5m, 15m, 30m, 1h, 1d</td>
+        <td>Recommended for intraday strategies. Requires <code style="font-size:0.82rem;color:#aaa">ALPACA_KEY</code> / <code style="font-size:0.82rem;color:#aaa">ALPACA_SECRET</code>. Returns adjusted OHLCV. No hard date cap — uses your selected date range.</td>
+      </tr>
       <tr>
         <td>Yahoo Finance</td>
         <td>20 years (daily)</td>
         <td>1m, 2m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo</td>
-        <td>Free. Intraday capped: 1h ≈ 730 days, 5–30m ≈ 60 days. Start date is automatically adjusted to the limit.</td>
+        <td>Free, no credentials required. Intraday capped by Yahoo: 1h ≈ 730 days, 5–30m ≈ 60 days. Start date is automatically adjusted to the limit.</td>
       </tr>
       <tr>
         <td>Interactive Brokers</td>
         <td>10+ years</td>
         <td>5m, 15m, 30m, 1h, 1d</td>
-        <td>Requires connected IB Gateway and a market data subscription. Fetched in chunks to stay within IB API limits.</td>
+        <td>Requires connected IB Gateway and a market data subscription. Fetched in chunks to stay within IB API pacing limits.</td>
       </tr>
     </table>
 
@@ -356,47 +379,55 @@
     <table>
       <tr><th>Area</th><th>What changed</th></tr>
       <tr>
-        <td>Risk Management</td>
+        <td>Dashboard — Strategy Picker</td>
         <td>
-          Three new safety guards added: daily max loss circuit breaker, per-position dollar stop,
-          and duplicate signal filter. All are configurable live from the Signal Router risk panel
-          and persist to <code style="font-size:0.82rem;color:#aaa">.env</code> on save.
+          Replaced the single-strategy dropdown with a multi-select eye-icon visibility panel.
+          Toggle individual strategies on or off — the equity curve, daily P&amp;L chart, time scatter,
+          and all metric cards (win rate, profit factor, drawdown, avg win/loss) update together
+          based on the visible set.
         </td>
       </tr>
       <tr>
-        <td>Signal Router — Risk Panel</td>
+        <td>Variants Browser</td>
         <td>
-          New panel at the top of the Signal Router page shows today's P&amp;L, guard status,
-          live open positions with a progress bar toward the per-position limit, and alert cards
-          for any blocked strategies with individual Unblock buttons.
+          New <strong>/variants</strong> page fans a saved strategy out across any combination of tickers
+          and timeframes. A two-stage IS/OOS walk-forward gate (run via <code style="font-size:0.82rem;color:#aaa">tools/provision_variants.py</code>)
+          filters candidates by out-of-sample performance before provisioning them to <code style="font-size:0.82rem;color:#aaa">variants.json</code>.
+          The browser shows IS vs OOS metrics and links directly to the backtester for each variant.
         </td>
       </tr>
       <tr>
-        <td>Broker — Alpaca</td>
+        <td>Strategy Optimizer</td>
         <td>
-          Added <code style="font-size:0.82rem;color:#aaa">close_position(symbol)</code> for single-position closes triggered by the position stop.
-          Alpaca fill cache TTL and pagination improved for faster dashboard load.
+          Grid and SAMBO smart search across multiple tickers and timeframes simultaneously.
+          Top-3 equity curves shown live during the run. Pine Script export injects optimised
+          parameters into a TradingView script (supports both <code style="font-size:0.82rem;color:#aaa">input()</code>-based and
+          hardcoded scripts). Results are scoped to the current run so previous sweeps don't
+          pollute the table.
         </td>
       </tr>
       <tr>
-        <td>Broker — IB</td>
+        <td>New Strategy Classes</td>
         <td>
-          Added <code style="font-size:0.82rem;color:#aaa">get_positions()</code> (via <code style="font-size:0.82rem;color:#aaa">portfolio()</code> for live unrealized P&amp;L)
-          and <code style="font-size:0.82rem;color:#aaa">close_position(symbol, qty)</code> for position-stop support on both paper and live gateways.
+          Added <strong>CamarillaBreakOut</strong> and <strong>CamarillaH3L3Reversal</strong> factory classes alongside
+          the existing unified <strong>cam_ema8</strong> strategy. All user-saved strategies are listed
+          automatically on the <strong>/strategies</strong> page with their parameter defaults and entry/exit rules.
         </td>
       </tr>
       <tr>
-        <td>Dashboard</td>
+        <td>Backtester Data Sources</td>
         <td>
-          Trade feed is now paginated. Alpaca fills are pre-warmed into a cache on startup to eliminate
-          the first-load delay.
+          Alpaca added as a data source for both the backtester and optimizer. Alpaca has no hard
+          intraday date cap (unlike Yahoo's 60-day limit), making it the preferred source for
+          intraday strategy development.
         </td>
       </tr>
       <tr>
-        <td>IB Execution Sync</td>
+        <td>Webhook Refactor</td>
         <td>
-          Soft-delete added to <code style="font-size:0.82rem;color:#aaa">ib_executions</code> so dismissed fills are never re-inserted by the periodic sync.
-          P&amp;L pairing now groups trades by (strategy, ticker) rather than ticker alone to avoid cross-strategy P&amp;L contamination.
+          Webhook handler extracted from <code style="font-size:0.82rem;color:#aaa">app.py</code> into a dedicated
+          <code style="font-size:0.82rem;color:#aaa">routes/webhook.py</code> Flask Blueprint, with a full pytest suite
+          covering integration tests, crossover semantics, daily resampling, and execution picklability.
         </td>
       </tr>
     </table>
