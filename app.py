@@ -671,13 +671,21 @@ def placeholder():
 _INTRADAY_TF = {"5m", "15m", "30m", "1h"}
 
 def _filter_rth(df):
-    """Filter a DataFrame with naive-UTC DatetimeIndex to RTH bars only (9:30-16:00 ET)."""
+    """Filter a DataFrame with naive-UTC DatetimeIndex to RTH bars only (9:30-16:00 ET).
+
+    Returns a DataFrame whose index is naive ET local time — this matters because
+    downstream Strategy classes (including AI-generated ones) use `idx.hour` and
+    `idx.minute` to build their own RTH masks. If the naive index still held UTC
+    values the Strategy would filter against 13:30-20:00 UTC, which drops ET
+    afternoon bars and halves the trade count.
+    """
     import pandas as _pd
     try:
         idx_et = df.index.tz_localize("UTC").tz_convert("America/New_York")
         rth = ((idx_et.hour > 9) | ((idx_et.hour == 9) & (idx_et.minute >= 30))) & (idx_et.hour < 16)
         df = df[rth.values].copy()
-        df.index = df.index.tz_localize(None)
+        # Strip tz after converting to ET so hour/minute reads match ET local time.
+        df.index = idx_et[rth].tz_localize(None)
     except Exception as _e:
         log.warning("RTH filter skipped: %s", _e)
     return df
@@ -1870,7 +1878,9 @@ def bt_convert():
         "by a session (input.session, time(timeframe.period, session), inRTH/newRTHDay variables, "
         "or checks against '0930-1600' etc.), you MUST preserve that gate in Python. Do NOT drop it. "
         "Extract the session start/end (default 09:30-16:00 ET) and gate entries with a mask built from "
-        "self.data.index hour/minute:\n"
+        "self.data.index hour/minute. IMPORTANT: the backtester hands you an ET-local naive DatetimeIndex "
+        "(tz stripped after conversion to America/New_York), so `idx.hour` directly reflects ET hour. "
+        "Do NOT tz_localize or tz_convert — treat the index as ET already.\n"
         "    idx = pd.DatetimeIndex(self.data.index)\n"
         "    mask = ((idx.hour > 9) | ((idx.hour == 9) & (idx.minute >= 30))) & (idx.hour < 16)\n"
         "    in_rth = pd.Series(mask, index=idx).values  # True inside RTH\n"
@@ -1925,7 +1935,27 @@ def bt_convert():
         "    self.l4 = self.I(lambda v: v, l4_vals)\n"
         "If Pine uses plain calendar-day levels (no RTH filter), drop the mask and resample on all bars.\n"
         "This produces one H4/L4 value per trading day that is constant for all intraday bars in that day, "
-        "exactly matching TradingView's request.security daily behaviour."
+        "exactly matching TradingView's request.security daily behaviour.\n"
+        "22. CRITICAL - STOP/TRAIL EXIT CHECKS USE LOW/HIGH, NOT CLOSE: Pine's strategy.exit() fires on "
+        "any tick that touches the stop or trailing stop, not just bar close. In backtesting.py we only "
+        "have OHLC, but Low/High are the best proxy for 'did the price touch this level inside the bar'. "
+        "For LONG positions: fixed stop and trailing-stop exits must compare against self.data.Low[-1] "
+        "(price went down enough intrabar). For SHORT positions: compare against self.data.High[-1]. "
+        "NEVER check trail/stop exits against self.data.Close[-1] — that misses exits on bars that wick "
+        "down to the stop but close above it. Correct pattern:\n"
+        "    # LONG trailing stop exit\n"
+        "    if self._trailing_active:\n"
+        "        trail_stop = self._highest - trail_offset\n"
+        "        if self.data.Low[-1] <= trail_stop:     # ← NOT Close[-1]\n"
+        "            self.position.close(); return\n"
+        "    # LONG fixed stop\n"
+        "    if self.data.Low[-1] <= self._entry - stop_dist:\n"
+        "        self.position.close(); return\n"
+        "    # SHORT trailing stop exit\n"
+        "    if self._trailing_active:\n"
+        "        trail_stop = self._lowest + trail_offset\n"
+        "        if self.data.High[-1] >= trail_stop:    # ← NOT Close[-1]\n"
+        "            self.position.close(); return\n"
     )
 
     def generate():
@@ -1986,8 +2016,14 @@ def bt_convert_verify():
         "6. Trade fill timing — is _trade_on_close = True set? (Pine has process_orders_on_close=true)\n"
         "7. Stop/trail logic — does Python use the same activation distance and offset as Pine's "
         "   strategy.exit(trail_points, trail_offset, loss)?\n"
-        "8. Indicator math — EMA period, length, source column all match?\n"
-        "9. Long-only vs long-short — does Python handle BOTH directions if Pine does?\n\n"
+        "8. Stop/trail exit check — do trail/fixed-stop exits compare against self.data.Low[-1] "
+        "   (long) or self.data.High[-1] (short), NOT self.data.Close[-1]? Close-only checks miss "
+        "   intrabar stop hits that Pine's tick-level simulation would catch.\n"
+        "9. Timezone assumption — does the Python use idx.hour directly (treating index as ET) "
+        "   without tz_localize/tz_convert? The backtester guarantees ET-local naive index; a "
+        "   tz_localize('UTC') here would be a bug.\n"
+        "10. Indicator math — EMA period, length, source column all match?\n"
+        "11. Long-only vs long-short — does Python handle BOTH directions if Pine does?\n\n"
         "OUTPUT FORMAT (strict JSON, no markdown fences):\n"
         "If the conversion is faithful, output exactly:\n"
         '  {\"ok\": true, \"issues\": []}\n'
