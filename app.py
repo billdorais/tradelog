@@ -683,7 +683,7 @@ def _filter_rth(df):
     try:
         idx_et = df.index.tz_localize("UTC").tz_convert("America/New_York")
         rth = ((idx_et.hour > 9) | ((idx_et.hour == 9) & (idx_et.minute >= 30))) & (idx_et.hour < 16)
-        df = df[rth.values].copy()
+        df = df[rth].copy()
         # Strip tz after converting to ET so hour/minute reads match ET local time.
         df.index = idx_et[rth].tz_localize(None)
     except Exception as _e:
