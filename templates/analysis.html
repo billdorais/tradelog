@@ -103,6 +103,14 @@
     .side-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; }
     .side-badge.long  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
     .side-badge.short { background: rgba(231,76,60,0.18);  color: #ef5350; }
+    .pair-tabs { display: flex; gap: 4px; padding: 10px 22px 0; border-bottom: 1px solid #1e2130; }
+    .pair-tab  { padding: 7px 14px; cursor: pointer; color: #888; font-size: 0.82rem;
+                 border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .pair-tab:hover  { color: #ccc; }
+    .pair-tab.active { color: #fff; border-bottom-color: #4a90d9; }
+    .pair-tab .count { color: #555; font-size: 0.75rem; margin-left: 4px; }
+    .pair-tab.active .count { color: #4a90d9; }
+    .orphan-reason { color: #888; font-style: italic; font-size: 0.72rem; }
   </style>
 </head>
 <body>
@@ -204,10 +212,14 @@
       </div>
       <button class="modal-close" onclick="closePairs()">Close</button>
     </div>
+    <div class="pair-tabs">
+      <div class="pair-tab active" data-tab="clean" onclick="switchPairTab('clean')">Round-trips<span class="count" id="pairsCleanCount">0</span></div>
+      <div class="pair-tab"        data-tab="orphans" onclick="switchPairTab('orphans')">Orphans<span class="count" id="pairsOrphanCount">0</span></div>
+    </div>
     <div class="modal-body">
       <div class="tbl-wrap">
         <table class="pair-tbl">
-          <thead><tr>
+          <thead id="pairsHead"><tr>
             <th>Side</th><th>Ticker</th><th>Qty</th>
             <th>Entry Price</th><th>Exit Price</th>
             <th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th>
@@ -355,33 +367,62 @@
       hour: '2-digit', minute: '2-digit' });
   }
 
-  function openPairs(kind, key) {
-    const closed = (analysisData && analysisData.closed) || [];
-    const pairs = closed.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
-    pairs.sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
-    const totalPnl = pairs.reduce((s, p) => s + p.pnl, 0);
-    document.getElementById('pairsTitle').textContent = key;
-    document.getElementById('pairsSub').textContent =
-      `${pairs.length} round-trip${pairs.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · sorted by |P&L|`;
-    const body = document.getElementById('pairsBody');
+  // Cached pairs for the active drill-down so tab switches don't refilter.
+  let _activePairs = { clean: [], orphans: [], key: '' };
+
+  function _renderPairRows(pairs, includeReason) {
     if (!pairs.length) {
-      body.innerHTML = '<tr><td colspan="8" class="empty">No paired trades.</td></tr>';
-    } else {
-      body.innerHTML = pairs.map(p => {
-        const sideCls = p.side === 'LONG' ? 'long' : 'short';
-        const pnlCls  = p.pnl >= 0 ? 'pos' : 'neg';
-        return `<tr>
-          <td><span class="side-badge ${sideCls}">${p.side}</span></td>
-          <td class="mono">${esc(p.ticker)}</td>
-          <td>${p.qty}</td>
-          <td class="mono">$${Number(p.entry_price).toFixed(2)}</td>
-          <td class="mono">$${Number(p.exit_price).toFixed(2)}</td>
-          <td class="mono">${esc(fmtTime(p.entry_time))}</td>
-          <td class="mono">${esc(fmtTime(p.exit_time))}</td>
-          <td class="${pnlCls}">${fmt(p.pnl)}</td>
-        </tr>`;
-      }).join('');
+      const span = includeReason ? 9 : 8;
+      return `<tr><td colspan="${span}" class="empty">None.</td></tr>`;
     }
+    return pairs.map(p => {
+      const sideCls = p.side === 'LONG' ? 'long' : 'short';
+      const pnlCls  = p.pnl >= 0 ? 'pos' : 'neg';
+      const reasonCell = includeReason
+        ? `<td class="orphan-reason">${esc(p.orphan_reason || '')}</td>`
+        : '';
+      return `<tr>
+        <td><span class="side-badge ${sideCls}">${p.side}</span></td>
+        <td class="mono">${esc(p.ticker)}</td>
+        <td>${p.qty}</td>
+        <td class="mono">$${Number(p.entry_price).toFixed(2)}</td>
+        <td class="mono">$${Number(p.exit_price).toFixed(2)}</td>
+        <td class="mono">${esc(fmtTime(p.entry_time))}</td>
+        <td class="mono">${esc(fmtTime(p.exit_time))}</td>
+        <td class="${pnlCls}">${fmt(p.pnl)}</td>
+        ${reasonCell}
+      </tr>`;
+    }).join('');
+  }
+
+  function switchPairTab(which) {
+    document.querySelectorAll('.pair-tab').forEach(el => {
+      el.classList.toggle('active', el.dataset.tab === which);
+    });
+    const rows   = which === 'orphans' ? _activePairs.orphans : _activePairs.clean;
+    const label  = which === 'orphans' ? 'orphan' : 'round-trip';
+    const totalPnl = rows.reduce((s, p) => s + p.pnl, 0);
+    document.getElementById('pairsSub').textContent =
+      `${rows.length} ${label}${rows.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · sorted by |P&L|`;
+    const head = document.getElementById('pairsHead');
+    head.innerHTML = which === 'orphans'
+      ? `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th>Reason</th></tr>`
+      : `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th></tr>`;
+    document.getElementById('pairsBody').innerHTML =
+      _renderPairRows(rows, which === 'orphans');
+  }
+
+  function openPairs(kind, key) {
+    const closed  = (analysisData && analysisData.closed)  || [];
+    const orphans = (analysisData && analysisData.orphans) || [];
+    const matches = arr => arr.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
+    const clean   = matches(closed).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+    const orph    = matches(orphans).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+    _activePairs = { clean, orphans: orph, key };
+    document.getElementById('pairsTitle').textContent = key;
+    document.getElementById('pairsCleanCount').textContent  = ` (${clean.length})`;
+    document.getElementById('pairsOrphanCount').textContent = ` (${orph.length})`;
+    switchPairTab('clean');
     document.getElementById('pairsBackdrop').classList.add('open');
     document.getElementById('pairsModal').classList.add('open');
   }

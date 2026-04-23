@@ -2839,6 +2839,18 @@ def _build_analysis_stats():
             "largest_loss":  round(min(losses), 2) if losses else 0,
         }
 
+    # Separate orphan pairs (phantom round-trips from stale/mispaired signals
+    # such as overnight holds on intraday strategies or direction mismatches).
+    # Orphans are returned to the UI but excluded from leaderboard stats.
+    orphans, closed_clean = [], []
+    for c in closed:
+        is_orph, reason = _classify_orphan(c)
+        if is_orph:
+            orphans.append({**c, "orphan_reason": reason})
+        else:
+            closed_clean.append(c)
+    closed = closed_clean
+
     # Per-strategy
     strat_map = {}
     for c in closed:
@@ -2900,6 +2912,7 @@ def _build_analysis_stats():
         "daily":        daily,
         "weekly":       weekly,
         "closed":       closed,
+        "orphans":      orphans,
     }
 
 
@@ -2910,6 +2923,38 @@ def api_analysis():
     except Exception as e:
         log.exception("Analysis error")
         return jsonify({"error": str(e)}), 500
+
+
+_INTRADAY_TOKENS = ("_1MIN", "_3MIN", "_5MIN", "_15MIN", "_30MIN")
+
+def _classify_orphan(pair):
+    """Return (is_orphan, reason) for a closed round-trip.
+
+    Orphan rules (any match):
+    (a) slug contains _LONG_/_SHORT_ and pair side contradicts it
+    (b) intraday strategy slug (*_5MIN etc.) but entry/exit on different days
+    (c) hold duration > 8 hours regardless of slug
+    """
+    from datetime import datetime as _dt
+    strat = (pair.get("strategy") or "").upper()
+    side  = pair.get("side", "")
+    if "_LONG_" in strat and side == "SHORT":
+        return True, "long-only strategy with short pair"
+    if "_SHORT_" in strat and side == "LONG":
+        return True, "short-only strategy with long pair"
+    et_str = pair.get("entry_time", "") or ""
+    xt_str = pair.get("exit_time",  "") or ""
+    is_intraday = any(tok in strat for tok in _INTRADAY_TOKENS)
+    if is_intraday and et_str[:10] and xt_str[:10] and et_str[:10] != xt_str[:10]:
+        return True, "intraday strategy with cross-day hold"
+    try:
+        et = _dt.fromisoformat(et_str.replace("Z", "+00:00"))
+        xt = _dt.fromisoformat(xt_str.replace("Z", "+00:00"))
+        if (xt - et).total_seconds() > 8 * 3600:
+            return True, "hold > 8h"
+    except Exception:
+        pass
+    return False, ""
 
 
 @app.route("/api/alpaca/analysis")
@@ -3071,7 +3116,9 @@ def api_alpaca_analysis():
                         m = min(qty, eq)
                         daily_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
                                              "entry_strategy": es, "exit_strategy": strat,
-                                             "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                                             "ticker": sym, "date": date_str, "side": "SHORT",
+                                             "entry_price": ep, "exit_price": price, "qty": m,
+                                             "entry_time": et, "exit_time": fill_ts})
                         qty -= m
                         if eq > m:
                             q.insert(0, (ep, eq - m, et, es))   # remainder stays at front (FIFO)
@@ -3084,7 +3131,9 @@ def api_alpaca_analysis():
                         m = min(qty, eq)
                         daily_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
                                              "entry_strategy": es, "exit_strategy": strat,
-                                             "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                                             "ticker": sym, "date": date_str, "side": "LONG",
+                                             "entry_price": ep, "exit_price": price, "qty": m,
+                                             "entry_time": et, "exit_time": fill_ts})
                         qty -= m
                         if eq > m:
                             q.insert(0, (ep, eq - m, et, es))
@@ -3121,6 +3170,29 @@ def api_alpaca_analysis():
                 c for c in daily_closed
                 if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
             ]
+
+        # Separate orphan pairs (phantom round-trips from stale inventory,
+        # direction-mismatched fills, or overnight holds on intraday strategies).
+        # Orphans are returned to the UI but excluded from leaderboard stats.
+        orphans, closed_clean = [], []
+        for c in closed:
+            is_orph, reason = _classify_orphan(c)
+            if is_orph:
+                c = {**c, "orphan_reason": reason}
+                orphans.append(c)
+            else:
+                closed_clean.append(c)
+        daily_orphans, daily_clean = [], []
+        for c in daily_closed:
+            is_orph, reason = _classify_orphan(c)
+            if is_orph:
+                c = {**c, "orphan_reason": reason}
+                daily_orphans.append(c)
+            else:
+                daily_clean.append(c)
+        # Swap so downstream aggregates use clean pairs; keep originals accessible
+        # via orphans / daily_orphans for the modal's Orphans tab.
+        closed, daily_closed = closed_clean, daily_clean
 
         # per_strategy and per_ticker use the global LIFO pairs so overnight
         # positions (bought one day, sold the next) are captured correctly.
@@ -3309,6 +3381,7 @@ def api_alpaca_analysis():
             "weekly":       weekly,
             "equity_curve": equity_curve,
             "closed":       closed,
+            "orphans":      orphans,
         })
     except Exception as e:
         log.exception("Alpaca analysis error")
