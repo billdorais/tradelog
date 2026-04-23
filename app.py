@@ -2075,7 +2075,7 @@ def bt_run():
     timeframe      = body.get("timeframe",  "1d")
     cash           = float(body.get("cash", 10000))
     commission     = float(body.get("commission", 0.0))
-    data_source    = body.get("data_source", "yfinance")
+    data_source    = body.get("data_source", "alpaca")
     strategy_type  = body.get("strategy_type", "builtin")   # "builtin" | "converted" | "saved"
     strategy_name  = body.get("strategy_name", "camarilla")
     strategy_code  = body.get("strategy_code", "")
@@ -2247,7 +2247,7 @@ def bt_optimize():
     end_date       = body.get("end_date",   "2024-12-31")
     cash           = float(body.get("cash", 10000))
     commission     = float(body.get("commission", 0.0))
-    data_source    = body.get("data_source", "yfinance")
+    data_source    = body.get("data_source", "alpaca")
     maximize       = body.get("maximize",    "Sharpe Ratio")
     param_ranges   = body.get("param_ranges", {})
     strategy_code  = body.get("strategy_code", "")
