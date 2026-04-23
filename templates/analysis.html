@@ -395,13 +395,25 @@
     if (e.key === 'Escape') closePairs();
   });
 
+  // Delegated click handlers for leaderboard drill-down — bound once to a
+  // stable parent so they survive tbody re-renders.
+  for (const id of ['stratBody', 'tickerBody']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.addEventListener('click', e => {
+      const tr = e.target.closest('tr.drill');
+      if (!tr) return;
+      openPairs(tr.dataset.kind, tr.dataset.key);
+    });
+  }
+
   // ── Strategy table ─────────────────────────────────────────────────────────
   function renderStratTable(map) {
     const body = document.getElementById('stratBody');
     const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
     if (!rows.length) { body.innerHTML = '<tr><td colspan="9" class="empty">No closed trades yet.</td></tr>'; return; }
     body.innerHTML = rows.map(([name, s]) => `
-      <tr class="drill" onclick="openPairs('strategy', ${JSON.stringify(name)})" title="Click to see round-trip pairs">
+      <tr class="drill" data-kind="strategy" data-key="${esc(name)}" title="Click to see round-trip pairs">
         <td class="name">${esc(name)}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
@@ -420,7 +432,7 @@
     const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
     if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No closed trades yet.</td></tr>'; return; }
     body.innerHTML = rows.map(([ticker, s]) => `
-      <tr class="drill" onclick="openPairs('ticker', ${JSON.stringify(ticker)})" title="Click to see round-trip pairs">
+      <tr class="drill" data-kind="ticker" data-key="${esc(ticker)}" title="Click to see round-trip pairs">
         <td class="name">${esc(ticker)}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
