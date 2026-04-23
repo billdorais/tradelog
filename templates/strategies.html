@@ -381,7 +381,8 @@
             preview.textContent = _convertedCode;
             preview.scrollTop = preview.scrollHeight;
           } else if (msg.type === 'done') {
-            status.textContent = 'Done — review the code below then save.';
+            status.textContent = 'Verifying against Pine source…';
+            await verifyConversion(pine);
             saveBtn.style.display = 'inline-block';
           } else if (msg.type === 'error') {
             status.textContent = 'Error: ' + msg.msg;
@@ -393,6 +394,61 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'Convert & Preview';
+    }
+  }
+
+  // Second-pass verification: send Pine + generated Python to the auditor
+  // endpoint and, if issues are found, swap in the revised code automatically.
+  async function verifyConversion(pine) {
+    const status  = document.getElementById('convertStatus');
+    const preview = document.getElementById('codePreview');
+    try {
+      const res = await fetch('/api/bt/convert/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pine_script: pine, python_code: _convertedCode }),
+      });
+      if (!res.ok) {
+        status.textContent = 'Done — review the code below then save. (verify unavailable)';
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let verdict = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const msg = JSON.parse(line.slice(6));
+          if (msg.type === 'chunk') verdict += msg.text;
+        }
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(verdict); } catch { /* model drifted from JSON */ }
+      if (!parsed) {
+        status.textContent = 'Done — review the code below then save. (verify returned non-JSON)';
+        return;
+      }
+      if (parsed.ok) {
+        status.textContent = '✓ Verified — conversion matches Pine source.';
+        return;
+      }
+      // Discrepancies found — swap in revised code and show what was fixed.
+      if (parsed.revised_code) {
+        _convertedCode = parsed.revised_code;
+        preview.textContent = _convertedCode;
+      }
+      const issuesList = (parsed.issues || []).map(i => '• ' + i).join('<br>');
+      status.innerHTML = '<b style="color:#e0a500">⚠ Auto-corrected ' +
+        (parsed.issues || []).length + ' discrepanc' +
+        ((parsed.issues || []).length === 1 ? 'y' : 'ies') + ':</b><br>' + issuesList;
+    } catch (e) {
+      status.textContent = 'Done — review the code below then save. (verify error: ' + e + ')';
     }
   }
 

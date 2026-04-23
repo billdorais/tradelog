@@ -1866,7 +1866,17 @@ def bt_convert():
         "8. Exit: self.position.close()\n"
         "9. Always guard against NaN at the start of next() before trading\n"
         "10. The class name must end in 'Strategy'\n"
-        "11. If the Pine Script uses intraday sessions or repainting, simplify to daily bar logic\n"
+        "11. SESSION / RTH FILTERING: If the Pine Script gates entries or level calculations "
+        "by a session (input.session, time(timeframe.period, session), inRTH/newRTHDay variables, "
+        "or checks against '0930-1600' etc.), you MUST preserve that gate in Python. Do NOT drop it. "
+        "Extract the session start/end (default 09:30-16:00 ET) and gate entries with a mask built from "
+        "self.data.index hour/minute:\n"
+        "    idx = pd.DatetimeIndex(self.data.index)\n"
+        "    mask = ((idx.hour > 9) | ((idx.hour == 9) & (idx.minute >= 30))) & (idx.hour < 16)\n"
+        "    in_rth = pd.Series(mask, index=idx).values  # True inside RTH\n"
+        "Store `in_rth` on self in init(); then in next() check `if not in_rth[len(self.data)-1]: return` "
+        "BEFORE entry logic. Skipping this causes Python to fire entries on overnight/extended-hours bars "
+        "that Pine's session gate would block, producing far more trades than TradingView.\n"
         "12. Include a short docstring describing the strategy\n"
         "13. NEVER use self.position.entry_price - it does not exist. Track entry price manually: "
         "set self._entry = self.data.Close[-1] when entering, then read self._entry in next()\n"
@@ -1896,19 +1906,24 @@ def bt_convert():
         "If the Pine Script fetches previous-day H/L/C (e.g. request.security(...,'D',...)) to compute levels, "
         "you MUST resample the intraday bar data to daily, shift by 1 day, then forward-fill back to intraday. "
         "NEVER just do pd.Series(high).shift(1) on raw intraday bars — that gives previous-BAR H/L/C, not previous-DAY. "
-        "CORRECT pattern (use in init() BEFORE wrapping in self.I()):\n"
+        "IMPORTANT: If Pine computes the daily H/L/C by tracking RTH variables (e.g. curRTHHigh updated only "
+        "when inRTH is true), you MUST filter to RTH bars BEFORE resampling, otherwise overnight extremes "
+        "leak into the level formula. Use the same RTH mask from rule #11.\n"
+        "CORRECT pattern when Pine uses RTH-tracked daily levels (use in init() BEFORE self.I()):\n"
         "    import pandas as pd\n"
         "    idx = pd.DatetimeIndex(self.data.index)\n"
-        "    s_high = pd.Series(self.data.High, index=idx)\n"
-        "    s_low  = pd.Series(self.data.Low,  index=idx)\n"
-        "    s_close= pd.Series(self.data.Close,index=idx)\n"
-        "    d_high = s_high.resample('B').max().shift(1).reindex(idx, method='ffill')\n"
-        "    d_low  = s_low.resample('B').min().shift(1).reindex(idx, method='ffill')\n"
-        "    d_close= s_close.resample('B').last().shift(1).reindex(idx, method='ffill')\n"
-        "    h4_vals = (d_close + (d_high - d_low) * cam_mult / 2.0).values  # or whatever formula\n"
+        "    mask = ((idx.hour > 9) | ((idx.hour == 9) & (idx.minute >= 30))) & (idx.hour < 16)\n"
+        "    s_high = pd.Series(self.data.High[mask], index=idx[mask])\n"
+        "    s_low  = pd.Series(self.data.Low[mask],  index=idx[mask])\n"
+        "    s_close= pd.Series(self.data.Close[mask],index=idx[mask])\n"
+        "    d_high = s_high.resample('D').max().shift(1).reindex(idx, method='ffill')\n"
+        "    d_low  = s_low.resample('D').min().shift(1).reindex(idx, method='ffill')\n"
+        "    d_close= s_close.resample('D').last().shift(1).reindex(idx, method='ffill')\n"
+        "    h4_vals = (d_close + (d_high - d_low) * cam_mult / 2.0).values\n"
         "    l4_vals = (d_close - (d_high - d_low) * cam_mult / 2.0).values\n"
         "    self.h4 = self.I(lambda v: v, h4_vals)\n"
         "    self.l4 = self.I(lambda v: v, l4_vals)\n"
+        "If Pine uses plain calendar-day levels (no RTH filter), drop the mask and resample on all bars.\n"
         "This produces one H4/L4 value per trading day that is constant for all intraday bars in that day, "
         "exactly matching TradingView's request.security daily behaviour."
     )
@@ -1922,6 +1937,80 @@ def bt_convert():
                 system=system,
                 messages=[{"role": "user", "content":
                     f"Convert this Pine Script strategy to backtesting.py:\n\n{pine_script}"}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'msg': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/bt/convert/verify", methods=["POST"])
+def bt_convert_verify():
+    """Second-pass verification: diff the generated Python against the Pine source
+    and return either {ok:true} or {ok:false, issues:[...], revised_code:"..."}.
+    Streams back as SSE so the UI can show progress."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    body        = request.get_json(silent=True) or {}
+    pine_script = (body.get("pine_script") or "").strip()
+    python_code = (body.get("python_code") or "").strip()
+    if not pine_script or not python_code:
+        return jsonify({"error": "pine_script and python_code required"}), 400
+
+    system = (
+        "You are auditing a Pine Script → backtesting.py conversion for fidelity. "
+        "Your job is to find ANY behavioral discrepancy between the Pine source and the "
+        "Python Strategy class that would cause different trade counts, entry timing, exit timing, "
+        "or P&L when run on the same data.\n\n"
+        "CHECKLIST (run through every item):\n"
+        "1. Session/RTH filters — does Pine gate entries by session? If yes, does Python enforce "
+        "   the same time-of-day mask before entries?\n"
+        "2. Previous-day H/L/C — if Pine uses RTH-tracked daily OHLC (curRTH* variables), does "
+        "   Python filter to RTH bars BEFORE resampling? Or is it doing calendar-day resample that "
+        "   includes overnight data?\n"
+        "3. Crossover semantics — does Pine use same-bar (close > L and open < L) or ta.crossover "
+        "   (close[1] < L and close[0] >= L)? Does Python match EXACTLY?\n"
+        "4. Entry guards — do both versions prevent re-entry while in position (pyramiding=0)?\n"
+        "5. Tick vs dollar units — are trail_points/loss parameters interpreted in the same unit "
+        "   between Pine (ticks) and Python (dollars)?\n"
+        "6. Trade fill timing — is _trade_on_close = True set? (Pine has process_orders_on_close=true)\n"
+        "7. Stop/trail logic — does Python use the same activation distance and offset as Pine's "
+        "   strategy.exit(trail_points, trail_offset, loss)?\n"
+        "8. Indicator math — EMA period, length, source column all match?\n"
+        "9. Long-only vs long-short — does Python handle BOTH directions if Pine does?\n\n"
+        "OUTPUT FORMAT (strict JSON, no markdown fences):\n"
+        "If the conversion is faithful, output exactly:\n"
+        '  {\"ok\": true, \"issues\": []}\n'
+        "If ANY discrepancy exists, output:\n"
+        '  {\"ok\": false, \"issues\": [\"short description of each issue\"], '
+        '\"revised_code\": \"<complete fixed Python Strategy class, same rules as original conversion>\"}\n'
+        "The revised_code MUST be the FULL replacement class from `from backtesting import Strategy` "
+        "through the end — no markdown, no explanation text, no diff format. Just the runnable file."
+    )
+
+    def generate():
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            user_msg = (
+                f"PINE SCRIPT:\n```\n{pine_script}\n```\n\n"
+                f"GENERATED PYTHON:\n```\n{python_code}\n```\n\n"
+                "Audit and return the JSON verdict."
+            )
+            with client.messages.stream(
+                model="claude-opus-4-7",
+                max_tokens=4000,
+                system=system,
+                messages=[{"role": "user", "content": user_msg}],
             ) as stream:
                 for text in stream.text_stream:
                     yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
