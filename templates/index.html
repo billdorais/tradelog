@@ -553,6 +553,7 @@
             <div style="display:flex;gap:14px;padding:2px 8px 8px;border-bottom:1px solid #1e2130;margin-bottom:4px">
               <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#5c8eff;cursor:pointer">All</span>
               <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#5c8eff;cursor:pointer">None</span>
+              <span onclick="selectTopTen(event)" style="font-size:0.75rem;color:#f0ad4e;cursor:pointer">Top 10</span>
             </div>
             <div id="stratPickerList"></div>
           </div>
@@ -902,6 +903,32 @@
       _populateStratPicker();
       _updateStratPickerBtn();
       _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    async function selectTopTen(e) {
+      if (e) e.stopPropagation();
+      const fromDate = document.getElementById('equityFromDate').value;
+      const toDate   = document.getElementById('equityToDate').value;
+      if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
+        _cachedFullStats = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json());
+        _cachedFromDate  = fromDate;
+        _cachedToDate    = toDate;
+      }
+      // Sum realised P&L per strategy across the full (unfiltered) curve
+      const pnlByStrat = {};
+      for (const p of (_cachedFullStats.equity_curve || [])) {
+        if (p.strategy && p.pnl != null) {
+          pnlByStrat[p.strategy] = (pnlByStrat[p.strategy] || 0) + p.pnl;
+        }
+      }
+      const top = Object.entries(pnlByStrat)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([s]) => s);
+      selectedStrategies = new Set(top);
+      _populateStratPicker();
+      _updateStratPickerBtn();
       await applyEquityFilter();
     }
 
