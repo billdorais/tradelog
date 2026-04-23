@@ -3021,7 +3021,9 @@ def api_alpaca_analysis():
                     ep, eq, et, es = q.pop(-1)  # LIFO: most recent short
                     m = min(qty, eq)
                     closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
-                                   "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                                   "ticker": sym, "date": date_str, "side": "SHORT",
+                                   "entry_price": ep, "exit_price": price, "qty": m,
+                                   "entry_time": et, "exit_time": fill_ts})
                     qty -= m
                     if eq > m:
                         q.append((ep, eq - m, et, es))   # remainder stays on top (LIFO)
@@ -3033,7 +3035,9 @@ def api_alpaca_analysis():
                     ep, eq, et, es = q.pop(-1)  # LIFO: most recent long
                     m = min(qty, eq)
                     closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
-                                   "ticker": sym, "date": date_str, "entry_time": et, "exit_time": fill_ts})
+                                   "ticker": sym, "date": date_str, "side": "LONG",
+                                   "entry_price": ep, "exit_price": price, "qty": m,
+                                   "entry_time": et, "exit_time": fill_ts})
                     qty -= m
                     if eq > m:
                         q.append((ep, eq - m, et, es))
@@ -3255,6 +3259,10 @@ def api_alpaca_analysis():
                     "exit_strategy":  p["strategy"],
                     "ticker":         ticker,
                     "date":           date_str,
+                    "side":           "LONG",
+                    "entry_price":    ep,
+                    "exit_price":     xp,
+                    "qty":            qty,
                     "entry_time":     entry_fill.get("time", ""),
                     "exit_time":      exit_fill.get("time", ""),
                 })
@@ -3300,6 +3308,7 @@ def api_alpaca_analysis():
             "daily":        daily,
             "weekly":       weekly,
             "equity_curve": equity_curve,
+            "closed":       closed,
         })
     except Exception as e:
         log.exception("Alpaca analysis error")
