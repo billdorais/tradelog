@@ -79,6 +79,30 @@
 
     /* ── Empty state ── */
     .empty { text-align: center; padding: 40px; color: #444; font-size: 0.9rem; }
+
+    /* ── Drill-down modal ── */
+    tr.drill { cursor: pointer; }
+    tr.drill:hover td.name { color: #4a90d9; text-decoration: underline; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 900; display: none; }
+    .modal-backdrop.open { display: block; }
+    .modal { position: fixed; top: 5%; left: 50%; transform: translateX(-50%);
+             width: min(1100px, 94vw); max-height: 90vh; background: #13161f;
+             border: 1px solid #2a2d3e; border-radius: 12px; z-index: 901; display: none;
+             flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+    .modal.open { display: flex; }
+    .modal-head { padding: 16px 22px; border-bottom: 1px solid #1e2130; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .modal-title { font-size: 1rem; font-weight: 600; color: #fff; font-family: monospace; }
+    .modal-sub { font-size: 0.8rem; color: #666; }
+    .modal-close { background: transparent; border: 1px solid #2a2d3e; color: #888; padding: 4px 12px;
+                   border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .modal-close:hover { color: #fff; border-color: #555; }
+    .modal-body { overflow-y: auto; padding: 16px 22px; }
+    .pair-tbl th { cursor: default; }
+    .pair-tbl td, .pair-tbl th { font-size: 0.8rem; }
+    .pair-tbl td.mono { font-family: monospace; font-size: 0.78rem; color: #999; }
+    .side-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; }
+    .side-badge.long  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
+    .side-badge.short { background: rgba(231,76,60,0.18);  color: #ef5350; }
   </style>
 </head>
 <body>
@@ -167,6 +191,30 @@
         </thead>
         <tbody id="tickerBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Drill-down modal -->
+  <div class="modal-backdrop" id="pairsBackdrop" onclick="closePairs()"></div>
+  <div class="modal" id="pairsModal" role="dialog" aria-hidden="true">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="pairsTitle">—</div>
+        <div class="modal-sub"   id="pairsSub">—</div>
+      </div>
+      <button class="modal-close" onclick="closePairs()">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="tbl-wrap">
+        <table class="pair-tbl">
+          <thead><tr>
+            <th>Side</th><th>Ticker</th><th>Qty</th>
+            <th>Entry Price</th><th>Exit Price</th>
+            <th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th>
+          </tr></thead>
+          <tbody id="pairsBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -299,13 +347,61 @@
     return `<td class="${n >= 0 ? 'pos' : 'neg'}">${fmt(v)}</td>`;
   }
 
+  function fmtTime(s) {
+    if (!s) return '—';
+    const d = new Date(s);
+    if (isNaN(d)) return String(s).slice(0, 19).replace('T', ' ');
+    return d.toLocaleString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit' });
+  }
+
+  function openPairs(kind, key) {
+    const closed = (analysisData && analysisData.closed) || [];
+    const pairs = closed.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
+    pairs.sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+    const totalPnl = pairs.reduce((s, p) => s + p.pnl, 0);
+    document.getElementById('pairsTitle').textContent = key;
+    document.getElementById('pairsSub').textContent =
+      `${pairs.length} round-trip${pairs.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · sorted by |P&L|`;
+    const body = document.getElementById('pairsBody');
+    if (!pairs.length) {
+      body.innerHTML = '<tr><td colspan="8" class="empty">No paired trades.</td></tr>';
+    } else {
+      body.innerHTML = pairs.map(p => {
+        const sideCls = p.side === 'LONG' ? 'long' : 'short';
+        const pnlCls  = p.pnl >= 0 ? 'pos' : 'neg';
+        return `<tr>
+          <td><span class="side-badge ${sideCls}">${p.side}</span></td>
+          <td class="mono">${esc(p.ticker)}</td>
+          <td>${p.qty}</td>
+          <td class="mono">$${Number(p.entry_price).toFixed(2)}</td>
+          <td class="mono">$${Number(p.exit_price).toFixed(2)}</td>
+          <td class="mono">${esc(fmtTime(p.entry_time))}</td>
+          <td class="mono">${esc(fmtTime(p.exit_time))}</td>
+          <td class="${pnlCls}">${fmt(p.pnl)}</td>
+        </tr>`;
+      }).join('');
+    }
+    document.getElementById('pairsBackdrop').classList.add('open');
+    document.getElementById('pairsModal').classList.add('open');
+  }
+
+  function closePairs() {
+    document.getElementById('pairsBackdrop').classList.remove('open');
+    document.getElementById('pairsModal').classList.remove('open');
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closePairs();
+  });
+
   // ── Strategy table ─────────────────────────────────────────────────────────
   function renderStratTable(map) {
     const body = document.getElementById('stratBody');
     const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
     if (!rows.length) { body.innerHTML = '<tr><td colspan="9" class="empty">No closed trades yet.</td></tr>'; return; }
     body.innerHTML = rows.map(([name, s]) => `
-      <tr>
+      <tr class="drill" onclick="openPairs('strategy', ${JSON.stringify(name)})" title="Click to see round-trip pairs">
         <td class="name">${esc(name)}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
@@ -324,7 +420,7 @@
     const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
     if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No closed trades yet.</td></tr>'; return; }
     body.innerHTML = rows.map(([ticker, s]) => `
-      <tr>
+      <tr class="drill" onclick="openPairs('ticker', ${JSON.stringify(ticker)})" title="Click to see round-trip pairs">
         <td class="name">${esc(ticker)}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>

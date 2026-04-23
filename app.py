@@ -2794,7 +2794,8 @@ def _build_analysis_stats():
                 entry_price, entry_qty, entry_time = queue.pop(0)
                 m = min(qty, entry_qty)
                 closed.append({"pnl": round((entry_price - price) * m, 2), "strategy": strategy,
-                               "ticker": ticker, "date": date_str,
+                               "ticker": ticker, "date": date_str, "side": "SHORT",
+                               "entry_price": entry_price, "exit_price": price, "qty": m,
                                "entry_time": entry_time, "exit_time": received})
                 qty -= m
                 if entry_qty > m:
@@ -2807,7 +2808,8 @@ def _build_analysis_stats():
                 entry_price, entry_qty, entry_time = queue.pop(0)
                 m = min(qty, entry_qty)
                 closed.append({"pnl": round((price - entry_price) * m, 2), "strategy": strategy,
-                               "ticker": ticker, "date": date_str,
+                               "ticker": ticker, "date": date_str, "side": "LONG",
+                               "entry_price": entry_price, "exit_price": price, "qty": m,
                                "entry_time": entry_time, "exit_time": received})
                 qty -= m
                 if entry_qty > m:
@@ -2897,6 +2899,7 @@ def _build_analysis_stats():
         "per_ticker":   per_ticker,
         "daily":        daily,
         "weekly":       weekly,
+        "closed":       closed,
     }
 
 
