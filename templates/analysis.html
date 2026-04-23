@@ -285,7 +285,7 @@
   function fmt(v) {
     if (v == null || v === '') return '—';
     const n = parseFloat(v);
-    return (n >= 0 ? '+' : '') + '$' + Math.abs(n).toFixed(2);
+    return (n >= 0 ? '+' : '-') + '$' + Math.abs(n).toFixed(2);
   }
 
   function pfBadge(pf) {
@@ -341,7 +341,7 @@
     if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
     const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
     const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
-    const avgPnlFmt = (avgPnl >= 0 ? '+' : '') + '$' + Math.abs(avgPnl).toFixed(2);
+    const avgPnlFmt = (avgPnl >= 0 ? '+' : '-') + '$' + Math.abs(avgPnl).toFixed(2);
     const avgPnlCls = avgPnl >= 0 ? 'color:#26a65b' : 'color:#ef5350';
     document.querySelector('#tab-daily thead tr').innerHTML = `
       <th>Date</th>
@@ -364,7 +364,7 @@
     if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
     const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
     const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
-    const avgPnlFmt = (avgPnl >= 0 ? '+' : '') + '$' + Math.abs(avgPnl).toFixed(2);
+    const avgPnlFmt = (avgPnl >= 0 ? '+' : '-') + '$' + Math.abs(avgPnl).toFixed(2);
     const avgPnlCls = avgPnl >= 0 ? 'color:#26a65b' : 'color:#ef5350';
     document.querySelector('#tab-weekly thead tr').innerHTML = `
       <th>Week</th>
