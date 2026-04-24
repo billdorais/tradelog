@@ -1493,7 +1493,7 @@ def _resolve_variant_strategy(slug):
         return None, f"DB lookup failed: {e}"
     if not row:
         return None, f"unknown strategy '{slug}' (not built-in, not saved)"
-    code = row[0]
+    code = _strip_code_fences(row[0])
     try:
         from backtesting import Strategy as _Strategy
         import numpy as _np, pandas as _pd
@@ -1544,6 +1544,18 @@ def api_variants_run():
         r.pop("folds", None)
         results.append(r)
     return jsonify({"results": results})
+
+
+def _strip_code_fences(code: str) -> str:
+    """Remove markdown code fences that Claude sometimes emits despite instructions."""
+    code = code.strip()
+    if code.startswith('```'):
+        first_nl = code.find('\n')
+        code = code[first_nl + 1:] if first_nl != -1 else code[3:]
+        last_fence = code.rfind('```')
+        if last_fence != -1:
+            code = code[:last_fence]
+    return code.strip()
 
 
 def _extract_strategy_params(code):
@@ -1608,7 +1620,7 @@ def bt_strategy_save():
     import re
     body = request.get_json(silent=True) or {}
     name      = (body.get("name")      or "").strip()
-    code      = (body.get("code")      or "").strip()
+    code      = _strip_code_fences((body.get("code")      or "").strip())
     pine_code = (body.get("pine_code") or "").strip()
     if not name or not code:
         return jsonify({"error": "name and code are required"}), 400
@@ -2306,9 +2318,14 @@ def bt_optimize():
             exec_code = None
 
         if exec_code:
+            exec_code = _strip_code_fences(exec_code)
             ns = {"Strategy": _Strategy, "np": _np, "numpy": _np, "pd": _pd, "pandas": _pd}
             try:
                 exec(exec_code, ns)
+            except SyntaxError as e:
+                lines = exec_code.splitlines()
+                bad = lines[e.lineno - 1].strip() if e.lineno and e.lineno <= len(lines) else ''
+                yield _sse({"type": "error", "msg": f"Strategy syntax error (line {e.lineno}): {e.msg}  →  {bad}"}); return
             except Exception as e:
                 yield _sse({"type": "error", "msg": f"Strategy code error: {e}"}); return
             strategy_cls = next(
