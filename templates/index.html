@@ -1227,8 +1227,10 @@
       return pairs.sort((a, b) => pairMs(b) - pairMs(a));
     }
 
-    // Same pairing logic for Alpaca fills (same BOT/SLD convention as IB)
-    function pairAlpacaExecs(execs) {
+    // Same pairing logic for Alpaca fills (same BOT/SLD convention as IB).
+    // `tvSignals` is the /api/trades list; used to resolve each fill's intent
+    // (exit vs entry) via the TV sentiment field, matching backend behavior.
+    function pairAlpacaExecs(execs, tvSignals) {
       const toMs = e => {
         const raw = (e.time || '');
         // Handle ISO (2026-04-13T19:50:01Z) and legacy IB format (20260413  15:50:01)
@@ -1240,6 +1242,43 @@
         return new Date(fixed);
       };
       const normSym = s => (s || '').toUpperCase().replace('/', '');
+      const receivedMs = r => {
+        if (!r) return NaN;
+        const s = r.includes('T') ? r : r.replace(' ', 'T');
+        const z = s.endsWith('Z') || s.includes('+') ? s : s + 'Z';
+        return new Date(z).getTime();
+      };
+      // Build TV signal lookup: {sym|side} → sorted [{ts, sentiment}]
+      const signalLookup = {};
+      for (const t of (tvSignals || [])) {
+        const sym = normSym(t.ticker);
+        const act = (t.action || '').toUpperCase();
+        const side = act === 'BUY' ? 'BOT' : act === 'SELL' ? 'SLD' : null;
+        if (!sym || !side) continue;
+        const ts = receivedMs(t.received_at);
+        if (!isFinite(ts)) continue;
+        const sent = (t.sentiment || '').toLowerCase();
+        const key = sym + '|' + side;
+        if (!signalLookup[key]) signalLookup[key] = [];
+        signalLookup[key].push({ ts, sentiment: sent });
+      }
+      for (const k of Object.keys(signalLookup)) signalLookup[k].sort((a, b) => a.ts - b.ts);
+      const resolveIntent = (sym, side, fillMs) => {
+        const arr = signalLookup[sym + '|' + side];
+        if (!arr || !arr.length) return 'legacy';
+        let best = arr[0];
+        let bestDiff = Math.abs(best.ts - fillMs);
+        for (let i = 1; i < arr.length; i++) {
+          const d = Math.abs(arr[i].ts - fillMs);
+          if (d < bestDiff) { best = arr[i]; bestDiff = d; }
+        }
+        if (bestDiff > 300000) return 'legacy';  // >5 min → treat as unmatched
+        if (best.sentiment === 'flat')  return 'exit';
+        if (best.sentiment === 'long')  return 'enter_long';
+        if (best.sentiment === 'short') return 'enter_short';
+        return 'legacy';
+      };
+
       const seen = new Set();
       const deduped = execs.filter(e => {
         // Deduplicate by order ID first; fall back to symbol|side|time|shares
@@ -1255,17 +1294,29 @@
       for (const e of sorted) {
         // Normalise crypto symbols: ETH/USD and ETHUSD both become ETHUSD
         const symbol = (e.symbol || '').toUpperCase().replace('/', '');
+        const intent = resolveIntent(symbol, e.side, toMs(e).getTime());
         if (e.side === 'BOT') {
+          if (intent === 'enter_long') {
+            if (!longs[symbol]) longs[symbol] = [];
+            longs[symbol].push(e);
+            continue;
+          }
           if (shorts[symbol] && shorts[symbol].length) {
             pairs.push({ entry: shorts[symbol].pop(), exit: e, direction: 'short' });
-          } else {
+          } else if (intent === 'legacy') {
             if (!longs[symbol]) longs[symbol] = [];
             longs[symbol].push(e);
           }
+          // intent === 'exit' with no open short → drop silently (stale exit)
         } else if (e.side === 'SLD') {
+          if (intent === 'enter_short') {
+            if (!shorts[symbol]) shorts[symbol] = [];
+            shorts[symbol].push(e);
+            continue;
+          }
           if (longs[symbol] && longs[symbol].length) {
             pairs.push({ entry: longs[symbol].pop(), exit: e, direction: 'long' });
-          } else {
+          } else if (intent === 'legacy') {
             if (!shorts[symbol]) shorts[symbol] = [];
             shorts[symbol].push(e);
           }
@@ -1514,7 +1565,7 @@
 
       const tvPairs     = pairSignals(filtered);
       const ibPairs     = pairIBExecs(allIBExecs);
-      const alpacaPairs = reconcileAlpacaPairs(pairAlpacaExecs(allAlpacaExecs), allAlpacaPositions);
+      const alpacaPairs = reconcileAlpacaPairs(pairAlpacaExecs(allAlpacaExecs, trades), allAlpacaPositions);
       const groups      = buildGroups(tvPairs, ibPairs, alpacaPairs);
       const body     = document.getElementById('tradeBody');
 
