@@ -2127,6 +2127,7 @@ def bt_run():
         try:
             from backtesting import Strategy as _Strategy
             import numpy as _np, pandas as _pd
+            strategy_code = _strip_code_fences(strategy_code)
             ns = {"Strategy": _Strategy, "np": _np, "numpy": _np, "pd": _pd, "pandas": _pd}
             exec(strategy_code, ns)
             strategy_cls = next(
@@ -2138,10 +2139,11 @@ def bt_run():
                 return jsonify({"error": "No Strategy subclass found in converted code"}), 400
             strategy_cls.__module__ = "__main__"
             strategy_cls.__qualname__ = strategy_cls.__name__
-            # Register on __main__ so pickle can resolve the class if
-            # backtesting.py's Pool ever falls back to a real subprocess
-            # pool (spawn/fork). Without this, only ThreadPool paths work.
             setattr(sys.modules["__main__"], strategy_cls.__name__, strategy_cls)
+        except SyntaxError as e:
+            lines = strategy_code.splitlines()
+            bad = lines[e.lineno - 1].strip() if e.lineno and e.lineno <= len(lines) else ''
+            return jsonify({"error": f"Syntax error (line {e.lineno}): {e.msg}  →  {bad}"}), 400
         except Exception as e:
             return jsonify({"error": f"Strategy code error: {e}"}), 400
     else:
