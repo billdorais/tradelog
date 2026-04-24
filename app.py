@@ -2444,33 +2444,23 @@ def bt_optimize():
                                 p_ov = dict(zip(opt_kwargs.keys(), combo))
                                 combo_results.append((p_ov, bt.run(**p_ov)))
                         else:
-                            # SAMBO smart search - cap each param to <=30 evenly-spaced values
-                            # so the discrete search space stays tractable.
-                            _MAX_SAMBO_VALS = 30
-                            sambo_kwargs = {}
-                            for k, vals in opt_kwargs.items():
-                                if len(vals) > _MAX_SAMBO_VALS:
-                                    step = (len(vals) - 1) / (_MAX_SAMBO_VALS - 1)
-                                    sambo_kwargs[k] = [vals[round(i * step)] for i in range(_MAX_SAMBO_VALS)]
-                                else:
-                                    sambo_kwargs[k] = vals
-                            capped_size = 1
-                            for v in sambo_kwargs.values():
-                                capped_size *= len(v)
+                            # Random search - bypass bt.optimize() which hangs on large spaces.
+                            # Sample combos uniformly; more trials than SAMBO's max_tries.
+                            _N_RANDOM = {"5m": 80, "15m": 100, "30m": 120, "1h": 150, "1d": 200}
+                            n_trials = min(_N_RANDOM.get(tf, 80), grid_size)
                             yield _sse({"type": "progress",
-                                        "msg": f"  SAMBO: {capped_size:,} capped combos, {tf_max_tries} trials",
+                                        "msg": f"  Random search: {n_trials} trials from {grid_size:,} combos",
                                         "pct": pct + 1})
-                            try:
-                                _, heatmap = bt.optimize(
-                                    **sambo_kwargs, maximize=maximize,
-                                    return_heatmap=True, max_tries=tf_max_tries, method="sambo")
-                            except Exception:
-                                _, heatmap = bt.optimize(
-                                    **sambo_kwargs, maximize=maximize,
-                                    return_heatmap=True, max_tries=tf_max_tries)
-                            for idx in heatmap.index:
-                                idx_t = idx if isinstance(idx, tuple) else (idx,)
-                                p_ov  = dict(zip(sambo_kwargs.keys(), idx_t))
+                            import random as _rnd
+                            seen = set()
+                            attempts = 0
+                            while len(combo_results) < n_trials and attempts < n_trials * 5:
+                                attempts += 1
+                                p_ov = {k: _rnd.choice(vals) for k, vals in opt_kwargs.items()}
+                                key = tuple(sorted(p_ov.items()))
+                                if key in seen:
+                                    continue
+                                seen.add(key)
                                 combo_results.append((p_ov, bt.run(**p_ov)))
                     else:
                         yield _sse({"type": "progress",
