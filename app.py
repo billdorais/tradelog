@@ -2444,18 +2444,33 @@ def bt_optimize():
                                 p_ov = dict(zip(opt_kwargs.keys(), combo))
                                 combo_results.append((p_ov, bt.run(**p_ov)))
                         else:
-                            # Sambo smart search â†’ full stats for each trial
+                            # SAMBO smart search - cap each param to <=30 evenly-spaced values
+                            # so the discrete search space stays tractable.
+                            _MAX_SAMBO_VALS = 30
+                            sambo_kwargs = {}
+                            for k, vals in opt_kwargs.items():
+                                if len(vals) > _MAX_SAMBO_VALS:
+                                    step = (len(vals) - 1) / (_MAX_SAMBO_VALS - 1)
+                                    sambo_kwargs[k] = [vals[round(i * step)] for i in range(_MAX_SAMBO_VALS)]
+                                else:
+                                    sambo_kwargs[k] = vals
+                            capped_size = 1
+                            for v in sambo_kwargs.values():
+                                capped_size *= len(v)
+                            yield _sse({"type": "progress",
+                                        "msg": f"  SAMBO: {capped_size:,} capped combos, {tf_max_tries} trials",
+                                        "pct": pct + 1})
                             try:
                                 _, heatmap = bt.optimize(
-                                    **opt_kwargs, maximize=maximize,
+                                    **sambo_kwargs, maximize=maximize,
                                     return_heatmap=True, max_tries=tf_max_tries, method="sambo")
                             except Exception:
                                 _, heatmap = bt.optimize(
-                                    **opt_kwargs, maximize=maximize,
+                                    **sambo_kwargs, maximize=maximize,
                                     return_heatmap=True, max_tries=tf_max_tries)
                             for idx in heatmap.index:
                                 idx_t = idx if isinstance(idx, tuple) else (idx,)
-                                p_ov  = dict(zip(opt_kwargs.keys(), idx_t))
+                                p_ov  = dict(zip(sambo_kwargs.keys(), idx_t))
                                 combo_results.append((p_ov, bt.run(**p_ov)))
                     else:
                         yield _sse({"type": "progress",
