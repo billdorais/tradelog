@@ -344,6 +344,8 @@ if os.environ.get("IB_HOST_LIVE"):
 alpaca_broker = None
 _alpaca_fills_cache = {"data": [], "ts": 0.0}
 ALPACA_CACHE_TTL = 120  # seconds — paginated fetch can be slow, cache longer
+_broker_status_cache = {"data": None, "ts": 0.0}
+BROKER_STATUS_TTL = 5  # seconds — dashboard polls on every load; brokers rarely flip that fast
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
@@ -982,6 +984,10 @@ def clear_trades():
 
 @app.route("/api/broker/status")
 def broker_status():
+    global _broker_status_cache
+    now = time.time()
+    if _broker_status_cache["data"] is not None and (now - _broker_status_cache["ts"]) < BROKER_STATUS_TTL:
+        return jsonify(_broker_status_cache["data"])
     brokers = {}
     brokers["IB"] = ib_broker.status() if ib_broker else {
         "connected": False, "broker": "IB", "note": "IB_HOST not set"
@@ -994,6 +1000,7 @@ def broker_status():
         brokers["Alpaca"] = alpaca_broker.status()
     if coinbase_broker is not None:
         brokers["Coinbase"] = coinbase_broker.status()
+    _broker_status_cache = {"data": brokers, "ts": now}
     return jsonify(brokers)
 
 
@@ -1143,14 +1150,10 @@ def alpaca_positions():
         log.warning("alpaca_positions: broker is None")
         return jsonify([])
     try:
-        alpaca_broker._ensure_client()
-        alpaca_broker._invalidate_pos_cache()
-        raw = alpaca_broker._trading.get_all_positions()
-        raw_count = len(raw) if raw else 0
         positions = alpaca_broker.get_positions()
         return jsonify({
             "positions": positions,
-            "_debug": {"paper": alpaca_broker._paper, "raw_count": raw_count},
+            "_debug": {"paper": alpaca_broker._paper, "raw_count": len(positions)},
         })
     except Exception as e:
         log.error("alpaca_positions failed: %s", e, exc_info=True)
