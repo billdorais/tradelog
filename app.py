@@ -3180,17 +3180,18 @@ def api_alpaca_analysis():
         # Build signal lookup: (ticker, side) → sorted list of (unix_ts, strategy)
         conn = get_db()
         cur  = conn.cursor()
-        cur.execute("SELECT ticker, action, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
+        cur.execute("SELECT ticker, action, sentiment, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
         rows = cur.fetchall()
         trades_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
         conn.close()
 
-        signal_lookup = {}  # (ticker, 'BOT'|'SLD') → [(ts, strategy)]
+        signal_lookup = {}  # (ticker, 'BOT'|'SLD') → [(ts, strategy, sentiment)]
         for t in trades_db:
-            ticker   = (t.get("ticker") or "").strip().upper()
-            action   = (t.get("action") or "").strip().upper()
-            received = t.get("received_at") or ""
-            strategy = (t.get("strategy") or "").strip()
+            ticker    = (t.get("ticker") or "").strip().upper()
+            action    = (t.get("action") or "").strip().upper()
+            sentiment = (t.get("sentiment") or "").strip().lower()
+            received  = t.get("received_at") or ""
+            strategy  = (t.get("strategy") or "").strip()
             if not strategy:
                 continue
             side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
@@ -3200,20 +3201,22 @@ def api_alpaca_analysis():
                 ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
             except Exception:
                 continue
-            signal_lookup.setdefault((ticker, side), []).append((ts, strategy))
+            signal_lookup.setdefault((ticker, side), []).append((ts, strategy, sentiment))
 
-        def _resolve_strategy(symbol, side, fill_time_str):
+        def _resolve_signal(symbol, side, fill_time_str):
+            """Return (strategy, sentiment) for the TV signal closest to this fill."""
             try:
                 fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
             except Exception:
-                return "Unknown"
+                return "Unknown", ""
             candidates = signal_lookup.get((symbol.upper(), side), [])
             if not candidates:
-                return "Unknown"
+                return "Unknown", ""
             best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
             if abs(best[0] - fill_ts) > 300:
-                return "Unknown"
-            return best[1]
+                return "Unknown", ""
+            return best[1], best[2]
+
 
         # Deduplicate fills
         seen = set()
@@ -3250,8 +3253,23 @@ def api_alpaca_analysis():
             qty      = float(f.get("shares") or 0)
             fill_ts  = f.get("time", "")
             date_str = fill_ts[:10] if fill_ts else ""
-            strat    = _resolve_strategy(sym, side, fill_ts)
+            strat, sentiment = _resolve_signal(sym, side, fill_ts)
+            # Map TV sentiment to intent. "flat" = exit (consume inventory only),
+            # "long"/"short" = entry (add inventory only). Missing/unknown falls
+            # back to the legacy heuristic (try-close-else-open) so fills without
+            # a matching TV signal still pair.
+            if sentiment == "flat":
+                intent = "exit"
+            elif sentiment == "long":
+                intent = "enter_long"
+            elif sentiment == "short":
+                intent = "enter_short"
+            else:
+                intent = "legacy"
             if side == "BOT":
+                if intent == "enter_long":
+                    open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                    continue
                 q = open_shorts.setdefault(sym, [])
                 while qty > 0 and q:
                     ep, eq, et, es = q.pop(-1)  # LIFO: most recent short
@@ -3263,9 +3281,12 @@ def api_alpaca_analysis():
                     qty -= m
                     if eq > m:
                         q.append((ep, eq - m, et, es))   # remainder stays on top (LIFO)
-                if qty > 0:
+                if qty > 0 and intent == "legacy":
                     open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
             elif side == "SLD":
+                if intent == "enter_short":
+                    open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                    continue
                 q = open_longs.setdefault(sym, [])
                 while qty > 0 and q:
                     ep, eq, et, es = q.pop(-1)  # LIFO: most recent long
@@ -3277,7 +3298,7 @@ def api_alpaca_analysis():
                     qty -= m
                     if eq > m:
                         q.append((ep, eq - m, et, es))
-                if qty > 0:
+                if qty > 0 and intent == "legacy":
                     open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
         # Per-day FIFO pairing — used only for the daily/weekly breakdown so each
@@ -3299,8 +3320,19 @@ def api_alpaca_analysis():
                 price   = float(f.get("price") or 0)
                 qty     = float(f.get("shares") or 0)
                 fill_ts = f.get("time", "")
-                strat   = _resolve_strategy(sym, side, fill_ts)
+                strat, sentiment = _resolve_signal(sym, side, fill_ts)
+                if sentiment == "flat":
+                    intent = "exit"
+                elif sentiment == "long":
+                    intent = "enter_long"
+                elif sentiment == "short":
+                    intent = "enter_short"
+                else:
+                    intent = "legacy"
                 if side == "BOT":
+                    if intent == "enter_long":
+                        day_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                        continue
                     q = day_shorts.setdefault(sym, [])
                     while qty > 0 and q:
                         ep, eq, et, es = q.pop(0)  # FIFO: oldest short
@@ -3313,9 +3345,12 @@ def api_alpaca_analysis():
                         qty -= m
                         if eq > m:
                             q.insert(0, (ep, eq - m, et, es))   # remainder stays at front (FIFO)
-                    if qty > 0:
+                    if qty > 0 and intent == "legacy":
                         day_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
                 elif side == "SLD":
+                    if intent == "enter_short":
+                        day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                        continue
                     q = day_longs.setdefault(sym, [])
                     while qty > 0 and q:
                         ep, eq, et, es = q.pop(0)
@@ -3328,7 +3363,7 @@ def api_alpaca_analysis():
                         qty -= m
                         if eq > m:
                             q.insert(0, (ep, eq - m, et, es))
-                    if qty > 0:
+                    if qty > 0 and intent == "legacy":
                         day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
         def _stats(tlist):
