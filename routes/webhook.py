@@ -74,14 +74,16 @@ def webhook():
     use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
     broker_targets  = []     # populated by broker nodes; supports multi-broker pipelines
 
+    matched_rule_id = None  # set when a routing rule matches; used to flip tv_alert_created
     try:
         rconn = app.get_db()
         rcur  = rconn.cursor()
-        rcur.execute("SELECT nodes FROM routing_rules WHERE enabled=1 ORDER BY COALESCE(sort_order, id) ASC")
+        rcur.execute("SELECT id, nodes FROM routing_rules WHERE enabled=1 ORDER BY COALESCE(sort_order, id) ASC")
         rule_rows = rcur.fetchall()
         rconn.close()
         for rrow in rule_rows:
-            nodes_raw = rrow[0] if app.DATABASE_URL else rrow["nodes"]
+            rule_id   = rrow[0] if app.DATABASE_URL else rrow["id"]
+            nodes_raw = rrow[1] if app.DATABASE_URL else rrow["nodes"]
             nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
             # Check if a strategy node in this pipeline matches
             strat_nodes = [n for n in nodes if n.get("type") == "strategy"]
@@ -159,9 +161,26 @@ def webhook():
                 broker_name = ",".join(broker_targets)
             app.log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
                          strategy_name, broker_name, use_live_broker, quantity, sec_type)
+            matched_rule_id = rule_id
             break  # first matching pipeline wins
     except Exception as e:
         app.log.warning("Routing rule lookup failed: %s", e)
+
+    # First webhook for a rule means the TV alert is wired up — flip the progress flag.
+    if matched_rule_id is not None:
+        try:
+            fconn = app.get_db()
+            fcur  = fconn.cursor()
+            fp    = app.placeholder()
+            fcur.execute(
+                f"UPDATE routing_rules SET tv_alert_created=1 "
+                f"WHERE id={fp} AND (tv_alert_created IS NULL OR tv_alert_created=0)",
+                (matched_rule_id,),
+            )
+            fconn.commit()
+            fconn.close()
+        except Exception as _fe:
+            app.log.debug("tv_alert_created flip failed: %s", _fe)
 
     # If no broker nodes fired from pipeline, fall back to the single broker_name from request body
     if not broker_targets and broker_name:

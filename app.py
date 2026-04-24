@@ -810,6 +810,12 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    try:
+        cur.execute("ALTER TABLE routing_rules ADD COLUMN tv_alert_created INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Add pine_code column to user_strategies if not present (migration)
     try:
         cur.execute("ALTER TABLE user_strategies ADD COLUMN pine_code TEXT")
@@ -1265,7 +1271,7 @@ def risk_unblock_strategy(strategy_name):
 def routing_rules_list():
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT id, name, enabled, nodes, created_at FROM routing_rules ORDER BY COALESCE(sort_order, id) ASC")
+    cur.execute("SELECT id, name, enabled, nodes, created_at, tv_alert_created FROM routing_rules ORDER BY COALESCE(sort_order, id) ASC")
     rows = cur.fetchall()
     conn.close()
     if DATABASE_URL:
@@ -1321,6 +1327,8 @@ def routing_rules_update(rule_id):
         fields.append(f"enabled={p}"); vals.append(int(data["enabled"]))
     if "nodes" in data:
         fields.append(f"nodes={p}"); vals.append(json.dumps(data["nodes"]))
+    if "tv_alert_created" in data:
+        fields.append(f"tv_alert_created={p}"); vals.append(int(bool(data["tv_alert_created"])))
     if not fields:
         conn.close()
         return jsonify({"error": "nothing to update"}), 400
@@ -1472,6 +1480,143 @@ def strategies():
 @app.route("/optimize")
 def optimize_page():
     return render_template("optimize.html")
+
+
+@app.route("/progress")
+def progress_page():
+    return render_template("progress.html")
+
+
+# Build the 12-alert spec for a ticker. Order is chosen to minimize TV
+# context-switching: outer = strategy (Pine reload), middle = level (dropdown),
+# inner = timeframe (fastest swap).
+PROGRESS_STRATEGIES = ["BREAKOUT", "REVERSAL"]
+PROGRESS_LEVELS     = ["R4S4", "R3S3"]
+PROGRESS_TIMEFRAMES = ["5MIN", "15MIN", "30MIN"]
+
+
+def _progress_alert_specs(ticker):
+    ticker = ticker.strip().upper()
+    specs = []
+    for strat in PROGRESS_STRATEGIES:
+        for level in PROGRESS_LEVELS:
+            for tf in PROGRESS_TIMEFRAMES:
+                name = f"CAM_{ticker}_{level}_{strat}_v1_{tf}"
+                tv_interval = {"5MIN": "5", "15MIN": "15", "30MIN": "30"}[tf]
+                specs.append({
+                    "name":       name,
+                    "ticker":     ticker,
+                    "strategy":   strat,
+                    "level":      level,
+                    "timeframe":  tf,
+                    "tv_settings": {
+                        "pine_script": f"CAM_R4S4_{strat}_V01",
+                        "level":       "R4" if level == "R4S4" else "R3",
+                        "interval":    tv_interval,
+                    },
+                    "payload": {
+                        "ticker":    "{{ticker}}",
+                        "action":    "{{strategy.order.action}}",
+                        "sentiment": "{{strategy.market_position}}",
+                        "quantity":  "1",
+                        "price":     "{{close}}",
+                        "time":      "{{timenow}}",
+                        "strategy":  name,
+                        "interval":  "{{interval}}",
+                        "broker":    "ib",
+                    },
+                })
+    return specs
+
+
+def _progress_default_nodes(name):
+    return [
+        {"type": "strategy",      "value": name},
+        {"type": "quantity",      "amount": 100, "unit": "shares"},
+        {"type": "instrument",    "value": "STK"},
+        {"type": "broker",        "value": "alpaca-paper"},
+        {"type": "trading_hours", "start": "09:30", "end": "16:00", "tz": "America/New_York"},
+    ]
+
+
+@app.route("/api/progress/add_ticker", methods=["POST"])
+def progress_add_ticker():
+    """Create the 12 routing rules for a ticker (idempotent) and return the TV alert checklist."""
+    data   = request.get_json(silent=True) or {}
+    ticker = (data.get("ticker") or "").strip().upper()
+    if not ticker or not ticker.replace("_", "").isalnum():
+        return jsonify({"error": "ticker required (alphanumeric)"}), 400
+
+    specs = _progress_alert_specs(ticker)
+    conn  = get_db()
+    cur   = conn.cursor()
+    p     = placeholder()
+
+    cur.execute("SELECT name FROM routing_rules")
+    existing = {(r[0] if DATABASE_URL else r["name"]) for r in cur.fetchall()}
+
+    created, skipped = [], []
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    for spec in specs:
+        if spec["name"] in existing:
+            skipped.append(spec["name"])
+            continue
+        nodes_json = json.dumps(_progress_default_nodes(spec["name"]))
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                f"VALUES ({p},{p},{p},{p},{p}) RETURNING id",
+                (spec["name"], 1, nodes_json, ts, 0),
+            )
+        else:
+            cur.execute(
+                f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                f"VALUES ({p},{p},{p},{p},{p})",
+                (spec["name"], 1, nodes_json, ts, 0),
+            )
+        created.append(spec["name"])
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "ticker":   ticker,
+        "created":  created,
+        "skipped":  skipped,
+        "specs":    specs,
+    })
+
+
+@app.route("/api/progress/fix_strategy_mismatch", methods=["POST"])
+def progress_fix_strategy_mismatch():
+    """One-shot cleanup: where a rule's name differs from its strategy node value, fix the node."""
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    cur.execute("SELECT id, name, nodes FROM routing_rules")
+    rows = cur.fetchall()
+    fixed = []
+    for r in rows:
+        rid       = r[0] if DATABASE_URL else r["id"]
+        name      = r[1] if DATABASE_URL else r["name"]
+        nodes_raw = r[2] if DATABASE_URL else r["nodes"]
+        try:
+            nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        except Exception:
+            continue
+        changed = False
+        for n in nodes:
+            if n.get("type") == "strategy" and (n.get("value") or "") != name:
+                n["value"] = name
+                changed = True
+        if changed:
+            cur.execute(
+                f"UPDATE routing_rules SET nodes={p} WHERE id={p}",
+                (json.dumps(nodes), rid),
+            )
+            fixed.append(name)
+    conn.commit()
+    conn.close()
+    return jsonify({"fixed": fixed, "count": len(fixed)})
 
 
 @app.route("/variants")

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Progress — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #000; color: #e0e0e0; min-height: 100vh; padding: 32px 16px; }
+
+    .topbar { max-width: 1200px; margin: 0 auto 28px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-left { display: flex; align-items: center; gap: 10px; }
+    .topbar-left img { height: 36px; width: 36px; image-rendering: pixelated; }
+    .topbar-left span { font-size: 1.1rem; font-weight: 700; color: #fff; }
+
+    .page { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+    .subtitle { font-size: 0.88rem; color: #666; margin-bottom: 28px; }
+
+    .card { background: #111; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
+    .card-title { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 16px; font-weight: 600; }
+
+    .btn { background: #2962ff; color: #fff; border: none; border-radius: 8px;
+           padding: 9px 22px; font-size: 0.88rem; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .btn:hover { background: #1a4fd8; }
+    .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .btn-sec { background: transparent; border: 1px solid #2a2d3e; color: #aaa; }
+    .btn-sec:hover { background: rgba(255,255,255,0.04); color: #fff; }
+
+    input[type="text"] { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
+                         color: #e0e0e0; padding: 9px 12px; font-size: 0.88rem; font-family: inherit; }
+    input[type="text"]:focus { outline: none; border-color: #2962ff; }
+
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+    .ticker-section { margin-bottom: 22px; }
+    .ticker-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .ticker-name { font-size: 1.05rem; font-weight: 700; color: #fff; }
+    .progress-pill { font-size: 0.72rem; padding: 3px 10px; border-radius: 999px; font-weight: 600;
+                     background: rgba(255,255,255,0.05); border: 1px solid #2a2d3e; color: #888; }
+    .progress-pill.complete { background: rgba(38,166,91,0.15); border-color: #26a65b; color: #5fe0a0; }
+    .progress-pill.partial { background: rgba(255,152,0,0.12); border-color: #ff9800; color: #ff9800; }
+
+    .group-label { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.06em;
+                   font-weight: 600; padding: 8px 0 4px; }
+
+    .alert-row { display: grid; grid-template-columns: 24px 1fr 80px;
+                 align-items: center; gap: 12px; padding: 6px 8px; border-radius: 5px;
+                 font-size: 0.85rem; border-bottom: 1px solid #0d0d0d; }
+    .alert-row:hover { background: rgba(255,255,255,0.02); }
+    .alert-row.done { color: #5fe0a0; }
+    .alert-name { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.82rem; }
+    .alert-row .meta { font-size: 0.74rem; color: #666; text-align: right; }
+
+    input[type="checkbox"] { width: 16px; height: 16px; accent-color: #26a65b; cursor: pointer; }
+
+    .checklist-card { background: #0a0a0a; border: 1px solid #2a2d3e; border-radius: 8px;
+                      padding: 14px 16px; margin-top: 12px; }
+    .checklist-step { padding: 8px 0; border-bottom: 1px solid #15171f; }
+    .checklist-step:last-child { border-bottom: none; }
+    .checklist-step-header { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
+    .checklist-step .step-num { display: inline-block; width: 22px; height: 22px; line-height: 22px;
+                                text-align: center; border-radius: 50%; background: #1e2130;
+                                color: #aaa; font-size: 0.72rem; font-weight: 700; }
+    .checklist-step .step-name { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.82rem; color: #e0e0e0; }
+    .checklist-step .step-settings { margin-left: 32px; color: #888; font-size: 0.78rem; line-height: 1.55; }
+    .checklist-step .step-settings code { background: #15171f; border: 1px solid #2a2d3e; border-radius: 3px;
+                                          padding: 1px 6px; color: #5fe0a0; font-size: 0.78rem; }
+    .copy-btn { float: right; background: transparent; border: 1px solid #2a2d3e; color: #888;
+                font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-family: inherit; }
+    .copy-btn:hover { color: #fff; border-color: #5fe0a0; }
+    .payload { margin-top: 6px; margin-left: 32px; background: #15171f; border: 1px solid #2a2d3e; border-radius: 5px;
+               padding: 8px 10px; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.75rem;
+               color: #e0e0e0; white-space: pre; overflow-x: auto; }
+
+    .summary-stat { display: inline-block; margin-right: 24px; font-size: 0.85rem; color: #aaa; }
+    .summary-stat strong { color: #fff; font-weight: 700; }
+
+    #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
+                 font-size: 0.9rem; border-bottom: 1px solid #1e2130; }
+    #navMenu a:last-child { border-bottom: none; }
+    #navMenu a:hover { background: rgba(255,255,255,0.04); }
+
+    .toast { position: fixed; bottom: 24px; right: 24px; background: #111; border: 1px solid #26a65b;
+             color: #5fe0a0; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem;
+             box-shadow: 0 6px 24px rgba(0,0,0,0.6); display: none; z-index: 1000; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="cursor:pointer"></a>
+    <span>Kairos Automata — Progress</span>
+  </div>
+  <div style="position:relative;display:inline-block">
+    <button id="navMenuBtn" onclick="toggleNavMenu()"
+            style="background:transparent;border:1px solid #1e2130;color:#aaa;padding:5px 10px;
+                   border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#0d0d0d;
+                              border:1px solid #1e2130;border-radius:8px;min-width:190px;z-index:999;
+                              box-shadow:0 6px 24px rgba(0,0,0,0.6)">
+      <a href="/">&#127968; Dashboard</a>
+      <a href="/routing">&#128257; Signal Router</a>
+      <a href="/strategies">&#128200; Strategies</a>
+      <a href="/optimize">&#128269; Optimizer</a>
+      <a href="/variants">&#127757; Variants</a>
+      <a href="/progress">&#9989; Progress</a>
+      <a href="/about">&#8505; About</a>
+    </div>
+  </div>
+</div>
+
+<div class="page">
+  <h1>Alert Progress</h1>
+  <div class="subtitle">Track which TradingView alerts have been wired up. The flag flips automatically the
+    first time a matching webhook fires; you can also tick it manually.</div>
+
+  <div class="card">
+    <div class="card-title">Add a new ticker</div>
+    <div class="row">
+      <input type="text" id="newTicker" placeholder="QQQ" maxlength="10" style="width:140px;text-transform:uppercase">
+      <button class="btn" id="addTickerBtn" onclick="addTicker()">+ Add ticker</button>
+      <span id="addStatus" style="font-size:0.8rem;color:#888"></span>
+    </div>
+    <div style="font-size:0.78rem;color:#666;margin-top:8px">
+      Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.
+    </div>
+  </div>
+
+  <div class="card" id="checklistCard" style="display:none">
+    <div class="card-title">TradingView alert checklist <span id="checklistTicker" style="color:#5fe0a0"></span></div>
+    <div style="font-size:0.78rem;color:#888;margin-bottom:8px">
+      Ordered to minimize switching: change the Pine script (and Reversal Level dropdown) as little as possible.
+      Copy each payload into the alert's Message field.
+    </div>
+    <div id="checklistBody"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Summary</div>
+    <div id="summaryBody" style="font-size:0.85rem;color:#888">Loading…</div>
+  </div>
+
+  <div id="tickerSections"></div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  let _rules = [];
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#navMenuBtn') && !e.target.closest('#navMenu')) {
+      const m = document.getElementById('navMenu');
+      if (m) m.style.display = 'none';
+    }
+  });
+
+  function showToast(msg, color) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.borderColor = color || '#26a65b';
+    t.style.color       = color || '#5fe0a0';
+    t.style.display = 'block';
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => { t.style.display = 'none'; }, 2400);
+  }
+
+  // CAM_{TICKER}_{LEVEL}_{STRATEGY}_v1_{TIMEFRAME}
+  const NAME_RE = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)_v1_(\d+MIN)$/i;
+
+  function parseRuleName(name) {
+    const m = NAME_RE.exec(name || '');
+    if (!m) return null;
+    return { ticker: m[1].toUpperCase(), level: m[2].toUpperCase(),
+             strategy: m[3].toUpperCase(), timeframe: m[4].toUpperCase() };
+  }
+
+  async function loadRules() {
+    const res = await fetch('/api/routing/rules');
+    _rules = await res.json();
+    render();
+  }
+
+  function render() {
+    const byTicker = {};
+    let totalRecognized = 0, totalDone = 0;
+    for (const r of _rules) {
+      const meta = parseRuleName(r.name);
+      if (!meta) continue;
+      totalRecognized++;
+      if (r.tv_alert_created) totalDone++;
+      if (!byTicker[meta.ticker]) byTicker[meta.ticker] = [];
+      byTicker[meta.ticker].push({ ...r, meta });
+    }
+
+    const summary = document.getElementById('summaryBody');
+    const tickerCount = Object.keys(byTicker).length;
+    summary.innerHTML = `
+      <span class="summary-stat"><strong>${tickerCount}</strong> tickers</span>
+      <span class="summary-stat"><strong>${totalDone}</strong> / <strong>${totalRecognized}</strong> alerts wired</span>
+      <span class="summary-stat"><strong>${_rules.length - totalRecognized}</strong> other rules</span>`;
+
+    const TF_ORDER = { '5MIN': 0, '15MIN': 1, '30MIN': 2 };
+    const root = document.getElementById('tickerSections');
+    const tickers = Object.keys(byTicker).sort();
+    if (!tickers.length) {
+      root.innerHTML = '<div class="card" style="color:#666">No CAM_* alerts yet. Add a ticker above.</div>';
+      return;
+    }
+    root.innerHTML = tickers.map(t => {
+      const items = byTicker[t];
+      const done = items.filter(r => r.tv_alert_created).length;
+      const total = items.length;
+      const pillClass = done === total ? 'complete' : (done > 0 ? 'partial' : '');
+      const renderGroup = (strat, levelOrder) => {
+        const rows = [];
+        for (const lvl of levelOrder) {
+          const matches = items.filter(r => r.meta.strategy === strat && r.meta.level === lvl)
+                               .sort((a, b) => TF_ORDER[a.meta.timeframe] - TF_ORDER[b.meta.timeframe]);
+          for (const r of matches) {
+            const checked = r.tv_alert_created ? 'checked' : '';
+            const doneClass = r.tv_alert_created ? 'done' : '';
+            rows.push(`<div class="alert-row ${doneClass}">
+              <input type="checkbox" ${checked} onchange="toggleAlert(${r.id}, this.checked)">
+              <span class="alert-name">${r.name}</span>
+              <span class="meta">${r.meta.timeframe}</span>
+            </div>`);
+          }
+          if (matches.length) rows.push('<div style="height:6px"></div>');
+        }
+        return rows.join('');
+      };
+      return `<div class="card ticker-section">
+        <div class="ticker-header">
+          <span class="ticker-name">${t}</span>
+          <span class="progress-pill ${pillClass}">${done} / ${total}</span>
+        </div>
+        <div class="group-label">Breakout</div>
+        ${renderGroup('BREAKOUT', ['R4S4', 'R3S3'])}
+        <div class="group-label">Reversal</div>
+        ${renderGroup('REVERSAL', ['R4S4', 'R3S3'])}
+      </div>`;
+    }).join('');
+  }
+
+  async function toggleAlert(ruleId, checked) {
+    try {
+      await fetch(`/api/routing/rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tv_alert_created: checked ? 1 : 0 }),
+      });
+      const r = _rules.find(x => x.id === ruleId);
+      if (r) r.tv_alert_created = checked ? 1 : 0;
+      render();
+    } catch (e) {
+      showToast('Save failed: ' + e.message, '#ef5350');
+    }
+  }
+
+  async function addTicker() {
+    const inp  = document.getElementById('newTicker');
+    const btn  = document.getElementById('addTickerBtn');
+    const stat = document.getElementById('addStatus');
+    const ticker = (inp.value || '').trim().toUpperCase();
+    if (!ticker) { stat.textContent = 'Enter a ticker.'; return; }
+    btn.disabled = true; stat.textContent = 'Creating rules…';
+    try {
+      const res = await fetch('/api/progress/add_ticker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'failed');
+      stat.innerHTML = `Created <strong style="color:#5fe0a0">${data.created.length}</strong>, skipped ${data.skipped.length} existing.`;
+      renderChecklist(data);
+      inp.value = '';
+      await loadRules();
+    } catch (e) {
+      stat.innerHTML = `<span style="color:#ef5350">Error: ${e.message}</span>`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderChecklist(data) {
+    document.getElementById('checklistCard').style.display = '';
+    document.getElementById('checklistTicker').textContent = '— ' + data.ticker;
+    const body = document.getElementById('checklistBody');
+    let lastPine = null, lastLevel = null;
+    body.innerHTML = data.specs.map((s, i) => {
+      const tv = s.tv_settings;
+      const newPine  = tv.pine_script !== lastPine;
+      const newLevel = tv.level !== lastLevel;
+      lastPine = tv.pine_script; lastLevel = tv.level;
+      const hint = newPine ? `<span style="color:#ff9800">⟲ load Pine</span>`
+                          : newLevel ? `<span style="color:#5fe0a0">▾ change level</span>` : '';
+      const payloadJson = JSON.stringify(s.payload, null, 2);
+      const payloadId = `pl_${i}`;
+      return `<div class="checklist-step">
+        <div class="checklist-step-header">
+          <span class="step-num">${i + 1}</span>
+          <span class="step-name">${s.name}</span>
+          <span style="color:#666;font-size:0.75rem">${hint}</span>
+          <button class="copy-btn" onclick="copyPayload('${payloadId}', this)">Copy payload</button>
+        </div>
+        <div class="step-settings">
+          Pine script: <code>${tv.pine_script}</code> &nbsp;·&nbsp;
+          Reversal Level: <code>${tv.level}</code> &nbsp;·&nbsp;
+          Timeframe: <code>${tv.interval}m</code>
+        </div>
+        <div class="payload" id="${payloadId}">${payloadJson}</div>
+      </div>`;
+    }).join('');
+  }
+
+  function copyPayload(id, btn) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    navigator.clipboard.writeText(el.textContent).then(() => {
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy payload'; }, 1400);
+    });
+  }
+
+  document.getElementById('newTicker').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addTicker();
+  });
+
+  loadRules();
+</script>
+</body>
+</html>
