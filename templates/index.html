@@ -1423,6 +1423,30 @@
       for (const [ticker, list] of Object.entries(alpacaByTicker))
         for (let i = 0; i < list.length; i++)
           if (!usedAlpaca.has(i + '|' + ticker)) groups.push({ tv: null, ib: null, alpaca: list[i] });
+
+      // Sort groups by most recent entry time (desc) across all present sources,
+      // so the feed's top row is always the most recent trade regardless of which
+      // side (TV/IB/Alpaca) produced it or which matched first.
+      const parseTs = s => {
+        if (!s) return NaN;
+        const raw = typeof s === 'string' ? s : '';
+        let fixed = raw.includes('-') ? raw : raw.replace(/^(\d{4})(\d{2})(\d{2})\s+/, '$1-$2-$3T');
+        fixed = fixed.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+        if (fixed.includes('T') && !fixed.endsWith('Z') && !fixed.includes('+')) fixed += 'Z';
+        return new Date(fixed).getTime();
+      };
+      const groupEntryMs = g => {
+        const candidates = [
+          g.tv     && g.tv.entry     && g.tv.entry.received_at,
+          g.ib     && g.ib.entry     && (g.ib.entry.ts || g.ib.entry.time),
+          g.alpaca && g.alpaca.entry && g.alpaca.entry.time,
+        ].map(parseTs).filter(Number.isFinite);
+        // Synthetic entry rows (open Alpaca positions with no time) → top of list
+        if (!candidates.length) return Number.MAX_SAFE_INTEGER;
+        return Math.max(...candidates);
+      };
+      groups.sort((a, b) => groupEntryMs(b) - groupEntryMs(a));
+
       return groups;
     }
 
