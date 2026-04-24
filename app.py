@@ -2937,10 +2937,11 @@ def _build_analysis_stats():
     closed      = []  # {"pnl", "strategy", "ticker", "date", "entry_time", "exit_time"}
 
     for t in trades:
-        action   = (t.get("action") or "").strip().upper()
-        ticker   = (t.get("ticker") or "").strip().upper()
-        strategy = (t.get("strategy") or "Unknown").strip()
-        received = t.get("received_at") or ""
+        action    = (t.get("action") or "").strip().upper()
+        sentiment = (t.get("sentiment") or "").strip().lower()
+        ticker    = (t.get("ticker") or "").strip().upper()
+        strategy  = (t.get("strategy") or "Unknown").strip()
+        received  = t.get("received_at") or ""
         try:
             price = float(t.get("price") or 0)
             qty   = float(t.get("quantity") or 1)
@@ -2955,7 +2956,25 @@ def _build_analysis_stats():
         key = (strategy, ticker)
         date_str = received[:10] if received else ""
 
+        # Classify intent: sentiment is the source of truth when present.
+        # TV alert templates emit {{strategy.market_position}} as the position
+        # state AFTER the fill — "flat" = exit, "long"/"short" = entry. Using
+        # this instead of bare action avoids a race condition when two alerts
+        # (exit + reversal entry) fire on the same bar and arrive out of order.
+        if sentiment == "flat":
+            intent = "exit"
+        elif sentiment == "long":
+            intent = "enter_long"
+        elif sentiment == "short":
+            intent = "enter_short"
+        else:
+            intent = "legacy"  # sentiment missing — fall back to action-order heuristic
+
         if action == "BUY":
+            if intent == "enter_long":
+                open_longs.setdefault(key, []).append((price, qty, received))
+                continue
+            # "exit" or "legacy" — try to close a short
             queue = open_shorts.setdefault(key, [])
             while qty > 0 and queue:
                 entry_price, entry_qty, entry_time = queue.pop(0)
@@ -2967,9 +2986,14 @@ def _build_analysis_stats():
                 qty -= m
                 if entry_qty > m:
                     queue.insert(0, (entry_price, entry_qty - m, entry_time))
-            if qty > 0:
+            # Only legacy mode opens a new long from unpaired BUY. An explicit
+            # sentiment=flat signal never opens a position.
+            if qty > 0 and intent == "legacy":
                 open_longs.setdefault(key, []).append((price, qty, received))
         elif action == "SELL":
+            if intent == "enter_short":
+                open_shorts.setdefault(key, []).append((price, qty, received))
+                continue
             queue = open_longs.setdefault(key, [])
             while qty > 0 and queue:
                 entry_price, entry_qty, entry_time = queue.pop(0)
@@ -2981,7 +3005,7 @@ def _build_analysis_stats():
                 qty -= m
                 if entry_qty > m:
                     queue.insert(0, (entry_price, entry_qty - m, entry_time))
-            if qty > 0:
+            if qty > 0 and intent == "legacy":
                 open_shorts.setdefault(key, []).append((price, qty, received))
 
     def _stats_from_trades(trade_list):
