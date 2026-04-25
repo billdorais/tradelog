@@ -2174,42 +2174,47 @@
     }
 
     function renderTVFeed() {
-      const body = document.getElementById('tradeBody');
+      const body   = document.getElementById('tradeBody');
       const filter = selectedStrategy;
-      const trades = filter
-        ? allTrades.filter(t => t.strategy === filter)
-        : allTrades;
+      const trades = filter ? allTrades.filter(t => t.strategy === filter) : allTrades;
 
-      // Sort newest first by received_at
-      const sorted = [...trades].sort((a, b) => {
-        const ta = a.received_at || '', tb = b.received_at || '';
-        return tb.localeCompare(ta);
-      });
-
-      if (!sorted.length) {
+      if (!trades.length) {
         body.innerHTML = '<tr><td colspan="12" class="empty">No TV signals in log.</td></tr>';
         return;
       }
 
-      body.innerHTML = sorted.map(t => {
-        const action = (t.action || '').toUpperCase();
-        const isBuy  = action === 'BUY';
+      const pairs = pairSignals(trades);
+
+      body.innerHTML = pairs.map(({ entry: en, exit: ex, direction }) => {
+        const ref        = en || ex;
+        const entryPrice = en ? parseFloat(en.price) : null;
+        const exitPrice  = ex ? parseFloat(ex.price) : null;
+        const qty        = parseFloat(ref.quantity);
+        const pnl        = (entryPrice != null && exitPrice != null)
+          ? direction === 'short' ? (entryPrice - exitPrice) * qty
+                                  : (exitPrice  - entryPrice) * qty
+          : undefined;
+        const dur    = en && ex ? tradeDuration(en.received_at, ex.received_at) : '—';
+        const status = ex ? ex.exec_status : en?.exec_status;
+        const detail = ex ? ex.exec_detail : en?.exec_detail;
+        const enId   = en?.id ?? null;
+        const exId   = ex?.id ?? null;
         return `<tr>
-          <td style="color:#aaa;font-size:0.75rem">TV
-            <button onclick="deleteTVRow(${t.id}, null)" title="Delete"
-              style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
+          <td style="color:#aaa;font-size:0.75rem;white-space:nowrap">TV
+            <button onclick="deleteTVRow(${enId},${exId})" title="Delete"
+              style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">\&#10005;</button>
           </td>
-          <td style="font-size:0.78rem">${fmtET(t.received_at) ?? '—'}</td>
-          <td style="color:#555;font-size:0.78rem">—</td>
-          <td style="color:#555">—</td>
-          <td>${sentimentBadge(t.sentiment || (isBuy ? 'long' : 'short'))}</td>
-          <td>${t.strategy ? `<span class="strategy-tag">${t.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
-          <td><strong>${t.ticker ?? '—'}</strong></td>
-          <td style="color:#555">—</td>
-          <td>${t.quantity ?? '—'}</td>
-          <td>${t.price != null ? '$' + Number(t.price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
-          <td style="color:#555">—</td>
-          <td>${execBadge(t.exec_status, t.exec_detail)}</td>
+          <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
+          <td style="font-size:0.78rem;color:#888">${ex ? fmtET(ex.received_at) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+          <td style="color:#888;font-size:0.78rem">${dur}</td>
+          <td>${sentimentBadge(ref.sentiment)}</td>
+          <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+          <td><strong>${ref.ticker ?? '—'}</strong></td>
+          ${pnlCell(pnl)}
+          <td>${isNaN(qty) ? '—' : qty}</td>
+          <td>${entryPrice != null ? '$'+entryPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
+          <td>${exitPrice  != null ? '$'+exitPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})  : '—'}</td>
+          <td>${execBadge(status, detail)}</td>
         </tr>`;
       }).join('');
     }
