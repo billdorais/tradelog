@@ -270,22 +270,8 @@
       margin-bottom: 12px;
     }
 
-    /* Chart loading spinner */
+    /* Spinner keyframe used by inline chart loading indicator */
     @keyframes spin { to { transform: rotate(360deg); } }
-    .chart-canvas-wrap { display: block; }
-    .chart-loading-overlay {
-      display: none; position: absolute; inset: 0;
-      align-items: center; justify-content: center;
-      background: rgba(15,17,23,0.7); border-radius: 8px; z-index: 5;
-    }
-    .chart-loading-overlay.active { display: flex; }
-    .chart-spinner {
-      width: 40px; height: 40px;
-      border: 3px solid rgba(255,255,255,0.1);
-      border-top-color: #a78bfa;
-      border-radius: 50%;
-      animation: spin 0.75s linear infinite;
-    }
 
     /* P&L chart tab active underline */
     .pnl-tab { padding: 5px 14px; font-size: 0.8rem; border-radius: 4px 4px 0 0;
@@ -557,10 +543,15 @@
   <!-- Equity curve -->
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <div style="display:flex;gap:4px">
+      <div style="display:flex;gap:4px;align-items:center">
         <button id="tabAlpaca"  class="pnl-tab active-alpaca"  onclick="switchTab('alpaca')">Alpaca P&amp;L</button>
         <button id="tabSignals" class="pnl-tab"                onclick="switchTab('signals')">Signals P&amp;L</button>
         <button id="tabIB"      class="pnl-tab"                onclick="switchTab('ib')">IB P&amp;L</button>
+        <span id="chartLoadingSpinner"
+          style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
+                 border-top-color:#a78bfa;border-radius:50%;
+                 animation:spin 0.75s linear infinite;flex-shrink:0">
+        </span>
       </div>
       <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
         Cumulative P&amp;L from closed trades
@@ -591,12 +582,7 @@
           style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer;width:110px">
       </div>
     </div>
-    <div class="chart-canvas-wrap">
-      <canvas id="equityChart" height="90"></canvas>
-    </div>
-    <div class="chart-loading-overlay" id="chartLoadingOverlay">
-      <div class="chart-spinner"></div>
-    </div>
+    <canvas id="equityChart" height="90"></canvas>
     <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
       <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555">
         Cumulative realized P&amp;L from Alpaca fills.
@@ -720,7 +706,7 @@
 
     async function switchTab(tab) {
       activeTab = tab;
-      const spinner = document.getElementById('chartLoadingOverlay');
+      const spinner = document.getElementById('chartLoadingSpinner');
       const filter  = document.getElementById('stratPickerWrap');
       const note    = document.getElementById('ibEquityNote');
       const label   = document.getElementById('equityChartLabel');
@@ -736,11 +722,11 @@
       if (tab === 'signals') {
         filter.style.display = '';
         label.textContent    = 'Cumulative P&L from TV signals';
-        spinner.classList.add('active');
+        spinner.style.display = 'inline-block';
         _cachedFullStats = null;
         await new Promise(r => requestAnimationFrame(r));  // let browser paint spinner first
         try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
-        spinner.classList.remove('active');
+        spinner.style.display = 'none';
         // Sync feed tab to TV
         feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
         _syncFeedTabButtons('tv');
@@ -756,10 +742,10 @@
           const d30 = new Date(); d30.setDate(d30.getDate() - 30);
           fromEl.value = d30.toISOString().slice(0, 10);
         }
-        spinner.classList.add('active');
+        spinner.style.display = 'inline-block';
         await new Promise(r => requestAnimationFrame(r));
         renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
-        spinner.classList.remove('active');
+        spinner.style.display = 'none';
         // Sync feed tab to Alpaca
         feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
         _syncFeedTabButtons('alpaca');
@@ -2156,25 +2142,25 @@
         document.getElementById('tabAlpaca').className  = 'pnl-tab' + (chartTab === 'alpaca'  ? ' active-alpaca'  : '');
         document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
         document.getElementById('tabIB').className      = 'pnl-tab';
-        const spinner = document.getElementById('chartLoadingOverlay');
+        const spinner = document.getElementById('chartLoadingSpinner');
         if (chartTab === 'signals') {
           const label = document.getElementById('equityChartLabel');
           label.textContent = 'Cumulative P&L from TV signals';
           document.getElementById('stratPickerWrap').style.display = '';
           _cachedFullStats = null;
-          spinner.classList.add('active');
+          spinner.style.display = 'inline-block';
           applyEquityFilter().catch(e => console.error('chart sync:', e))
-            .finally(() => spinner.classList.remove('active'));
+            .finally(() => spinner.style.display = 'none');
         } else {
           document.getElementById('ibEquityNote').style.display = 'flex';
           document.getElementById('ibEquityNote').textContent   = 'Cumulative realized P&L from Alpaca fills.';
           document.getElementById('equityChartLabel').textContent = 'Cumulative realized P&L from Alpaca fills';
-          spinner.classList.add('active');
+          spinner.style.display = 'inline-block';
           renderAlpacaStats(
             document.getElementById('equityFromDate').value,
             document.getElementById('equityToDate').value
           );
-          spinner.classList.remove('active');
+          spinner.style.display = 'none';
         }
       }
     }
