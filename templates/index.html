@@ -726,7 +726,6 @@
         if (tab === 'signals') {
           if (label) label.textContent = 'Cumulative P&L from TV signals';
           await new Promise(r => requestAnimationFrame(r));
-          _cachedFullStats = null;
           try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
           feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
           _syncFeedTabButtons('tv');
@@ -1719,10 +1718,18 @@
       // Only draw the equity chart from FIFO data on non-Alpaca tabs;
       // the Alpaca tab draws its own chart from portfolio history before calling renderStats.
       if (activeTab !== 'alpaca') {
-        const labels   = (stats.equity_curve || []).map(p => fmtET(p.time) || p.time);
-        const values   = (stats.equity_curve || []).map(p => p.value);
-        const tradeIds = (stats.equity_curve || []).map(p => ({ entry: p.entry_id, exit: p.exit_id }));
-        drawChart(labels, values, lineColor, tradeIds);
+        const _curve   = stats.equity_curve || [];
+        const labels   = _curve.map(p => fmtET(p.time) || p.time);
+        const values   = _curve.map(p => p.value);
+        const tradeIds = _curve.map(p => ({ entry: p.entry_id, exit: p.exit_id }));
+        drawChart(labels, values, lineColor, tradeIds, (idx) => {
+          const pt = _curve[idx];
+          if (!pt) return;
+          const ex = _loadExclusions();
+          ex.add(_tradeKey(pt));
+          _saveExclusions(ex);
+          applyEquityFilter().catch(e => console.error(e));
+        });
         if (!values.length && activeTab === 'signals') {
           const chartCanvas = document.getElementById('equityChart');
           const c = chartCanvas.getContext('2d');
