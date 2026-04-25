@@ -444,6 +444,10 @@
             preview.textContent = _convertedCode;
             preview.scrollTop = preview.scrollHeight;
             status.textContent = `Converting… ${_convertedCode.length.toLocaleString()} chars`;
+            if (_convertedCode.length > 200) {
+              saveBtn.style.display = 'inline-block';
+              saveBtn.textContent = '✓ Save (partial — still converting)';
+            }
           } else if (msg.type === 'done') {
             convertDone = true;
             _convertAbort = null;
@@ -458,6 +462,7 @@
               status.textContent = `✓ Converted ${_convertedCode.length.toLocaleString()} chars — review then save.`;
             }
             saveBtn.style.display = 'inline-block';
+            saveBtn.textContent = '✓ Save to Optimizer';
             break outer;
           } else if (msg.type === 'error') {
             status.textContent = 'Error: ' + msg.msg;
@@ -624,6 +629,19 @@
     const name = document.getElementById('stratName').value.trim();
     if (!name) { alert('Enter a strategy name first.'); return; }
     if (!_convertedCode) { alert('Convert the script first.'); return; }
+
+    // If convert is still streaming, abort it first so we save exactly what's in preview.
+    if (_convertAbort) {
+      _convertSkipped = true;
+      try { _convertAbort.abort(); } catch {}
+      _convertAbort = null;
+      stopStallWatch();
+      document.getElementById('skipVerifyBtn').style.display = 'none';
+    }
+    if (_verifyAbort) {
+      _verifySkipped = true;
+      try { _verifyAbort.abort(); } catch {}
+    }
 
     const saveBtn = document.getElementById('saveBtn');
     const saveMsg = document.getElementById('saveMsg');
