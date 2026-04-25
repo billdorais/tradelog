@@ -299,6 +299,8 @@
       <textarea class="pine-textarea" id="pineInput" placeholder="Paste your Pine Script strategy here…"></textarea>
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
         <button class="btn-convert" id="convertBtn" onclick="convertScript()">Convert &amp; Preview</button>
+        <button class="btn-convert" id="skipVerifyBtn" onclick="skipVerify()"
+                style="display:none;background:#3a3d4e">Skip verify &amp; save</button>
         <span class="convert-status" id="convertStatus"></span>
       </div>
       <div class="save-row" style="margin-top:14px">
@@ -330,6 +332,19 @@
   document.addEventListener('DOMContentLoaded', () => { loadSavedStrategies(); });
 
   let _convertedCode = '';
+  let _verifyAbort  = null;
+  let _verifySkipped = false;
+
+  function skipVerify() {
+    _verifySkipped = true;
+    if (_verifyAbort) {
+      try { _verifyAbort.abort(); } catch {}
+    }
+    document.getElementById('skipVerifyBtn').style.display = 'none';
+    document.getElementById('convertStatus').textContent =
+      'Skipped verify — review the code below then save.';
+    document.getElementById('saveBtn').style.display = 'inline-block';
+  }
 
   async function convertScript() {
     const pine = document.getElementById('pineInput').value.trim();
@@ -349,6 +364,8 @@
     saveBtn.style.display = 'none';
     saveMsg.textContent = '';
     _convertedCode = '';
+    _verifySkipped = false;
+    document.getElementById('skipVerifyBtn').style.display = 'none';
 
     try {
       const res = await fetch('/api/bt/convert', {
@@ -401,13 +418,17 @@
   // Second-pass verification: send Pine + generated Python to the auditor
   // endpoint and, if issues are found, swap in the revised code automatically.
   async function verifyConversion(pine) {
-    const status  = document.getElementById('convertStatus');
-    const preview = document.getElementById('codePreview');
+    const status      = document.getElementById('convertStatus');
+    const preview     = document.getElementById('codePreview');
+    const skipBtn     = document.getElementById('skipVerifyBtn');
+    skipBtn.style.display = 'inline-block';
+    _verifyAbort = new AbortController();
     try {
       const res = await fetch('/api/bt/convert/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pine_script: pine, python_code: _convertedCode }),
+        signal: _verifyAbort.signal,
       });
       if (!res.ok) {
         status.textContent = 'Done — review the code below then save. (verify unavailable)';
@@ -426,9 +447,13 @@
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const msg = JSON.parse(line.slice(6));
-          if (msg.type === 'chunk') verdict += msg.text;
+          if (msg.type === 'chunk') {
+            verdict += msg.text;
+            status.textContent = `Verifying… ${verdict.length.toLocaleString()} chars received`;
+          }
         }
       }
+      if (_verifySkipped) return;
       let parsed = null;
       try { parsed = JSON.parse(verdict); } catch { /* model drifted from JSON */ }
       if (!parsed) {
@@ -449,7 +474,11 @@
         (parsed.issues || []).length + ' discrepanc' +
         ((parsed.issues || []).length === 1 ? 'y' : 'ies') + ':</b><br>' + issuesList;
     } catch (e) {
+      if (e.name === 'AbortError' || _verifySkipped) return;
       status.textContent = 'Done — review the code below then save. (verify error: ' + e + ')';
+    } finally {
+      skipBtn.style.display = 'none';
+      _verifyAbort = null;
     }
   }
 
