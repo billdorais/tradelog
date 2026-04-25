@@ -2685,14 +2685,16 @@
       disableMobile: true,
       onChange: () => { _saveDashboardDates(); applyEquityFilter(); },
     };
-    const _fpFrom = flatpickr('#equityFromDate', _fpCfg);
-    const _fpTo   = flatpickr('#equityToDate',   _fpCfg);
+    flatpickr('#equityFromDate', _fpCfg);
+    flatpickr('#equityToDate',   _fpCfg);
 
-    // Restore saved dates on load
-    const _savedFrom = localStorage.getItem(_LS_FROM);
-    const _savedTo   = localStorage.getItem(_LS_TO);
-    if (_savedFrom) _fpFrom.setDate(_savedFrom, false);
-    if (_savedTo)   _fpTo.setDate(_savedTo, false);
+    // Restore saved session start date — set value directly, safe with all flatpickr versions
+    try {
+      const _sv = localStorage.getItem(_LS_FROM);
+      const _tv = localStorage.getItem(_LS_TO);
+      if (_sv) { const el = document.getElementById('equityFromDate'); if (el) { el.value = _sv; el._flatpickr && el._flatpickr.setDate(_sv, false); } }
+      if (_tv) { const el = document.getElementById('equityToDate');   if (el) { el.value = _tv; el._flatpickr && el._flatpickr.setDate(_tv, false); } }
+    } catch(e) {}
 
     // Poll live Alpaca unrealized P&L for open positions every 10 s
     async function refreshLivePnl() {
