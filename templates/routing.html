@@ -24,13 +24,8 @@
 
     /* Pipeline rows */
     .pipelines { display: flex; flex-direction: column; gap: 16px; }
-    .pipeline-wrap { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; transition: border-color 0.2s, opacity 0.2s; cursor: default; }
+    .pipeline-wrap { background: #13161f; border: 1px solid #1e2130; border-left-width: 4px; border-radius: 10px; padding: 16px 20px; transition: opacity 0.2s; cursor: default; }
     .pipeline-wrap.disabled { opacity: 0.45; }
-    .pipeline-wrap.drag-over { border-color: #4a90d9; background: #151829; }
-    .pipeline-wrap.dragging  { opacity: 0.35; }
-    .drag-handle { cursor: grab; color: #3a3d4e; font-size: 1rem; padding: 4px 6px 4px 0; flex-shrink: 0; user-select: none; line-height: 1; }
-    .drag-handle:hover { color: #888; }
-    .drag-handle:active { cursor: grabbing; }
     .pipeline-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
     .pipeline-name { font-size: 0.9rem; font-weight: 600; color: #ccc; flex: 1; background: transparent; border: none; outline: none; }
     .pipeline-name:focus { border-bottom: 1px solid #4a90d9; }
@@ -273,7 +268,6 @@
   let activePipelineId = null;   // which pipeline the palette/modal targets
   let activeNodeIdx    = null;   // which node index is being edited (-1 = new)
   let pendingNodeType  = null;   // type for new node being added
-  let dragSrcId        = null;   // id of pipeline being dragged
 
   // -----------------------------------------------------------------------
   // Risk panel
@@ -482,26 +476,53 @@
   // -----------------------------------------------------------------------
   // Render
   // -----------------------------------------------------------------------
+  // ── Prefix colour helpers ────────────────────────────────────────
+  const _PREFIX_PALETTE = [
+    ['rgba(74,144,226,0.10)',  '#4a90e2'],  // blue
+    ['rgba(77,184,106,0.10)',  '#4db86a'],  // green
+    ['rgba(226,150,74,0.10)',  '#e2964a'],  // amber
+    ['rgba(144,74,226,0.10)',  '#904ae2'],  // purple
+    ['rgba(74,226,200,0.10)',  '#4ae2c8'],  // teal
+    ['rgba(226,74,74,0.10)',   '#e24a4a'],  // red
+    ['rgba(226,74,144,0.10)',  '#e24a90'],  // pink
+    ['rgba(144,226,74,0.10)',  '#90e24a'],  // lime
+    ['rgba(74,112,226,0.10)',  '#4a70e2'],  // indigo
+    ['rgba(226,200,74,0.10)',  '#e2c84a'],  // gold
+    ['rgba(74,226,226,0.10)',  '#4ae2e2'],  // cyan
+    ['rgba(226,120,74,0.10)',  '#e2784a'],  // orange
+  ];
+
+  function _prefixGroup(name) {
+    const parts = (name || '').split('_');
+    return parts.slice(0, Math.min(3, parts.length)).join('_').toUpperCase();
+  }
+
+  function _prefixColor(prefix) {
+    let h = 0;
+    for (let i = 0; i < prefix.length; i++) h = (h * 31 + prefix.charCodeAt(i)) & 0x7fffffff;
+    return _PREFIX_PALETTE[h % _PREFIX_PALETTE.length];
+  }
+
   function renderAll() {
     const container = document.getElementById('pipelines');
     const empty     = document.getElementById('emptyState');
-    // Clear existing pipeline rows (keep emptyState in DOM)
     [...container.querySelectorAll('.pipeline-wrap')].forEach(el => el.remove());
 
-    if (rules.length === 0) {
-      empty.style.display = 'block';
-      return;
-    }
+    if (rules.length === 0) { empty.style.display = 'block'; return; }
     empty.style.display = 'none';
 
-    rules.forEach(rule => {
+    // Sort alphabetically for display (does not change match priority in DB)
+    const sorted = [...rules].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    sorted.forEach(rule => {
+      const [bgTint, borderColor] = _prefixColor(_prefixGroup(rule.name));
       const wrap = document.createElement('div');
       wrap.className = 'pipeline-wrap' + (rule.enabled ? '' : ' disabled');
       wrap.dataset.id = rule.id;
-      wrap.draggable = true;
+      wrap.style.borderLeftColor = borderColor;
+      wrap.style.backgroundColor = bgTint;
       wrap.innerHTML = `
         <div class="pipeline-header">
-          <span class="drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
           <input class="pipeline-name" value="${escHtml(rule.name)}" placeholder="Pipeline name"
             onchange="renamePipeline(${rule.id}, this.value)" />
           <label class="pipeline-toggle" title="${rule.enabled ? 'Enabled' : 'Disabled'}">
@@ -514,33 +535,6 @@
         <div class="node-chain" id="chain-${rule.id}">
           ${renderChain(rule)}
         </div>`;
-      // Drag-and-drop events
-      wrap.addEventListener('dragstart', e => {
-        dragSrcId = rule.id;
-        setTimeout(() => wrap.classList.add('dragging'), 0);
-        e.dataTransfer.effectAllowed = 'move';
-      });
-      wrap.addEventListener('dragend', () => {
-        wrap.classList.remove('dragging');
-        document.querySelectorAll('.pipeline-wrap').forEach(w => w.classList.remove('drag-over'));
-      });
-      wrap.addEventListener('dragover', e => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        document.querySelectorAll('.pipeline-wrap').forEach(w => w.classList.remove('drag-over'));
-        if (rule.id !== dragSrcId) wrap.classList.add('drag-over');
-      });
-      wrap.addEventListener('drop', e => {
-        e.preventDefault();
-        if (dragSrcId == null || dragSrcId === rule.id) return;
-        const srcIdx  = rules.findIndex(r => r.id === dragSrcId);
-        const dstIdx  = rules.findIndex(r => r.id === rule.id);
-        const [moved] = rules.splice(srcIdx, 1);
-        rules.splice(dstIdx, 0, moved);
-        persistOrder();
-        renderAll();
-      });
-
       container.appendChild(wrap);
     });
   }
