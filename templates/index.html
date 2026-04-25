@@ -2106,10 +2106,53 @@
         ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9'
         : inactive;
 
-      // Rebuild groups with the updated filter so sort order is correct,
-      // then sync the equity chart to the matching P&L tab.
-      renderTable(allTrades, selectedStrategy);
+      if (tab === 'tv') {
+        renderTVFeed();
+      } else {
+        renderTable(allTrades, selectedStrategy);
+      }
       switchTab(tab === 'tv' ? 'signals' : 'alpaca');
+    }
+
+    function renderTVFeed() {
+      const body = document.getElementById('tradeBody');
+      const filter = selectedStrategy;
+      const trades = filter
+        ? allTrades.filter(t => t.strategy === filter)
+        : allTrades;
+
+      // Sort newest first by received_at
+      const sorted = [...trades].sort((a, b) => {
+        const ta = a.received_at || '', tb = b.received_at || '';
+        return tb.localeCompare(ta);
+      });
+
+      if (!sorted.length) {
+        body.innerHTML = '<tr><td colspan="12" class="empty">No TV signals in log.</td></tr>';
+        return;
+      }
+
+      body.innerHTML = sorted.map(t => {
+        const action = (t.action || '').toUpperCase();
+        const isBuy  = action === 'BUY';
+        return `<tr>
+          <td style="color:#aaa;font-size:0.75rem">TV
+            <button onclick="deleteTVRow(${t.id}, null)" title="Delete"
+              style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
+          </td>
+          <td style="font-size:0.78rem">${fmtET(t.received_at) ?? '—'}</td>
+          <td style="color:#555;font-size:0.78rem">—</td>
+          <td style="color:#555">—</td>
+          <td>${sentimentBadge(t.sentiment || (isBuy ? 'long' : 'short'))}</td>
+          <td>${t.strategy ? `<span class="strategy-tag">${t.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+          <td><strong>${t.ticker ?? '—'}</strong></td>
+          <td style="color:#555">—</td>
+          <td>${t.quantity ?? '—'}</td>
+          <td>${t.price != null ? '$' + Number(t.price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
+          <td style="color:#555">—</td>
+          <td>${execBadge(t.exec_status, t.exec_detail)}</td>
+        </tr>`;
+      }).join('');
     }
 
     async function applyFilter() {
@@ -2275,7 +2318,10 @@
         _populateStratPicker();
         _updateStratPickerBtn();
 
-        try { renderTable(trades, selectedStrategy); } catch(re) { console.error('renderTable error:', re); }
+        try {
+          if (feedTab === 'tv') renderTVFeed();
+          else renderTable(trades, selectedStrategy);
+        } catch(re) { console.error('renderTable error:', re); }
 
         // Render charts/stats for whichever tab is active
         if (activeTab === 'alpaca') {
