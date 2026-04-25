@@ -845,11 +845,15 @@
     function _tradeKey(p) { return `${p.time}|${p.ticker}`; }
 
     function _filterEquityCurve(curve) {
-      const excl = _loadExclusions();
+      const excl      = _loadExclusions();
+      const fromDate  = document.getElementById('equityFromDate')?.value || '';
+      const toDate    = document.getElementById('equityToDate')?.value   || '';
       let filtered = curve;
       if (excl.size)               filtered = filtered.filter(p => !excl.has(_tradeKey(p)));
       if (_signalsOnly)            filtered = filtered.filter(p => p.both_matched === true);
       if (selectedStrategies.size) filtered = filtered.filter(p => selectedStrategies.has(p.strategy));
+      if (fromDate)                filtered = filtered.filter(p => (p.time || '') >= fromDate);
+      if (toDate)                  filtered = filtered.filter(p => (p.time || '').slice(0, 10) <= toDate);
       let cum = 0;
       return filtered.map(p => {
         cum = Math.round((cum + (p.pnl || 0)) * 100) / 100;
