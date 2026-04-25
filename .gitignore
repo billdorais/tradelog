@@ -2,3 +2,4 @@
 trades.db
 __pycache__/
 *.pyc
+logs/

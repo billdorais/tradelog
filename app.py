@@ -17,6 +17,20 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# Persist logs to ./logs/app.log so users can grab a copy after a stall/crash.
+try:
+    from logging.handlers import RotatingFileHandler
+    _log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _fh = RotatingFileHandler(os.path.join(_log_dir, "app.log"),
+                              maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    _fh.setLevel(logging.INFO)
+    logging.getLogger().addHandler(_fh)
+    log.info("File logging enabled: %s", os.path.join(_log_dir, "app.log"))
+except Exception as _e:
+    log.warning("Could not attach file log handler: %s", _e)
+
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "change-me")
 DATABASE_URL  = os.environ.get("DATABASE_URL")
 
@@ -2132,6 +2146,11 @@ def bt_convert():
     )
 
     def generate():
+        t0 = time.time()
+        chunks = 0
+        chars = 0
+        last_chunk_ts = t0
+        log.info("bt_convert: stream open, pine=%d chars", len(pine_script))
         try:
             client = _anthropic.Anthropic(api_key=api_key)
             with client.messages.stream(
@@ -2142,9 +2161,29 @@ def bt_convert():
                     f"Convert this Pine Script strategy to backtesting.py:\n\n{pine_script}"}],
             ) as stream:
                 for text in stream.text_stream:
+                    now = time.time()
+                    if now - last_chunk_ts > 5:
+                        log.warning("bt_convert: %.1fs gap between chunks (%d chars so far)",
+                                    now - last_chunk_ts, chars)
+                    last_chunk_ts = now
+                    chunks += 1
+                    chars += len(text)
                     yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+                try:
+                    final = stream.get_final_message()
+                    log.info("bt_convert: stream complete in %.1fs — %d chunks, %d chars, "
+                             "stop_reason=%s, in=%d out=%d tok",
+                             time.time() - t0, chunks, chars,
+                             getattr(final, "stop_reason", "?"),
+                             getattr(getattr(final, "usage", None), "input_tokens", -1),
+                             getattr(getattr(final, "usage", None), "output_tokens", -1))
+                except Exception as _fe:
+                    log.info("bt_convert: stream complete in %.1fs — %d chunks, %d chars (no final msg: %s)",
+                             time.time() - t0, chunks, chars, _fe)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
+            log.exception("bt_convert: stream error after %.1fs / %d chars: %s",
+                          time.time() - t0, chars, e)
             yield f"data: {json.dumps({'type': 'error', 'msg': str(e)})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
@@ -2213,6 +2252,12 @@ def bt_convert_verify():
     )
 
     def generate():
+        t0 = time.time()
+        chunks = 0
+        chars = 0
+        last_chunk_ts = t0
+        log.info("bt_verify: stream open, pine=%d / python=%d chars",
+                 len(pine_script), len(python_code))
         try:
             client = _anthropic.Anthropic(api_key=api_key)
             user_msg = (
@@ -2227,9 +2272,29 @@ def bt_convert_verify():
                 messages=[{"role": "user", "content": user_msg}],
             ) as stream:
                 for text in stream.text_stream:
+                    now = time.time()
+                    if now - last_chunk_ts > 5:
+                        log.warning("bt_verify: %.1fs gap between chunks (%d chars so far)",
+                                    now - last_chunk_ts, chars)
+                    last_chunk_ts = now
+                    chunks += 1
+                    chars += len(text)
                     yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+                try:
+                    final = stream.get_final_message()
+                    log.info("bt_verify: stream complete in %.1fs — %d chunks, %d chars, "
+                             "stop_reason=%s, in=%d out=%d tok",
+                             time.time() - t0, chunks, chars,
+                             getattr(final, "stop_reason", "?"),
+                             getattr(getattr(final, "usage", None), "input_tokens", -1),
+                             getattr(getattr(final, "usage", None), "output_tokens", -1))
+                except Exception as _fe:
+                    log.info("bt_verify: stream complete in %.1fs — %d chunks, %d chars (no final msg: %s)",
+                             time.time() - t0, chunks, chars, _fe)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
+            log.exception("bt_verify: stream error after %.1fs / %d chars: %s",
+                          time.time() - t0, chars, e)
             yield f"data: {json.dumps({'type': 'error', 'msg': str(e)})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
