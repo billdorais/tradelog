@@ -2092,7 +2092,7 @@
     }
 
     function switchFeedTab(tab) {
-      feedTab          = tab;
+      feedTab            = tab;
       _feedFilter.tv     = (tab === 'tv');
       _feedFilter.alpaca = (tab === 'alpaca');
 
@@ -2106,12 +2106,10 @@
         ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9'
         : inactive;
 
-      sortGroupsByVisibleEntry(_allGroups);
-      const body = document.getElementById('tradeBody');
-      _shownGroups = 0;
-      body.innerHTML = '';
-      if (_allGroups.length) _renderGroups();
-      else body.innerHTML = '<tr><td colspan="12" class="empty">No trades yet — waiting for webhook signals...</td></tr>';
+      // Rebuild groups with the updated filter so sort order is correct,
+      // then sync the equity chart to the matching P&L tab.
+      renderTable(allTrades, selectedStrategy);
+      switchTab(tab === 'tv' ? 'signals' : 'alpaca');
     }
 
     async function applyFilter() {
