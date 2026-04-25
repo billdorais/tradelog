@@ -262,6 +262,7 @@
       background: #1c1f2e;
       border-radius: 8px;
       padding: 20px 24px;
+      position: relative;
     }
     .chart-wrap .chart-title {
       font-size: 0.8rem;
@@ -271,16 +272,16 @@
 
     /* Chart loading spinner */
     @keyframes spin { to { transform: rotate(360deg); } }
-    .chart-canvas-wrap { position: relative; }
+    .chart-canvas-wrap { display: block; }
     .chart-loading-overlay {
       display: none; position: absolute; inset: 0;
       align-items: center; justify-content: center;
-      background: rgba(0,0,0,0.35); border-radius: 8px; z-index: 5;
+      background: rgba(15,17,23,0.7); border-radius: 8px; z-index: 5;
     }
     .chart-loading-overlay.active { display: flex; }
     .chart-spinner {
-      width: 38px; height: 38px;
-      border: 3px solid rgba(255,255,255,0.08);
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.1);
       border-top-color: #a78bfa;
       border-radius: 50%;
       animation: spin 0.75s linear infinite;
@@ -592,9 +593,9 @@
     </div>
     <div class="chart-canvas-wrap">
       <canvas id="equityChart" height="90"></canvas>
-      <div class="chart-loading-overlay" id="chartLoadingOverlay">
-        <div class="chart-spinner"></div>
-      </div>
+    </div>
+    <div class="chart-loading-overlay" id="chartLoadingOverlay">
+      <div class="chart-spinner"></div>
     </div>
     <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
       <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555">
@@ -737,13 +738,12 @@
         label.textContent    = 'Cumulative P&L from TV signals';
         spinner.classList.add('active');
         _cachedFullStats = null;
+        await new Promise(r => requestAnimationFrame(r));  // let browser paint spinner first
         try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
         spinner.classList.remove('active');
-        // Sync feed tab — update state + buttons + render (no switchFeedTab call to avoid loop)
-        if (feedTab !== 'tv') {
-          feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
-          _syncFeedTabButtons('tv');
-        }
+        // Sync feed tab to TV
+        feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
+        _syncFeedTabButtons('tv');
         renderTVFeed();
       } else if (tab === 'alpaca') {
         note.style.display  = 'flex';
@@ -757,13 +757,12 @@
           fromEl.value = d30.toISOString().slice(0, 10);
         }
         spinner.classList.add('active');
+        await new Promise(r => requestAnimationFrame(r));
         renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
         spinner.classList.remove('active');
-        // Sync feed tab
-        if (feedTab !== 'alpaca') {
-          feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('alpaca');
-        }
+        // Sync feed tab to Alpaca
+        feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+        _syncFeedTabButtons('alpaca');
         renderTable(allTrades, selectedStrategy);
       } else {
         note.style.display  = 'flex';
