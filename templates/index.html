@@ -269,6 +269,35 @@
       margin-bottom: 12px;
     }
 
+    /* Chart loading spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .chart-canvas-wrap { position: relative; }
+    .chart-loading-overlay {
+      display: none; position: absolute; inset: 0;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.35); border-radius: 8px; z-index: 5;
+    }
+    .chart-loading-overlay.active { display: flex; }
+    .chart-spinner {
+      width: 38px; height: 38px;
+      border: 3px solid rgba(255,255,255,0.08);
+      border-top-color: #a78bfa;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+
+    /* P&L chart tab active underline */
+    .pnl-tab { padding: 5px 14px; font-size: 0.8rem; border-radius: 4px 4px 0 0;
+               cursor: pointer; border: 1px solid #2a2d3e; background: transparent;
+               color: #888; border-bottom: 2px solid transparent; font-family: inherit; }
+    .pnl-tab:hover { color: #ccc; }
+    .pnl-tab.active-alpaca  { border-color: #5fe0a0; background: rgba(95,224,160,0.15);
+                               color: #5fe0a0; border-bottom-color: #5fe0a0; }
+    .pnl-tab.active-signals { border-color: #a78bfa; background: rgba(167,139,250,0.12);
+                               color: #a78bfa; border-bottom-color: #a78bfa; }
+    .pnl-tab.active-ib      { border-color: #4a90d9; background: rgba(74,144,217,0.12);
+                               color: #4a90d9; border-bottom-color: #4a90d9; }
+
     /* Table */
     .section-label {
       max-width: 1200px;
@@ -528,18 +557,9 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px">
-        <button id="tabAlpaca" onclick="switchTab('alpaca')"
-          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer">
-          Alpaca P&amp;L
-        </button>
-        <button id="tabSignals" onclick="switchTab('signals')"
-          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
-          Signals P&amp;L
-        </button>
-        <button id="tabIB" onclick="switchTab('ib')"
-          style="padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer">
-          IB P&amp;L
-        </button>
+        <button id="tabAlpaca"  class="pnl-tab active-alpaca"  onclick="switchTab('alpaca')">Alpaca P&amp;L</button>
+        <button id="tabSignals" class="pnl-tab"                onclick="switchTab('signals')">Signals P&amp;L</button>
+        <button id="tabIB"      class="pnl-tab"                onclick="switchTab('ib')">IB P&amp;L</button>
       </div>
       <div id="equityChartLabel" class="chart-title" style="margin-bottom:0;font-size:0.8rem;color:#888">
         Cumulative P&amp;L from closed trades
@@ -570,7 +590,12 @@
           style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer;width:110px">
       </div>
     </div>
-    <canvas id="equityChart" height="90"></canvas>
+    <div class="chart-canvas-wrap">
+      <canvas id="equityChart" height="90"></canvas>
+      <div class="chart-loading-overlay" id="chartLoadingOverlay">
+        <div class="chart-spinner"></div>
+      </div>
+    </div>
     <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
       <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555">
         Cumulative realized P&amp;L from Alpaca fills.
@@ -694,43 +719,53 @@
 
     async function switchTab(tab) {
       activeTab = tab;
-      const signalsBtn = document.getElementById('tabSignals');
-      const alpacaBtn  = document.getElementById('tabAlpaca');
-      const ibBtn      = document.getElementById('tabIB');
-      const filter     = document.getElementById('stratPickerWrap');
-      const note       = document.getElementById('ibEquityNote');
-      const label      = document.getElementById('equityChartLabel');
-      const inactive   = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #2a2d3e;background:transparent;color:#888;cursor:pointer';
+      const spinner = document.getElementById('chartLoadingOverlay');
+      const filter  = document.getElementById('stratPickerWrap');
+      const note    = document.getElementById('ibEquityNote');
+      const label   = document.getElementById('equityChartLabel');
 
-      signalsBtn.style.cssText = inactive;
-      alpacaBtn.style.cssText  = inactive;
-      ibBtn.style.cssText      = inactive;
-      filter.style.display     = 'none';
-      note.style.display       = 'none';
+      // Update tab button classes
+      document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'  ? ' active-alpaca'  : '');
+      document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals' ? ' active-signals' : '');
+      document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'      ? ' active-ib'      : '');
+
+      filter.style.display = 'none';
+      note.style.display   = 'none';
 
       if (tab === 'signals') {
-        signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer';
-        filter.style.display     = '';
-        label.textContent        = 'Cumulative P&L from closed trades';
-        _cachedFullStats = null;  // force fresh fetch when switching to signals
-        try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter error:', e); }
-        renderTable(allTrades, selectedStrategy);
+        filter.style.display = '';
+        label.textContent    = 'Cumulative P&L from TV signals';
+        spinner.classList.add('active');
+        _cachedFullStats = null;
+        try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
+        spinner.classList.remove('active');
+        // Sync feed tab — update state + buttons + render (no switchFeedTab call to avoid loop)
+        if (feedTab !== 'tv') {
+          feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
+          _syncFeedTabButtons('tv');
+        }
+        renderTVFeed();
       } else if (tab === 'alpaca') {
-        alpacaBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer';
-        note.style.display      = 'flex';
-        note.textContent        = 'Cumulative realized P&L from Alpaca fills.';
-        label.textContent       = 'Cumulative realized P&L from Alpaca fills';
+        note.style.display  = 'flex';
+        note.textContent    = 'Cumulative realized P&L from Alpaca fills.';
+        label.textContent   = 'Cumulative realized P&L from Alpaca fills';
         document.getElementById('equityFromDate').style.display = '';
         document.getElementById('equityToDate').style.display   = '';
-        // Default to last 30 days if no date filter set
         const fromEl = document.getElementById('equityFromDate');
         if (!fromEl.value) {
           const d30 = new Date(); d30.setDate(d30.getDate() - 30);
           fromEl.value = d30.toISOString().slice(0, 10);
         }
+        spinner.classList.add('active');
         renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
+        spinner.classList.remove('active');
+        // Sync feed tab
+        if (feedTab !== 'alpaca') {
+          feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('alpaca');
+        }
+        renderTable(allTrades, selectedStrategy);
       } else {
-        ibBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #4a90d9;background:rgba(74,144,217,0.15);color:#4a90d9;cursor:pointer';
         note.style.display  = 'flex';
         note.textContent    = 'Cumulative realized P&L from IB fills.';
         label.textContent   = 'Cumulative realized P&L from IB fills';
@@ -2092,27 +2127,53 @@
       return '/api/stats' + (p.toString() ? '?' + p.toString() : '');
     }
 
+    function _syncFeedTabButtons(tab) {
+      const inactive = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
+      document.getElementById('feedTabAlpaca').style.cssText = tab === 'alpaca'
+        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0'
+        : inactive;
+      document.getElementById('feedTabTV').style.cssText = tab === 'tv'
+        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9'
+        : inactive;
+    }
+
     function switchFeedTab(tab) {
       feedTab            = tab;
       _feedFilter.tv     = (tab === 'tv');
       _feedFilter.alpaca = (tab === 'alpaca');
+      _syncFeedTabButtons(tab);
 
-      const alpacaBtn = document.getElementById('feedTabAlpaca');
-      const tvBtn     = document.getElementById('feedTabTV');
-      const inactive  = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
-      alpacaBtn.style.cssText = tab === 'alpaca'
-        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0'
-        : inactive;
-      tvBtn.style.cssText = tab === 'tv'
-        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9'
-        : inactive;
+      if (tab === 'tv') renderTVFeed();
+      else renderTable(allTrades, selectedStrategy);
 
-      if (tab === 'tv') {
-        renderTVFeed();
-      } else {
-        renderTable(allTrades, selectedStrategy);
+      // Sync chart tab — update buttons + trigger chart directly (no switchTab call to avoid loop)
+      const chartTab = tab === 'tv' ? 'signals' : 'alpaca';
+      if (activeTab !== chartTab) {
+        activeTab = chartTab;
+        document.getElementById('tabAlpaca').className  = 'pnl-tab' + (chartTab === 'alpaca'  ? ' active-alpaca'  : '');
+        document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
+        document.getElementById('tabIB').className      = 'pnl-tab';
+        const spinner = document.getElementById('chartLoadingOverlay');
+        if (chartTab === 'signals') {
+          const label = document.getElementById('equityChartLabel');
+          label.textContent = 'Cumulative P&L from TV signals';
+          document.getElementById('stratPickerWrap').style.display = '';
+          _cachedFullStats = null;
+          spinner.classList.add('active');
+          applyEquityFilter().catch(e => console.error('chart sync:', e))
+            .finally(() => spinner.classList.remove('active'));
+        } else {
+          document.getElementById('ibEquityNote').style.display = 'flex';
+          document.getElementById('ibEquityNote').textContent   = 'Cumulative realized P&L from Alpaca fills.';
+          document.getElementById('equityChartLabel').textContent = 'Cumulative realized P&L from Alpaca fills';
+          spinner.classList.add('active');
+          renderAlpacaStats(
+            document.getElementById('equityFromDate').value,
+            document.getElementById('equityToDate').value
+          );
+          spinner.classList.remove('active');
+        }
       }
-      switchTab(tab === 'tv' ? 'signals' : 'alpaca');
     }
 
     function renderTVFeed() {
