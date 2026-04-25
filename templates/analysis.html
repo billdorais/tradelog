@@ -141,15 +141,35 @@
       <div class="page-title">Trading Performance Analysis</div>
       <div class="page-sub" id="dataAge" style="margin-bottom:0">Loading…</div>
     </div>
-    <div style="display:flex;gap:4px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px;padding:3px">
-      <button id="srcSignals" onclick="switchSource('signals')"
-        style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-        Signals
-      </button>
-      <button id="srcAlpaca" onclick="switchSource('alpaca')"
-        style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
-        Alpaca
-      </button>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <!-- Date range filter -->
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:0.75rem;color:#555;white-space:nowrap">From</span>
+        <input type="date" id="analysisFrom"
+          style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
+                 padding:5px 8px;font-size:0.8rem;cursor:pointer;outline:none"
+          onchange="saveDates();load()">
+        <span style="color:#555;font-size:0.8rem">→</span>
+        <input type="date" id="analysisTo"
+          style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
+                 padding:5px 8px;font-size:0.8rem;cursor:pointer;outline:none"
+          onchange="saveDates();load()">
+        <button onclick="clearDates()"
+          title="Show all history"
+          style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;
+                 padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
+      </div>
+      <!-- Source toggle -->
+      <div style="display:flex;gap:4px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px;padding:3px">
+        <button id="srcSignals" onclick="switchSource('signals')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+          Signals
+        </button>
+        <button id="srcAlpaca" onclick="switchSource('alpaca')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
+          Alpaca
+        </button>
+      </div>
     </div>
   </div>
 
@@ -288,16 +308,47 @@
     load();
   }
 
+  // ── Date persistence (shared with dashboard via localStorage) ─────────────
+  const LS_FROM = 'kairos_date_from';
+  const LS_TO   = 'kairos_date_to';
+
+  function saveDates() {
+    const f = document.getElementById('analysisFrom').value;
+    const t = document.getElementById('analysisTo').value;
+    if (f) localStorage.setItem(LS_FROM, f); else localStorage.removeItem(LS_FROM);
+    if (t) localStorage.setItem(LS_TO,   t); else localStorage.removeItem(LS_TO);
+  }
+
+  function clearDates() {
+    document.getElementById('analysisFrom').value = '';
+    document.getElementById('analysisTo').value   = '';
+    localStorage.removeItem(LS_FROM);
+    localStorage.removeItem(LS_TO);
+    load();
+  }
+
+  function restoreDates() {
+    const f = localStorage.getItem(LS_FROM) || '';
+    const t = localStorage.getItem(LS_TO)   || '';
+    document.getElementById('analysisFrom').value = f;
+    document.getElementById('analysisTo').value   = t;
+  }
+
   // ── Load data ──────────────────────────────────────────────────────────────
   async function load() {
+    const fromDate = document.getElementById('analysisFrom').value;
+    const toDate   = document.getElementById('analysisTo').value;
     let endpoint = activeSource === 'alpaca' ? '/api/alpaca/analysis' : '/api/analysis';
+    const params = new URLSearchParams();
+    if (fromDate) params.set('from_date', fromDate);
+    if (toDate)   params.set('to_date',   toDate);
     if (activeSource === 'alpaca') {
-      // Apply the same trade exclusions stored by the dashboard
       try {
         const excl = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]');
-        if (excl.length) endpoint += '?exclude=' + encodeURIComponent(excl.join(','));
+        excl.forEach(e => params.append('exclude', e));
       } catch(e) {}
     }
+    if (params.toString()) endpoint += '?' + params.toString();
     document.getElementById('dataAge').textContent = 'Loading…';
     const res  = await fetch(endpoint);
     const data = await res.json();
@@ -630,6 +681,7 @@
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  restoreDates();
   load();
 
   function toggleNavMenu() {
