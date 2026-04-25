@@ -628,21 +628,22 @@
   </details>
 
   <!-- Combined trade table -->
-  <div class="section-label">Trade Feed</div>
+  <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;max-width:1200px;margin:0 auto 10px">
+    <span>Trade Feed</span>
+    <div style="display:flex;gap:4px">
+      <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0">
+        Alpaca Fills</button>
+      <button id="feedTabTV" onclick="switchFeedTab('tv')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
+        TV Signals</button>
+    </div>
+  </div>
   <div class="filter-bar">
     <label for="strategyFilter">Strategy</label>
     <select id="strategyFilter" onchange="applyFilter()">
       <option value="">All Strategies</option>
     </select>
-    <div style="display:flex;align-items:center;gap:6px;margin-left:16px">
-      <span style="font-size:0.75rem;color:#555">Source:</span>
-      <button id="feedFilterTV" onclick="toggleFeedFilter('tv')"
-        style="padding:3px 10px;font-size:0.75rem;border-radius:4px;cursor:pointer;
-               border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9">TV</button>
-      <button id="feedFilterAlpaca" onclick="toggleFeedFilter('alpaca')"
-        style="padding:3px 10px;font-size:0.75rem;border-radius:4px;cursor:pointer;
-               border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0">Alpaca</button>
-    </div>
   </div>
   <div class="table-wrap">
     <table>
@@ -685,7 +686,8 @@
     let _cachedFromDate    = null;
     let _cachedToDate      = null;
     let _allGroups     = [];
-    let _feedFilter    = { tv: true, alpaca: true };
+    let _feedFilter    = { tv: false, alpaca: true };  // Alpaca default
+    let feedTab        = 'alpaca';
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
     let activeTab = 'alpaca';
@@ -2089,21 +2091,21 @@
       return '/api/stats' + (p.toString() ? '?' + p.toString() : '');
     }
 
-    function toggleFeedFilter(src) {
-      _feedFilter[src] = !_feedFilter[src];
-      const btn = document.getElementById(src === 'tv' ? 'feedFilterTV' : 'feedFilterAlpaca');
-      const on  = _feedFilter[src];
-      if (src === 'tv') {
-        btn.style.background = on ? 'rgba(74,144,217,0.2)'  : 'transparent';
-        btn.style.color      = on ? '#4a90d9' : '#444';
-        btn.style.borderColor= on ? '#4a90d9' : '#2a2d3e';
-      } else {
-        btn.style.background = on ? 'rgba(95,224,160,0.15)' : 'transparent';
-        btn.style.color      = on ? '#5fe0a0' : '#444';
-        btn.style.borderColor= on ? '#5fe0a0' : '#2a2d3e';
-      }
-      // Re-render the feed with current groups (no need to re-fetch).
-      // Re-sort by the visible-source entry time so the top row matches what's shown.
+    function switchFeedTab(tab) {
+      feedTab          = tab;
+      _feedFilter.tv     = (tab === 'tv');
+      _feedFilter.alpaca = (tab === 'alpaca');
+
+      const alpacaBtn = document.getElementById('feedTabAlpaca');
+      const tvBtn     = document.getElementById('feedTabTV');
+      const inactive  = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
+      alpacaBtn.style.cssText = tab === 'alpaca'
+        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0'
+        : inactive;
+      tvBtn.style.cssText = tab === 'tv'
+        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9'
+        : inactive;
+
       sortGroupsByVisibleEntry(_allGroups);
       const body = document.getElementById('tradeBody');
       _shownGroups = 0;
