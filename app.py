@@ -2150,6 +2150,8 @@ def bt_convert():
         chunks = 0
         chars = 0
         last_chunk_ts = t0
+        last_progress_log = 0
+        first_chunk_logged = False
         log.info("bt_convert: stream open, pine=%d chars", len(pine_script))
         try:
             client = _anthropic.Anthropic(api_key=api_key)
@@ -2162,12 +2164,19 @@ def bt_convert():
             ) as stream:
                 for text in stream.text_stream:
                     now = time.time()
+                    if not first_chunk_logged:
+                        log.info("bt_convert: first chunk after %.1fs", now - t0)
+                        first_chunk_logged = True
                     if now - last_chunk_ts > 5:
                         log.warning("bt_convert: %.1fs gap between chunks (%d chars so far)",
                                     now - last_chunk_ts, chars)
                     last_chunk_ts = now
                     chunks += 1
                     chars += len(text)
+                    if chars - last_progress_log >= 1000:
+                        log.info("bt_convert: progress %d chars / %d chunks at %.1fs",
+                                 chars, chunks, now - t0)
+                        last_progress_log = chars
                     yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
                 try:
                     final = stream.get_final_message()
@@ -2256,6 +2265,8 @@ def bt_convert_verify():
         chunks = 0
         chars = 0
         last_chunk_ts = t0
+        last_progress_log = 0
+        first_chunk_logged = False
         log.info("bt_verify: stream open, pine=%d / python=%d chars",
                  len(pine_script), len(python_code))
         try:
@@ -2273,12 +2284,19 @@ def bt_convert_verify():
             ) as stream:
                 for text in stream.text_stream:
                     now = time.time()
+                    if not first_chunk_logged:
+                        log.info("bt_verify: first chunk after %.1fs", now - t0)
+                        first_chunk_logged = True
                     if now - last_chunk_ts > 5:
                         log.warning("bt_verify: %.1fs gap between chunks (%d chars so far)",
                                     now - last_chunk_ts, chars)
                     last_chunk_ts = now
                     chunks += 1
                     chars += len(text)
+                    if chars - last_progress_log >= 1000:
+                        log.info("bt_verify: progress %d chars / %d chunks at %.1fs",
+                                 chars, chunks, now - t0)
+                        last_progress_log = chars
                     yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
                 try:
                     final = stream.get_final_message()
