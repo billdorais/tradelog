@@ -2155,7 +2155,7 @@ def bt_convert():
             client = _anthropic.Anthropic(api_key=api_key)
             with client.messages.stream(
                 model="claude-opus-4-7",
-                max_tokens=8000,
+                max_tokens=16000,
                 system=system,
                 messages=[{"role": "user", "content":
                     f"Convert this Pine Script strategy to backtesting.py:\n\n{pine_script}"}],
@@ -2267,7 +2267,7 @@ def bt_convert_verify():
             )
             with client.messages.stream(
                 model="claude-opus-4-7",
-                max_tokens=8000,
+                max_tokens=16000,
                 system=system,
                 messages=[{"role": "user", "content": user_msg}],
             ) as stream:
