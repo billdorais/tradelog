@@ -300,7 +300,7 @@
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
         <button class="btn-convert" id="convertBtn" onclick="convertScript()">Convert &amp; Preview</button>
         <button class="btn-convert" id="skipVerifyBtn" onclick="skipVerify()"
-                style="display:none;background:#3a3d4e">Stop &amp; save partial</button>
+                style="display:none;background:#ff9800;color:#000">Stop &amp; save partial</button>
         <span class="convert-status" id="convertStatus"></span>
       </div>
       <div class="save-row" style="margin-top:14px">
@@ -336,6 +336,25 @@
   let _convertSkipped = false;
   let _verifyAbort    = null;
   let _verifySkipped  = false;
+  let _lastChunkTs    = 0;
+  let _stallTimer     = null;
+
+  function startStallWatch(phaseLabel) {
+    _lastChunkTs = Date.now();
+    if (_stallTimer) clearInterval(_stallTimer);
+    _stallTimer = setInterval(() => {
+      const idle = (Date.now() - _lastChunkTs) / 1000;
+      if (idle >= 15) {
+        const status = document.getElementById('convertStatus');
+        status.innerHTML = `<span style="color:#ff9800">⚠ ${phaseLabel} stalled — ` +
+          `${idle.toFixed(0)}s with no data. Click <b>Stop &amp; save partial</b> to recover.</span>`;
+      }
+    }, 1000);
+  }
+  function stopStallWatch() {
+    if (_stallTimer) { clearInterval(_stallTimer); _stallTimer = null; }
+  }
+  function bumpChunk() { _lastChunkTs = Date.now(); }
 
   function skipVerify() {
     // Dual-purpose: during convert it stops the convert stream and saves what
@@ -404,10 +423,12 @@
       let buf = '';
       preview.style.display = 'block';
       status.textContent = 'Converting… 0 chars';
+      startStallWatch('Convert');
 
       outer: while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        bumpChunk();
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split('\n');
         buf = lines.pop();
@@ -437,6 +458,7 @@
         status.textContent = 'Error: ' + e;
       }
     } finally {
+      stopStallWatch();
       btn.disabled = false;
       btn.textContent = 'Convert & Preview';
       _convertAbort = null;
@@ -469,9 +491,11 @@
       const decoder = new TextDecoder();
       let buf = '';
       let verdict = '';
+      startStallWatch('Verify');
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        bumpChunk();
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split('\n');
         buf = lines.pop();
@@ -508,6 +532,7 @@
       if (e.name === 'AbortError' || _verifySkipped) return;
       status.textContent = 'Done — review the code below then save. (verify error: ' + e + ')';
     } finally {
+      stopStallWatch();
       skipBtn.style.display = 'none';
       _verifyAbort = null;
     }
