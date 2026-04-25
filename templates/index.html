@@ -705,56 +705,57 @@
     let activeTab = 'alpaca';
 
     async function switchTab(tab) {
-      activeTab = tab;
-      const spinner = document.getElementById('chartLoadingSpinner');
-      const filter  = document.getElementById('stratPickerWrap');
-      const note    = document.getElementById('ibEquityNote');
-      const label   = document.getElementById('equityChartLabel');
+      try {
+        activeTab = tab;
 
-      // Update tab button classes
-      document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'  ? ' active-alpaca'  : '');
-      document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals' ? ' active-signals' : '');
-      document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'      ? ' active-ib'      : '');
+        // Tab button highlighting
+        document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'  ? ' active-alpaca'  : '');
+        document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals' ? ' active-signals' : '');
+        document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'      ? ' active-ib'      : '');
 
-      filter.style.display = 'none';
-      note.style.display   = 'none';
+        const spinner = document.getElementById('chartLoadingSpinner');
+        const label   = document.getElementById('equityChartLabel');
+        const filter  = document.getElementById('stratPickerWrap');
+        const note    = document.getElementById('ibEquityNote');
 
-      if (tab === 'signals') {
-        filter.style.display = '';
-        label.textContent    = 'Cumulative P&L from TV signals';
-        spinner.style.display = 'inline-block';
-        _cachedFullStats = null;
-        await new Promise(r => requestAnimationFrame(r));  // let browser paint spinner first
-        try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
-        spinner.style.display = 'none';
-        // Sync feed tab to TV
-        feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
-        _syncFeedTabButtons('tv');
-        renderTVFeed();
-      } else if (tab === 'alpaca') {
-        note.style.display  = 'flex';
-        note.textContent    = 'Cumulative realized P&L from Alpaca fills.';
-        label.textContent   = 'Cumulative realized P&L from Alpaca fills';
-        document.getElementById('equityFromDate').style.display = '';
-        document.getElementById('equityToDate').style.display   = '';
-        const fromEl = document.getElementById('equityFromDate');
-        if (!fromEl.value) {
-          const d30 = new Date(); d30.setDate(d30.getDate() - 30);
-          fromEl.value = d30.toISOString().slice(0, 10);
+        // Update label and show spinner immediately (before any async work)
+        if (spinner) spinner.style.display = 'inline-block';
+        if (filter)  filter.style.display  = tab === 'signals' ? '' : 'none';
+        if (note)    note.style.display    = tab === 'alpaca'  ? 'flex' : 'none';
+
+        if (tab === 'signals') {
+          if (label) label.textContent = 'Cumulative P&L from TV signals';
+          await new Promise(r => requestAnimationFrame(r));
+          _cachedFullStats = null;
+          try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
+          feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
+          _syncFeedTabButtons('tv');
+          renderTVFeed();
+        } else if (tab === 'alpaca') {
+          if (label) label.textContent = 'Cumulative realized P&L from Alpaca fills';
+          if (note)  note.textContent  = 'Cumulative realized P&L from Alpaca fills.';
+          const fromEl = document.getElementById('equityFromDate');
+          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
+          const toEl = document.getElementById('equityToDate');
+          if (toEl) toEl.style.display = '';
+          await new Promise(r => requestAnimationFrame(r));
+          renderAlpacaStats(
+            document.getElementById('equityFromDate')?.value || '',
+            document.getElementById('equityToDate')?.value   || ''
+          );
+          feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('alpaca');
+          renderTable(allTrades, selectedStrategy);
+        } else {
+          if (label) label.textContent = 'Cumulative realized P&L from IB fills';
+          if (note)  note.textContent  = 'Cumulative realized P&L from IB fills.';
+          loadIBEquity();
         }
-        spinner.style.display = 'inline-block';
-        await new Promise(r => requestAnimationFrame(r));
-        renderAlpacaStats(document.getElementById('equityFromDate').value, document.getElementById('equityToDate').value);
-        spinner.style.display = 'none';
-        // Sync feed tab to Alpaca
-        feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-        _syncFeedTabButtons('alpaca');
-        renderTable(allTrades, selectedStrategy);
-      } else {
-        note.style.display  = 'flex';
-        note.textContent    = 'Cumulative realized P&L from IB fills.';
-        label.textContent   = 'Cumulative realized P&L from IB fills';
-        loadIBEquity();
+      } catch(err) {
+        console.error('switchTab error:', err);
+      } finally {
+        const sp = document.getElementById('chartLoadingSpinner');
+        if (sp) sp.style.display = 'none';
       }
     }
 
