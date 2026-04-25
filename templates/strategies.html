@@ -301,6 +301,10 @@
         <button class="btn-convert" id="convertBtn" onclick="convertScript()">Convert &amp; Preview</button>
         <button class="btn-convert" id="skipVerifyBtn" onclick="skipVerify()"
                 style="display:none;background:#ff9800;color:#000">Stop &amp; save partial</button>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.83rem;color:#888;margin-left:6px">
+          <input type="checkbox" id="enableVerifyCb" style="accent-color:#2962ff">
+          Run audit pass after convert (slower, can stall)
+        </label>
         <span class="convert-status" id="convertStatus"></span>
       </div>
       <div class="save-row" style="margin-top:14px">
@@ -443,9 +447,16 @@
           } else if (msg.type === 'done') {
             convertDone = true;
             _convertAbort = null;
-            document.getElementById('skipVerifyBtn').textContent = 'Skip verify & save';
-            status.textContent = 'Verifying against Pine source…';
-            await verifyConversion(pine);
+            stopStallWatch();
+            const wantVerify = document.getElementById('enableVerifyCb').checked;
+            if (wantVerify) {
+              document.getElementById('skipVerifyBtn').textContent = 'Skip verify & save';
+              status.textContent = 'Verifying against Pine source…';
+              await verifyConversion(pine);
+            } else {
+              document.getElementById('skipVerifyBtn').style.display = 'none';
+              status.textContent = `✓ Converted ${_convertedCode.length.toLocaleString()} chars — review then save.`;
+            }
             saveBtn.style.display = 'inline-block';
             break outer;
           } else if (msg.type === 'error') {
