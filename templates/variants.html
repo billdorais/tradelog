@@ -183,6 +183,7 @@ document.addEventListener('click', e => {
 
 function resetConfig() {
   document.getElementById('cfg').value = JSON.stringify(DEFAULT_CFG, null, 2);
+  refreshSlugHighlights();
 }
 
 function fmtNum(n, digits) {
@@ -299,6 +300,60 @@ async function applyRules() {
   btn.textContent = 'Apply Survivors as Routing Rules';
 }
 
+function _getConfig() {
+  try { return JSON.parse(document.getElementById('cfg').value); } catch(e) { return null; }
+}
+
+function _allConfigStrategies(cfg) {
+  const strats = new Set();
+  for (const v of (cfg?.variants || [])) (v.strategies || []).forEach(s => strats.add(s));
+  return strats;
+}
+
+function isStratActive(slug) {
+  const cfg = _getConfig();
+  return cfg ? _allConfigStrategies(cfg).has(slug) : false;
+}
+
+function toggleStrategy(slug) {
+  let cfg = _getConfig();
+  if (!cfg) { cfg = JSON.parse(JSON.stringify(DEFAULT_CFG)); }
+  if (!cfg.variants || !cfg.variants.length) cfg.variants = [{ tickers:[], tfs:['5m'], strategies:[], broker:'alpaca-paper', quantity:1 }];
+
+  const active = _allConfigStrategies(cfg).has(slug);
+  // Add to or remove from every variant that exists
+  for (const v of cfg.variants) {
+    if (!Array.isArray(v.strategies)) v.strategies = [];
+    if (active) {
+      v.strategies = v.strategies.filter(s => s !== slug);
+    } else {
+      if (!v.strategies.includes(slug)) v.strategies.push(slug);
+    }
+  }
+  document.getElementById('cfg').value = JSON.stringify(cfg, null, 2);
+
+  // Update slug chip appearance
+  const el = document.getElementById('slug_' + slug);
+  if (el) {
+    const nowActive = !active;
+    el.style.borderColor  = nowActive ? '#5fe0a0' : '#1e2130';
+    el.style.background   = nowActive ? 'rgba(95,224,160,0.1)' : '#0a0a0a';
+    el.style.fontWeight   = nowActive ? '700' : 'normal';
+  }
+}
+
+// Refresh slug highlights to match current config
+function refreshSlugHighlights() {
+  const active = _allConfigStrategies(_getConfig());
+  document.querySelectorAll('[id^="slug_"]').forEach(el => {
+    const slug = el.id.replace('slug_', '');
+    const on = active.has(slug);
+    el.style.borderColor = on ? '#5fe0a0' : '#1e2130';
+    el.style.background  = on ? 'rgba(95,224,160,0.1)' : '#0a0a0a';
+    el.style.fontWeight  = on ? '700' : 'normal';
+  });
+}
+
 async function loadStrategies() {
   const el = document.getElementById('stratList');
   try {
@@ -307,8 +362,15 @@ async function loadStrategies() {
     const slugs = Object.keys(data).sort();
     if (!slugs.length) { el.textContent = '(none)'; return; }
     el.innerHTML = slugs.map(s =>
-      `<code style="background:#0a0a0a;border:1px solid #1e2130;border-radius:4px;padding:1px 7px;margin:0 4px 4px 0;display:inline-block;color:#5fe0a0;font-size:0.8rem">${s}</code>`
+      `<code onclick="toggleStrategy('${s}')" title="Click to add/remove from config"
+        style="background:#0a0a0a;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
+               margin:0 4px 4px 0;display:inline-block;color:#5fe0a0;font-size:0.8rem;
+               cursor:pointer;user-select:none;transition:border-color 0.15s"
+        onmouseover="this.style.borderColor='#5fe0a0'"
+        onmouseout="this.style.borderColor=isStratActive('${s}') ? '#5fe0a0' : '#1e2130'"
+        id="slug_${s}">${s}</code>`
     ).join('');
+    refreshSlugHighlights();
   } catch (e) {
     el.textContent = 'Failed to load strategies: ' + e.message;
     el.style.color = '#ef5350';
