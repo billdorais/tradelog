@@ -692,7 +692,7 @@
     const PAGE_SIZE    = 20;
     let activeTab = 'alpaca';
 
-    function switchTab(tab) {
+    async function switchTab(tab) {
       activeTab = tab;
       const signalsBtn = document.getElementById('tabSignals');
       const alpacaBtn  = document.getElementById('tabAlpaca');
@@ -712,8 +712,9 @@
         signalsBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #26a65b;background:rgba(38,166,91,0.15);color:#26a65b;cursor:pointer';
         filter.style.display     = '';
         label.textContent        = 'Cumulative P&L from closed trades';
-        applyEquityFilter();
-        renderTable(allTrades, selectedStrategy); // restore signals stat counts
+        _cachedFullStats = null;  // force fresh fetch when switching to signals
+        try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter error:', e); }
+        renderTable(allTrades, selectedStrategy);
       } else if (tab === 'alpaca') {
         alpacaBtn.style.cssText = 'padding:5px 14px;font-size:0.8rem;border-radius:4px;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0;cursor:pointer';
         note.style.display      = 'flex';
@@ -2174,14 +2175,20 @@
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
       if (activeTab === 'alpaca') { renderAlpacaStats(fromDate, toDate); return; }
-      // Always fetch all-strategies data and filter client-side for multi-select support
-      if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
-        _cachedFullStats = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json());
-        _cachedFromDate  = fromDate;
-        _cachedToDate    = toDate;
+      try {
+        if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
+          const res = await fetch(buildStatsUrl('', fromDate, toDate));
+          if (!res.ok) throw new Error(`/api/stats returned ${res.status}`);
+          _cachedFullStats = await res.json();
+          _cachedFromDate  = fromDate;
+          _cachedToDate    = toDate;
+        }
+        const curve = _filterEquityCurve(_cachedFullStats.equity_curve || []);
+        renderStats({ ..._computeStatsFromCurve(curve), equity_curve: curve });
+      } catch(e) {
+        console.error('applyEquityFilter failed:', e);
+        document.getElementById('equityChartLabel').textContent = 'Error loading signals data: ' + e.message;
       }
-      const curve = _filterEquityCurve(_cachedFullStats.equity_curve || []);
-      renderStats({ ..._computeStatsFromCurve(curve), equity_curve: curve });
     }
 
     async function applyDailyFilter() {
