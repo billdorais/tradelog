@@ -272,7 +272,12 @@
             const doneClass = r.tv_alert_created ? 'done' : '';
             rows.push(`<div class="alert-row ${doneClass}">
               <input type="checkbox" ${checked} onchange="toggleAlert(${r.id}, this.checked)">
-              <button class="alert-name-btn" onclick="openPayloadModal('${r.name}')">${r.name}</button>
+              <span style="display:flex;align-items:center;gap:6px">
+                <button class="alert-name-btn" onclick="openPayloadModal('${r.name}')">${r.name}</button>
+                <button onclick="renameAlert(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Rename"
+                  style="background:transparent;border:none;color:#444;cursor:pointer;font-size:0.85rem;
+                         padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#aaa'" onmouseout="this.style.color='#444'">✎</button>
+              </span>
               <span class="meta">${r.meta.timeframe}</span>
             </div>`);
           }
@@ -291,6 +296,20 @@
         ${renderGroup('REVERSAL', ['R4S4', 'R3S3'])}
       </div>`;
     }).join('');
+  }
+
+  async function renameAlert(ruleId, currentName) {
+    const newName = prompt('Rename alert:', currentName);
+    if (!newName || newName.trim() === currentName) return;
+    try {
+      const r = await fetch(`/api/routing/rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      if (!r.ok) { alert('Rename failed'); return; }
+      loadData();
+    } catch (e) { alert('Rename error: ' + e); }
   }
 
   async function toggleAlert(ruleId, checked) {

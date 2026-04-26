@@ -1812,6 +1812,25 @@ def bt_strategy_save():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/bt/strategies/<slug>", methods=["PUT"])
+def bt_strategy_rename(slug):
+    """Rename a saved strategy (display name only — slug stays the same)."""
+    body = request.get_json(silent=True) or {}
+    new_name = (body.get("name") or "").strip()
+    if not new_name:
+        return jsonify({"error": "name is required"}), 400
+    p = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"UPDATE user_strategies SET name={p} WHERE slug={p}", (new_name, slug))
+        conn.commit()
+        conn.close()
+        return jsonify({"slug": slug, "name": new_name})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/bt/strategies/<slug>", methods=["DELETE"])
 def bt_strategy_delete(slug):
     """Delete a user-saved strategy."""

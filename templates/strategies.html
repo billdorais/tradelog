@@ -597,17 +597,53 @@
       return `
         <div class="mini-card" data-slug="${esc(c.slug)}">
           <div class="mc-head">
-            <div>
-              <div class="mc-name">${esc(c.name)}</div>
+            <div style="flex:1;min-width:0">
+              <div class="mc-name" id="name_${esc(c.slug)}">${esc(c.name)}</div>
               <div class="mc-slug">${esc(c.slug)}</div>
             </div>
-            <button class="mc-del" onclick="deleteStrategy('${esc(c.slug)}', '${esc(c.name)}')">Delete</button>
+            <div style="display:flex;gap:6px;flex-shrink:0">
+              <button class="mc-del" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:3px 10px;font-size:0.75rem;cursor:pointer"
+                onclick="startRename('${esc(c.slug)}', '${esc(c.name)}')">Rename</button>
+              <button class="mc-del" onclick="deleteStrategy('${esc(c.slug)}', '${esc(c.name)}')">Delete</button>
+            </div>
           </div>
           <div class="mini-badges">${badges}</div>
           ${desc}
           ${paramsHtml}
         </div>`;
     }).join('');
+  }
+
+  function startRename(slug, currentName) {
+    const el = document.getElementById('name_' + slug);
+    if (!el) return;
+    el.innerHTML = `
+      <input id="rename_input_${slug}" value="${currentName.replace(/"/g,'&quot;')}"
+        style="background:#0a0a0a;border:1px solid #2962ff;border-radius:5px;color:#e0e0e0;
+               padding:3px 8px;font-size:0.9rem;font-family:inherit;width:100%;font-weight:700"
+        onkeydown="if(event.key==='Enter')saveRename('${slug}');if(event.key==='Escape')loadSavedStrategies()">
+      <div style="display:flex;gap:6px;margin-top:5px">
+        <button onclick="saveRename('${slug}')"
+          style="background:#2962ff;border:none;color:#fff;border-radius:5px;padding:3px 10px;font-size:0.75rem;cursor:pointer">Save</button>
+        <button onclick="loadSavedStrategies()"
+          style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:5px;padding:3px 10px;font-size:0.75rem;cursor:pointer">Cancel</button>
+      </div>`;
+    document.getElementById('rename_input_' + slug)?.focus();
+  }
+
+  async function saveRename(slug) {
+    const input = document.getElementById('rename_input_' + slug);
+    const newName = input?.value?.trim();
+    if (!newName) return;
+    try {
+      const r = await fetch(`/api/bt/strategies/${encodeURIComponent(slug)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName }),
+      });
+      if (!r.ok) { const e = await r.json().catch(()=>({})); alert('Rename failed: '+(e.error||r.status)); return; }
+      loadSavedStrategies();
+    } catch (e) { alert('Rename error: ' + e); }
   }
 
   async function deleteStrategy(slug, name) {
