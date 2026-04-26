@@ -420,16 +420,16 @@
       time:      "{{timenow}}",
       strategy:  name,
       interval:  "{{interval}}",
-      broker:    "ib",
     };
   }
   {% endraw %}
 
   function tvSettingsFor(meta) {
     const tfMap = { '05MIN': '5', '5MIN': '5', '15MIN': '15', '30MIN': '30' };
+    const levelShort = meta.level === 'R4S4' ? 'R4' : 'R3';
     return {
-      pine_script: `CAM_R4S4_${meta.strategy}_V01`,
-      level:       meta.level === 'R4S4' ? 'R4' : 'R3',
+      pine_script: `CAM_${meta.strategy}_${meta.level}`,
+      level:       levelShort,
       interval:    tfMap[meta.timeframe] || meta.timeframe,
     };
   }
