@@ -505,16 +505,16 @@
     const baseHue = _hashStr(group) % 360;
     const border  = `hsl(${baseHue}, 65%, 60%)`;
 
-    // Push BREAKOUT vivid and REVERSAL nearly pure gray so the two are
-    // clearly different at a glance against the dark page background.
-    const sat   = sub === 'BREAKOUT' ? 75
-                : sub === 'REVERSAL' ? 0
+    // BREAKOUT is the more saturated of the pair, REVERSAL the more muted —
+    // but both sit close enough to the middle that they read as related.
+    const sat   = sub === 'BREAKOUT' ? 45
+                : sub === 'REVERSAL' ? 22
                 : 30;
     const light = sub === 'BREAKOUT' ? 50
-                : sub === 'REVERSAL' ? 35
+                : sub === 'REVERSAL' ? 45
                 : 50;
-    const alpha = sub === 'BREAKOUT' ? 0.42
-                : sub === 'REVERSAL' ? 0.30
+    const alpha = sub === 'BREAKOUT' ? 0.32
+                : sub === 'REVERSAL' ? 0.26
                 : 0.22;
     const bg    = `hsla(${baseHue}, ${sat}%, ${light}%, ${alpha})`;
     return { border, bg };
