@@ -215,14 +215,19 @@
     showToast._t = setTimeout(() => { t.style.display = 'none'; }, 2400);
   }
 
-  // CAM_{TICKER}_{LEVEL}_{STRATEGY}_v1_{TIMEFRAME}
-  const NAME_RE = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)_v1_(\d+MIN)$/i;
+  // Old: CAM_{TICKER}_{LEVEL}_{STRATEGY}_v1_{TF}  e.g. CAM_SPY_R4S4_BREAKOUT_v1_5MIN
+  // New: CAM_{TICKER}_{STRATEGY}_{LEVEL}_{TF}     e.g. CAM_SPY_BREAKOUT_R4S4_5MIN
+  const _RE_OLD = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)(?:_v\d+)?_(\d+MIN)$/i;
+  const _RE_NEW = /^CAM_([A-Z0-9]+)_(BREAKOUT|REVERSAL)_(R\dS\d)_(\d+MIN)$/i;
 
   function parseRuleName(name) {
-    const m = NAME_RE.exec(name || '');
-    if (!m) return null;
-    return { ticker: m[1].toUpperCase(), level: m[2].toUpperCase(),
-             strategy: m[3].toUpperCase(), timeframe: m[4].toUpperCase() };
+    let m = _RE_OLD.exec(name || '');
+    if (m) return { ticker: m[1].toUpperCase(), level: m[2].toUpperCase(),
+                    strategy: m[3].toUpperCase(), timeframe: m[4].toUpperCase() };
+    m = _RE_NEW.exec(name || '');
+    if (m) return { ticker: m[1].toUpperCase(), level: m[3].toUpperCase(),
+                    strategy: m[2].toUpperCase(), timeframe: m[4].toUpperCase() };
+    return null;
   }
 
   async function loadRules() {
