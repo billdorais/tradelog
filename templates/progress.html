@@ -308,7 +308,7 @@
         body: JSON.stringify({ name: newName.trim() }),
       });
       if (!r.ok) { alert('Rename failed'); return; }
-      loadData();
+      loadRules();
     } catch (e) { alert('Rename error: ' + e); }
   }
 
