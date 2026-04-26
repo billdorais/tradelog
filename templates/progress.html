@@ -290,10 +290,16 @@
         }
         return rows.join('');
       };
+      const itemIds = JSON.stringify(items.map(r => r.id));
       return `<div class="card ticker-section">
         <div class="ticker-header">
           <span class="ticker-name">${t}</span>
           <span class="progress-pill ${pillClass}">${done} / ${total}</span>
+          <button onclick="deleteTicker('${t}', ${itemIds.replace(/"/g,'&quot;')})"
+            style="margin-left:auto;background:transparent;border:1px solid #3a1a1a;color:#e74c3c;
+                   border-radius:6px;padding:3px 10px;font-size:0.75rem;cursor:pointer;font-family:inherit"
+            onmouseover="this.style.background='rgba(231,76,60,0.1)'"
+            onmouseout="this.style.background='transparent'">Delete ticker</button>
         </div>
         <div class="group-label">Breakout</div>
         ${renderGroup('BREAKOUT', ['R4S4', 'R3S3'])}
@@ -301,6 +307,20 @@
         ${renderGroup('REVERSAL', ['R4S4', 'R3S3'])}
       </div>`;
     }).join('');
+  }
+
+  async function deleteTicker(ticker, ids) {
+    if (!confirm(`Delete all ${ids.length} routing rules for ${ticker}? This cannot be undone.`)) return;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        const r = await fetch(`/api/routing/rules/${id}`, { method: 'DELETE' });
+        if (!r.ok) failed++;
+      } catch(e) { failed++; }
+    }
+    if (failed) showToast(`${failed} rule(s) failed to delete`, '#e74c3c');
+    else showToast(`${ticker} removed`, '#5fe0a0');
+    loadRules();
   }
 
   async function renameAlert(ruleId, currentName) {
