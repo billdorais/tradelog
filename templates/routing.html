@@ -508,9 +508,12 @@
   }
 
   function _pipelineColors(name) {
+    // Border color is keyed on the ticker group only (e.g. CAM_SPY) so every
+    // rule for the same ticker gets the same left bar. Background opacity
+    // varies per level/strategy/timeframe so individual rules still read distinct.
     const parts   = (name || '').toUpperCase().split('_');
-    const group   = parts.slice(0, Math.min(3, parts.length)).join('_');
-    const subtype = parts[3] || '';                              // e.g. BREAKOUT / REVERSAL
+    const group   = parts.slice(0, Math.min(2, parts.length)).join('_');
+    const subtype = parts.slice(2).join('_');                    // e.g. R3S3_BREAKOUT_V1_05MIN
     const border  = _BORDER_PALETTE[_hashStr(group)   % _BORDER_PALETTE.length];
     const opacity = _SUB_OPACITIES [_hashStr(group + '_' + subtype) % _SUB_OPACITIES.length];
     const r = parseInt(border.slice(1,3), 16);
