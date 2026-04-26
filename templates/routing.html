@@ -494,24 +494,22 @@
     // hue wheel (360°) instead of indexing a fixed palette, so different
     // tickers (e.g. CAM_AMD vs CAM_GOOG) can't collide on the same color.
     //
-    // Background sits in the same hue family as the border but is desaturated
-    // and dimmed. BREAKOUT vs REVERSAL get a noticeable hue rotation (±18°)
-    // and a wider alpha gap so the two paired groups read clearly distinct
-    // while still feeling related to the ticker.
+    // BREAKOUT and REVERSAL share the ticker's hue but split on saturation:
+    // BREAKOUT renders punchy and saturated, REVERSAL renders muted and
+    // nearly gray. Same color family, very different feel at a glance.
     const parts   = (name || '').toUpperCase().split('_');
     const group   = parts.slice(0, Math.min(2, parts.length)).join('_');
     const sub     = parts[3] || '';                               // BREAKOUT / REVERSAL
     const baseHue = _hashStr(group) % 360;
     const border  = `hsl(${baseHue}, 65%, 60%)`;
 
-    const hueShift = sub === 'BREAKOUT' ? -18
-                   : sub === 'REVERSAL' ? +18
-                   : 0;
-    const alpha    = sub === 'BREAKOUT' ? 0.14
-                   : sub === 'REVERSAL' ? 0.32
-                   : 0.22;
-    const bgHue    = (baseHue + hueShift + 360) % 360;
-    const bg       = `hsla(${bgHue}, 30%, 55%, ${alpha})`;
+    const sat   = sub === 'BREAKOUT' ? 55
+                : sub === 'REVERSAL' ? 10
+                : 30;
+    const alpha = sub === 'BREAKOUT' ? 0.30
+                : sub === 'REVERSAL' ? 0.22
+                : 0.22;
+    const bg    = `hsla(${baseHue}, ${sat}%, 50%, ${alpha})`;
     return { border, bg };
   }
 
