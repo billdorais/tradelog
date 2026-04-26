@@ -215,10 +215,10 @@
     showToast._t = setTimeout(() => { t.style.display = 'none'; }, 2400);
   }
 
-  // Old: CAM_{TICKER}_{LEVEL}_{STRATEGY}_v1_{TF}  e.g. CAM_SPY_R4S4_BREAKOUT_v1_5MIN
-  // New: CAM_{TICKER}_{STRATEGY}_{LEVEL}_{TF}     e.g. CAM_SPY_BREAKOUT_R4S4_5MIN
-  const _RE_OLD = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)(?:_v\d+)?_(\d+MIN)$/i;
-  const _RE_NEW = /^CAM_([A-Z0-9]+)_(BREAKOUT|REVERSAL)_(R\dS\d)_(\d+MIN)$/i;
+  // Old: CAM_{TICKER}_{LEVEL}_{STRATEGY}_v1_{TF}  e.g. CAM_SPY_R4S4_BREAKOUT_v1_05MIN
+  // New: CAM_{TICKER}_{STRATEGY}_{LEVEL}_{TF}     e.g. CAM_SPY_BREAKOUT_R4S4_05MIN
+  const _RE_OLD = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)(?:_v\d+)?_(0?\d+MIN)$/i;
+  const _RE_NEW = /^CAM_([A-Z0-9]+)_(BREAKOUT|REVERSAL)_(R\dS\d)_(0?\d+MIN)$/i;
 
   function parseRuleName(name) {
     let m = _RE_OLD.exec(name || '');
@@ -255,7 +255,7 @@
       <span class="summary-stat"><strong>${totalDone}</strong> / <strong>${totalRecognized}</strong> alerts wired</span>
       <span class="summary-stat"><strong>${_rules.length - totalRecognized}</strong> other rules</span>`;
 
-    const TF_ORDER = { '5MIN': 0, '15MIN': 1, '30MIN': 2 };
+    const TF_ORDER = { '05MIN': 0, '5MIN': 0, '15MIN': 1, '30MIN': 2 };
     const root = document.getElementById('tickerSections');
     const tickers = Object.keys(byTicker).sort();
     if (!tickers.length) {
@@ -426,7 +426,7 @@
   {% endraw %}
 
   function tvSettingsFor(meta) {
-    const tfMap = { '5MIN': '5', '15MIN': '15', '30MIN': '30' };
+    const tfMap = { '05MIN': '5', '5MIN': '5', '15MIN': '15', '30MIN': '30' };
     return {
       pine_script: `CAM_R4S4_${meta.strategy}_V01`,
       level:       meta.level === 'R4S4' ? 'R4' : 'R3',

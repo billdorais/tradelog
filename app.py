@@ -1506,7 +1506,7 @@ def progress_page():
 # inner = timeframe (fastest swap).
 PROGRESS_STRATEGIES = ["BREAKOUT", "REVERSAL"]
 PROGRESS_LEVELS     = ["R4S4", "R3S3"]
-PROGRESS_TIMEFRAMES = ["5MIN", "15MIN", "30MIN"]
+PROGRESS_TIMEFRAMES = ["05MIN", "15MIN", "30MIN"]
 
 
 def _progress_alert_specs(ticker):
@@ -1516,7 +1516,7 @@ def _progress_alert_specs(ticker):
         for level in PROGRESS_LEVELS:
             for tf in PROGRESS_TIMEFRAMES:
                 name = f"CAM_{ticker}_{level}_{strat}_v1_{tf}"
-                tv_interval = {"5MIN": "5", "15MIN": "15", "30MIN": "30"}[tf]
+                tv_interval = {"05MIN": "5", "15MIN": "15", "30MIN": "30"}[tf]
                 specs.append({
                     "name":       name,
                     "ticker":     ticker,
