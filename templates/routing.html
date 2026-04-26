@@ -497,9 +497,11 @@
     // BREAKOUT and REVERSAL share the ticker's hue but split on saturation:
     // BREAKOUT renders punchy and saturated, REVERSAL renders muted and
     // nearly gray. Same color family, very different feel at a glance.
+    // Name layout: CAM_<TICKER>_<TYPE>_<LEVEL>_<TF> (e.g. CAM_AAPL_BREAKOUT_R3S3_05MIN)
+    //   parts[0]=CAM  parts[1]=ticker  parts[2]=BREAKOUT|REVERSAL  parts[3]=level  parts[4]=tf
     const parts   = (name || '').toUpperCase().split('_');
     const group   = parts.slice(0, Math.min(2, parts.length)).join('_');
-    const sub     = parts[3] || '';                               // BREAKOUT / REVERSAL
+    const sub     = parts[2] || '';                               // BREAKOUT / REVERSAL
     const baseHue = _hashStr(group) % 360;
     const border  = `hsl(${baseHue}, 65%, 60%)`;
 
