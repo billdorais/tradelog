@@ -1505,7 +1505,7 @@ def progress_page():
 # context-switching: outer = strategy (Pine reload), middle = level (dropdown),
 # inner = timeframe (fastest swap).
 PROGRESS_STRATEGIES = ["BREAKOUT", "REVERSAL"]
-PROGRESS_LEVELS     = ["R4S4", "R3S3"]
+PROGRESS_LEVELS     = ["R3S3", "R4S4"]
 PROGRESS_TIMEFRAMES = ["05MIN", "15MIN", "30MIN"]
 
 
