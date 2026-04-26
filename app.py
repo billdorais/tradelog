@@ -1515,7 +1515,7 @@ def _progress_alert_specs(ticker):
     for strat in PROGRESS_STRATEGIES:
         for level in PROGRESS_LEVELS:
             for tf in PROGRESS_TIMEFRAMES:
-                name = f"CAM_{ticker}_{level}_{strat}_v1_{tf}"
+                name = f"CAM_{ticker}_{strat}_{level}_{tf}"
                 tv_interval = {"05MIN": "5", "15MIN": "15", "30MIN": "30"}[tf]
                 specs.append({
                     "name":       name,
