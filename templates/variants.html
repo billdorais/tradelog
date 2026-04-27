@@ -349,33 +349,32 @@ function refreshSlugHighlights() {
 async function loadStrategies() {
   const el = document.getElementById('stratList');
   try {
-    const r = await fetch('/api/bt/strategies');
-    const data = await r.json();
-    const slugs = Object.keys(data).sort();
-    if (!slugs.length) { el.textContent = '(none)'; return; }
+    // Fetch meta (to identify user-saved slugs) and full params in parallel
+    const [metaRes, paramsRes] = await Promise.all([
+      fetch('/api/bt/strategies/meta').then(r => r.json()),
+      fetch('/api/bt/strategies').then(r => r.json()),
+    ]);
 
-    // Populate DEFAULT_CFG.defaults from actual strategy params
+    // Only show strategies the user created
+    const userSlugs = metaRes.filter(m => m.user).map(m => m.slug).sort();
+    if (!userSlugs.length) { el.textContent = '(none — save a strategy on the Strategies page first)'; return; }
+
+    // Populate DEFAULT_CFG.defaults from actual param defaults
     DEFAULT_CFG.defaults = {};
-    for (const [slug, params] of Object.entries(data)) {
-      if (params && params.length) {
-        const defaults = {};
-        for (const p of params) defaults[p.id] = p.default;
-        DEFAULT_CFG.defaults[slug] = defaults;
+    for (const slug of userSlugs) {
+      const params = paramsRes[slug] || [];
+      if (params.length) {
+        const defs = {};
+        for (const p of params) defs[p.id] = p.default;
+        DEFAULT_CFG.defaults[slug] = defs;
       }
     }
 
-    // Pre-select user saved strategies (non-builtin)
-    const builtins = new Set(['bollinger','cam_breakout','cam_ema8','cam_h3l3_reversal',
-                               'cam_r4s4_reversal_v01','camarilla','ema_cross','macd','rsi','sma_cross']);
-    const userSlugs = slugs.filter(s => !builtins.has(s));
-    if (userSlugs.length && !DEFAULT_CFG.variants[0].strategies.length) {
-      DEFAULT_CFG.variants[0].strategies = userSlugs;
-    }
-
-    // Refresh config textarea if it's showing the base config
+    // Auto-select all user strategies
+    DEFAULT_CFG.variants[0].strategies = [...userSlugs];
     resetConfig();
 
-    el.innerHTML = slugs.map(s =>
+    el.innerHTML = userSlugs.map(s =>
       `<code onclick="toggleStrategy('${s}')" title="Click to add/remove from config"
         style="background:#1a1612;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
                margin:0 4px 4px 0;display:inline-block;color:#7FE098;font-size:0.8rem;
