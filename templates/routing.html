@@ -16,11 +16,13 @@
     .page-title { font-size: 1.3rem; font-weight: 600; }
     .page-subtitle { font-size: 0.85rem; color: #666; margin-top: 4px; }
 
-    .btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: opacity 0.15s; }
-    .btn:hover { opacity: 0.85; }
-    .btn-primary { background: #88BF8B; color: #fff; }
+    .btn { padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; font-family: inherit; transition: all 0.15s; }
+    .btn-primary { background: rgba(136,191,139,0.12); border: 1px solid #88BF8B; color: #88BF8B; }
+    .btn-primary:hover { background: rgba(136,191,139,0.22); border-color: #8BD996; color: #8BD996; }
     .btn-ghost { background: transparent; border: 1px solid #2a2d3e; color: #aaa; }
+    .btn-ghost:hover { border-color: #517356; color: #88BF8B; }
     .btn-danger { background: transparent; border: 1px solid #e74c3c; color: #e74c3c; }
+    .btn-danger:hover { background: rgba(231,76,60,0.1); }
 
     /* Pipeline rows */
     .pipelines { display: flex; flex-direction: column; gap: 16px; }
