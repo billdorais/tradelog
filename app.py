@@ -66,7 +66,9 @@ _auto_closed_symbols  = set()   # symbols already sent a position-stop close tod
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _risk_lock            = threading.Lock()
 
-if os.environ.get("IB_HOST"):
+_IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
+
+if _IB_ENABLED and os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
     from brokers.ib_broker import IBBroker
     ib_broker      = IBBroker()
@@ -297,7 +299,7 @@ if os.environ.get("IB_HOST"):
 # Live IB broker (optional — set IB_HOST_LIVE to enable)
 # ---------------------------------------------------------------------------
 
-if os.environ.get("IB_HOST_LIVE"):
+if _IB_ENABLED and os.environ.get("IB_HOST_LIVE"):
     import queue as _ib_queue_mod_live
     if not _ib_task_queue:            # import IBBroker if paper block didn't run
         from brokers.ib_broker import IBBroker
@@ -1040,7 +1042,8 @@ def broker_status():
         return jsonify(_broker_status_cache["data"])
     brokers = {}
     brokers["IB"] = ib_broker.status() if ib_broker else {
-        "connected": False, "broker": "IB", "note": "IB_HOST not set"
+        "connected": False, "broker": "IB",
+        "note": "IB disabled (set IB_ENABLED=1 to enable)" if not _IB_ENABLED else "IB_HOST not set",
     }
     if ib_broker_live is not None:
         st = ib_broker_live.status()
