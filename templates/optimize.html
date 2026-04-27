@@ -664,7 +664,7 @@
         <td><span class="badge ${isBase ? '' : 'badge-blue'}" style="${isBase ? 'background:rgba(242,231,172,0.15);color:#F2E7AC' : ''}">${r.ticker}</span></td>
         <td><span class="badge badge-gray">${r.timeframe}</span></td>
         <td style="font-size:0.78rem;color:#888">${pStr}</td>
-        <td style="font-weight:700;color:${isBase ? '#F2E7AC' : '#8BD996'}">${typeof r.score === 'number' ? r.score.toFixed(4) : r.score}</td>
+        <td style="font-weight:700;color:${isBase ? '#F2E7AC' : '#7FE098'}">${typeof r.score === 'number' ? r.score.toFixed(4) : r.score}</td>
         <td class="${pnl != null ? (pnl >= 0 ? 'pos' : 'neg') : ''}">${pnlStr}</td>
         <td class="${ret >= 0 ? 'pos' : 'neg'}">${ret.toFixed(2)}%</td>
         <td>${(r.stats['Sharpe Ratio'] || 0).toFixed(3)}</td>
@@ -864,7 +864,7 @@
 
   // ── Equity curve chart ─────────────────────────────────────────
   let _equityChart = null;
-  const CURVE_COLORS = ['#517356', '#517356', '#F2E7AC'];
+  const CURVE_COLORS = ['#7FE098', '#7FE098', '#F2E7AC'];
 
   function renderEquityChart() {
     // Top-3 from the current run only (so sweeping one param shows that param varying)

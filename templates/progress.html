@@ -208,8 +208,8 @@
   function showToast(msg, color) {
     const t = document.getElementById('toast');
     t.textContent = msg;
-    t.style.borderColor = color || '#517356';
-    t.style.color       = color || '#88BF8B';
+    t.style.borderColor = color || '#7FE098';
+    t.style.color       = color || '#7FE098';
     t.style.display = 'block';
     clearTimeout(showToast._t);
     showToast._t = setTimeout(() => { t.style.display = 'none'; }, 2400);
@@ -319,7 +319,7 @@
       } catch(e) { failed++; }
     }
     if (failed) showToast(`${failed} rule(s) failed to delete`, '#e74c3c');
-    else showToast(`${ticker} removed`, '#88BF8B');
+    else showToast(`${ticker} removed`, '#7FE098');
     loadRules();
   }
 

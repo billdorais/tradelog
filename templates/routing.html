@@ -436,12 +436,12 @@
     for (const p of positions) {
       const upnl    = p.unrealized_pnl ?? 0;
       const sign    = upnl >= 0 ? '+' : '';
-      const color   = upnl >= 0 ? '#8BD996' : '#e74c3c';
+      const color   = upnl >= 0 ? '#7FE098' : '#e74c3c';
       // Bar: how far toward the limit (0–100%)
       let barPct = 0, barColor = '#e74c3c';
       if (limitVal && limitVal < 0 && upnl < 0) {
         barPct = Math.min(100, Math.round((upnl / limitVal) * 100));
-        barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#8BD996';
+        barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#7FE098';
       }
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -757,10 +757,10 @@
     const ibPanel     = document.getElementById('optPanel_ib');
     alpacaPanel.style.display = tab === 'alpaca' ? 'block' : 'none';
     ibPanel.style.display     = tab === 'ib'     ? 'block' : 'none';
-    alpacaBtn.style.borderBottomColor = tab === 'alpaca' ? '#88BF8B' : 'transparent';
-    alpacaBtn.style.color             = tab === 'alpaca' ? '#88BF8B' : '#666';
-    ibBtn.style.borderBottomColor     = tab === 'ib'     ? '#88BF8B' : 'transparent';
-    ibBtn.style.color                 = tab === 'ib'     ? '#88BF8B' : '#666';
+    alpacaBtn.style.borderBottomColor = tab === 'alpaca' ? '#7FE098' : 'transparent';
+    alpacaBtn.style.color             = tab === 'alpaca' ? '#7FE098' : '#666';
+    ibBtn.style.borderBottomColor     = tab === 'ib'     ? '#7FE098' : 'transparent';
+    ibBtn.style.color                 = tab === 'ib'     ? '#7FE098' : '#666';
   }
 
   function buildModalForm(type, node) {
@@ -841,12 +841,12 @@
           <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid #2a2d3e">
             <button type="button" id="optTab_alpaca"
               onclick="switchOptTab('alpaca')"
-              style="padding:6px 16px;font-size:0.8rem;border:none;border-bottom:2px solid ${obm==='alpaca'?'#88BF8B':'transparent'};background:transparent;color:${obm==='alpaca'?'#88BF8B':'#666'};cursor:pointer">
+              style="padding:6px 16px;font-size:0.8rem;border:none;border-bottom:2px solid ${obm==='alpaca'?'#7FE098':'transparent'};background:transparent;color:${obm==='alpaca'?'#7FE098':'#666'};cursor:pointer">
               Alpaca
             </button>
             <button type="button" id="optTab_ib"
               onclick="switchOptTab('ib')"
-              style="padding:6px 16px;font-size:0.8rem;border:none;border-bottom:2px solid ${obm==='ib'?'#88BF8B':'transparent'};background:transparent;color:${obm==='ib'?'#88BF8B':'#666'};cursor:pointer">
+              style="padding:6px 16px;font-size:0.8rem;border:none;border-bottom:2px solid ${obm==='ib'?'#7FE098':'transparent'};background:transparent;color:${obm==='ib'?'#7FE098':'#666'};cursor:pointer">
               IB
             </button>
           </div>

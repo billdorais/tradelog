@@ -763,7 +763,7 @@
       const labels = data.map(p => p.time);
       const values = data.map(p => p.value);
       const finalVal  = values.length ? values[values.length - 1] : 0;
-      const lineColor = finalVal >= 0 ? '#88BF8B' : '#ef5350';
+      const lineColor = finalVal >= 0 ? '#7FE098' : '#ef5350';
       drawChart(labels, values, lineColor);
       if (!values.length) {
         const c = document.getElementById('equityChart').getContext('2d');
@@ -963,8 +963,8 @@
     function toggleSignalsOnly() {
       _signalsOnly = !_signalsOnly;
       const btn = document.getElementById('alpacaSignalsOnly');
-      btn.style.borderColor = _signalsOnly ? '#88BF8B' : '#2a2d3e';
-      btn.style.color       = _signalsOnly ? '#88BF8B' : '#555';
+      btn.style.borderColor = _signalsOnly ? '#7FE098' : '#2a2d3e';
+      btn.style.color       = _signalsOnly ? '#7FE098' : '#555';
       btn.style.background  = _signalsOnly ? 'rgba(136,191,139,0.1)' : 'transparent';
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
@@ -1021,7 +1021,7 @@
 
       // Build stats object in the same shape as /api/stats so renderStats works
       const lastVal   = displayCurve.length ? displayCurve[displayCurve.length - 1].value : 0;
-      const lineColor = lastVal >= 0 ? '#88BF8B' : '#ef5350';
+      const lineColor = lastVal >= 0 ? '#7FE098' : '#ef5350';
       const computed  = _computeStatsFromCurve(displayCurve);
       const stats = {
         ...computed,
@@ -1151,7 +1151,7 @@
 
     function pnlCell(pnl) {
       if (pnl === undefined) return '<td style="color:#555">—</td>';
-      const color = pnl > 0 ? '#517356' : pnl < 0 ? '#ef5350' : '#888';
+      const color = pnl > 0 ? '#7FE098' : pnl < 0 ? '#ef5350' : '#888';
       const sign  = pnl > 0 ? '+' : '';
       return `<td style="color:${color};font-weight:600">${sign}$${pnl.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
     }
@@ -1657,7 +1657,7 @@
       const wins = Math.round(pct), losses = 100 - wins;
       _chartInstances[canvasId] = new Chart(canvas.getContext('2d'), {
         type: 'doughnut',
-        data: { datasets: [{ data: [wins, losses], backgroundColor: ['#517356', '#ef5350'], borderWidth: 0, circumference: 180, rotation: 270 }] },
+        data: { datasets: [{ data: [wins, losses], backgroundColor: ['#7FE098', '#ef5350'], borderWidth: 0, circumference: 180, rotation: 270 }] },
         options: { animation: false, cutout: '72%', plugins: { legend: { display: false }, tooltip: { enabled: false } } },
       });
     }
@@ -1676,7 +1676,7 @@
     }
 
     function renderStats(stats, lineColor, tradesForScatter) {
-      lineColor = lineColor || '#8BD996';
+      lineColor = lineColor || '#7FE098';
       const noData = !stats.completed_trades;
 
       // Net P&L
@@ -1700,7 +1700,7 @@
       document.getElementById('perfPF').textContent = noData ? '—' : (pf === null ? '∞' : pf);
       // Profit factor ring: 1.0 = 50% fill (break-even), 2.0 = 100% fill
       drawRing('pfRing', noData ? 0 : pf === null ? 100 : Math.min(pf / 2 * 100, 100),
-        pf >= 1 ? '#517356' : '#ef5350');
+        pf >= 1 ? '#7FE098' : '#ef5350');
 
       // Max drawdown — no graphic
       document.getElementById('perfDD').textContent = noData ? '—' : fmt(-stats.max_drawdown, '$');
@@ -1780,7 +1780,7 @@
           datasets: [{
             data: netValues,
             backgroundColor: netValues.map(v => v >= 0 ? 'rgba(38,166,91,0.75)' : 'rgba(239,83,80,0.75)'),
-            borderColor:     netValues.map(v => v >= 0 ? '#517356' : '#ef5350'),
+            borderColor:     netValues.map(v => v >= 0 ? '#7FE098' : '#ef5350'),
             borderWidth: 1,
             borderRadius: 2,
           }],
@@ -1999,7 +1999,7 @@
           labels,
           datasets: [{
             data: values,
-            borderColor: '#8BD996',
+            borderColor: '#7FE098',
             borderWidth: 1.5,
             pointRadius: 0,
             fill: true,
@@ -2274,7 +2274,7 @@
         let html = `<table style="width:100%;border-collapse:collapse;font-size:0.78rem">
           <thead><tr>${hdrs.map(h=>`<th style="text-align:left;padding:5px 8px;border-bottom:1px solid #2a2d3e;color:#555">${h}</th>`).join('')}</tr></thead><tbody>`;
         for (const r of rows) {
-          const sideColor = r.side === 'BUY' ? '#517356' : '#ef4444';
+          const sideColor = r.side === 'BUY' ? '#7FE098' : '#ef4444';
           html += `<tr>
             <td style="padding:4px 8px;color:#e0e0e0;font-family:monospace">#${r.id}</td>
             <td style="padding:4px 8px;color:${sideColor}">${r.side}</td>
@@ -2340,9 +2340,9 @@
 
         // Broker pills — render one per configured broker
         const brokerDefs = [
-          { key: 'IB',       label: 'IB',       color: '#517356', acctFn: b => 'Paper' },
-          { key: 'IB_LIVE',  label: 'IB Live',  color: '#88BF8B', acctFn: b => (b.accounts||[]).join(', ') },
-          { key: 'Alpaca',   label: 'Alpaca',   color: '#88BF8B', acctFn: b => b.paper ? 'Paper' : 'Live' },
+          { key: 'IB',       label: 'IB',       color: '#7FE098', acctFn: b => 'Paper' },
+          { key: 'IB_LIVE',  label: 'IB Live',  color: '#7FE098', acctFn: b => (b.accounts||[]).join(', ') },
+          { key: 'Alpaca',   label: 'Alpaca',   color: '#7FE098', acctFn: b => b.paper ? 'Paper' : 'Live' },
           { key: 'Coinbase', label: 'Coinbase', color: '#70a8f5', acctFn: b => (b.accounts||[b.account||'']).join(', ').slice(0,12) },
         ];
         let pillsHtml = '';
@@ -2487,8 +2487,8 @@
       const btn = document.getElementById('eodToggleBtn');
       if (enabled) {
         btn.textContent = 'EOD Close: ON';
-        btn.style.borderColor = '#517356';
-        btn.style.color = '#517356';
+        btn.style.borderColor = '#7FE098';
+        btn.style.color = '#7FE098';
       } else {
         btn.textContent = 'EOD Close: OFF';
         btn.style.borderColor = '#e74c3c';
@@ -2562,8 +2562,8 @@
         const data = await res.json();
         if (res.ok && data.success) {
           btn.textContent = 'Closed';
-          btn.style.borderColor = '#88BF8B';
-          btn.style.color = '#88BF8B';
+          btn.style.borderColor = '#7FE098';
+          btn.style.color = '#7FE098';
           setTimeout(loadTrades, 4000);  // wait for market order fill to land on Alpaca
         } else {
           const errMsg = data.error || 'Unknown error';
@@ -2715,7 +2715,7 @@
           if (!cell) return;
           if (!pos) { cell.innerHTML = '<span style="color:#555">—</span>'; return; }
           const upnl  = parseFloat(pos.unrealized_pnl ?? 0);
-          const color = upnl > 0 ? '#517356' : upnl < 0 ? '#ef5350' : '#888';
+          const color = upnl > 0 ? '#7FE098' : upnl < 0 ? '#ef5350' : '#888';
           const sign  = upnl > 0 ? '+' : '';
           const fmt   = upnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           cell.innerHTML = `<span style="color:${color};font-weight:600" title="Unrealized P&L">${sign}$${fmt}</span>`

@@ -351,7 +351,7 @@
     localStorage.setItem('tvPineRef', val);
     const st = document.getElementById('pineRefStatus');
     st.textContent = '✓ Saved';
-    st.style.color = '#517356';
+    st.style.color = '#7FE098';
     setTimeout(() => { st.textContent = ''; }, 2000);
   }
 
@@ -558,7 +558,7 @@
             codeEl.scrollTop = codeEl.scrollHeight;
           } else if (msg.type === 'done') {
             statusEl.textContent = '✓ Ready — review and run';
-            statusEl.style.color = '#517356';
+            statusEl.style.color = '#7FE098';
           } else if (msg.type === 'error') {
             statusEl.textContent = '✗ ' + msg.msg;
             statusEl.style.color = '#ef5350';
@@ -599,7 +599,7 @@
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       statusEl.textContent = '✓ Saved — visible in Built-in tab';
-      statusEl.style.color = '#517356';
+      statusEl.style.color = '#7FE098';
       strategyParams = {};  // force reload next time built-in tab opens
     } catch (e) {
       statusEl.textContent = '✗ ' + e.message;
@@ -761,9 +761,9 @@
     });
 
     const candles = _priceChart.addCandlestickSeries({
-      upColor:   '#517356', downColor:   '#ef5350',
-      borderUpColor: '#517356', borderDownColor: '#ef5350',
-      wickUpColor:   '#517356', wickDownColor:   '#ef5350',
+      upColor:   '#7FE098', downColor:   '#ef5350',
+      borderUpColor: '#7FE098', borderDownColor: '#ef5350',
+      wickUpColor:   '#7FE098', wickDownColor:   '#ef5350',
     });
     candles.setData(ohlcv);
 
@@ -775,7 +775,7 @@
         if (t.entry_time) markers.push({
           time:     toUnix(t.entry_time),
           position: isLong ? 'belowBar' : 'aboveBar',
-          color:    isLong ? '#517356' : '#ef5350',
+          color:    isLong ? '#7FE098' : '#ef5350',
           shape:    isLong ? 'arrowUp' : 'arrowDown',
           text:     isLong ? 'Buy' : 'Sell',
         });
@@ -822,7 +822,7 @@
     const areaSeries = _equityChart.addAreaSeries({
       topColor:    'rgba(74,144,217,0.3)',
       bottomColor: 'rgba(74,144,217,0.0)',
-      lineColor:   '#88BF8B',
+      lineColor:   '#7FE098',
       lineWidth:   2,
     });
     areaSeries.setData(equity.map(p => ({ time: p.time, value: p.value })));
@@ -840,7 +840,7 @@
     document.getElementById('tradesTitle').textContent =
       `${trades.length} Trade${trades.length !== 1 ? 's' : ''} — ${ticker}`;
     document.getElementById('tradesBody').innerHTML = trades.map(t => {
-      const c    = t.pnl > 0 ? '#517356' : t.pnl < 0 ? '#ef5350' : '#888';
+      const c    = t.pnl > 0 ? '#7FE098' : t.pnl < 0 ? '#ef5350' : '#888';
       const sign = t.pnl > 0 ? '+' : '';
       const badge = t.direction === 'Long'
         ? '<span class="long-badge">Long</span>'

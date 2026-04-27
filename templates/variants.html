@@ -217,7 +217,7 @@ async function runVariants() {
     lastResults = data.results || [];
     renderResults(lastResults);
     status.textContent = `Done — ${lastResults.length} variant(s) evaluated.`;
-    status.style.color = '#88BF8B';
+    status.style.color = '#7FE098';
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
     status.style.color = '#ef5350';
@@ -295,7 +295,7 @@ async function applyRules() {
     }
   }
   status.textContent = `${created} created, ${updated} updated` + (errors ? `, ${errors} failed` : '') + '.';
-  status.style.color = errors ? '#ef5350' : '#88BF8B';
+  status.style.color = errors ? '#ef5350' : '#7FE098';
   btn.disabled = false;
   btn.textContent = 'Apply Survivors as Routing Rules';
 }
@@ -336,7 +336,7 @@ function toggleStrategy(slug) {
   const el = document.getElementById('slug_' + slug);
   if (el) {
     const nowActive = !active;
-    el.style.borderColor  = nowActive ? '#88BF8B' : '#1e2130';
+    el.style.borderColor  = nowActive ? '#7FE098' : '#1e2130';
     el.style.background   = nowActive ? 'rgba(136,191,139,0.1)' : '#0a0a0a';
     el.style.fontWeight   = nowActive ? '700' : 'normal';
   }
@@ -348,7 +348,7 @@ function refreshSlugHighlights() {
   document.querySelectorAll('[id^="slug_"]').forEach(el => {
     const slug = el.id.replace('slug_', '');
     const on = active.has(slug);
-    el.style.borderColor = on ? '#88BF8B' : '#1e2130';
+    el.style.borderColor = on ? '#7FE098' : '#1e2130';
     el.style.background  = on ? 'rgba(136,191,139,0.1)' : '#0a0a0a';
     el.style.fontWeight  = on ? '700' : 'normal';
   });
@@ -366,8 +366,8 @@ async function loadStrategies() {
         style="background:#1a1612;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
                margin:0 4px 4px 0;display:inline-block;color:#7FE098;font-size:0.8rem;
                cursor:pointer;user-select:none;transition:border-color 0.15s"
-        onmouseover="this.style.borderColor='#88BF8B'"
-        onmouseout="this.style.borderColor=isStratActive('${s}') ? '#88BF8B' : '#1e2130'"
+        onmouseover="this.style.borderColor='#7FE098'"
+        onmouseout="this.style.borderColor=isStratActive('${s}') ? '#7FE098' : '#1e2130'"
         id="slug_${s}">${s}</code>`
     ).join('');
     refreshSlugHighlights();
