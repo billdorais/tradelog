@@ -110,6 +110,20 @@
     .modal-payload { background: #15171f; border: 1px solid #2a2d3e; border-radius: 6px;
                      padding: 12px 14px; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.78rem;
                      color: #e0e0e0; white-space: pre; overflow-x: auto; }
+    .modal-section-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em;
+                           color: #888; margin: 14px 0 6px; }
+    .modal-section-label:first-child { margin-top: 0; }
+    .pine-inputs { background: #15171f; border: 1px solid #2a2d3e; border-radius: 6px;
+                   padding: 10px 14px; font-size: 0.8rem; color: #ccc; }
+    .pine-inputs .row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+    .pine-inputs .row + .row { border-top: 1px dashed #1e2130; }
+    .pine-inputs .lbl { color: #888; min-width: 130px; font-size: 0.75rem; }
+    .pine-inputs code { background: #0d0d0d; border: 1px solid #2a2d3e; border-radius: 3px;
+                        padding: 1px 6px; color: #7FE098; font-family: 'Consolas','Monaco',monospace; }
+    .pine-inputs .mini-copy { margin-left: auto; background: transparent; border: 1px solid #2a2d3e;
+                              color: #888; border-radius: 4px; font-size: 0.7rem; padding: 2px 8px;
+                              cursor: pointer; }
+    .pine-inputs .mini-copy:hover { color: #7FE098; border-color: #7FE098; }
     .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
   </style>
 </head>
@@ -182,9 +196,12 @@
     </div>
     <div class="modal-body">
       <div class="modal-meta" id="modalMeta"></div>
+      <div class="modal-section-label">Pine script inputs</div>
+      <div class="pine-inputs" id="modalPineInputs"></div>
+      <div class="modal-section-label">TradingView alert &gt; Message field</div>
       <div class="modal-payload" id="modalPayload"></div>
       <div class="modal-actions">
-        <button class="btn" onclick="copyModalPayload(this)">Copy payload</button>
+        <button class="btn" onclick="copyModalPayload(this)">Copy message</button>
         <button class="btn btn-sec" onclick="closePayloadModal()">Close</button>
       </div>
     </div>
@@ -390,38 +407,35 @@
       lastPine = tv.pine_script; lastLevel = tv.level;
       const hint = newPine ? `<span style="color:#ff9800">⟲ load Pine</span>`
                           : newLevel ? `<span style="color:#88BF8B">▾ change level</span>` : '';
-      const payloadJson = JSON.stringify(s.payload, null, 2);
+      const alertMsg = s.alert_message || TV_ALERT_MESSAGE;
+      const pi       = s.pine_inputs || {};
       const payloadId = `pl_${i}`;
       return `<div class="checklist-step">
         <div class="checklist-step-header">
           <span class="step-num">${i + 1}</span>
           <span class="step-name">${s.name}</span>
           <span style="color:#666;font-size:0.75rem">${hint}</span>
-          <button class="copy-btn" onclick="copyPayload('${payloadId}', this)">Copy payload</button>
+          <button class="copy-btn" onclick="copyPayload('${payloadId}', this)">Copy message</button>
         </div>
         <div class="step-settings">
-          Pine script: <code>${tv.pine_script}</code> &nbsp;·&nbsp;
-          Reversal Level: <code>${tv.level}</code> &nbsp;·&nbsp;
-          Timeframe: <code>${tv.interval}m</code>
+          Pine: <code>${tv.pine_script}</code> &nbsp;·&nbsp;
+          Level: <code>${tv.level}</code> &nbsp;·&nbsp;
+          TF: <code>${tv.interval}m</code> &nbsp;·&nbsp;
+          Strategy ID: <code>${pi.strategy_id || s.name}</code> &nbsp;·&nbsp;
+          Broker: <code>${pi.broker || 'alpaca-paper'}</code> &nbsp;·&nbsp;
+          Qty: <code>${pi.qty != null ? pi.qty : 100}</code>
         </div>
-        <div class="payload" id="${payloadId}">${payloadJson}</div>
+        <div class="payload" id="${payloadId}">${alertMsg}</div>
       </div>`;
     }).join('');
   }
 
   {% raw %}
-  function buildPayload(name) {
-    return {
-      ticker:    "{{ticker}}",
-      action:    "{{strategy.order.action}}",
-      sentiment: "{{strategy.market_position}}",
-      quantity:  "1",
-      price:     "{{close}}",
-      time:      "{{timenow}}",
-      strategy:  name,
-      interval:  "{{interval}}",
-    };
-  }
+  // The TV alert "Message" field is now a single placeholder. The Pine script
+  // builds the full JSON in alert_message (with the routing strategy_id, broker,
+  // qty, and the entry/exit-aware action like EXIT_LONG / EXIT_SHORT) so the
+  // webhook never has to disambiguate {{strategy.order.action}}.
+  const TV_ALERT_MESSAGE = '{{strategy.order.alert_message}}';
   {% endraw %}
 
   function tvSettingsFor(meta) {
@@ -434,9 +448,20 @@
     };
   }
 
+  function _miniCopy(text) {
+    return `<button class="mini-copy" onclick="_copyText('${text.replace(/'/g,"\\'")}', this)">Copy</button>`;
+  }
+
+  function _copyText(txt, btn) {
+    navigator.clipboard.writeText(txt).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    });
+  }
+
   function openPayloadModal(name) {
     const meta = parseRuleName(name);
-    const payload = buildPayload(name);
     document.getElementById('modalTitle').textContent = name;
     if (meta) {
       const tv = tvSettingsFor(meta);
@@ -447,7 +472,16 @@
     } else {
       document.getElementById('modalMeta').textContent = '';
     }
-    document.getElementById('modalPayload').textContent = JSON.stringify(payload, null, 2);
+    const broker = 'alpaca-paper';
+    const qty    = 100;
+    document.getElementById('modalPineInputs').innerHTML = `
+      <div class="row"><span class="lbl">Routing Strategy ID</span>
+        <code>${name}</code>${_miniCopy(name)}</div>
+      <div class="row"><span class="lbl">Broker</span>
+        <code>${broker}</code>${_miniCopy(broker)}</div>
+      <div class="row"><span class="lbl">Quantity</span>
+        <code>${qty}</code>${_miniCopy(String(qty))}</div>`;
+    document.getElementById('modalPayload').textContent = TV_ALERT_MESSAGE;
     document.getElementById('payloadModal').classList.add('show');
   }
 
@@ -474,7 +508,7 @@
     if (!el) return;
     navigator.clipboard.writeText(el.textContent).then(() => {
       btn.textContent = 'Copied';
-      setTimeout(() => { btn.textContent = 'Copy payload'; }, 1400);
+      setTimeout(() => { btn.textContent = 'Copy message'; }, 1400);
     });
   }
 

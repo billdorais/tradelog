@@ -1528,17 +1528,18 @@ def _progress_alert_specs(ticker):
                         "level":       "R4" if level == "R4S4" else "R3",
                         "interval":    tv_interval,
                     },
-                    "payload": {
-                        "ticker":    "{{ticker}}",
-                        "action":    "{{strategy.order.action}}",
-                        "sentiment": "{{strategy.market_position}}",
-                        "quantity":  "1",
-                        "price":     "{{close}}",
-                        "time":      "{{timenow}}",
-                        "strategy":  name,
-                        "interval":  "{{interval}}",
-                        "broker":    "ib",
+                    # Pine script inputs the user must set on the chart so the
+                    # alert_message Pine emits already contains the strategy name,
+                    # broker, and qty. The TV alert Message field is then a single
+                    # placeholder that forwards Pine's pre-built JSON unchanged —
+                    # this avoids the {{strategy.order.action}} ambiguity that
+                    # collapses entries and exits onto the same buy/sell.
+                    "pine_inputs": {
+                        "strategy_id": name,
+                        "broker":      "alpaca-paper",
+                        "qty":         100,
                     },
+                    "alert_message": "{{strategy.order.alert_message}}",
                 })
     return specs
 
