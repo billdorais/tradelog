@@ -24,7 +24,7 @@
 
     /* Pipeline rows */
     .pipelines { display: flex; flex-direction: column; gap: 16px; }
-    .pipeline-wrap { background: #13161f; border: 1px solid #1e2130; border-left-width: 4px; border-radius: 10px; padding: 16px 20px; transition: opacity 0.2s; cursor: default; }
+    .pipeline-wrap { background: #26201C; border: 1px solid #2a2d2a; border-left-width: 4px; border-radius: 10px; padding: 16px 20px; transition: opacity 0.2s; cursor: default; }
     .pipeline-wrap.disabled { opacity: 0.45; }
     .pipeline-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
     .pipeline-name { font-size: 0.9rem; font-weight: 600; color: #ccc; flex: 1; background: transparent; border: none; outline: none; }
@@ -46,26 +46,26 @@
     .node-delete { position: absolute; top: -8px; right: -8px; width: 18px; height: 18px; background: #e74c3c; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 0.65rem; color: #fff; cursor: pointer; z-index: 10; }
     .node:hover .node-delete { display: flex; }
 
-    /* Node colours */
-    .node-strategy  { background: #1a1d2e; border-color: #4a4d6e; color: #ccc; }
-    .node-quantity  { background: #1a2535; border-color: #2a5580; color: #7ab8f5; }
-    .node-instrument-STK    { background: #2a1a40; border-color: #7c4dbd; color: #c39eff; }
-    .node-instrument-FUT    { background: #1a2a40; border-color: #2e6da4; color: #7ab8f5; }
-    .node-instrument-OPT    { background: #2a1f10; border-color: #c8832a; color: #F2E7AC; }
-    .node-instrument-CRYPTO { background: #2a1a10; border-color: #d46b2a; color: #f5a060; }
-    .node-mode-live  { background: #102a1a; border-color: #517356; color: #8BD996; }
-    .node-mode-paper { background: #2a2510; border-color: #c8a22a; color: #F2E7AC; }
+    /* Node colours — palette: #517356 dark green · #88BF8B mid · #8BD996 light · #F2E7AC cream */
+    .node-strategy  { background: #1e2318; border-color: #517356; color: #88BF8B; }
+    .node-quantity  { background: #1a2318; border-color: #3a5a42; color: #8BD996; }
+    .node-instrument-STK    { background: #1e231a; border-color: #517356; color: #8BD996; }
+    .node-instrument-FUT    { background: #1a2318; border-color: #3a5a42; color: #88BF8B; }
+    .node-instrument-OPT    { background: #2a2318; border-color: #c8832a; color: #F2E7AC; }
+    .node-instrument-CRYPTO { background: #2a2010; border-color: #d46b2a; color: #F2E7AC; }
+    .node-mode-live  { background: #1a2818; border-color: #517356; color: #8BD996; }
+    .node-mode-paper { background: #2a2818; border-color: #F2E7AC; color: #F2E7AC; }
     .node-broker-ib         { background: #2a1010; border-color: #c83232; color: #f57070; }
     .node-broker-ib-paper   { background: #2a1010; border-color: #c83232; color: #f57070; }
     .node-broker-ib-live    { background: #3a0808; border-color: #ff4444; color: #ff9090; }
-    .node-broker-alpaca     { background: #0f2a1a; border-color: #2ab86e; color: #88BF8B; }
-    .node-broker-alpaca-paper { background: #0f2a1a; border-color: #2ab86e; color: #88BF8B; }
-    .node-broker-alpaca-live  { background: #052a10; border-color: #517356; color: #8BD996; }
+    .node-broker-alpaca     { background: #182a1a; border-color: #517356; color: #88BF8B; }
+    .node-broker-alpaca-paper { background: #182a1a; border-color: #517356; color: #88BF8B; }
+    .node-broker-alpaca-live  { background: #0e2814; border-color: #8BD996; color: #8BD996; }
     .node-broker-coinbase   { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
-    .node-ticker          { background: #102a2a; border-color: #2a9898; color: #60e0e0; }
-    .node-options_config  { background: #2a1f10; border-color: #e8962a; color: #F2E7AC; min-width: 130px; }
-    .node-trading_hours   { background: #102030; border-color: #2a7898; color: #60c8e0; min-width: 120px; }
-    .node-crypto_qty      { background: #1a1500; border-color: #c8a500; color: #F2E7AC; min-width: 120px; }
+    .node-ticker          { background: #1a2820; border-color: #88BF8B; color: #8BD996; }
+    .node-options_config  { background: #2a2318; border-color: #c8832a; color: #F2E7AC; min-width: 130px; }
+    .node-trading_hours   { background: #1a2820; border-color: #517356; color: #88BF8B; min-width: 120px; }
+    .node-crypto_qty      { background: #1e2810; border-color: #F2E7AC; color: #F2E7AC; min-width: 120px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #88BF8B; color: #88BF8B; }
@@ -502,20 +502,21 @@
     const parts   = (name || '').toUpperCase().split('_');
     const group   = parts.slice(0, Math.min(2, parts.length)).join('_');
     const sub     = parts[2] || '';                               // BREAKOUT / REVERSAL
-    const baseHue = _hashStr(group) % 360;
-    const border  = `hsl(${baseHue}, 65%, 60%)`;
+    // Constrain to the green palette range (95–165°) so all tickers stay
+    // within the green family while still being distinguishable from each other.
+    const baseHue = 95 + (_hashStr(group) % 70);
+    const border  = `hsl(${baseHue}, 55%, 58%)`;
 
-    // BREAKOUT is the more saturated of the pair, REVERSAL the more muted —
-    // but both sit close enough to the middle that they read as related.
-    const sat   = sub === 'BREAKOUT' ? 45
-                : sub === 'REVERSAL' ? 22
-                : 30;
-    const light = sub === 'BREAKOUT' ? 50
-                : sub === 'REVERSAL' ? 45
-                : 50;
-    const alpha = sub === 'BREAKOUT' ? 0.32
-                : sub === 'REVERSAL' ? 0.26
-                : 0.22;
+    // BREAKOUT is more saturated/vivid; REVERSAL is softer/muted.
+    const sat   = sub === 'BREAKOUT' ? 42
+                : sub === 'REVERSAL' ? 20
+                : 28;
+    const light = sub === 'BREAKOUT' ? 48
+                : sub === 'REVERSAL' ? 42
+                : 46;
+    const alpha = sub === 'BREAKOUT' ? 0.30
+                : sub === 'REVERSAL' ? 0.22
+                : 0.20;
     const bg    = `hsla(${baseHue}, ${sat}%, ${light}%, ${alpha})`;
     return { border, bg };
   }
