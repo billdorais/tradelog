@@ -382,6 +382,36 @@ if os.environ.get("COINBASE_KEY"):
 _daily_pnl_cache = {"value": None, "ts": 0.0}
 
 
+# ---------------------------------------------------------------------------
+# Action normalization
+#
+# The webhook stores the *raw* action string from TradingView. Older alerts
+# only ever sent BUY / SELL (because {{strategy.order.action}} could not
+# distinguish entries from exits). Pine scripts that build their own JSON in
+# alert_message now emit LONG / SHORT / EXIT_LONG / EXIT_SHORT directly.
+#
+# For any code that only needs to know "did money go in or out of a long
+# position", these collapse to two equivalence classes:
+#
+#   BUY-side  : BUY  | LONG  | EXIT_SHORT  → opens a long  (or closes a short)
+#   SELL-side : SELL | SHORT | EXIT_LONG   → opens a short (or closes a long)
+# ---------------------------------------------------------------------------
+_BUY_ALIASES  = frozenset({"BUY",  "LONG",  "EXIT_SHORT"})
+_SELL_ALIASES = frozenset({"SELL", "SHORT", "EXIT_LONG"})
+
+
+def _canonical_action(action):
+    """Collapse LONG/EXIT_SHORT → BUY and SHORT/EXIT_LONG → SELL.
+    Returns the original (uppercased) string for unknown values so callers
+    that compare against custom tokens still work."""
+    a = (action or "").strip().upper()
+    if a in _BUY_ALIASES:
+        return "BUY"
+    if a in _SELL_ALIASES:
+        return "SELL"
+    return a
+
+
 def _compute_daily_pnl():
     """Return today's P&L.
     When Alpaca is configured, uses alpaca_broker.daily_pnl() (equity minus
@@ -423,7 +453,7 @@ def _compute_daily_pnl():
         today_pnl   = 0.0
 
         for t in trade_rows:
-            action   = (t.get("action") or "").strip().upper()
+            action   = _canonical_action(t.get("action"))
             ticker   = (t.get("ticker") or "").strip().upper()
             strategy = (t.get("strategy") or "Unknown").strip()
             received = t.get("received_at") or ""
@@ -2881,7 +2911,7 @@ def alpaca_trades():
             sig_lookup = {}
             for t in sig_rows:
                 ticker   = (t.get("ticker") or "").strip().upper()
-                action   = (t.get("action") or "").strip().upper()
+                action   = _canonical_action(t.get("action"))
                 received = t.get("received_at") or ""
                 strategy = (t.get("strategy") or "").strip()
                 if not ticker or not received or not strategy:
@@ -2989,7 +3019,7 @@ def api_stats():
     closed      = []
 
     for t in trades:
-        action   = (t.get("action") or "").strip().upper()
+        action   = _canonical_action(t.get("action"))
         ticker   = (t.get("ticker") or "").strip().upper()
         strategy = (t.get("strategy") or "").strip()
         received = t.get("received_at") or ""
@@ -3109,7 +3139,7 @@ def api_orphaned_trades():
     open_shorts = {}
 
     for t in trades:
-        action   = (t.get("action") or "").strip().upper()
+        action   = _canonical_action(t.get("action"))
         ticker   = (t.get("ticker") or "").strip().upper()
         strategy = (t.get("strategy") or "").strip()
         received = t.get("received_at") or ""
@@ -3188,7 +3218,7 @@ def _build_analysis_stats():
     closed      = []  # {"pnl", "strategy", "ticker", "date", "entry_time", "exit_time"}
 
     for t in trades:
-        action    = (t.get("action") or "").strip().upper()
+        action    = _canonical_action(t.get("action"))
         sentiment = (t.get("sentiment") or "").strip().lower()
         ticker    = (t.get("ticker") or "").strip().upper()
         strategy  = (t.get("strategy") or "Unknown").strip()
@@ -3439,7 +3469,7 @@ def api_alpaca_analysis():
         signal_lookup = {}  # (ticker, 'BOT'|'SLD') → [(ts, strategy, sentiment)]
         for t in trades_db:
             ticker    = (t.get("ticker") or "").strip().upper()
-            action    = (t.get("action") or "").strip().upper()
+            action    = _canonical_action(t.get("action"))
             sentiment = (t.get("sentiment") or "").strip().lower()
             received  = t.get("received_at") or ""
             strategy  = (t.get("strategy") or "").strip()
@@ -3742,7 +3772,7 @@ def api_alpaca_analysis():
             tv_pairs_aligned = []
             for t in trades_db:
                 ticker   = (t.get("ticker") or "").strip().upper()
-                action   = (t.get("action") or "").strip().upper()
+                action   = _canonical_action(t.get("action"))
                 received = t.get("received_at") or ""
                 strategy = (t.get("strategy") or "Unknown").strip()
                 exec_st  = (t.get("exec_status") or "").lower()
