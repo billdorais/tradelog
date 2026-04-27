@@ -24,7 +24,7 @@
     textarea { width: 100%; min-height: 380px; background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
                color: #e0e0e0; padding: 14px; font-size: 0.82rem; font-family: 'Consolas', 'Monaco', monospace;
                line-height: 1.5; resize: vertical; }
-    textarea:focus { outline: none; border-color: #517356; }
+    textarea:focus { outline: none; border-color: #7FE098; }
 
     .btn { background: #517356; color: #fff; border: none; border-radius: 8px;
            padding: 11px 32px; font-size: 0.95rem; font-weight: 700; cursor: pointer; font-family: inherit; }
@@ -48,12 +48,12 @@
     tr.error { background: rgba(255,152,0,0.05); }
     .badge { display:inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700;
              letter-spacing: 0.04em; text-transform: uppercase; }
-    .badge.pass  { background: rgba(81,115,86,0.18);  color: #88BF8B; }
+    .badge.pass  { background: rgba(81,115,86,0.18);  color: #7FE098; }
     .badge.fail  { background: rgba(239,83,80,0.18);  color: #ef5350; }
     .badge.error { background: rgba(255,152,0,0.18);  color: #ff9800; }
     .reason { color: #888; font-size: 0.8rem; }
     .tv-note { margin-top: 14px; font-size: 0.82rem; color: #888; line-height: 1.6; }
-    .tv-note code { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 4px; padding: 1px 6px; color: #88BF8B; font-size: 0.8rem; }
+    .tv-note code { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 4px; padding: 1px 6px; color: #7FE098; font-size: 0.8rem; }
 
     #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
                  font-size: 0.9rem; border-bottom: 1px solid #1e2130; }
@@ -364,7 +364,7 @@ async function loadStrategies() {
     el.innerHTML = slugs.map(s =>
       `<code onclick="toggleStrategy('${s}')" title="Click to add/remove from config"
         style="background:#1a1612;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
-               margin:0 4px 4px 0;display:inline-block;color:#88BF8B;font-size:0.8rem;
+               margin:0 4px 4px 0;display:inline-block;color:#7FE098;font-size:0.8rem;
                cursor:pointer;user-select:none;transition:border-color 0.15s"
         onmouseover="this.style.borderColor='#88BF8B'"
         onmouseout="this.style.borderColor=isStratActive('${s}') ? '#88BF8B' : '#1e2130'"

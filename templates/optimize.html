@@ -31,7 +31,7 @@
     .field label { display: block; font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px; font-weight: 600; }
     .field input, .field select { width: 100%; background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
                                    color: #e0e0e0; padding: 9px 11px; font-size: 0.88rem; font-family: inherit; }
-    .field input:focus, .field select:focus { outline: none; border-color: #517356; }
+    .field input:focus, .field select:focus { outline: none; border-color: #7FE098; }
     .field input::placeholder { color: #444; }
 
     /* ── Timeframe checkboxes ─────────────────────────────────── */
@@ -39,7 +39,7 @@
     .tf-btn  { background: #0a0a0a; border: 1px solid #1e2130; color: #666; padding: 6px 14px;
                border-radius: 6px; font-size: 0.82rem; cursor: pointer; font-family: inherit; font-weight: 600;
                transition: all 0.12s; user-select: none; }
-    .tf-btn.active { background: rgba(81,115,86,0.15); border-color: #517356; color: #8BD996; }
+    .tf-btn.active { background: rgba(81,115,86,0.15); border-color: #7FE098; color: #7FE098; }
 
     /* ── Param ranges table ───────────────────────────────────── */
     .param-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
@@ -49,7 +49,7 @@
     .param-table tr:last-child td { border-bottom: none; }
     .param-table td input { width: 90px; background: #0a0a0a; border: 1px solid #1e2130; border-radius: 5px;
                              color: #e0e0e0; padding: 5px 8px; font-size: 0.83rem; font-family: inherit; }
-    .param-table td input:focus { outline: none; border-color: #517356; }
+    .param-table td input:focus { outline: none; border-color: #7FE098; }
     .param-name { font-weight: 600; color: #ccc; }
     .param-default { color: #555; font-size: 0.78rem; }
     .no-params { color: #444; font-size: 0.85rem; padding: 12px 0; }
@@ -61,7 +61,7 @@
     .btn-run:disabled { background: #1e2130; color: #444; cursor: not-allowed; }
     .btn-ghost { background: transparent; border: 1px solid #1e2130; color: #666; border-radius: 7px;
                  padding: 8px 18px; font-size: 0.85rem; cursor: pointer; font-family: inherit; }
-    .btn-ghost:hover { border-color: #517356; color: #aaa; }
+    .btn-ghost:hover { border-color: #7FE098; color: #aaa; }
 
     /* ── Progress ────────────────────────────────────────────── */
     .progress-wrap { margin-bottom: 6px; }
@@ -70,7 +70,7 @@
     .progress-log { margin-top: 10px; font-size: 0.8rem; color: #555; max-height: 80px; overflow-y: auto; }
     .progress-log .log-line { padding: 2px 0; }
     .log-warn { color: #F2E7AC; }
-    .log-ok   { color: #517356; }
+    .log-ok   { color: #7FE098; }
 
     /* ── TV-style summary banner ─────────────────────────────── */
     .tv-summary { display: flex; gap: 0; border: 1px solid #1e2130; border-radius: 8px;
@@ -94,7 +94,7 @@
                        font-weight: 600; cursor: pointer; user-select: none; }
     table.results th:hover { color: #aaa; }
     table.results th .sort-arrow { margin-left: 4px; color: #444; }
-    table.results th.sorted .sort-arrow { color: #517356; }
+    table.results th.sorted .sort-arrow { color: #7FE098; }
     table.results td { padding: 9px 12px; border-bottom: 1px solid #0d0d0d; }
     table.results tr:last-child td { border-bottom: none; }
     table.results tr:hover td { background: rgba(255,255,255,0.02); cursor: pointer; }
@@ -102,10 +102,10 @@
     table.results tr.selected-row td { background: rgba(81,115,86,0.12) !important; }
 
     .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
-    .badge-blue  { background: rgba(81,115,86,0.15); color: #8BD996; }
+    .badge-blue  { background: rgba(81,115,86,0.15); color: #7FE098; }
     .badge-gray  { background: rgba(255,255,255,0.07); color: #888; }
-    .pos { color: #517356; } .neg { color: #ef5350; }
-    .rank-1 { font-weight: 700; color: #517356; }
+    .pos { color: #7FE098; } .neg { color: #ef5350; }
+    .rank-1 { font-weight: 700; color: #7FE098; }
 
     .empty { text-align: center; padding: 60px 20px; color: #333; font-size: 0.9rem; }
 
@@ -114,18 +114,18 @@
     .strat-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px;
                   background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
                   cursor: pointer; transition: border-color 0.12s; user-select: none; }
-    .strat-item:hover { border-color: #517356; }
-    .strat-item.active { border-color: #517356; background: rgba(41,98,255,0.07); }
+    .strat-item:hover { border-color: #7FE098; }
+    .strat-item.active { border-color: #7FE098; background: rgba(41,98,255,0.07); }
     .strat-item .strat-dot { width: 8px; height: 8px; border-radius: 50%; background: #1e2130;
                               border: 2px solid #444; flex-shrink: 0; transition: all 0.12s; }
-    .strat-item.active .strat-dot { background: #517356; border-color: #517356; }
+    .strat-item.active .strat-dot { background: #517356; border-color: #7FE098; }
     .strat-item .strat-name { flex: 1; font-size: 0.88rem; color: #ccc; }
     .strat-item.active .strat-name { color: #fff; }
     .strat-del { background: transparent; border: none; color: #333; cursor: pointer;
                  font-size: 1rem; padding: 0 2px; line-height: 1; transition: color 0.1s; }
     .strat-del:hover { color: #ef5350; }
     .strat-empty { padding: 20px 0; color: #444; font-size: 0.88rem; }
-    .strat-empty a { color: #517356; text-decoration: none; }
+    .strat-empty a { color: #7FE098; text-decoration: none; }
     .strat-empty a:hover { text-decoration: underline; }
 
     /* ── Hamburger nav ────────────────────────────────────────── */
@@ -182,7 +182,7 @@
   <div class="card">
     <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
       <span>My Pine Script Strategies</span>
-      <a href="/strategies" style="font-size:0.75rem;color:#517356;text-decoration:none;font-weight:600;text-transform:none;letter-spacing:0">+ Upload Strategy</a>
+      <a href="/strategies" style="font-size:0.75rem;color:#7FE098;text-decoration:none;font-weight:600;text-transform:none;letter-spacing:0">+ Upload Strategy</a>
     </div>
     <div id="stratListWrap" style="margin-bottom:18px">
       <div class="strat-empty">Loading strategies…</div>
@@ -315,7 +315,7 @@
       <div style="display:flex;align-items:center;gap:10px">
         <span class="results-count" id="resultsCount"></span>
         <button id="exportPineBtn" onclick="exportPineScript()"
-                style="display:none;background:rgba(81,115,86,0.12);border:1px solid #517356;color:#8BD996;
+                style="display:none;background:rgba(81,115,86,0.12);border:1px solid #517356;color:#7FE098;
                        border-radius:6px;padding:6px 14px;font-size:0.8rem;font-weight:600;cursor:pointer;font-family:inherit">
           &#11015; Export Pine Script
         </button>
