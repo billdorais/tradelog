@@ -21,8 +21,8 @@
     .mode-tab { padding: 8px 20px; border-radius: 6px; border: 1px solid #2a2d3e;
                 background: transparent; color: #888; font-size: 0.9rem; font-family: inherit;
                 cursor: pointer; font-weight: 600; transition: all 0.15s; }
-    .mode-tab.active { background: #4a90d9; border-color: #4a90d9; color: #fff; }
-    .mode-tab:hover:not(.active) { border-color: #4a90d9; color: #ccc; }
+    .mode-tab.active { background: #88BF8B; border-color: #88BF8B; color: #fff; }
+    .mode-tab:hover:not(.active) { border-color: #88BF8B; color: #ccc; }
 
     /* Cards */
     .card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 10px;
@@ -30,13 +30,13 @@
 
     /* Pine Script section */
     .pine-label { font-size: 0.8rem; color: #888; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
-    .pine-label span { background: rgba(74,144,217,0.15); color: #4a90d9; padding: 2px 8px;
+    .pine-label span { background: rgba(136,191,139,0.15); color: #88BF8B; padding: 2px 8px;
                        border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
     textarea.pine-input { width: 100%; height: 220px; background: #13152a; border: 1px solid #2a2d3e;
                           border-radius: 6px; color: #e0e0e0; padding: 12px; font-size: 0.82rem;
                           font-family: 'Courier New', monospace; resize: vertical; line-height: 1.5; }
-    textarea.pine-input:focus { outline: none; border-color: #4a90d9; }
-    .convert-btn { margin-top: 12px; background: #6c5ce7; color: #fff; border: none; border-radius: 6px;
+    textarea.pine-input:focus { outline: none; border-color: #88BF8B; }
+    .convert-btn { margin-top: 12px; background: #517356; color: #fff; border: none; border-radius: 6px;
                    padding: 9px 22px; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit; }
     .convert-btn:hover { background: #5a4bd1; }
     .convert-btn:disabled { background: #2a2d3e; color: #555; cursor: not-allowed; }
@@ -49,39 +49,39 @@
     .code-actions { display: flex; gap: 6px; }
     .code-action-btn { background: transparent; border: 1px solid #2a2d3e; color: #888; padding: 3px 10px;
                        border-radius: 4px; font-size: 0.75rem; cursor: pointer; font-family: inherit; }
-    .code-action-btn:hover { border-color: #4a90d9; color: #ccc; }
+    .code-action-btn:hover { border-color: #88BF8B; color: #ccc; }
     textarea.code-view { width: 100%; height: 260px; background: #0d0f1e; border: 1px solid #2a2d3e;
                          border-radius: 6px; color: #a8d8a8; padding: 12px; font-size: 0.8rem;
                          font-family: 'Courier New', monospace; resize: vertical; line-height: 1.6; }
-    textarea.code-view:focus { outline: none; border-color: #4a90d9; }
+    textarea.code-view:focus { outline: none; border-color: #88BF8B; }
 
     /* Built-in strategy section */
     .strategy-select-wrap { margin-bottom: 16px; }
     .strategy-select-wrap label { font-size: 0.75rem; color: #888; display: block; margin-bottom: 5px; }
     select.strategy-select { width: 280px; background: #13152a; border: 1px solid #2a2d3e; border-radius: 6px;
                               color: #e0e0e0; padding: 8px 10px; font-size: 0.9rem; font-family: inherit; }
-    select.strategy-select:focus { outline: none; border-color: #4a90d9; }
+    select.strategy-select:focus { outline: none; border-color: #88BF8B; }
 
     /* Params grid */
     .params-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
     .field label { display: block; font-size: 0.73rem; color: #888; margin-bottom: 4px; }
     .field input { width: 100%; background: #13152a; border: 1px solid #2a2d3e; border-radius: 6px;
                    color: #e0e0e0; padding: 7px 10px; font-size: 0.88rem; font-family: inherit; }
-    .field input:focus { outline: none; border-color: #4a90d9; }
+    .field input:focus { outline: none; border-color: #88BF8B; }
 
     /* Common config row */
     .config-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
                   padding-top: 16px; border-top: 1px solid #2a2d3e; margin-top: 16px; }
 
     /* Run button */
-    .run-btn { margin-top: 18px; background: #4a90d9; color: #fff; border: none; border-radius: 6px;
+    .run-btn { margin-top: 18px; background: #88BF8B; color: #fff; border: none; border-radius: 6px;
                padding: 10px 28px; font-size: 0.95rem; font-weight: 600; cursor: pointer; font-family: inherit; }
     .run-btn:hover { background: #357abd; }
     .run-btn:disabled { background: #2a2d3e; color: #555; cursor: not-allowed; }
 
     /* Status */
     .status { padding: 11px 16px; border-radius: 6px; font-size: 0.88rem; margin-bottom: 16px; display: none; }
-    .status.info  { background: rgba(74,144,217,0.12); color: #4a90d9; border: 1px solid rgba(74,144,217,0.25); display: block; }
+    .status.info  { background: rgba(136,191,139,0.12); color: #88BF8B; border: 1px solid rgba(74,144,217,0.25); display: block; }
     .status.error { background: rgba(239,83,80,0.12);  color: #ef5350; border: 1px solid rgba(239,83,80,0.25); display: block; }
     .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid currentColor;
                border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite;
@@ -94,7 +94,7 @@
     .stat-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 8px; padding: 13px 15px; }
     .stat-lbl { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
     .stat-val { font-size: 1.05rem; font-weight: 700; }
-    .stat-val.pos, .pos { color: #26a65b; }
+    .stat-val.pos, .pos { color: #517356; }
     .stat-val.neg, .neg { color: #ef5350; }
 
     /* Charts */
@@ -114,7 +114,7 @@
     td { padding: 8px 12px; border-bottom: 1px solid #1a1d2e; white-space: nowrap; }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(255,255,255,0.02); }
-    .long-badge  { background: rgba(38,166,91,0.15); color: #26a65b; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    .long-badge  { background: rgba(81,115,86,0.15); color: #517356; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
     .short-badge { background: rgba(239,83,80,0.15); color: #ef5350; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
 
     .empty { text-align: center; padding: 50px 20px; color: #444; font-size: 0.9rem; }
@@ -161,7 +161,7 @@
 
       <div class="code-section" id="codeSection" style="display:none">
         <div class="code-header">
-          <div class="code-header-label">Generated Python Strategy <span style="color:#26a65b;font-size:0.75rem" id="codeStatus"></span></div>
+          <div class="code-header-label">Generated Python Strategy <span style="color:#517356;font-size:0.75rem" id="codeStatus"></span></div>
           <div class="code-actions">
             <button class="code-action-btn" onclick="copyCode()">Copy</button>
             <button class="code-action-btn" onclick="clearCode()">Clear</button>
@@ -173,7 +173,7 @@
                  style="flex:1;max-width:260px;background:#13152a;border:1px solid #2a2d3e;border-radius:6px;
                         color:#e0e0e0;padding:7px 10px;font-size:0.88rem;font-family:inherit">
           <button class="code-action-btn" onclick="saveStrategy()"
-                  style="padding:7px 14px;border-color:#6c5ce7;color:#6c5ce7">
+                  style="padding:7px 14px;border-color:#517356;color:#517356">
             &#10003; Save as Strategy
           </button>
           <span id="saveStatus" style="font-size:0.8rem;color:#888"></span>
@@ -259,8 +259,8 @@
         <thead>
           <tr>
             <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#555;font-size:0.72rem;text-transform:uppercase">Metric</th>
-            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#26a65b;font-size:0.72rem">TradingView</th>
-            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#4a90d9;font-size:0.72rem">Python</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#517356;font-size:0.72rem">TradingView</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#88BF8B;font-size:0.72rem">Python</th>
             <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #2a2d3e;color:#888;font-size:0.72rem">Delta</th>
           </tr>
         </thead>
@@ -351,7 +351,7 @@
     localStorage.setItem('tvPineRef', val);
     const st = document.getElementById('pineRefStatus');
     st.textContent = '✓ Saved';
-    st.style.color = '#26a65b';
+    st.style.color = '#517356';
     setTimeout(() => { st.textContent = ''; }, 2000);
   }
 
@@ -431,8 +431,8 @@
       const deltaStr = delta != null ? (delta > 0 ? '+' : '') + delta.toFixed(m.dec) : '—';
       return `<tr style="border-bottom:1px solid #1e2130">
         <td style="padding:8px 12px;color:#ccc">${m.label}</td>
-        <td style="padding:8px 12px;text-align:right;color:#26a65b">${fmtNum(tvVal, m.dec)}</td>
-        <td style="padding:8px 12px;text-align:right;color:#4a90d9">${fmtNum(pyVal, m.dec)}</td>
+        <td style="padding:8px 12px;text-align:right;color:#517356">${fmtNum(tvVal, m.dec)}</td>
+        <td style="padding:8px 12px;text-align:right;color:#88BF8B">${fmtNum(pyVal, m.dec)}</td>
         <td style="padding:8px 12px;text-align:right" class="${deltaClass}">${deltaStr}</td>
       </tr>`;
     }).join('');
@@ -558,7 +558,7 @@
             codeEl.scrollTop = codeEl.scrollHeight;
           } else if (msg.type === 'done') {
             statusEl.textContent = '✓ Ready — review and run';
-            statusEl.style.color = '#26a65b';
+            statusEl.style.color = '#517356';
           } else if (msg.type === 'error') {
             statusEl.textContent = '✗ ' + msg.msg;
             statusEl.style.color = '#ef5350';
@@ -599,7 +599,7 @@
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       statusEl.textContent = '✓ Saved — visible in Built-in tab';
-      statusEl.style.color = '#26a65b';
+      statusEl.style.color = '#517356';
       strategyParams = {};  // force reload next time built-in tab opens
     } catch (e) {
       statusEl.textContent = '✗ ' + e.message;
@@ -761,9 +761,9 @@
     });
 
     const candles = _priceChart.addCandlestickSeries({
-      upColor:   '#26a65b', downColor:   '#ef5350',
-      borderUpColor: '#26a65b', borderDownColor: '#ef5350',
-      wickUpColor:   '#26a65b', wickDownColor:   '#ef5350',
+      upColor:   '#517356', downColor:   '#ef5350',
+      borderUpColor: '#517356', borderDownColor: '#ef5350',
+      wickUpColor:   '#517356', wickDownColor:   '#ef5350',
     });
     candles.setData(ohlcv);
 
@@ -775,7 +775,7 @@
         if (t.entry_time) markers.push({
           time:     toUnix(t.entry_time),
           position: isLong ? 'belowBar' : 'aboveBar',
-          color:    isLong ? '#26a65b' : '#ef5350',
+          color:    isLong ? '#517356' : '#ef5350',
           shape:    isLong ? 'arrowUp' : 'arrowDown',
           text:     isLong ? 'Buy' : 'Sell',
         });
@@ -822,7 +822,7 @@
     const areaSeries = _equityChart.addAreaSeries({
       topColor:    'rgba(74,144,217,0.3)',
       bottomColor: 'rgba(74,144,217,0.0)',
-      lineColor:   '#4a90d9',
+      lineColor:   '#88BF8B',
       lineWidth:   2,
     });
     areaSeries.setData(equity.map(p => ({ time: p.time, value: p.value })));
@@ -840,7 +840,7 @@
     document.getElementById('tradesTitle').textContent =
       `${trades.length} Trade${trades.length !== 1 ? 's' : ''} — ${ticker}`;
     document.getElementById('tradesBody').innerHTML = trades.map(t => {
-      const c    = t.pnl > 0 ? '#26a65b' : t.pnl < 0 ? '#ef5350' : '#888';
+      const c    = t.pnl > 0 ? '#517356' : t.pnl < 0 ? '#ef5350' : '#888';
       const sign = t.pnl > 0 ? '+' : '';
       const badge = t.direction === 'Long'
         ? '<span class="long-badge">Long</span>'

@@ -76,7 +76,7 @@
     /* ── Data source select ── */
     select.data-select {
       width: 100%;
-      background: #111;
+      background: #26201C;
       border: 1px solid #2a2d3e;
       border-radius: 4px;
       color: #e0e0e0;
@@ -86,7 +86,7 @@
     }
     input.data-input {
       width: 100%;
-      background: #111;
+      background: #26201C;
       border: 1px solid #2a2d3e;
       border-radius: 4px;
       color: #e0e0e0;
@@ -94,12 +94,12 @@
       font-family: inherit;
       font-size: 0.9rem;
     }
-    input.data-input:focus, select.data-select:focus { outline: none; border-color: #a78bfa; }
+    input.data-input:focus, select.data-select:focus { outline: none; border-color: #8BD996; }
 
     /* ── Mode toggle ── */
     .mode-toggle {
       display: flex;
-      background: #111;
+      background: #26201C;
       border: 1px solid #2a2d3e;
       border-radius: 6px;
       overflow: hidden;
@@ -118,7 +118,7 @@
     }
     .mode-btn.active {
       background: #1e1e3e;
-      color: #a78bfa;
+      color: #8BD996;
       font-weight: 600;
     }
 
@@ -134,7 +134,7 @@
     }
     .field input[type="number"] {
       width: 100%;
-      background: #111;
+      background: #26201C;
       border: 1px solid #2a2d3e;
       border-radius: 4px;
       color: #e0e0e0;
@@ -144,7 +144,7 @@
     }
     .field input[type="number"]:focus {
       outline: none;
-      border-color: #a78bfa;
+      border-color: #8BD996;
     }
 
     .range-row {
@@ -173,7 +173,7 @@
     .run-btn {
       width: 100%;
       padding: 11px;
-      background: #a78bfa;
+      background: #8BD996;
       border: none;
       border-radius: 6px;
       color: #000;
@@ -215,7 +215,7 @@
       font-weight: 700;
       color: #fff;
     }
-    .stat-value.green { color: #26a65b; }
+    .stat-value.green { color: #517356; }
     .stat-value.red   { color: #ef5350; }
 
     /* ── Chart ── */
@@ -276,9 +276,9 @@
       font-size: 0.82rem;
     }
     tr:last-child td { border-bottom: none; }
-    .pnl-pos { color: #26a65b; }
+    .pnl-pos { color: #517356; }
     .pnl-neg { color: #ef5350; }
-    .dir-long  { color: #26a65b; font-weight: 600; }
+    .dir-long  { color: #517356; font-weight: 600; }
     .dir-short { color: #ef5350; font-weight: 600; }
 
     /* ── Optimize table ── */
@@ -289,7 +289,7 @@
       font-size: 0.75rem;
       font-weight: 700;
       background: rgba(167,139,250,0.15);
-      color: #a78bfa;
+      color: #8BD996;
     }
 
     /* ── Empty / loading state ── */
@@ -305,7 +305,7 @@
       display: inline-block;
       width: 18px; height: 18px;
       border: 2px solid #333;
-      border-top-color: #a78bfa;
+      border-top-color: #8BD996;
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
       vertical-align: middle;
@@ -335,9 +335,9 @@
       margin-top: 16px;
       padding: 11px;
       background: linear-gradient(135deg, #130d2e, #0d1a2e);
-      border: 1px solid #a78bfa44;
+      border: 1px solid #8BD99644;
       border-radius: 6px;
-      color: #a78bfa;
+      color: #8BD996;
       font-family: inherit;
       font-size: 0.9rem;
       font-weight: 700;
@@ -345,7 +345,7 @@
       letter-spacing: 0.03em;
       transition: border-color 0.15s, background 0.15s;
     }
-    .step2-btn:hover  { border-color: #a78bfa; background: linear-gradient(135deg, #1c1040, #122040); }
+    .step2-btn:hover  { border-color: #8BD996; background: linear-gradient(135deg, #1c1040, #122040); }
     .step2-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
     .step2-panel { display: flex; flex-direction: column; gap: 14px; }
@@ -393,7 +393,7 @@
     }
     .script-label {
       font-size: 0.7rem; text-transform: uppercase;
-      letter-spacing: 0.08em; color: #a78bfa; font-weight: 700;
+      letter-spacing: 0.08em; color: #8BD996; font-weight: 700;
     }
     .script-code {
       padding: 16px 20px;
@@ -434,10 +434,10 @@
       gap: 3px;
     }
     .log-line { color: #555; }
-    .log-line.ok     { color: #26a65b; }
+    .log-line.ok     { color: #517356; }
     .log-line.warn   { color: #f59e0b; }
     .log-line.error  { color: #ef5350; }
-    .log-line.iter   { color: #a78bfa; font-weight: 600; }
+    .log-line.iter   { color: #8BD996; font-weight: 600; }
     .log-line.refine { color: #7dd3fc; }
 
     .agent-iter-card {
@@ -450,12 +450,12 @@
       padding: 10px 16px;
       background: #0d0d20;
       border-bottom: 1px solid #2a2d3e;
-      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #a78bfa;
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #8BD996;
       display: flex; justify-content: space-between;
     }
     .agent-summary {
       background: #080810;
-      border: 1px solid #a78bfa33;
+      border: 1px solid #8BD99633;
       border-radius: 8px;
       padding: 20px 22px;
       font-size: 0.88rem;
@@ -468,20 +468,20 @@
     .agent-summary h2:first-child { margin-top: 0; }
     .best-badge {
       display: inline-flex; gap: 16px; flex-wrap: wrap;
-      background: #0d1230; border: 1px solid #a78bfa44;
+      background: #0d1230; border: 1px solid #8BD99644;
       border-radius: 6px; padding: 12px 16px; margin-bottom: 14px;
     }
     .best-badge span { font-size: 0.82rem; color: #888; }
-    .best-badge strong { color: #a78bfa; font-size: 1rem; }
+    .best-badge strong { color: #8BD996; font-size: 1rem; }
 
     /* ── Claude analysis ── */
     .claude-btn {
       width: 100%;
       padding: 10px;
       background: transparent;
-      border: 1px solid #a78bfa55;
+      border: 1px solid #8BD99655;
       border-radius: 6px;
-      color: #a78bfa;
+      color: #8BD996;
       font-family: inherit;
       font-size: 0.88rem;
       font-weight: 600;
@@ -489,12 +489,12 @@
       letter-spacing: 0.03em;
       transition: background 0.15s, border-color 0.15s;
     }
-    .claude-btn:hover { background: rgba(167,139,250,0.08); border-color: #a78bfa; }
+    .claude-btn:hover { background: rgba(167,139,250,0.08); border-color: #8BD996; }
     .claude-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
     .claude-panel {
       background: #080810;
-      border: 1px solid #a78bfa33;
+      border: 1px solid #8BD99633;
       border-radius: 8px;
       padding: 20px 22px;
       font-size: 0.88rem;
@@ -505,7 +505,7 @@
       font-size: 0.7rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: #a78bfa;
+      color: #8BD996;
       margin-bottom: 14px;
       display: flex;
       align-items: center;
@@ -527,7 +527,7 @@
       content: "›";
       position: absolute;
       left: 2px;
-      color: #a78bfa;
+      color: #8BD996;
     }
     .claude-panel .cp-body p { margin-bottom: 8px; }
   </style>
@@ -612,7 +612,7 @@
           </div>
           <div id="pinePanel" style="display:none">
             <textarea id="pineScript" rows="6" placeholder="Paste your Pine Script v5 here…"
-              style="width:100%;background:#111;border:1px solid #2a2d3e;border-radius:4px;
+              style="width:100%;background:#26201C;border:1px solid #2a2d3e;border-radius:4px;
                      color:#7dd3fc;font-family:Consolas,monospace;font-size:0.75rem;
                      padding:10px;resize:vertical;line-height:1.5"
               oninput="parsePineParams(this.value)"></textarea>
@@ -792,7 +792,7 @@ function updateSourceHint() {
   const v    = getDataSource();
   if (v === 'ib') {
     hint.textContent   = '✓ IB: 5-min bars back years. Requires IB Gateway connected + market data subscription.';
-    hint.style.color   = '#26a65b';
+    hint.style.color   = '#517356';
     hint.style.display = '';
   } else {
     hint.style.display = 'none';
@@ -812,7 +812,7 @@ function updateIntervalHint() {
   const msg  = INTERVAL_HINTS[v] || '';
   hint.textContent    = msg;
   hint.style.display  = msg ? '' : 'none';
-  hint.style.color    = v === '1d' ? '#26a65b' : '#f59e0b';
+  hint.style.color    = v === '1d' ? '#517356' : '#f59e0b';
 }
 updateIntervalHint();
 
@@ -921,7 +921,7 @@ function parsePineParams(src) {
   }
 
   if (filled > 0) {
-    nameEl.style.color = '#26a65b';
+    nameEl.style.color = '#517356';
     nameEl.textContent = `✓ ${filled} parameters loaded`;
   } else {
     nameEl.style.color = '#ef5350';
@@ -1130,19 +1130,19 @@ function renderOptimize(data) {
   const bestEl = document.createElement('div');
   bestEl.innerHTML = `
     <div class="stats-row">
-      <div class="stat-card" style="border-color:#a78bfa44">
+      <div class="stat-card" style="border-color:#8BD99644">
         <div class="stat-label">Best Profit Factor</div>
         <div class="stat-value green">${best.profit_factor ?? '—'}</div>
       </div>
-      <div class="stat-card" style="border-color:#a78bfa44">
+      <div class="stat-card" style="border-color:#8BD99644">
         <div class="stat-label">Best Win Rate</div>
         <div class="stat-value">${best.win_rate}%</div>
       </div>
-      <div class="stat-card" style="border-color:#a78bfa44">
+      <div class="stat-card" style="border-color:#8BD99644">
         <div class="stat-label">Total P&L</div>
         <div class="stat-value ${best.total_pnl >= 0 ? 'green' : 'red'}">${fmt(best.total_pnl)}</div>
       </div>
-      <div class="stat-card" style="border-color:#a78bfa44">
+      <div class="stat-card" style="border-color:#8BD99644">
         <div class="stat-label">Combos Tested</div>
         <div class="stat-value">${data.grid.length}</div>
       </div>
@@ -1245,7 +1245,7 @@ function drawEquityChart(curve) {
 
   const values = curve.map(p => p.value);
   const isProfit = values[values.length - 1] >= 0;
-  const lineColor = isProfit ? '#26a65b' : '#ef5350';
+  const lineColor = isProfit ? '#517356' : '#ef5350';
   const topColor  = isProfit ? 'rgba(38,166,91,0.3)' : 'rgba(239,83,80,0.3)';
 
   const area = equityChart.addAreaSeries({
@@ -1429,7 +1429,7 @@ async function runStep2(btn) {
       const best = gd.grid?.[0];
       if (best) {
         bestParams = best;
-        const pfCol = (best.profit_factor || 0) >= 1 ? '#26a65b' : '#ef5350';
+        const pfCol = (best.profit_factor || 0) >= 1 ? '#517356' : '#ef5350';
         addCard(`
           <div class="s2-card">
             <div class="s2-card-title">Refined Backtest — Best of ${gd.grid.length} combinations</div>
@@ -1551,7 +1551,7 @@ async function runAgent() {
   logPanel.innerHTML = `
     <div class="agent-log-header">
       <span>⚡ Agent Log</span>
-      <span id="agentStatus" style="color:#a78bfa">Starting…</span>
+      <span id="agentStatus" style="color:#8BD996">Starting…</span>
     </div>
     <div class="agent-log-body" id="agentLog"></div>`;
   rc.appendChild(logPanel);
@@ -1651,7 +1651,7 @@ async function runAgent() {
               wrap.innerHTML = `
                 <div class="agent-summary">
                   <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;
-                              color:#a78bfa;margin-bottom:12px">✦ Claude's Final Analysis</div>
+                              color:#8BD996;margin-bottom:12px">✦ Claude's Final Analysis</div>
                   <div id="agentSummaryBody"></div>
                 </div>`;
               document.getElementById('agentResults').appendChild(wrap);
@@ -1670,7 +1670,7 @@ async function runAgent() {
                   <div><span>Best Params (${ev.tickers.join(', ')})</span><br>
                     <strong>LTA ${best.long_trail_activation} · STA ${best.short_trail_activation} · LHS ${best.long_hard_stop} · SHS ${best.short_hard_stop}</strong>
                   </div>
-                  <div><span>Avg Profit Factor</span><br><strong style="color:#26a65b">${best.avg_profit_factor}</strong></div>
+                  <div><span>Avg Profit Factor</span><br><strong style="color:#517356">${best.avg_profit_factor}</strong></div>
                   <div><span>Min PF (worst ticker)</span><br><strong>${best.min_profit_factor}</strong></div>
                   <div><span>Avg Win Rate</span><br><strong>${best.avg_win_rate}%</strong></div>
                   <div><span>Iterations</span><br><strong>${ev.iterations}</strong></div>

@@ -18,21 +18,21 @@
     h1 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
     .subtitle { font-size: 0.88rem; color: #666; margin-bottom: 28px; }
 
-    .card { background: #111; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
+    .card { background: #26201C; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
     .card-title { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 16px; font-weight: 600; }
 
     textarea { width: 100%; min-height: 380px; background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
                color: #e0e0e0; padding: 14px; font-size: 0.82rem; font-family: 'Consolas', 'Monaco', monospace;
                line-height: 1.5; resize: vertical; }
-    textarea:focus { outline: none; border-color: #2962ff; }
+    textarea:focus { outline: none; border-color: #517356; }
 
-    .btn { background: #2962ff; color: #fff; border: none; border-radius: 8px;
+    .btn { background: #517356; color: #fff; border: none; border-radius: 8px;
            padding: 11px 32px; font-size: 0.95rem; font-weight: 700; cursor: pointer; font-family: inherit; }
-    .btn:hover { background: #1a4fd8; }
+    .btn:hover { background: #3a5040; }
     .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
     .btn-sec { background: transparent; border: 1px solid #2a2d3e; color: #aaa; }
     .btn-sec:hover { background: rgba(255,255,255,0.04); color: #fff; }
-    .btn-apply { background: #26a65b; }
+    .btn-apply { background: #517356; }
     .btn-apply:hover { background: #1f8848; }
 
     .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
@@ -43,17 +43,17 @@
          text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #1e2130; font-weight: 600; }
     td { padding: 8px 10px; border-bottom: 1px solid #0d0d0d; vertical-align: middle; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    tr.pass  { background: rgba(38,166,91,0.05); }
+    tr.pass  { background: rgba(81,115,86,0.05); }
     tr.fail  { background: rgba(239,83,80,0.03); }
     tr.error { background: rgba(255,152,0,0.05); }
     .badge { display:inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700;
              letter-spacing: 0.04em; text-transform: uppercase; }
-    .badge.pass  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
+    .badge.pass  { background: rgba(81,115,86,0.18);  color: #88BF8B; }
     .badge.fail  { background: rgba(239,83,80,0.18);  color: #ef5350; }
     .badge.error { background: rgba(255,152,0,0.18);  color: #ff9800; }
     .reason { color: #888; font-size: 0.8rem; }
     .tv-note { margin-top: 14px; font-size: 0.82rem; color: #888; line-height: 1.6; }
-    .tv-note code { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 4px; padding: 1px 6px; color: #5fe0a0; font-size: 0.8rem; }
+    .tv-note code { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 4px; padding: 1px 6px; color: #88BF8B; font-size: 0.8rem; }
 
     #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
                  font-size: 0.9rem; border-bottom: 1px solid #1e2130; }
@@ -97,7 +97,7 @@
     <div id="stratList" class="status-line" style="line-height:1.7">Loading…</div>
     <div class="tv-note" style="margin-top:10px">
       Use any slug above as a <code>strategies:</code> entry in the config.
-      To add a brand-new strategy: go to <a href="/strategies" style="color:#5fe0a0">Strategies</a>,
+      To add a brand-new strategy: go to <a href="/strategies" style="color:#88BF8B">Strategies</a>,
       paste Pine Script, click <strong>Convert &amp; Preview</strong>, then <strong>Save</strong>.
       The new slug will appear here after refresh. Saved strategies live in the <code>user_strategies</code> DB table.
     </div>
@@ -217,7 +217,7 @@ async function runVariants() {
     lastResults = data.results || [];
     renderResults(lastResults);
     status.textContent = `Done — ${lastResults.length} variant(s) evaluated.`;
-    status.style.color = '#5fe0a0';
+    status.style.color = '#88BF8B';
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
     status.style.color = '#ef5350';
@@ -295,7 +295,7 @@ async function applyRules() {
     }
   }
   status.textContent = `${created} created, ${updated} updated` + (errors ? `, ${errors} failed` : '') + '.';
-  status.style.color = errors ? '#ef5350' : '#5fe0a0';
+  status.style.color = errors ? '#ef5350' : '#88BF8B';
   btn.disabled = false;
   btn.textContent = 'Apply Survivors as Routing Rules';
 }
@@ -336,8 +336,8 @@ function toggleStrategy(slug) {
   const el = document.getElementById('slug_' + slug);
   if (el) {
     const nowActive = !active;
-    el.style.borderColor  = nowActive ? '#5fe0a0' : '#1e2130';
-    el.style.background   = nowActive ? 'rgba(95,224,160,0.1)' : '#0a0a0a';
+    el.style.borderColor  = nowActive ? '#88BF8B' : '#1e2130';
+    el.style.background   = nowActive ? 'rgba(136,191,139,0.1)' : '#0a0a0a';
     el.style.fontWeight   = nowActive ? '700' : 'normal';
   }
 }
@@ -348,8 +348,8 @@ function refreshSlugHighlights() {
   document.querySelectorAll('[id^="slug_"]').forEach(el => {
     const slug = el.id.replace('slug_', '');
     const on = active.has(slug);
-    el.style.borderColor = on ? '#5fe0a0' : '#1e2130';
-    el.style.background  = on ? 'rgba(95,224,160,0.1)' : '#0a0a0a';
+    el.style.borderColor = on ? '#88BF8B' : '#1e2130';
+    el.style.background  = on ? 'rgba(136,191,139,0.1)' : '#0a0a0a';
     el.style.fontWeight  = on ? '700' : 'normal';
   });
 }
@@ -363,11 +363,11 @@ async function loadStrategies() {
     if (!slugs.length) { el.textContent = '(none)'; return; }
     el.innerHTML = slugs.map(s =>
       `<code onclick="toggleStrategy('${s}')" title="Click to add/remove from config"
-        style="background:#0a0a0a;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
-               margin:0 4px 4px 0;display:inline-block;color:#5fe0a0;font-size:0.8rem;
+        style="background:#1a1612;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
+               margin:0 4px 4px 0;display:inline-block;color:#88BF8B;font-size:0.8rem;
                cursor:pointer;user-select:none;transition:border-color 0.15s"
-        onmouseover="this.style.borderColor='#5fe0a0'"
-        onmouseout="this.style.borderColor=isStratActive('${s}') ? '#5fe0a0' : '#1e2130'"
+        onmouseover="this.style.borderColor='#88BF8B'"
+        onmouseout="this.style.borderColor=isStratActive('${s}') ? '#88BF8B' : '#1e2130'"
         id="slug_${s}">${s}</code>`
     ).join('');
     refreshSlugHighlights();

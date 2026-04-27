@@ -62,12 +62,12 @@
       font-weight: bold;
       letter-spacing: 0.04em;
     }
-    .mode-pill.paper { background: rgba(255,193,7,0.15); color: #ffc107; border: 1px solid rgba(255,193,7,0.3); }
-    .mode-pill.live  { background: rgba(38,166,91,0.15);  color: #26a65b; border: 1px solid rgba(38,166,91,0.3); }
+    .mode-pill.paper { background: rgba(242,231,172,0.15); color: #F2E7AC; border: 1px solid rgba(255,193,7,0.3); }
+    .mode-pill.live  { background: rgba(81,115,86,0.15);  color: #517356; border: 1px solid rgba(38,166,91,0.3); }
     .mode-dot { width: 7px; height: 7px; border-radius: 50%; }
-    .mode-pill.paper .mode-dot { background: #ffc107; }
-    .mode-pill.live  .mode-dot { background: #26a65b; animation: pulse 1.5s infinite; }
-    .mode-pill.ib-connected    { background: rgba(38,166,91,0.15);  color: #26a65b; border: 1px solid rgba(38,166,91,0.3); }
+    .mode-pill.paper .mode-dot { background: #F2E7AC; }
+    .mode-pill.live  .mode-dot { background: #517356; animation: pulse 1.5s infinite; }
+    .mode-pill.ib-connected    { background: rgba(81,115,86,0.15);  color: #517356; border: 1px solid rgba(38,166,91,0.3); }
     .mode-pill.ib-disconnected { background: rgba(239,83,80,0.15);  color: #ef5350; border: 1px solid rgba(239,83,80,0.3); }
 
     @keyframes pulse {
@@ -77,14 +77,14 @@
 
     button {
       padding: 8px 16px;
-      background: #2962ff;
+      background: #517356;
       color: #fff;
       border: none;
       border-radius: 6px;
       cursor: pointer;
       font-size: 0.9rem;
     }
-    button:hover { background: #1a4fd8; }
+    button:hover { background: #3a5040; }
     button.danger { background: transparent; color: #ef5350; border: 1px solid rgba(239,83,80,0.4); }
     button.danger:hover { background: rgba(239,83,80,0.1); border-color: #ef5350; }
 
@@ -95,10 +95,10 @@
       min-width: 150px; display: inline-flex; align-items: center; justify-content: space-between;
       gap: 8px; font-family: inherit; font-weight: normal;
     }
-    .strat-picker-btn:hover { border-color: #5c8eff; background: #0f1117; }
+    .strat-picker-btn:hover { border-color: #8BD996; background: #0f1117; }
     .strat-picker-panel {
       display: none; position: absolute; right: 0; top: calc(100% + 4px);
-      background: #111; border: 1px solid #2a2d3e; border-radius: 8px; padding: 8px;
+      background: #26201C; border: 1px solid #2a2d3e; border-radius: 8px; padding: 8px;
       min-width: 240px; z-index: 200; max-height: 360px; overflow-y: auto;
       box-shadow: 0 4px 24px rgba(0,0,0,0.6);
     }
@@ -120,7 +120,7 @@
     }
 
     .stat-card {
-      background: #111;
+      background: #26201C;
       border: 1px solid #1e2130;
       border-radius: 10px;
       padding: 18px 20px;
@@ -130,7 +130,7 @@
 
     .stat-card .label { font-size: 0.72rem; color: #666; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
     .stat-card .value { font-size: 1.5rem; font-weight: bold; color: #fff; }
-    .stat-card.positive .value { color: #26a65b; }
+    .stat-card.positive .value { color: #517356; }
     .stat-card.negative .value { color: #ef5350; }
     .stat-card.neutral  .value { color: #fff; }
 
@@ -144,7 +144,7 @@
     }
 
     .perf-card {
-      background: #111;
+      background: #26201C;
       border: 1px solid #1e2130;
       border-radius: 10px;
       padding: 14px 18px;
@@ -180,7 +180,7 @@
     }
 
     .perf-card .pc-value.negative { color: #ef5350; }
-    .perf-card .pc-value.positive { color: #26a65b; }
+    .perf-card .pc-value.positive { color: #517356; }
 
     .pc-right {
       display: flex;
@@ -205,7 +205,7 @@
       width: 100%;
     }
 
-    .gauge-counts .wins  { color: #26a65b; }
+    .gauge-counts .wins  { color: #517356; }
     .gauge-counts .mid   { color: #555; }
     .gauge-counts .losses{ color: #ef5350; }
 
@@ -224,7 +224,7 @@
       margin-bottom: 6px;
     }
 
-    .winloss-bar .win-seg  { background: #26a65b; }
+    .winloss-bar .win-seg  { background: #517356; }
     .winloss-bar .loss-seg { background: #ef5350; }
 
     .winloss-labels {
@@ -234,7 +234,7 @@
       font-size: 0.72rem;
     }
 
-    .winloss-labels .wl-win  { color: #26a65b; }
+    .winloss-labels .wl-win  { color: #517356; }
     .winloss-labels .wl-loss { color: #ef5350; }
 
     /* Flatpickr dark theme overrides */
@@ -246,9 +246,9 @@
     .flatpickr-weekdays,.flatpickr-weekday { background:#1c1f2e; color:#555; }
     .flatpickr-day { color:#c0c0c0; border-radius:6px; }
     .flatpickr-day:hover,.flatpickr-day:focus { background:#2a2d3e; border-color:#2a2d3e; color:#fff; }
-    .flatpickr-day.selected,.flatpickr-day.selected:hover { background:#4a90d9; border-color:#4a90d9; color:#fff; }
-    .flatpickr-day.today { border-color:#5fe0a0; }
-    .flatpickr-day.today:hover { background:#5fe0a0; color:#111; }
+    .flatpickr-day.selected,.flatpickr-day.selected:hover { background:#88BF8B; border-color:#88BF8B; color:#fff; }
+    .flatpickr-day.today { border-color:#88BF8B; }
+    .flatpickr-day.today:hover { background:#88BF8B; color:#111; }
     .flatpickr-day.flatpickr-disabled,.flatpickr-day.flatpickr-disabled:hover { color:#333; }
     .flatpickr-months .flatpickr-prev-month,.flatpickr-months .flatpickr-next-month { color:#888; fill:#888; }
     .flatpickr-months .flatpickr-prev-month:hover,.flatpickr-months .flatpickr-next-month:hover { color:#e0e0e0; fill:#e0e0e0; }
@@ -278,12 +278,12 @@
                cursor: pointer; border: 1px solid #2a2d3e; background: transparent;
                color: #888; border-bottom: 2px solid transparent; font-family: inherit; }
     .pnl-tab:hover { color: #ccc; }
-    .pnl-tab.active-alpaca  { border-color: #5fe0a0; background: rgba(95,224,160,0.15);
-                               color: #5fe0a0; border-bottom-color: #5fe0a0; }
-    .pnl-tab.active-signals { border-color: #a78bfa; background: rgba(167,139,250,0.12);
-                               color: #a78bfa; border-bottom-color: #a78bfa; }
-    .pnl-tab.active-ib      { border-color: #4a90d9; background: rgba(74,144,217,0.12);
-                               color: #4a90d9; border-bottom-color: #4a90d9; }
+    .pnl-tab.active-alpaca  { border-color: #88BF8B; background: rgba(136,191,139,0.15);
+                               color: #88BF8B; border-bottom-color: #88BF8B; }
+    .pnl-tab.active-signals { border-color: #8BD996; background: rgba(139,217,150,0.12);
+                               color: #8BD996; border-bottom-color: #8BD996; }
+    .pnl-tab.active-ib      { border-color: #88BF8B; background: rgba(136,191,139,0.12);
+                               color: #88BF8B; border-bottom-color: #88BF8B; }
 
     /* Table */
     .section-label {
@@ -351,15 +351,15 @@
       font-weight: bold;
       text-transform: uppercase;
     }
-    .badge-buy    { background: rgba(38,166,91,0.2);  color: #26a65b; }
+    .badge-buy    { background: rgba(38,166,91,0.2);  color: #517356; }
     .badge-sell   { background: rgba(239,83,80,0.2);  color: #ef5350; }
-    .badge-long   { background: rgba(38,166,91,0.1);  color: #26a65b; }
+    .badge-long   { background: rgba(81,115,86,0.1);  color: #517356; }
     .badge-short  { background: rgba(239,83,80,0.1);  color: #ef5350; }
     .badge-flat   { background: rgba(150,150,150,0.1); color: #aaa; }
 
     /* Exec status badges */
-    .exec-ok     { background: rgba(38,166,91,0.15);  color: #26a65b; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
-    .exec-paper  { background: rgba(255,193,7,0.15);  color: #ffc107; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
+    .exec-ok     { background: rgba(81,115,86,0.15);  color: #517356; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
+    .exec-paper  { background: rgba(242,231,172,0.15);  color: #F2E7AC; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
     .exec-error  { background: rgba(239,83,80,0.15);  color: #ef5350; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; }
     .exec-none   { color: #444; font-size: 0.75rem; }
     tr.row-error { background: rgba(239,83,80,0.05); border-left: 3px solid #ef5350; }
@@ -394,7 +394,7 @@
       cursor: pointer;
     }
 
-    .filter-bar select:focus { outline: none; border-color: #2962ff; }
+    .filter-bar select:focus { outline: none; border-color: #517356; }
 
     .empty {
       text-align: center;
@@ -432,7 +432,7 @@
       <button id="ibReconnectBtn"   style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
       <button id="ibDisconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#f59e0b;border:1px solid rgba(245,158,11,0.4)" onclick="disconnectIB()">Disconnect IB</button>
       <span class="status" id="status">Loading...</span>
-      <button onclick="loadTrades()" style="background:#2962ff;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem">Refresh</button>
+      <button onclick="loadTrades()" style="background:#517356;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem">Refresh</button>
       <button id="eodToggleBtn" onclick="toggleEODClose()" style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">EOD Close: ...</button>
       <button id="closeAllBtn" onclick="closeAllPositions()" style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Close All Positions</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
@@ -448,7 +448,7 @@
     </div>
     <div class="stat-card">
       <div class="label">Buy Signals</div>
-      <div class="value" style="color:#26a65b" id="statBuys">—</div>
+      <div class="value" style="color:#517356" id="statBuys">—</div>
     </div>
     <div class="stat-card">
       <div class="label">Sell Signals</div>
@@ -549,7 +549,7 @@
         <button id="tabIB"      class="pnl-tab"                onclick="switchTab('ib')">IB P&amp;L</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
-                 border-top-color:#a78bfa;border-radius:50%;
+                 border-top-color:#8BD996;border-radius:50%;
                  animation:spin 0.75s linear infinite;flex-shrink:0">
         </span>
       </div>
@@ -564,11 +564,11 @@
           </button>
           <div class="strat-picker-panel" id="stratPickerPanel">
             <div style="display:flex;gap:14px;padding:2px 8px 8px;border-bottom:1px solid #1e2130;margin-bottom:4px">
-              <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#5c8eff;cursor:pointer">All</span>
-              <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#5c8eff;cursor:pointer">None</span>
-              <span onclick="selectTopN(10,event)" style="font-size:0.75rem;color:#f0ad4e;cursor:pointer">Top 10</span>
-              <span onclick="selectTopN(15,event)" style="font-size:0.75rem;color:#f0ad4e;cursor:pointer">Top 15</span>
-              <span onclick="selectTopN(20,event)" style="font-size:0.75rem;color:#f0ad4e;cursor:pointer">Top 20</span>
+              <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#8BD996;cursor:pointer">All</span>
+              <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#8BD996;cursor:pointer">None</span>
+              <span onclick="selectTopN(10,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 10</span>
+              <span onclick="selectTopN(15,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 15</span>
+              <span onclick="selectTopN(20,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 20</span>
             </div>
             <div id="stratPickerList"></div>
           </div>
@@ -644,7 +644,7 @@
     <span>Trade Feed</span>
     <div style="display:flex;gap:4px">
       <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0">
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B">
         Alpaca Fills</button>
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
@@ -763,7 +763,7 @@
       const labels = data.map(p => p.time);
       const values = data.map(p => p.value);
       const finalVal  = values.length ? values[values.length - 1] : 0;
-      const lineColor = finalVal >= 0 ? '#4a90d9' : '#ef5350';
+      const lineColor = finalVal >= 0 ? '#88BF8B' : '#ef5350';
       drawChart(labels, values, lineColor);
       if (!values.length) {
         const c = document.getElementById('equityChart').getContext('2d');
@@ -963,9 +963,9 @@
     function toggleSignalsOnly() {
       _signalsOnly = !_signalsOnly;
       const btn = document.getElementById('alpacaSignalsOnly');
-      btn.style.borderColor = _signalsOnly ? '#5fe0a0' : '#2a2d3e';
-      btn.style.color       = _signalsOnly ? '#5fe0a0' : '#555';
-      btn.style.background  = _signalsOnly ? 'rgba(95,224,160,0.1)' : 'transparent';
+      btn.style.borderColor = _signalsOnly ? '#88BF8B' : '#2a2d3e';
+      btn.style.color       = _signalsOnly ? '#88BF8B' : '#555';
+      btn.style.background  = _signalsOnly ? 'rgba(136,191,139,0.1)' : 'transparent';
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
       renderAlpacaStats(fromDate, toDate);
@@ -1021,7 +1021,7 @@
 
       // Build stats object in the same shape as /api/stats so renderStats works
       const lastVal   = displayCurve.length ? displayCurve[displayCurve.length - 1].value : 0;
-      const lineColor = lastVal >= 0 ? '#5fe0a0' : '#ef5350';
+      const lineColor = lastVal >= 0 ? '#88BF8B' : '#ef5350';
       const computed  = _computeStatsFromCurve(displayCurve);
       const stats = {
         ...computed,
@@ -1151,7 +1151,7 @@
 
     function pnlCell(pnl) {
       if (pnl === undefined) return '<td style="color:#555">—</td>';
-      const color = pnl > 0 ? '#26a65b' : pnl < 0 ? '#ef5350' : '#888';
+      const color = pnl > 0 ? '#517356' : pnl < 0 ? '#ef5350' : '#888';
       const sign  = pnl > 0 ? '+' : '';
       return `<td style="color:${color};font-weight:600">${sign}$${pnl.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;
     }
@@ -1528,7 +1528,7 @@
               style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">&#10005;</button>
           </td>
           <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
-          <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#26a65b;font-size:0.72rem">Open</span>' + closeBtn}</td>
+          <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#517356;font-size:0.72rem">Open</span>' + closeBtn}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(ref.sentiment)}</td>
           <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
@@ -1574,9 +1574,9 @@
              </span>`
           : `<span class="exec-ok">✓ Filled</span>`;
         rows.push(`<tr class="group-second"${isOpen ? ` data-open-symbol="${ref.symbol}" data-open-key="${openKey}"` : ''}>
-          <td style="color:#5fe0a0;font-size:0.75rem;white-space:nowrap">Alpaca</td>
+          <td style="color:#88BF8B;font-size:0.75rem;white-space:nowrap">Alpaca</td>
           <td style="font-size:0.78rem;color:#aaa">${fmtET(alpTs(en)) ?? '—'}</td>
-          <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+          <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#517356;font-size:0.72rem">Open</span>'}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(sentiment)}</td>
           <td>${alpStrat ? `<span class="strategy-tag">${alpStrat}</span>` : '<span style="color:#444">—</span>'}</td>
@@ -1657,7 +1657,7 @@
       const wins = Math.round(pct), losses = 100 - wins;
       _chartInstances[canvasId] = new Chart(canvas.getContext('2d'), {
         type: 'doughnut',
-        data: { datasets: [{ data: [wins, losses], backgroundColor: ['#26a65b', '#ef5350'], borderWidth: 0, circumference: 180, rotation: 270 }] },
+        data: { datasets: [{ data: [wins, losses], backgroundColor: ['#517356', '#ef5350'], borderWidth: 0, circumference: 180, rotation: 270 }] },
         options: { animation: false, cutout: '72%', plugins: { legend: { display: false }, tooltip: { enabled: false } } },
       });
     }
@@ -1676,7 +1676,7 @@
     }
 
     function renderStats(stats, lineColor, tradesForScatter) {
-      lineColor = lineColor || '#a78bfa';
+      lineColor = lineColor || '#8BD996';
       const noData = !stats.completed_trades;
 
       // Net P&L
@@ -1700,7 +1700,7 @@
       document.getElementById('perfPF').textContent = noData ? '—' : (pf === null ? '∞' : pf);
       // Profit factor ring: 1.0 = 50% fill (break-even), 2.0 = 100% fill
       drawRing('pfRing', noData ? 0 : pf === null ? 100 : Math.min(pf / 2 * 100, 100),
-        pf >= 1 ? '#26a65b' : '#ef5350');
+        pf >= 1 ? '#517356' : '#ef5350');
 
       // Max drawdown — no graphic
       document.getElementById('perfDD').textContent = noData ? '—' : fmt(-stats.max_drawdown, '$');
@@ -1780,7 +1780,7 @@
           datasets: [{
             data: netValues,
             backgroundColor: netValues.map(v => v >= 0 ? 'rgba(38,166,91,0.75)' : 'rgba(239,83,80,0.75)'),
-            borderColor:     netValues.map(v => v >= 0 ? '#26a65b' : '#ef5350'),
+            borderColor:     netValues.map(v => v >= 0 ? '#517356' : '#ef5350'),
             borderWidth: 1,
             borderRadius: 2,
           }],
@@ -1987,7 +1987,7 @@
         const grad   = ctx.createLinearGradient(0, top, 0, bottom);
         const zeroFrac = Math.min(Math.max((zeroY - top) / (bottom - top), 0), 1);
         grad.addColorStop(0,            'rgba(38,166,91,0.45)');
-        grad.addColorStop(zeroFrac,     'rgba(38,166,91,0.05)');
+        grad.addColorStop(zeroFrac,     'rgba(81,115,86,0.05)');
         grad.addColorStop(zeroFrac,     'rgba(239,83,80,0.05)');
         grad.addColorStop(1,            'rgba(239,83,80,0.45)');
         return grad;
@@ -1999,7 +1999,7 @@
           labels,
           datasets: [{
             data: values,
-            borderColor: '#a78bfa',
+            borderColor: '#8BD996',
             borderWidth: 1.5,
             pointRadius: 0,
             fill: true,
@@ -2065,7 +2065,7 @@
               const grad    = ctx.createLinearGradient(0, top, 0, bottom);
               const zeroFrac = Math.min(Math.max((zeroY - top) / (bottom - top), 0), 1);
               grad.addColorStop(0,          'rgba(38,166,91,0.45)');
-              grad.addColorStop(zeroFrac,   'rgba(38,166,91,0.05)');
+              grad.addColorStop(zeroFrac,   'rgba(81,115,86,0.05)');
               grad.addColorStop(zeroFrac,   'rgba(239,83,80,0.05)');
               grad.addColorStop(1,          'rgba(239,83,80,0.45)');
               return grad;
@@ -2127,10 +2127,10 @@
     function _syncFeedTabButtons(tab) {
       const inactive = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
       document.getElementById('feedTabAlpaca').style.cssText = tab === 'alpaca'
-        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5fe0a0;background:rgba(95,224,160,0.15);color:#5fe0a0'
+        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B'
         : inactive;
       document.getElementById('feedTabTV').style.cssText = tab === 'tv'
-        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #4a90d9;background:rgba(74,144,217,0.2);color:#4a90d9'
+        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.2);color:#88BF8B'
         : inactive;
     }
 
@@ -2205,7 +2205,7 @@
               style="margin-left:4px;background:transparent;border:none;color:#444;cursor:pointer;font-size:0.72rem;padding:0;vertical-align:middle">\&#10005;</button>
           </td>
           <td style="font-size:0.78rem">${fmtET(en?.received_at) ?? '—'}</td>
-          <td style="font-size:0.78rem;color:#888">${ex ? fmtET(ex.received_at) : '<span style="color:#26a65b;font-size:0.72rem">Open</span>'}</td>
+          <td style="font-size:0.78rem;color:#888">${ex ? fmtET(ex.received_at) : '<span style="color:#517356;font-size:0.72rem">Open</span>'}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(ref.sentiment)}</td>
           <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
@@ -2265,7 +2265,7 @@
         const rows = await fetch('/api/orphaned_trades').then(r => r.json());
         const summaryEl = document.getElementById('orphanedSummaryText');
         if (!rows.length) {
-          el.innerHTML = '<span style="color:#26a65b;font-size:0.78rem">&#10003; No orphaned trades found.</span>';
+          el.innerHTML = '<span style="color:#517356;font-size:0.78rem">&#10003; No orphaned trades found.</span>';
           summaryEl.textContent = 'Orphaned / rogue trades — none found';
           return;
         }
@@ -2274,7 +2274,7 @@
         let html = `<table style="width:100%;border-collapse:collapse;font-size:0.78rem">
           <thead><tr>${hdrs.map(h=>`<th style="text-align:left;padding:5px 8px;border-bottom:1px solid #2a2d3e;color:#555">${h}</th>`).join('')}</tr></thead><tbody>`;
         for (const r of rows) {
-          const sideColor = r.side === 'BUY' ? '#26a65b' : '#ef4444';
+          const sideColor = r.side === 'BUY' ? '#517356' : '#ef4444';
           html += `<tr>
             <td style="padding:4px 8px;color:#e0e0e0;font-family:monospace">#${r.id}</td>
             <td style="padding:4px 8px;color:${sideColor}">${r.side}</td>
@@ -2340,9 +2340,9 @@
 
         // Broker pills — render one per configured broker
         const brokerDefs = [
-          { key: 'IB',       label: 'IB',       color: '#26a65b', acctFn: b => 'Paper' },
-          { key: 'IB_LIVE',  label: 'IB Live',  color: '#4a90d9', acctFn: b => (b.accounts||[]).join(', ') },
-          { key: 'Alpaca',   label: 'Alpaca',   color: '#5fe0a0', acctFn: b => b.paper ? 'Paper' : 'Live' },
+          { key: 'IB',       label: 'IB',       color: '#517356', acctFn: b => 'Paper' },
+          { key: 'IB_LIVE',  label: 'IB Live',  color: '#88BF8B', acctFn: b => (b.accounts||[]).join(', ') },
+          { key: 'Alpaca',   label: 'Alpaca',   color: '#88BF8B', acctFn: b => b.paper ? 'Paper' : 'Live' },
           { key: 'Coinbase', label: 'Coinbase', color: '#70a8f5', acctFn: b => (b.accounts||[b.account||'']).join(', ').slice(0,12) },
         ];
         let pillsHtml = '';
@@ -2487,8 +2487,8 @@
       const btn = document.getElementById('eodToggleBtn');
       if (enabled) {
         btn.textContent = 'EOD Close: ON';
-        btn.style.borderColor = '#26a65b';
-        btn.style.color = '#26a65b';
+        btn.style.borderColor = '#517356';
+        btn.style.color = '#517356';
       } else {
         btn.textContent = 'EOD Close: OFF';
         btn.style.borderColor = '#e74c3c';
@@ -2562,8 +2562,8 @@
         const data = await res.json();
         if (res.ok && data.success) {
           btn.textContent = 'Closed';
-          btn.style.borderColor = '#5fe0a0';
-          btn.style.color = '#5fe0a0';
+          btn.style.borderColor = '#88BF8B';
+          btn.style.color = '#88BF8B';
           setTimeout(loadTrades, 4000);  // wait for market order fill to land on Alpaca
         } else {
           const errMsg = data.error || 'Unknown error';
@@ -2715,7 +2715,7 @@
           if (!cell) return;
           if (!pos) { cell.innerHTML = '<span style="color:#555">—</span>'; return; }
           const upnl  = parseFloat(pos.unrealized_pnl ?? 0);
-          const color = upnl > 0 ? '#26a65b' : upnl < 0 ? '#ef5350' : '#888';
+          const color = upnl > 0 ? '#517356' : upnl < 0 ? '#ef5350' : '#888';
           const sign  = upnl > 0 ? '+' : '';
           const fmt   = upnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           cell.innerHTML = `<span style="color:${color};font-weight:600" title="Unrealized P&L">${sign}$${fmt}</span>`

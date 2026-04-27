@@ -22,9 +22,9 @@
     .stat-card { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 18px; }
     .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 6px; }
     .stat-value { font-size: 1.4rem; font-weight: 700; color: #fff; }
-    .stat-value.pos { color: #26a65b; }
+    .stat-value.pos { color: #517356; }
     .stat-value.neg { color: #e74c3c; }
-    .stat-value.neu { color: #f5c060; }
+    .stat-value.neu { color: #F2E7AC; }
 
     /* ── Section headings ── */
     .section { margin-bottom: 36px; }
@@ -36,19 +36,19 @@
     table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     thead th { background: #13161f; color: #666; font-weight: 500; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.05em; padding: 10px 14px; text-align: left; border-bottom: 1px solid #1e2130; cursor: pointer; white-space: nowrap; user-select: none; }
     thead th:hover { color: #aaa; }
-    thead th.sorted { color: #4a90d9; }
+    thead th.sorted { color: #88BF8B; }
     tbody tr { border-bottom: 1px solid #1a1d2e; transition: background 0.1s; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #13161f; }
     td { padding: 10px 14px; color: #b0b0b0; white-space: nowrap; }
     td.name { color: #e0e0e0; font-weight: 500; font-family: monospace; font-size: 0.8rem; }
-    td.pos { color: #26a65b; font-weight: 600; }
+    td.pos { color: #517356; font-weight: 600; }
     td.neg { color: #e74c3c; font-weight: 600; }
 
     /* profit factor badge */
     .pf { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.8rem; }
-    .pf-good { background: rgba(38,166,91,0.15); color: #26a65b; }
-    .pf-ok   { background: rgba(245,192,96,0.15); color: #f5c060; }
+    .pf-good { background: rgba(81,115,86,0.15); color: #517356; }
+    .pf-ok   { background: rgba(242,231,172,0.15); color: #F2E7AC; }
     .pf-bad  { background: rgba(231,76,60,0.15);  color: #e74c3c; }
 
     /* ── Tabs ── */
@@ -58,7 +58,7 @@
     .tab.active { background: #1a1d2e; border-color: #2a2d3e; color: #e0e0e0; }
 
     /* ── Daily/Weekly summary colours ── */
-    .day-pos { background: rgba(38,166,91,0.06); }
+    .day-pos { background: rgba(81,115,86,0.06); }
     .day-neg { background: rgba(231,76,60,0.06); }
 
     /* ── AI suggestions panel ── */
@@ -66,15 +66,15 @@
     .btn { padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: opacity 0.15s; }
     .btn:hover { opacity: 0.85; }
     .btn:disabled { opacity: 0.45; cursor: default; }
-    .btn-ai { background: linear-gradient(135deg, #6c3fc7, #4a90d9); color: #fff; }
+    .btn-ai { background: linear-gradient(135deg, #6c3fc7, #88BF8B); color: #fff; }
     .ai-output { background: #13161f; border: 1px solid #2a2d3e; border-radius: 10px; padding: 20px 24px; font-size: 0.88rem; line-height: 1.75; color: #c0c0c0; min-height: 60px; }
     .ai-output h2 { font-size: 1rem; color: #fff; margin: 18px 0 8px; border-bottom: 1px solid #1e2130; padding-bottom: 5px; }
     .ai-output h2:first-child { margin-top: 0; }
     .ai-output ul { margin: 6px 0 10px 20px; }
     .ai-output li { margin-bottom: 4px; }
-    .ai-output strong { color: #f5c060; }
+    .ai-output strong { color: #F2E7AC; }
     .ai-placeholder { color: #444; font-style: italic; }
-    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #4a90d9; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #88BF8B; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Empty state ── */
@@ -82,7 +82,7 @@
 
     /* ── Drill-down modal ── */
     tr.drill { cursor: pointer; }
-    tr.drill:hover td.name { color: #4a90d9; text-decoration: underline; }
+    tr.drill:hover td.name { color: #88BF8B; text-decoration: underline; }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 900; display: none; }
     .modal-backdrop.open { display: block; }
     .modal { position: fixed; top: 5%; left: 50%; transform: translateX(-50%);
@@ -101,15 +101,15 @@
     .pair-tbl td, .pair-tbl th { font-size: 0.8rem; }
     .pair-tbl td.mono { font-family: monospace; font-size: 0.78rem; color: #999; }
     .side-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; }
-    .side-badge.long  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
+    .side-badge.long  { background: rgba(81,115,86,0.18);  color: #88BF8B; }
     .side-badge.short { background: rgba(231,76,60,0.18);  color: #ef5350; }
     .pair-tabs { display: flex; gap: 4px; padding: 10px 22px 0; border-bottom: 1px solid #1e2130; }
     .pair-tab  { padding: 7px 14px; cursor: pointer; color: #888; font-size: 0.82rem;
                  border-bottom: 2px solid transparent; margin-bottom: -1px; }
     .pair-tab:hover  { color: #ccc; }
-    .pair-tab.active { color: #fff; border-bottom-color: #4a90d9; }
+    .pair-tab.active { color: #fff; border-bottom-color: #88BF8B; }
     .pair-tab .count { color: #555; font-size: 0.75rem; margin-left: 4px; }
-    .pair-tab.active .count { color: #4a90d9; }
+    .pair-tab.active .count { color: #88BF8B; }
     .orphan-reason { color: #888; font-style: italic; font-size: 0.72rem; }
   </style>
 </head>
@@ -543,7 +543,7 @@
     const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
     const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
     const avgPnlFmt = (avgPnl >= 0 ? '+' : '-') + '$' + Math.abs(avgPnl).toFixed(2);
-    const avgPnlCls = avgPnl >= 0 ? 'color:#26a65b' : 'color:#ef5350';
+    const avgPnlCls = avgPnl >= 0 ? 'color:#517356' : 'color:#ef5350';
     document.querySelector('#tab-daily thead tr').innerHTML = `
       <th>Date</th>
       <th>Trades <span style="color:#555;font-weight:400">(avg ${avgTrades})</span></th>
@@ -566,7 +566,7 @@
     const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
     const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
     const avgPnlFmt = (avgPnl >= 0 ? '+' : '-') + '$' + Math.abs(avgPnl).toFixed(2);
-    const avgPnlCls = avgPnl >= 0 ? 'color:#26a65b' : 'color:#ef5350';
+    const avgPnlCls = avgPnl >= 0 ? 'color:#517356' : 'color:#ef5350';
     document.querySelector('#tab-weekly thead tr').innerHTML = `
       <th>Week</th>
       <th>Trades <span style="color:#555;font-weight:400">(avg ${avgTrades})</span></th>

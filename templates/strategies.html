@@ -79,7 +79,7 @@
       font-size: 0.65rem; font-weight: 700; letter-spacing: 0.04em;
       text-transform: uppercase; padding: 2px 8px; border-radius: 3px;
     }
-    .mini-badge.long  { background: rgba(38,166,91,0.18);  color: #5fe0a0; }
+    .mini-badge.long  { background: rgba(81,115,86,0.18);  color: #88BF8B; }
     .mini-badge.short { background: rgba(239,83,80,0.18);  color: #ef5350; }
     .mini-params {
       font-size: 0.76rem;
@@ -171,7 +171,7 @@
       text-transform: uppercase;
       margin-bottom: 12px;
     }
-    .signal-block.long  .signal-label { color: #26a65b; }
+    .signal-block.long  .signal-label { color: #517356; }
     .signal-block.short .signal-label { color: #ef5350; }
 
     .condition-list {
@@ -241,29 +241,29 @@
       color: #e0e0e0; padding: 9px 12px; font-size: 0.88rem; font-family: inherit;
       margin-bottom: 14px;
     }
-    .upload-card input[type=text]:focus { outline: none; border-color: #2962ff; }
+    .upload-card input[type=text]:focus { outline: none; border-color: #517356; }
     .pine-textarea {
       width: 100%; min-height: 200px; background: #060606; border: 1px solid #2a2d3e;
       border-radius: 6px; color: #c8c8c8; padding: 12px 14px; font-size: 0.82rem;
       font-family: 'Courier New', monospace; resize: vertical; margin-bottom: 14px;
     }
-    .pine-textarea:focus { outline: none; border-color: #2962ff; }
-    .btn-convert { background: #2962ff; color: #fff; border: none; border-radius: 7px;
+    .pine-textarea:focus { outline: none; border-color: #517356; }
+    .btn-convert { background: #517356; color: #fff; border: none; border-radius: 7px;
                    padding: 10px 28px; font-size: 0.9rem; font-weight: 700; cursor: pointer;
                    font-family: inherit; }
-    .btn-convert:hover { background: #1a4fd8; }
+    .btn-convert:hover { background: #3a5040; }
     .btn-convert:disabled { background: #1e2130; color: #444; cursor: not-allowed; }
     .convert-status { font-size: 0.83rem; color: #555; margin-left: 12px; }
     .code-preview { display: none; margin-top: 16px; background: #060606; border: 1px solid #1e2130;
                     border-radius: 6px; padding: 14px; font-size: 0.78rem; font-family: monospace;
                     color: #aaa; max-height: 260px; overflow-y: auto; white-space: pre; }
     .save-row { margin-top: 12px; display: flex; align-items: center; gap: 10px; }
-    .btn-save { background: #26a65b; color: #fff; border: none; border-radius: 7px;
+    .btn-save { background: #517356; color: #fff; border: none; border-radius: 7px;
                 padding: 9px 24px; font-size: 0.88rem; font-weight: 700; cursor: pointer;
                 font-family: inherit; display: none; }
     .btn-save:hover { background: #1e8449; }
     .save-msg { font-size: 0.83rem; }
-    .save-ok  { color: #26a65b; }
+    .save-ok  { color: #517356; }
     .save-err { color: #ef5350; }
   </style>
 </head>
@@ -302,7 +302,7 @@
         <button class="btn-convert" id="skipVerifyBtn" onclick="skipVerify()"
                 style="display:none;background:#ff9800;color:#000">Stop &amp; save partial</button>
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.83rem;color:#888;margin-left:6px">
-          <input type="checkbox" id="enableVerifyCb" style="accent-color:#2962ff">
+          <input type="checkbox" id="enableVerifyCb" style="accent-color:#517356">
           Run audit pass after convert (slower, can stall)
         </label>
         <span class="convert-status" id="convertStatus"></span>
@@ -619,12 +619,12 @@
     if (!el) return;
     el.innerHTML = `
       <input id="rename_input_${slug}" value="${currentName.replace(/"/g,'&quot;')}"
-        style="background:#0a0a0a;border:1px solid #2962ff;border-radius:5px;color:#e0e0e0;
+        style="background:#1a1612;border:1px solid #517356;border-radius:5px;color:#e0e0e0;
                padding:3px 8px;font-size:0.9rem;font-family:inherit;width:100%;font-weight:700"
         onkeydown="if(event.key==='Enter')saveRename('${slug}');if(event.key==='Escape')loadSavedStrategies()">
       <div style="display:flex;gap:6px;margin-top:5px">
         <button onclick="saveRename('${slug}')"
-          style="background:#2962ff;border:none;color:#fff;border-radius:5px;padding:3px 10px;font-size:0.75rem;cursor:pointer">Save</button>
+          style="background:#517356;border:none;color:#fff;border-radius:5px;padding:3px 10px;font-size:0.75rem;cursor:pointer">Save</button>
         <button onclick="loadSavedStrategies()"
           style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:5px;padding:3px 10px;font-size:0.75rem;cursor:pointer">Cancel</button>
       </div>`;

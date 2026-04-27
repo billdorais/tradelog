@@ -234,7 +234,7 @@
       <tr><td>Options Config</td><td>For options signals — sets target premium (mid-price), expiry type (weekly/monthly), and side (auto/call/put).</td></tr>
       <tr><td>Quantity</td><td>Overrides the order size in shares, dollar amount, or % of account. Fractional quantities supported for crypto.</td></tr>
       <tr><td>Mode</td><td>Routes to the IB paper account or IB live account. Does not affect Alpaca/Coinbase routing.</td></tr>
-      <tr><td>Broker</td><td>Selects the execution broker: <strong style="color:#26a65b">IB</strong>, <strong style="color:#5fe0a0">Alpaca</strong>, or <strong style="color:#70a8f5">Coinbase</strong>. Overrides the "broker" field in the TradingView payload.</td></tr>
+      <tr><td>Broker</td><td>Selects the execution broker: <strong style="color:#517356">IB</strong>, <strong style="color:#88BF8B">Alpaca</strong>, or <strong style="color:#70a8f5">Coinbase</strong>. Overrides the "broker" field in the TradingView payload.</td></tr>
       <tr><td>Ticker Override</td><td>Forces a specific ticker regardless of what TradingView sends.</td></tr>
       <tr><td>Trading Hours</td><td>Drops signals arriving outside a configured session window (e.g. 09:30–16:00 ET). No trade is logged.</td></tr>
     </table>
@@ -242,7 +242,7 @@
     <h2>Dashboard — Trade Feed</h2>
     <p>
       Each trade appears as a paired row group. The top row shows the TradingView signal (source: <strong style="color:#aaa">TV</strong>);
-      the row beneath shows the broker execution fill (<strong style="color:#4a90d9">IB</strong> or <strong style="color:#5fe0a0">Alpaca</strong>).
+      the row beneath shows the broker execution fill (<strong style="color:#88BF8B">IB</strong> or <strong style="color:#88BF8B">Alpaca</strong>).
       TV signals are matched to broker fills chronologically by ticker. Unmatched fills from either broker appear as standalone rows.
       TV rows have a ✕ delete button to remove stale entries without affecting the broker account.
     </p>
