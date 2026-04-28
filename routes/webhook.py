@@ -234,8 +234,13 @@ def webhook():
     ))
     conn.commit()
 
-    # Daily max loss circuit breaker — block new orders if halt is active
-    if app.MAX_DAILY_LOSS < 0 and order_action in ("BUY", "SELL"):
+    # Exit signals (EXIT_LONG / EXIT_SHORT / sentiment=flat) always bypass risk
+    # halts — blocking exits makes open losses worse, not better.
+    _is_exit = (raw_action in ("EXIT_LONG", "EXIT_SHORT")
+                or (data.get("sentiment") or "").strip().lower() == "flat")
+
+    # Daily max loss circuit breaker — block NEW entries only, never exits
+    if app.MAX_DAILY_LOSS < 0 and order_action in ("BUY", "SELL") and not _is_exit:
         with app._risk_lock:
             _halted = app._risk_halted
         if _halted:
@@ -245,8 +250,8 @@ def webhook():
             conn.close()
             return jsonify({"status": "blocked", "reason": "daily_loss_limit"}), 200
 
-    # Per-strategy block (set by position stop monitor)
-    if strategy_name and order_action in ("BUY", "SELL"):
+    # Per-strategy block (set by position stop monitor) — exits bypass this too
+    if strategy_name and order_action in ("BUY", "SELL") and not _is_exit:
         with app._risk_lock:
             _block_info = app._blocked_strategies.get(strategy_name)
         if _block_info:
