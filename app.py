@@ -335,7 +335,10 @@ _alpaca_analysis_cache = {}   # key → {"data": ..., "ts": float}
 ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
 ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
 _broker_status_cache = {"data": None, "ts": 0.0}
-BROKER_STATUS_TTL = 5  # seconds — dashboard polls on every load; brokers rarely flip that fast
+BROKER_STATUS_TTL = 30  # seconds — broker connectivity rarely flips that fast
+
+_alpaca_positions_cache = {"data": None, "ts": 0.0}
+ALPACA_POSITIONS_TTL = 15  # seconds — live P&L dashboard polls every 10s; cache prevents thundering herd
 
 
 def _get_cached_fills():
@@ -1270,12 +1273,18 @@ def alpaca_positions():
     if alpaca_broker is None:
         log.warning("alpaca_positions: broker is None")
         return jsonify([])
+    global _alpaca_positions_cache
+    now = time.time()
+    if _alpaca_positions_cache["data"] is not None and (now - _alpaca_positions_cache["ts"]) < ALPACA_POSITIONS_TTL:
+        return jsonify(_alpaca_positions_cache["data"])
     try:
         positions = alpaca_broker.get_positions()
-        return jsonify({
+        result = {
             "positions": positions,
             "_debug": {"paper": alpaca_broker._paper, "raw_count": len(positions)},
-        })
+        }
+        _alpaca_positions_cache = {"data": result, "ts": now}
+        return jsonify(result)
     except Exception as e:
         log.error("alpaca_positions failed: %s", e, exc_info=True)
         return jsonify({"positions": [], "_debug": {"error": str(e)}})
