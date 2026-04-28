@@ -266,34 +266,6 @@ if _IB_ENABLED and os.environ.get("IB_HOST"):
 
     threading.Thread(target=_poll_account_snapshot, daemon=True).start()
 
-    def _eod_close_scheduler():
-        """Close all open IB positions at 3:58 PM ET on weekdays (if enabled).
-        Fires any time in the 3:58–4:00 PM ET window so a mid-window restart
-        (e.g. from a redeploy) still catches the close."""
-        ET = ZoneInfo("America/New_York")
-        triggered_date = None
-        while True:
-            now = datetime.now(ET)
-            today = now.date()
-            t = (now.hour, now.minute)
-            in_window = (15, 58) <= t <= (16, 0)   # 3:58 PM – 4:00 PM ET
-            if (eod_close_enabled
-                    and now.weekday() < 5            # Mon–Fri
-                    and in_window
-                    and triggered_date != today):
-                triggered_date = today
-                log.info("EOD scheduler: closing all positions at %02d:%02d ET", now.hour, now.minute)
-                try:
-                    if ib_broker and ib_broker.is_connected():
-                        result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
-                        log.info("EOD close result: %s", result)
-                    else:
-                        log.warning("EOD scheduler: IB not connected, skipping close")
-                except Exception as e:
-                    log.error("EOD close failed: %s", e)
-            time.sleep(30)
-
-    threading.Thread(target=_eod_close_scheduler, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Live IB broker (optional — set IB_HOST_LIVE to enable)
@@ -376,6 +348,58 @@ if os.environ.get("COINBASE_KEY"):
     from brokers.coinbase_broker import CoinbaseBroker
     coinbase_broker = CoinbaseBroker()
     log.info("Coinbase broker initialised")
+
+# ---------------------------------------------------------------------------
+# EOD close scheduler — closes all broker positions at 3:58 PM ET on weekdays.
+# Runs regardless of which brokers are configured (IB, Alpaca, Coinbase).
+# Fires any time in the 3:58–4:00 PM window so a mid-window restart still
+# catches the close.
+# ---------------------------------------------------------------------------
+
+def _eod_close_scheduler():
+    ET = ZoneInfo("America/New_York")
+    triggered_date = None
+    while True:
+        now = datetime.now(ET)
+        today = now.date()
+        t = (now.hour, now.minute)
+        in_window = (15, 58) <= t <= (16, 0)   # 3:58 PM – 4:00 PM ET
+        if (eod_close_enabled
+                and now.weekday() < 5            # Mon–Fri
+                and in_window
+                and triggered_date != today):
+            triggered_date = today
+            log.info("EOD scheduler: closing all positions at %02d:%02d ET", now.hour, now.minute)
+            # Alpaca
+            if alpaca_broker is not None:
+                try:
+                    result = alpaca_broker.close_all_positions()
+                    log.info("EOD close Alpaca: %s", result)
+                except Exception as e:
+                    log.error("EOD close Alpaca failed: %s", e)
+            # Coinbase
+            if coinbase_broker is not None:
+                try:
+                    result = coinbase_broker.close_all_positions()
+                    log.info("EOD close Coinbase: %s", result)
+                except Exception as e:
+                    log.error("EOD close Coinbase failed: %s", e)
+            # IB (must run on the background IB thread)
+            if _ib_task_queue is not None and ib_broker is not None:
+                try:
+                    result = _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
+                    log.info("EOD close IB paper: %s", result)
+                except Exception as e:
+                    log.error("EOD close IB paper failed: %s", e)
+            if _ib_live_task_queue is not None and ib_broker_live is not None:
+                try:
+                    result = _submit_ib_live_task(ib_broker_live.close_all_positions, _timeout=60)
+                    log.info("EOD close IB live: %s", result)
+                except Exception as e:
+                    log.error("EOD close IB live failed: %s", e)
+        time.sleep(30)
+
+threading.Thread(target=_eod_close_scheduler, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Risk monitor — polls P&L every 60s; halts + liquidates on MAX_DAILY_LOSS
@@ -868,6 +892,37 @@ def init_db():
         conn.commit()
     except Exception:
         conn.rollback()
+
+    # Migration: update trading_hours end time from 16:00 → 15:55 in all pipelines
+    try:
+        p = placeholder()
+        cur.execute("SELECT id, nodes FROM routing_rules")
+        _rr_rows = cur.fetchall()
+        _patched = 0
+        for _rr in _rr_rows:
+            _rr_id   = _rr[0] if DATABASE_URL else _rr["id"]
+            _nodes_r = _rr[1] if DATABASE_URL else _rr["nodes"]
+            try:
+                _nodes = json.loads(_nodes_r) if isinstance(_nodes_r, str) else (_nodes_r or [])
+            except Exception:
+                continue
+            _changed = False
+            for _n in _nodes:
+                if _n.get("type") == "trading_hours" and _n.get("end") == "16:00":
+                    _n["end"] = "15:55"
+                    _changed = True
+            if _changed:
+                cur.execute(
+                    f"UPDATE routing_rules SET nodes={p} WHERE id={p}",
+                    (json.dumps(_nodes), _rr_id),
+                )
+                _patched += 1
+        if _patched:
+            conn.commit()
+            log.info("Migration: patched trading_hours end → 15:55 in %d pipeline(s)", _patched)
+    except Exception as _e:
+        conn.rollback()
+        log.warning("Migration: trading_hours patch failed: %s", _e)
 
     # App settings table (persists risk limits across restarts)
     cur.execute("""
@@ -1583,7 +1638,7 @@ def _progress_default_nodes(name):
         {"type": "quantity",      "amount": 100, "unit": "shares"},
         {"type": "instrument",    "value": "STK"},
         {"type": "broker",        "value": "alpaca-paper"},
-        {"type": "trading_hours", "start": "09:30", "end": "16:00", "tz": "America/New_York"},
+        {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
     ]
 
 
