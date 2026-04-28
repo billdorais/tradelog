@@ -330,10 +330,23 @@ if _IB_ENABLED and os.environ.get("IB_HOST_LIVE"):
 # ---------------------------------------------------------------------------
 
 alpaca_broker = None
-_alpaca_fills_cache = {"data": [], "ts": 0.0}
-ALPACA_CACHE_TTL = 120  # seconds — paginated fetch can be slow, cache longer
+_alpaca_fills_cache    = {"data": [], "ts": 0.0}
+_alpaca_analysis_cache = {}   # key → {"data": ..., "ts": float}
+ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
+ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
 _broker_status_cache = {"data": None, "ts": 0.0}
 BROKER_STATUS_TTL = 5  # seconds — dashboard polls on every load; brokers rarely flip that fast
+
+
+def _get_cached_fills():
+    """Return Alpaca fills from the shared cache, fetching only when stale."""
+    global _alpaca_fills_cache
+    now = time.time()
+    if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
+        return _alpaca_fills_cache["data"]
+    fills = alpaca_broker.get_fills()
+    _alpaca_fills_cache = {"data": fills, "ts": now}
+    return fills
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
@@ -2947,15 +2960,15 @@ def alpaca_portfolio_history():
 
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
-    """Return filled Alpaca orders with resolved strategy names, cached for 30s."""
-    global _alpaca_fills_cache
+    """Return filled Alpaca orders with resolved strategy names, cached."""
     if alpaca_broker is None:
         return jsonify([])
+    # Check if we already have strategy-annotated data in the fills cache
     now = time.time()
-    if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
+    if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL and _alpaca_fills_cache["data"]:
         return jsonify(_alpaca_fills_cache["data"])
     try:
-        fills = alpaca_broker.get_fills()
+        fills = _get_cached_fills()
         # Resolve strategy for each fill by matching time+ticker against signals DB
         try:
             from datetime import datetime as _dt
@@ -3000,7 +3013,8 @@ def alpaca_trades():
                         f["strategy"] = best[1]
         except Exception as _e:
             log.debug("alpaca_trades strategy resolution error: %s", _e)
-        _alpaca_fills_cache = {"data": fills, "ts": now}
+        # Write annotated data back into the cache (keeps ts from _get_cached_fills)
+        _alpaca_fills_cache["data"] = fills
         return jsonify(fills)
     except Exception as e:
         log.error("alpaca_trades error: %s", e)
@@ -3498,10 +3512,18 @@ def api_alpaca_analysis():
         if alpaca_broker is None:
             return jsonify({"error": "Alpaca not configured"}), 400
 
-        from_date = request.args.get("from_date", "")
-        to_date   = request.args.get("to_date",   "")
+        from_date    = request.args.get("from_date",    "")
+        to_date      = request.args.get("to_date",      "")
+        signals_only = request.args.get("signals_only", "0")
+        exclude      = request.args.get("exclude",      "")
 
-        fills = alpaca_broker.get_fills()
+        # Check analysis-level cache (keyed on all query params)
+        _cache_key = f"{from_date}|{to_date}|{signals_only}|{exclude}"
+        _cached    = _alpaca_analysis_cache.get(_cache_key)
+        if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
+            return jsonify(_cached["data"])
+
+        fills = _get_cached_fills()
         if not fills:
             return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
 
@@ -3514,7 +3536,7 @@ def api_alpaca_analysis():
                      (not from_date or _fill_date(f) >= from_date) and
                      (not to_date   or _fill_date(f) <= to_date)]
 
-        signals_only = request.args.get("signals_only", "0") == "1"
+        signals_only = (signals_only == "1")
 
         # Build signal lookup: (ticker, side) → sorted list of (unix_ts, strategy)
         conn = get_db()
@@ -3938,7 +3960,7 @@ def api_alpaca_analysis():
                     "both_matched":  _is_matched(c.get("entry_strategy")) and _is_matched(c.get("exit_strategy")),
                 })
 
-        return jsonify({
+        result = {
             "overall":      _stats(daily_closed) or {},
             "per_strategy": per_strategy,
             "per_ticker":   per_ticker,
@@ -3947,7 +3969,9 @@ def api_alpaca_analysis():
             "equity_curve": equity_curve,
             "closed":       closed,
             "orphans":      orphans,
-        })
+        }
+        _alpaca_analysis_cache[_cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
     except Exception as e:
         log.exception("Alpaca analysis error")
         return jsonify({"error": str(e)}), 500
