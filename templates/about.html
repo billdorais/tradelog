@@ -117,20 +117,26 @@
     <p>
       Kairos Automata is an automated trade execution, logging, and analysis platform built by Bill Dorais.
       TradingView alerts are received as webhooks and routed through a configurable Signal Router pipeline
-      before being forwarded to a supported broker — Interactive Brokers, Alpaca, or Coinbase — for execution.
-      The dashboard displays paired TV&nbsp;+&nbsp;broker rows, cumulative P&amp;L, equity curves,
-      and per-strategy performance metrics, with a multi-select visibility picker for filtering the
-      view to any combination of strategies.
+      before being forwarded to a supported broker — Alpaca, Interactive Brokers, or Coinbase — for execution.
+      The dashboard separates <strong>Alpaca Fills</strong> and <strong>TV Signals</strong> into dedicated tabs,
+      shows cumulative P&amp;L with a multi-select strategy visibility picker (Top 10/15/20, eye-toggle per strategy),
+      and syncs the equity chart to whichever feed tab is active.
     </p>
     <p>
       Beyond live trading, the platform includes a full backtesting and optimisation suite.
-      The <strong>Backtester</strong> runs a single strategy over historical data (Yahoo Finance or Alpaca)
-      and produces equity curves and performance stats. The <strong>Optimizer</strong> sweeps parameter
-      ranges across multiple tickers and timeframes using grid search or SAMBO smart search, exports
-      the best result as a ready-to-use Pine Script, and compares Python vs TradingView results
-      side-by-side. The <strong>Variants</strong> browser fans a single optimised strategy out across
-      tickers and timeframes, applies an IS/OOS walk-forward gate, and provisions approved variants
-      directly into the signal router.
+      The <strong>Backtester</strong> runs a single strategy over Alpaca or Yahoo Finance data.
+      The <strong>Optimizer</strong> sweeps parameter ranges across multiple tickers and timeframes
+      using random search, exports the best result as a ready-to-use Pine Script, and compares
+      Python vs TradingView results side-by-side.
+      The <strong>Variants</strong> browser fans user-saved strategies out across tickers and timeframes,
+      auto-populates defaults from the live strategy params, applies an IS/OOS walk-forward gate, and
+      provisions approved variants directly into the Signal Router.
+    </p>
+    <p>
+      The <strong>Progress</strong> page tracks TradingView alert setup per ticker using the naming
+      convention <code style="font-size:0.82rem;color:#aaa">CAM_TICKER_STRAT_LEVEL_TFMIN</code>
+      (e.g. <code style="font-size:0.82rem;color:#aaa">CAM_SPY_BREAKOUT_R4S4_05MIN</code>).
+      Alerts can be renamed, tickers deleted, and progress checked off as alerts go live.
     </p>
 
     <h2>Supported Brokers</h2>
@@ -226,7 +232,7 @@
     </table>
 
     <h2>Signal Router — Pipeline Nodes</h2>
-    <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Pipelines can be dragged to reorder and duplicated via the ⧉ button.</p>
+    <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Pipelines sort alphabetically and are colour-coded by prefix group (e.g. all <code style="font-size:0.82rem;color:#aaa">CAM_SPY_BREAKOUT</code> rules share one border colour). Duplicate via the ⧉ button.</p>
     <table>
       <tr><th>Node</th><th>Description</th></tr>
       <tr><td>Strategy</td><td>Matches the incoming strategy name. Supports wildcards, e.g. <code style="color:#c5a3ff;font-size:0.85rem">CAM_MSFT*</code>. If omitted, the pipeline matches all signals.</td></tr>
@@ -241,10 +247,10 @@
 
     <h2>Dashboard — Trade Feed</h2>
     <p>
-      Each trade appears as a paired row group. The top row shows the TradingView signal (source: <strong style="color:#aaa">TV</strong>);
-      the row beneath shows the broker execution fill (<strong style="color:#88BF8B">IB</strong> or <strong style="color:#88BF8B">Alpaca</strong>).
-      TV signals are matched to broker fills chronologically by ticker. Unmatched fills from either broker appear as standalone rows.
-      TV rows have a ✕ delete button to remove stale entries without affecting the broker account.
+      The trade feed has two tabs: <strong>Alpaca Fills</strong> (default) shows clean Alpaca execution rows
+      with paired P&amp;L; <strong>TV Signals</strong> shows TradingView signals paired into entry/exit trades
+      with computed P&amp;L. Switching chart tabs (Alpaca P&amp;L / Signals P&amp;L) also switches the feed tab.
+      The equity chart supports click-to-exclude individual trades on both tabs.
     </p>
 
     <h2>Railway Services</h2>
@@ -283,16 +289,16 @@
     </table>
 
     <h2>Webhook Payload — Stocks</h2>
-    <p>TradingView alerts POST the following JSON to trigger a stock trade. When a Signal Router pipeline matches, its node settings override the payload values.</p>
+    <p>TradingView alerts POST the following JSON. The <code style="font-size:0.82rem;color:#aaa">strategy</code> field must match the pipeline name exactly. Use <code style="font-size:0.82rem;color:#aaa">{{strategy.order.alert_message}}</code> for the action field so LONG/SHORT/EXIT signals are passed through correctly.</p>
     <div class="flow">
       {% raw %}{<br>
       &nbsp;&nbsp;"ticker":    "{{ticker}}",<br>
-      &nbsp;&nbsp;"action":    "{{strategy.order.action}}",<br>
+      &nbsp;&nbsp;"action":    "{{strategy.order.alert_message}}",<br>
       &nbsp;&nbsp;"sentiment": "{{strategy.market_position}}",<br>
-      &nbsp;&nbsp;"quantity":  100,<br>
+      &nbsp;&nbsp;"quantity":  1,<br>
       &nbsp;&nbsp;"price":     {{close}},<br>
       &nbsp;&nbsp;"time":      "{{timenow}}",<br>
-      &nbsp;&nbsp;"strategy":  "CAM_MSFT_V1_5MIN",<br>
+      &nbsp;&nbsp;"strategy":  "CAM_SPY_BREAKOUT_R4S4_05MIN",<br>
       &nbsp;&nbsp;"interval":  "{{interval}}"<br>
       }{% endraw %}
     </div>
@@ -351,6 +357,7 @@
       <tr><td>MAX_DAILY_LOSS</td><td>0 (off)</td><td>Negative dollar value. Halts all trading and liquidates all positions when today's P&amp;L reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
       <tr><td>MAX_POSITION_LOSS</td><td>0 (off)</td><td>Negative dollar value. Closes a single position and blocks its strategy when unrealized loss reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
       <tr><td>SIGNAL_COOLDOWN_SECS</td><td>10</td><td>Seconds to suppress duplicate signals for the same strategy + ticker + action combination.</td></tr>
+      <tr><td>IB_ENABLED</td><td>false</td><td>Set to <code style="font-size:0.82rem;color:#aaa">true</code> to enable the IB broker. Off by default so IB connection errors don't affect Alpaca-only deployments.</td></tr>
     </table>
 
     <h2>Backtester &amp; Optimizer — Data Sources</h2>
@@ -380,55 +387,73 @@
     <table>
       <tr><th>Area</th><th>What changed</th></tr>
       <tr>
-        <td>Dashboard — Strategy Picker</td>
+        <td>Naming Convention</td>
         <td>
-          Replaced the single-strategy dropdown with a multi-select eye-icon visibility panel.
-          Toggle individual strategies on or off — the equity curve, daily P&amp;L chart, time scatter,
-          and all metric cards (win rate, profit factor, drawdown, avg win/loss) update together
-          based on the visible set.
+          All routing rules and TradingView alerts now follow
+          <code style="font-size:0.82rem;color:#aaa">CAM_TICKER_STRAT_LEVEL_TFMIN</code>
+          (e.g. <code style="font-size:0.82rem;color:#aaa">CAM_SPY_BREAKOUT_R4S4_05MIN</code>).
+          The <strong>Progress</strong> page parses both old and new formats and auto-generates rules
+          in the new convention when adding a ticker. Alert names and routing rules can be renamed
+          or deleted per-ticker directly from the page.
         </td>
       </tr>
       <tr>
-        <td>Variants Browser</td>
+        <td>Dashboard — Trade Feed Split</td>
         <td>
-          New <strong>/variants</strong> page fans a saved strategy out across any combination of tickers
-          and timeframes. A two-stage IS/OOS walk-forward gate (run via <code style="font-size:0.82rem;color:#aaa">tools/provision_variants.py</code>)
-          filters candidates by out-of-sample performance before provisioning them to <code style="font-size:0.82rem;color:#aaa">variants.json</code>.
-          The browser shows IS vs OOS metrics and links directly to the backtester for each variant.
+          The trade feed is now split into <strong>Alpaca Fills</strong> and <strong>TV Signals</strong> tabs
+          to eliminate confusing paired rows. Switching chart tabs syncs the feed tab and vice versa.
+          The equity chart supports a shared date filter (persisted across pages via localStorage)
+          and click-to-exclude on both tabs. Strategy visibility buttons include <strong>Top 10 / 15 / 20</strong>
+          quick-selects ranked by realised P&amp;L.
         </td>
       </tr>
       <tr>
-        <td>Strategy Optimizer</td>
+        <td>Signal Router Theming</td>
         <td>
-          Grid and SAMBO smart search across multiple tickers and timeframes simultaneously.
-          Top-3 equity curves shown live during the run. Pine Script export injects optimised
-          parameters into a TradingView script (supports both <code style="font-size:0.82rem;color:#aaa">input()</code>-based and
-          hardcoded scripts). Results are scoped to the current run so previous sweeps don't
-          pollute the table.
+          Pipelines are sorted alphabetically and colour-coded by name prefix — each ticker group shares
+          a border hue (greens only, constrained to the palette), with BREAKOUT more saturated and
+          REVERSAL more muted within the same group. Buttons use an outlined green style.
         </td>
       </tr>
       <tr>
-        <td>New Strategy Classes</td>
+        <td>Variants — Live Defaults</td>
         <td>
-          Added <strong>CamarillaBreakOut</strong> and <strong>CamarillaH3L3Reversal</strong> factory classes alongside
-          the existing unified <strong>cam_ema8</strong> strategy. All user-saved strategies are listed
-          automatically on the <strong>/strategies</strong> page with their parameter defaults and entry/exit rules.
+          The Variants page now fetches parameter defaults directly from the saved strategies in the DB
+          on every load, so the config is always in sync with the latest strategy params.
+          Only user-saved strategies are shown (built-ins are hidden).
         </td>
       </tr>
       <tr>
-        <td>Backtester Data Sources</td>
+        <td>Analysis — Date Filter</td>
         <td>
-          Alpaca added as a data source for both the backtester and optimizer. Alpaca has no hard
-          intraday date cap (unlike Yahoo's 60-day limit), making it the preferred source for
-          intraday strategy development.
+          The leaderboard and all analysis stats now have a From/To date filter.
+          Dates are shared with the dashboard via <code style="font-size:0.82rem;color:#aaa">localStorage</code>
+          so setting a session start date on either page applies everywhere — useful for a clean
+          start when moving from testing to live trading.
         </td>
       </tr>
       <tr>
-        <td>Webhook Refactor</td>
+        <td>Strategy Rename</td>
         <td>
-          Webhook handler extracted from <code style="font-size:0.82rem;color:#aaa">app.py</code> into a dedicated
-          <code style="font-size:0.82rem;color:#aaa">routes/webhook.py</code> Flask Blueprint, with a full pytest suite
-          covering integration tests, crossover semantics, daily resampling, and execution picklability.
+          User-saved strategies can be renamed inline on the <strong>/strategies</strong> page
+          (slug stays the same to preserve references). Routing rules on the <strong>/progress</strong>
+          page can be renamed via the pencil icon.
+        </td>
+      </tr>
+      <tr>
+        <td>IB Disabled by Default</td>
+        <td>
+          IB broker is now off unless <code style="font-size:0.82rem;color:#aaa">IB_ENABLED=true</code> is set,
+          preventing IB connection errors from affecting Alpaca-only deployments.
+        </td>
+      </tr>
+      <tr>
+        <td>Webhook Action Field</td>
+        <td>
+          The recommended TradingView payload now uses
+          <code style="font-size:0.82rem;color:#aaa">{{strategy.order.alert_message}}</code>
+          for the action field so LONG/SHORT/EXIT signals pass through correctly
+          and count toward performance stats.
         </td>
       </tr>
     </table>
