@@ -280,16 +280,56 @@
     </div>
   </div>
 
+  <!-- Reset confirmation modal -->
+  <div id="resetBackdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000" onclick="closeReset()"></div>
+  <div id="resetModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+       width:min(440px,92vw);background:#13161f;border:1px solid #3a2a2a;border-radius:12px;
+       z-index:1001;padding:28px 28px 22px;box-shadow:0 20px 60px rgba(0,0,0,0.7)">
+    <div style="font-size:1rem;font-weight:600;color:#fff;margin-bottom:6px">Reset TV Signal History</div>
+    <div style="font-size:0.82rem;color:#888;margin-bottom:20px;line-height:1.5">
+      This permanently deletes rows from the TV trades table. The Alpaca chart is unaffected.<br>
+      Choose how much to remove:
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:22px">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border-radius:8px;border:1px solid #2a2d3e;background:#0d0f16">
+        <input type="radio" name="resetMode" value="all" checked style="accent-color:#e74c3c">
+        <span style="font-size:0.85rem;color:#e0e0e0">Wipe everything — complete clean slate</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border-radius:8px;border:1px solid #2a2d3e;background:#0d0f16">
+        <input type="radio" name="resetMode" value="before" style="accent-color:#e74c3c">
+        <span style="font-size:0.85rem;color:#e0e0e0">Delete signals before&nbsp;
+          <input type="date" id="resetBeforeDate"
+            style="background:#1a1d2e;border:1px solid #3a2d2d;color:#e0e0e0;border-radius:4px;padding:3px 6px;font-size:0.8rem"
+            onclick="document.querySelector('input[name=resetMode][value=before]').checked=true">
+        </span>
+      </label>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px">
+      <button onclick="closeReset()"
+        style="background:transparent;border:1px solid #2a2d3e;color:#888;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.85rem">
+        Cancel
+      </button>
+      <button id="resetConfirmBtn" onclick="confirmReset()"
+        style="background:rgba(231,76,60,0.15);border:1px solid #e74c3c;color:#e74c3c;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:600">
+        Delete Signals
+      </button>
+    </div>
+  </div>
+
   <!-- TV vs Alpaca Reconcile -->
   <div class="section" id="reconcileSection">
     <div class="section-title">
       TV vs Alpaca Reconcile
       <span>compares signal prices (TV) to actual fill prices (Alpaca) per strategy</span>
     </div>
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button class="btn" id="reconcileBtn" onclick="loadReconcile()"
         style="background:rgba(136,191,139,0.12);border:1px solid #88BF8B;color:#7FE098;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:500">
         Load Reconcile
+      </button>
+      <button onclick="openReset()"
+        style="background:rgba(231,76,60,0.08);border:1px solid #5a2a2a;color:#e74c3c;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:500">
+        Reset TV Signals
       </button>
       <div id="reconcileSummary" style="font-size:0.8rem;color:#555"></div>
     </div>
@@ -714,6 +754,45 @@
   function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
+
+  // ── Reset TV signals ──────────────────────────────────────────────────
+  function openReset() {
+    const d = new Date();
+    document.getElementById('resetBeforeDate').value = d.toISOString().slice(0, 10);
+    document.getElementById('resetBackdrop').style.display = '';
+    document.getElementById('resetModal').style.display = '';
+  }
+
+  function closeReset() {
+    document.getElementById('resetBackdrop').style.display = 'none';
+    document.getElementById('resetModal').style.display = 'none';
+  }
+
+  async function confirmReset() {
+    const mode = document.querySelector('input[name=resetMode]:checked')?.value;
+    const beforeDate = document.getElementById('resetBeforeDate').value;
+    const btn = document.getElementById('resetConfirmBtn');
+    const body = mode === 'before' && beforeDate ? { before_date: beforeDate } : {};
+    btn.disabled = true;
+    btn.textContent = 'Deleting…';
+    try {
+      const res  = await fetch('/api/trades/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      closeReset();
+      document.getElementById('reconcileSummary').textContent =
+        `✓ Deleted ${data.deleted} TV signal${data.deleted === 1 ? '' : 's'}`;
+      load();
+    } catch(e) {
+      btn.textContent = 'Error — try again';
+      btn.disabled = false;
+    }
+  }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeReset(); });
 
   // ── TV vs Alpaca Reconcile ─────────────────────────────────────────────
   async function loadReconcile() {

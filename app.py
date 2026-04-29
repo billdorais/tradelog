@@ -4200,6 +4200,26 @@ def api_debug_reconcile():
     })
 
 
+@app.route("/api/trades/reset", methods=["POST"])
+def api_trades_reset():
+    """Delete TV signal rows from the trades table.
+    Body: {} to wipe all, or {"before_date": "YYYY-MM-DD"} to wipe older rows only."""
+    data        = request.get_json(silent=True) or {}
+    before_date = (data.get("before_date") or "").strip()
+    conn = get_db()
+    cur  = conn.cursor()
+    p    = placeholder()
+    if before_date:
+        cur.execute(f"DELETE FROM trades WHERE received_at < {p}", (before_date + "T00:00:00",))
+    else:
+        cur.execute("DELETE FROM trades")
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    log.info("TV trades reset: deleted=%d before_date=%r", deleted, before_date or "ALL")
+    return jsonify({"deleted": deleted})
+
+
 @app.route("/api/analysis/suggest", methods=["POST"])
 def api_analysis_suggest():
     """Stream AI suggestions for improving profit factor per strategy."""
