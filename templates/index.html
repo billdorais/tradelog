@@ -626,6 +626,30 @@
     <canvas id="timeScatterChart" height="120"></canvas>
   </div>
 
+  <!-- Trade detail modal (scatter click) -->
+  <div id="tradeDetailBackdrop" onclick="closeTradeDetail(event)"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:3000;
+           align-items:center;justify-content:center">
+    <div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:12px;padding:24px 28px;
+                min-width:320px;max-width:440px;width:90%;box-shadow:0 16px 48px rgba(0,0,0,0.7)"
+         onclick="event.stopPropagation()">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <div>
+          <div id="tdTicker" style="font-size:1.2rem;font-weight:700;color:#fff"></div>
+          <div id="tdStrategy" style="font-size:0.75rem;color:#666;font-family:monospace;margin-top:2px"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div id="tdPnl" style="font-size:1.3rem;font-weight:700"></div>
+          <button onclick="closeTradeDetail()"
+            style="background:transparent;border:none;color:#555;font-size:1.4rem;cursor:pointer;line-height:1;padding:0 2px">×</button>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+        <tbody id="tdRows"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Orphaned / rogue trade cleanup -->
   <details id="orphanedSection" style="margin-bottom:12px" ontoggle="if(this.open && !this._loaded){this._loaded=true;loadOrphanedTrades()}">
     <summary style="cursor:pointer;font-size:0.8rem;color:#888;padding:8px 0;list-style:none;display:flex;align-items:center;gap:8px">
@@ -1840,7 +1864,9 @@
             const [h, m] = etMs.split(':').map(Number);
             const minOfDay = h * 60 + m;
             if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-              points.push({ x: minOfDay, y: parseFloat((t.pnl || 0).toFixed(2)), win: (t.pnl || 0) > 0 });
+              points.push({ x: minOfDay, y: parseFloat((t.pnl || 0).toFixed(2)), win: (t.pnl || 0) > 0,
+                ticker: t.ticker, strategy: t.strategy, time: t.time,
+                entryId: t.entry_id, exitId: t.exit_id });
           }
         }
       } else {
@@ -1867,7 +1893,10 @@
                 const [h, m] = etMs.split(':').map(Number);
                 const minOfDay = h * 60 + m;
                 if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-                  points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
+                  points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0,
+                    ticker, strategy: strat, time,
+                    entryPrice: e.price, exitPrice: price, qty: Math.min(qty, e.qty),
+                    entryId: e.id, exitId: t.id, execStatus: t.exec_status });
               }
             } else { if (!openLongs[key]) openLongs[key] = []; openLongs[key].push({ price, qty, id: t.id }); }
           } else if (action === 'SELL') {
@@ -1881,7 +1910,10 @@
                 const [h, m] = etMs.split(':').map(Number);
                 const minOfDay = h * 60 + m;
                 if (minOfDay >= ET_OPEN_MINUTES && minOfDay <= ET_CLOSE_MINUTES)
-                  points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0, entryId: e.id, exitId: t.id });
+                  points.push({ x: minOfDay, y: parseFloat(pnl.toFixed(2)), win: pnl > 0,
+                    ticker, strategy: strat, time,
+                    entryPrice: e.price, exitPrice: price, qty: Math.min(qty, e.qty),
+                    entryId: e.id, exitId: t.id, execStatus: t.exec_status });
               }
             } else { if (!openShorts[key]) openShorts[key] = []; openShorts[key].push({ price, qty, id: t.id }); }
           }
@@ -1893,6 +1925,8 @@
 
       const winPoints  = points.filter(p =>  p.win);
       const lossPoints = points.filter(p => !p.win);
+      window._scatterWin  = winPoints;
+      window._scatterLoss = lossPoints;
 
       const canvas = document.getElementById('timeScatterChart');
       const ctx    = canvas.getContext('2d');
@@ -1915,6 +1949,14 @@
         },
         options: {
           animation: false,
+          onClick: (evt, elements) => {
+            if (!elements.length) return;
+            const el = elements[0];
+            const pt = el.datasetIndex === 0
+              ? (window._scatterWin  || [])[el.index]
+              : (window._scatterLoss || [])[el.index];
+            if (pt) openTradeDetail(pt);
+          },
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -1924,9 +1966,7 @@
                   const h = Math.floor(min / 60), m = min % 60;
                   const t = `${h}:${String(m).padStart(2,'0')}`;
                   const pnl = item.parsed.y >= 0 ? '+$' + item.parsed.y.toFixed(2) : '-$' + Math.abs(item.parsed.y).toFixed(2);
-                  const pt = item.datasetIndex === 0 ? winPoints[item.dataIndex] : lossPoints[item.dataIndex];
-                  const ids = pt ? `  [entry #${pt.entryId ?? '?'} → exit #${pt.exitId ?? '?'}]` : '';
-                  return `${t} ET  ${pnl}${ids}`;
+                  return `${t} ET  ${pnl}  (click for details)`;
                 },
                 title: () => '',
               },
@@ -1958,6 +1998,44 @@
           },
         },
       });
+    }
+
+    function openTradeDetail(pt) {
+      const pnl = pt.y;
+      const sign = pnl >= 0 ? '+' : '';
+      const color = pnl >= 0 ? '#7FE098' : '#ef5350';
+      document.getElementById('tdTicker').textContent    = pt.ticker || '—';
+      document.getElementById('tdStrategy').textContent  = pt.strategy || '';
+      document.getElementById('tdPnl').textContent       = sign + '$' + Math.abs(pnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      document.getElementById('tdPnl').style.color       = color;
+
+      const rows = [];
+      const addRow = (label, value, valColor) =>
+        rows.push(`<tr>
+          <td style="padding:6px 0;color:#666;font-size:0.78rem;border-bottom:1px solid #1e2130">${label}</td>
+          <td style="padding:6px 0;text-align:right;font-weight:600;font-size:0.85rem;${valColor ? 'color:'+valColor : ''};border-bottom:1px solid #1e2130">${value}</td>
+        </tr>`);
+
+      if (pt.time) {
+        const d = new Date(pt.time.includes('T') || pt.time.endsWith('Z') ? pt.time : pt.time + 'Z');
+        addRow('Exit Time', fmtET(pt.time) || pt.time);
+      }
+      addRow('Result', pnl >= 0 ? 'Win' : 'Loss', color);
+      if (pt.entryPrice != null) addRow('Entry Price', '$' + Number(pt.entryPrice).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+      if (pt.exitPrice  != null) addRow('Exit Price',  '$' + Number(pt.exitPrice).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+      if (pt.qty        != null) addRow('Quantity', pt.qty);
+      if (pt.entryId    != null) addRow('Entry ID', '#' + pt.entryId);
+      if (pt.exitId     != null) addRow('Exit ID',  '#' + pt.exitId);
+      if (pt.execStatus)         addRow('Exec Status', pt.execStatus);
+
+      document.getElementById('tdRows').innerHTML = rows.join('');
+      const bd = document.getElementById('tradeDetailBackdrop');
+      bd.style.display = 'flex';
+    }
+
+    function closeTradeDetail(e) {
+      if (e && e.target !== document.getElementById('tradeDetailBackdrop')) return;
+      document.getElementById('tradeDetailBackdrop').style.display = 'none';
     }
 
     function drawDailyChart(equityCurve, skipBar) {
