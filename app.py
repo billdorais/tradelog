@@ -3986,6 +3986,220 @@ def api_alpaca_analysis():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/debug/reconcile")
+def api_debug_reconcile():
+    """Side-by-side TV vs Alpaca P&L per strategy for diagnosing chart differences."""
+    from datetime import datetime as _dt
+
+    from_date = request.args.get("from_date", "")
+    to_date   = request.args.get("to_date",   "")
+
+    # ── TV signals side (FIFO pairing, mirrors /api/stats) ──────────────
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT * FROM trades ORDER BY id ASC")
+    rows = cur.fetchall()
+    if DATABASE_URL:
+        cols       = [d[0] for d in cur.description]
+        all_trades = [dict(zip(cols, r)) for r in rows]
+    else:
+        all_trades = [dict(r) for r in rows]
+    conn.close()
+
+    tv_open_longs  = {}
+    tv_open_shorts = {}
+    tv_closed      = []
+
+    for t in all_trades:
+        action   = _canonical_action(t.get("action"))
+        ticker   = (t.get("ticker") or "").strip().upper()
+        strategy = (t.get("strategy") or "").strip()
+        received = t.get("received_at") or ""
+        trade_id = t.get("id")
+        try:
+            price = float(t.get("price") or 0)
+            qty   = float(t.get("quantity") or 1)
+        except (ValueError, TypeError):
+            continue
+        if not ticker or price == 0:
+            continue
+        if (t.get("exec_status") or "").lower() in ("blocked", "skipped", "error"):
+            continue
+        key = (strategy, ticker)
+        in_window = ((not from_date) or (received[:10] >= from_date)) and \
+                    ((not to_date)   or (received[:10] <= to_date))
+        if action == "BUY":
+            queue = tv_open_shorts.setdefault(key, [])
+            while qty > 0 and queue:
+                ep, eq, et, eid = queue.pop(0)
+                m = min(qty, eq)
+                if in_window:
+                    tv_closed.append({"pnl": round((ep - price) * m, 2), "strategy": strategy, "ticker": ticker})
+                qty -= m
+                if eq > m:
+                    queue.insert(0, (ep, eq - m, et, eid))
+            if qty > 0:
+                tv_open_longs.setdefault(key, []).append((price, qty, received, trade_id))
+        elif action == "SELL":
+            queue = tv_open_longs.setdefault(key, [])
+            while qty > 0 and queue:
+                ep, eq, et, eid = queue.pop(0)
+                m = min(qty, eq)
+                if in_window:
+                    tv_closed.append({"pnl": round((price - ep) * m, 2), "strategy": strategy, "ticker": ticker})
+                qty -= m
+                if eq > m:
+                    queue.insert(0, (ep, eq - m, et, eid))
+            if qty > 0:
+                tv_open_shorts.setdefault(key, []).append((price, qty, received, trade_id))
+
+    # ── Alpaca fills side (LIFO pairing, mirrors /api/alpaca/analysis) ───
+    alpaca_closed   = []
+    unmatched_fills = 0
+
+    if alpaca_broker is not None:
+        fills = _get_cached_fills()
+        if from_date or to_date:
+            fills = [f for f in fills if
+                     (not from_date or (f.get("time") or "")[:10] >= from_date) and
+                     (not to_date   or (f.get("time") or "")[:10] <= to_date)]
+
+        sig_lkp = {}
+        for t in all_trades:
+            tk  = (t.get("ticker") or "").strip().upper()
+            act = _canonical_action(t.get("action"))
+            rcv = t.get("received_at") or ""
+            stg = (t.get("strategy") or "").strip()
+            snt = (t.get("sentiment") or "").strip().lower()
+            if not stg or not tk or not rcv:
+                continue
+            sd = "BOT" if act == "BUY" else "SLD" if act == "SELL" else None
+            if not sd:
+                continue
+            try:
+                ts = _dt.fromisoformat(rcv.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            sig_lkp.setdefault((tk, sd), []).append((ts, stg, snt))
+
+        def _rsig(symbol, side, ftime):
+            try:
+                fts = _dt.fromisoformat(ftime.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return "Unknown", ""
+            cands = sig_lkp.get((symbol.upper(), side), [])
+            if not cands:
+                return "Unknown", ""
+            best = min(cands, key=lambda x: abs(x[0] - fts))
+            if abs(best[0] - fts) > 300:
+                return "Unknown", ""
+            return best[1], best[2]
+
+        seen = set()
+        deduped = []
+        for f in fills:
+            k = f"{f['symbol']}|{f['side']}|{f['time']}|{f['shares']}"
+            if k not in seen:
+                seen.add(k)
+                deduped.append(f)
+
+        def _pts(f):
+            try:
+                return _dt.fromisoformat((f["time"] or "").replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0
+        deduped.sort(key=_pts)
+
+        al_longs = {}
+        al_shorts = {}
+        for f in deduped:
+            sym   = (f.get("symbol") or "").upper()
+            side  = f.get("side", "")
+            price = float(f.get("price") or 0)
+            qty   = float(f.get("shares") or 0)
+            ftime = f.get("time", "")
+            strat, sentiment = _rsig(sym, side, ftime)
+            if strat == "Unknown":
+                unmatched_fills += 1
+            if sentiment == "flat":
+                intent = "exit"
+            elif sentiment == "long":
+                intent = "enter_long"
+            elif sentiment == "short":
+                intent = "enter_short"
+            else:
+                intent = "legacy"
+            if side == "BOT":
+                if intent == "enter_long":
+                    al_longs.setdefault(sym, []).append((price, qty, ftime, strat))
+                    continue
+                q = al_shorts.setdefault(sym, [])
+                while qty > 0 and q:
+                    ep, eq, et, es = q.pop(-1)
+                    m = min(qty, eq)
+                    alpaca_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es, "ticker": sym})
+                    qty -= m
+                    if eq > m:
+                        q.append((ep, eq - m, et, es))
+                if qty > 0 and intent == "legacy":
+                    al_longs.setdefault(sym, []).append((price, qty, ftime, strat))
+            elif side == "SLD":
+                if intent == "enter_short":
+                    al_shorts.setdefault(sym, []).append((price, qty, ftime, strat))
+                    continue
+                q = al_longs.setdefault(sym, [])
+                while qty > 0 and q:
+                    ep, eq, et, es = q.pop(-1)
+                    m = min(qty, eq)
+                    alpaca_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es, "ticker": sym})
+                    qty -= m
+                    if eq > m:
+                        q.append((ep, eq - m, et, es))
+                if qty > 0 and intent == "legacy":
+                    al_shorts.setdefault(sym, []).append((price, qty, ftime, strat))
+
+    # ── Aggregate per strategy ──────────────────────────────────────────
+    def _agg(pairs):
+        by_strat = {}
+        for p in pairs:
+            s = p["strategy"] or "Unknown"
+            e = by_strat.setdefault(s, {"trades": 0, "pnl": 0.0, "wins": 0})
+            e["trades"] += 1
+            e["pnl"]     = round(e["pnl"] + p["pnl"], 2)
+            if p["pnl"] > 0:
+                e["wins"] += 1
+        return by_strat
+
+    tv_map     = _agg(tv_closed)
+    alpaca_map = _agg(alpaca_closed)
+
+    all_strats = sorted(set(list(tv_map.keys()) + list(alpaca_map.keys())))
+    result_rows = []
+    for strat in all_strats:
+        tv  = tv_map.get(strat,     {"trades": 0, "pnl": 0.0, "wins": 0})
+        alp = alpaca_map.get(strat, {"trades": 0, "pnl": 0.0, "wins": 0})
+        result_rows.append({
+            "strategy":        strat,
+            "tv_trades":       tv["trades"],
+            "tv_pnl":          tv["pnl"],
+            "tv_win_rate":     round(tv["wins"] / tv["trades"] * 100, 1) if tv["trades"] else 0,
+            "alpaca_trades":   alp["trades"],
+            "alpaca_pnl":      alp["pnl"],
+            "alpaca_win_rate": round(alp["wins"] / alp["trades"] * 100, 1) if alp["trades"] else 0,
+            "pnl_delta":       round(alp["pnl"] - tv["pnl"], 2),
+            "trade_delta":     alp["trades"] - tv["trades"],
+        })
+
+    result_rows.sort(key=lambda r: abs(r["pnl_delta"]), reverse=True)
+
+    return jsonify({
+        "rows":             result_rows,
+        "unmatched_fills":  unmatched_fills,
+        "tv_total_pnl":     round(sum(p["pnl"] for p in tv_closed), 2),
+        "alpaca_total_pnl": round(sum(p["pnl"] for p in alpaca_closed), 2),
+    })
+
+
 @app.route("/api/analysis/suggest", methods=["POST"])
 def api_analysis_suggest():
     """Stream AI suggestions for improving profit factor per strategy."""

@@ -280,6 +280,40 @@
     </div>
   </div>
 
+  <!-- TV vs Alpaca Reconcile -->
+  <div class="section" id="reconcileSection">
+    <div class="section-title">
+      TV vs Alpaca Reconcile
+      <span>compares signal prices (TV) to actual fill prices (Alpaca) per strategy</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+      <button class="btn" id="reconcileBtn" onclick="loadReconcile()"
+        style="background:rgba(136,191,139,0.12);border:1px solid #88BF8B;color:#7FE098;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:500">
+        Load Reconcile
+      </button>
+      <div id="reconcileSummary" style="font-size:0.8rem;color:#555"></div>
+    </div>
+    <div id="reconcileWrap" style="display:none">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:18px" id="reconcileCards"></div>
+      <div class="tbl-wrap">
+        <table id="reconcileTable">
+          <thead><tr>
+            <th onclick="sortTable('reconcileTable',0)">Strategy</th>
+            <th onclick="sortTable('reconcileTable',1)">TV Trades</th>
+            <th onclick="sortTable('reconcileTable',2)">TV P&amp;L</th>
+            <th onclick="sortTable('reconcileTable',3)">TV Win%</th>
+            <th onclick="sortTable('reconcileTable',4)">Alpaca Trades</th>
+            <th onclick="sortTable('reconcileTable',5)">Alpaca P&amp;L</th>
+            <th onclick="sortTable('reconcileTable',6)">Alpaca Win%</th>
+            <th onclick="sortTable('reconcileTable',7)" title="Alpaca P&L minus TV P&L">P&amp;L Delta</th>
+            <th onclick="sortTable('reconcileTable',8)" title="Alpaca trade count minus TV trade count">Trade Delta</th>
+          </tr></thead>
+          <tbody id="reconcileBody"><tr><td colspan="9" class="empty">Click Load Reconcile above.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <!-- AI suggestions -->
   <div class="section">
     <div class="section-title">AI Profit Factor Suggestions</div>
@@ -679,6 +713,87 @@
 
   function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── TV vs Alpaca Reconcile ─────────────────────────────────────────────
+  async function loadReconcile() {
+    const btn = document.getElementById('reconcileBtn');
+    const sum = document.getElementById('reconcileSummary');
+    btn.disabled = true;
+    btn.textContent = 'Loading…';
+    sum.textContent = '';
+    const fromDate = document.getElementById('analysisFrom').value;
+    const toDate   = document.getElementById('analysisTo').value;
+    const params = new URLSearchParams();
+    if (fromDate) params.set('from_date', fromDate);
+    if (toDate)   params.set('to_date',   toDate);
+    let url = '/api/debug/reconcile';
+    if (params.toString()) url += '?' + params.toString();
+    try {
+      const res  = await fetch(url);
+      const data = await res.json();
+      renderReconcile(data);
+    } catch(e) {
+      sum.textContent = 'Error: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Reload Reconcile';
+    }
+  }
+
+  function renderReconcile(data) {
+    const rows = data.rows || [];
+    document.getElementById('reconcileWrap').style.display = '';
+
+    const tvTot  = data.tv_total_pnl     || 0;
+    const alTot  = data.alpaca_total_pnl || 0;
+    const delta  = Math.round((alTot - tvTot) * 100) / 100;
+    const unmatch = data.unmatched_fills || 0;
+    const deltaCls = delta >= 0 ? '#7FE098' : '#e74c3c';
+
+    document.getElementById('reconcileCards').innerHTML = `
+      ${rcCard('TV Total P&L',      fmt(tvTot),  tvTot  >= 0 ? 'pos' : 'neg')}
+      ${rcCard('Alpaca Total P&L',  fmt(alTot),  alTot  >= 0 ? 'pos' : 'neg')}
+      ${rcCard('Total Delta',       fmt(delta),  delta  >= 0 ? 'pos' : 'neg')}
+      ${rcCard('Unmatched Fills',   unmatch,     unmatch > 0 ? 'neg' : '')}
+    `;
+
+    const body = document.getElementById('reconcileBody');
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">No data.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = rows.map(r => {
+      const deltaCls  = r.pnl_delta  >= 0 ? 'pos' : 'neg';
+      const tradeCls  = r.trade_delta === 0 ? '' : (r.trade_delta > 0 ? 'pos' : 'neg');
+      const tvPnlCls  = r.tv_pnl     >= 0 ? 'pos' : 'neg';
+      const alPnlCls  = r.alpaca_pnl >= 0 ? 'pos' : 'neg';
+      const tvWinCls  = r.tv_win_rate     >= 50 ? 'pos' : (r.tv_trades     > 0 ? 'neg' : '');
+      const alWinCls  = r.alpaca_win_rate >= 50 ? 'pos' : (r.alpaca_trades > 0 ? 'neg' : '');
+      const tradeSign = r.trade_delta > 0 ? '+' : '';
+      return `<tr>
+        <td class="name">${esc(r.strategy)}</td>
+        <td>${r.tv_trades}</td>
+        <td class="${tvPnlCls}">${fmt(r.tv_pnl)}</td>
+        <td class="${tvWinCls}">${r.tv_trades > 0 ? r.tv_win_rate + '%' : '—'}</td>
+        <td>${r.alpaca_trades}</td>
+        <td class="${alPnlCls}">${fmt(r.alpaca_pnl)}</td>
+        <td class="${alWinCls}">${r.alpaca_trades > 0 ? r.alpaca_win_rate + '%' : '—'}</td>
+        <td class="${deltaCls}" style="font-weight:600">${fmt(r.pnl_delta)}</td>
+        <td class="${tradeCls}">${tradeSign}${r.trade_delta}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('reconcileSummary').textContent =
+      `${rows.length} strategies compared · ${unmatch} fills unmatched`;
+  }
+
+  function rcCard(label, value, cls) {
+    return `<div class="stat-card">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value ${cls}">${value}</div>
+    </div>`;
   }
 
   restoreDates();
