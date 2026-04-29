@@ -77,12 +77,13 @@ class AlpacaBroker:
         acct = self._trading.get_account()
         return float(acct.equity) - float(acct.last_equity)
 
-    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD"):
+    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy=""):
         """
         Place a market or limit order.
         action: BUY or SELL
         price:  None = market order, float = limit order
         """
+        import time as _time
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
@@ -172,20 +173,26 @@ class AlpacaBroker:
                 return {"success": False, "error": str(e)}
 
         try:
+            # Embed strategy name so fills can be identified even if TV DB is reset.
+            # Format: kairos-{strategy[:36]}-{unix_ts}  (max 48 chars, all alphanumeric/dash/underscore)
+            _strat_slug  = (strategy or "unknown")[:36].replace(" ", "_")
+            _client_oid  = f"kairos-{_strat_slug}-{int(_time.time())}"
             if price:
                 req = LimitOrderRequest(
-                    symbol       = ticker,
-                    qty          = qty,
-                    side         = side,
-                    time_in_force= tif,
-                    limit_price  = round(float(price), 2),
+                    symbol           = ticker,
+                    qty              = qty,
+                    side             = side,
+                    time_in_force    = tif,
+                    limit_price      = round(float(price), 2),
+                    client_order_id  = _client_oid,
                 )
             else:
                 req = MarketOrderRequest(
-                    symbol       = ticker,
-                    qty          = qty,
-                    side         = side,
-                    time_in_force= tif,
+                    symbol           = ticker,
+                    qty              = qty,
+                    side             = side,
+                    time_in_force    = tif,
+                    client_order_id  = _client_oid,
                 )
             order = self._trading.submit_order(req)
             self._invalidate_pos_cache()  # position state changed

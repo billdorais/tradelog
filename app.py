@@ -3573,19 +3573,25 @@ def api_alpaca_analysis():
                 continue
             signal_lookup.setdefault((ticker, side), []).append((ts, strategy, sentiment))
 
-        def _resolve_signal(symbol, side, fill_time_str):
-            """Return (strategy, sentiment) for the TV signal closest to this fill."""
+        def _resolve_signal(symbol, side, fill_time_str, order_id=""):
+            """Return (strategy, sentiment) for the TV signal closest to this fill.
+            Falls back to parsing strategy from client_order_id (kairos-{strategy}-{ts})
+            when no TV signal match exists — this covers the case where the TV DB was reset."""
             try:
                 fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
             except Exception:
-                return "Unknown", ""
+                fill_ts = None
             candidates = signal_lookup.get((symbol.upper(), side), [])
-            if not candidates:
-                return "Unknown", ""
-            best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
-            if abs(best[0] - fill_ts) > 300:
-                return "Unknown", ""
-            return best[1], best[2]
+            if candidates and fill_ts is not None:
+                best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+                if abs(best[0] - fill_ts) <= 300:
+                    return best[1], best[2]
+            # Fall back to client_order_id embedded at order submission time
+            if order_id and order_id.startswith("kairos-"):
+                parts = order_id.split("-", 2)  # ["kairos", strategy, ts]
+                if len(parts) == 3 and parts[1]:
+                    return parts[1], ""
+            return "Unknown", ""
 
 
         # Deduplicate fills
@@ -3623,7 +3629,7 @@ def api_alpaca_analysis():
             qty      = float(f.get("shares") or 0)
             fill_ts  = f.get("time", "")
             date_str = fill_ts[:10] if fill_ts else ""
-            strat, sentiment = _resolve_signal(sym, side, fill_ts)
+            strat, sentiment = _resolve_signal(sym, side, fill_ts, f.get("order_id", ""))
             # Map TV sentiment to intent. "flat" = exit (consume inventory only),
             # "long"/"short" = entry (add inventory only). Missing/unknown falls
             # back to the legacy heuristic (try-close-else-open) so fills without
@@ -3690,7 +3696,7 @@ def api_alpaca_analysis():
                 price   = float(f.get("price") or 0)
                 qty     = float(f.get("shares") or 0)
                 fill_ts = f.get("time", "")
-                strat, sentiment = _resolve_signal(sym, side, fill_ts)
+                strat, sentiment = _resolve_signal(sym, side, fill_ts, f.get("order_id", ""))
                 if sentiment == "flat":
                     intent = "exit"
                 elif sentiment == "long":
@@ -4082,18 +4088,21 @@ def api_debug_reconcile():
                 continue
             sig_lkp.setdefault((tk, sd), []).append((ts, stg, snt))
 
-        def _rsig(symbol, side, ftime):
+        def _rsig(symbol, side, ftime, order_id=""):
             try:
                 fts = _dt.fromisoformat(ftime.replace("Z", "+00:00")).timestamp()
             except Exception:
-                return "Unknown", ""
+                fts = None
             cands = sig_lkp.get((symbol.upper(), side), [])
-            if not cands:
-                return "Unknown", ""
-            best = min(cands, key=lambda x: abs(x[0] - fts))
-            if abs(best[0] - fts) > 300:
-                return "Unknown", ""
-            return best[1], best[2]
+            if cands and fts is not None:
+                best = min(cands, key=lambda x: abs(x[0] - fts))
+                if abs(best[0] - fts) <= 300:
+                    return best[1], best[2]
+            if order_id and order_id.startswith("kairos-"):
+                parts = order_id.split("-", 2)
+                if len(parts) == 3 and parts[1]:
+                    return parts[1], ""
+            return "Unknown", ""
 
         seen = set()
         deduped = []
@@ -4118,7 +4127,7 @@ def api_debug_reconcile():
             price = float(f.get("price") or 0)
             qty   = float(f.get("shares") or 0)
             ftime = f.get("time", "")
-            strat, sentiment = _rsig(sym, side, ftime)
+            strat, sentiment = _rsig(sym, side, ftime, f.get("order_id", ""))
             if strat == "Unknown":
                 unmatched_fills += 1
             if sentiment == "flat":

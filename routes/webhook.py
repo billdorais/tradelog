@@ -349,10 +349,13 @@ def webhook():
             _opt_right   = opt_right_ovr
             _opt_ctrs    = opt_contracts
 
+            _strategy    = strategy_name
+
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
                 sec_type=_sec_type, currency=_currency, trade_id=_trade_id,
                 opt_prem=_opt_prem, opt_exp=_opt_exp, opt_right=_opt_right, opt_ctrs=_opt_ctrs,
+                strategy=_strategy,
             ):
                 _exec_status = _exec_detail = None
                 try:
@@ -375,6 +378,7 @@ def webhook():
                             price    = price,
                             sec_type = sec_type,
                             currency = currency,
+                            strategy = strategy,
                         )
                     _exec_status = "ok" if result.get("success") else "error"
                     _exec_detail = json.dumps(result)
