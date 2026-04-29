@@ -1155,7 +1155,7 @@
       const pnlMap = {};   // trade id → pnl value
       for (const t of sorted) {
         const ticker = (t.ticker || '').toUpperCase();
-        const action = (t.action || '').toUpperCase();
+        const action = canonAction(t.action);
         const price  = parseFloat(t.price);
         const qty    = parseFloat(t.quantity);
         if (!ticker || isNaN(price) || isNaN(qty)) continue;
@@ -1193,6 +1193,17 @@
       }) + ' ET';
     }
 
+    // Collapse new action vocabulary to legacy BUY/SELL so all the BUY/SELL
+    // pairing logic below keeps working. Mirrors server-side _canonical_action().
+    //   LONG / EXIT_SHORT  → BUY
+    //   SHORT / EXIT_LONG  → SELL
+    function canonAction(a) {
+      const u = (a || '').toString().trim().toUpperCase();
+      if (u === 'BUY'  || u === 'LONG'  || u === 'EXIT_SHORT') return 'BUY';
+      if (u === 'SELL' || u === 'SHORT' || u === 'EXIT_LONG')  return 'SELL';
+      return u;
+    }
+
     // Pair TV signals: handles both LONG (BUY→SELL) and SHORT (SELL→BUY)
     function pairSignals(trades) {
       const sorted = [...trades].sort((a, b) => a.id - b.id);
@@ -1201,7 +1212,7 @@
       const pairs  = [];
       for (const t of sorted) {
         const ticker = (t.ticker || '').toUpperCase();
-        const action = (t.action || '').toUpperCase();
+        const action = canonAction(t.action);
         if (action === 'BUY') {
           // Closes an open short first; otherwise opens a new long
           if (shorts[ticker] && shorts[ticker].length) {
@@ -1304,7 +1315,7 @@
       const signalLookup = {};
       for (const t of (tvSignals || [])) {
         const sym = normSym(t.ticker);
-        const act = (t.action || '').toUpperCase();
+        const act = canonAction(t.action);
         const side = act === 'BUY' ? 'BOT' : act === 'SELL' ? 'SLD' : null;
         if (!sym || !side) continue;
         const ts = receivedMs(t.received_at);
@@ -1660,8 +1671,8 @@
       }
 
       document.getElementById('statTotal').textContent    = filtered.length;
-      document.getElementById('statBuys').textContent     = filtered.filter(t => t.action?.toLowerCase() === 'buy').length;
-      document.getElementById('statSells').textContent    = filtered.filter(t => t.action?.toLowerCase() === 'sell').length;
+      document.getElementById('statBuys').textContent     = filtered.filter(t => canonAction(t.action) === 'BUY').length;
+      document.getElementById('statSells').textContent    = filtered.filter(t => canonAction(t.action) === 'SELL').length;
       document.getElementById('statTickers').textContent  = new Set(filtered.map(t => t.ticker).filter(Boolean)).size;
       document.getElementById('statExecuted').textContent = filtered.filter(t => t.exec_status === 'ok').length;
       document.getElementById('statErrors').textContent   = filtered.filter(t => t.exec_status === 'error').length;
@@ -1874,7 +1885,7 @@
         const openLongs = {}, openShorts = {};
         const sorted = [...tradesForScatter].sort((a, b) => (a.id || 0) - (b.id || 0));
         for (const t of sorted) {
-          const action = (t.action || '').trim().toUpperCase();
+          const action = canonAction(t.action);
           const ticker = (t.ticker || '').trim().toUpperCase();
           const strat  = (t.strategy || '').trim();
           const price  = parseFloat(t.price);
