@@ -1445,6 +1445,26 @@ def routing_rules_update(rule_id):
     cur  = conn.cursor()
     p    = placeholder()
     fields, vals = [], []
+    if "name" in data and "nodes" not in data:
+        # Renaming the rule: also rewrite any strategy node whose value matches
+        # the old rule name. Webhook routing matches on the strategy node value,
+        # so without this the rename would silently break alert routing.
+        cur.execute(f"SELECT name, nodes FROM routing_rules WHERE id={p}", (rule_id,))
+        row = cur.fetchone()
+        if row:
+            old_name  = row[0] if DATABASE_URL else row["name"]
+            nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+            try:
+                nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+                changed = False
+                for n in nodes:
+                    if n.get("type") == "strategy" and (n.get("value") or "").strip() == (old_name or "").strip():
+                        n["value"] = data["name"]
+                        changed = True
+                if changed:
+                    fields.append(f"nodes={p}"); vals.append(json.dumps(nodes))
+            except (ValueError, TypeError):
+                pass
     if "name" in data:
         fields.append(f"name={p}"); vals.append(data["name"])
     if "enabled" in data:
