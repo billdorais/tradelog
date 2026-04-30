@@ -108,14 +108,74 @@ class AlpacaBroker:
         is_crypto = "/" in ticker
         tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
 
-        # For stock SELL: first cancel any pending BUY orders for this ticker.
-        # This handles the race where an exit signal arrives before the entry fill:
-        # rather than dropping the exit (leaving the position open), we cancel the
-        # pending entry so we never enter at all.
-        if not is_crypto and side == OrderSide.SELL:
+        # For stock SELL exit: cancel any pending BUY orders, then use close_position.
+        # If entry and exit fire simultaneously the BUY may still be pending — we cancel
+        # it, but ALSO check whether an existing position still needs to be closed.
+        if not is_crypto and side == OrderSide.SELL and is_exit:
             try:
                 from alpaca.trading.requests import GetOrdersRequest
-                from alpaca.trading.enums import QueryOrderStatus, OrderSide as _OS
+                from alpaca.trading.enums import QueryOrderStatus
+                open_req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
+                open_orders = self._trading.get_orders(filter=open_req)
+                pending_buys = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
+                ]
+                if pending_buys:
+                    cancelled_ids = []
+                    for o in pending_buys:
+                        try:
+                            self._trading.cancel_order_by_id(o.id)
+                            cancelled_ids.append(str(o.id))
+                            log.warning(
+                                "Alpaca EXIT_LONG %s: cancelled pending BUY order %s",
+                                ticker, o.id,
+                            )
+                        except Exception as _ce:
+                            log.warning("Alpaca cancel order %s failed: %s", o.id, _ce)
+                    self._invalidate_pos_cache()
+                    # After cancelling the pending entry, check whether an existing
+                    # position still needs to be closed (entry+exit same bar race).
+                    positions = self._get_positions_cached()
+                    has_position = any(
+                        p.symbol.upper() == ticker.upper() and float(p.qty or 0) > 0
+                        for p in positions
+                    )
+                    if not has_position:
+                        return {
+                            "success":             False,
+                            "skipped":             True,
+                            "cancelled_buy":       True,
+                            "cancelled_order_ids": cancelled_ids,
+                            "error":               f"Pending BUY for {ticker} cancelled — no open position to close.",
+                        }
+                    log.info("EXIT_LONG %s: pending BUY cancelled but existing position found — closing", ticker)
+            except Exception as _oe:
+                log.warning("Alpaca open-order check for %s SELL-exit failed: %s — continuing", ticker, _oe)
+
+            # Use close_position for reliability — Alpaca determines exact qty/direction.
+            try:
+                order = self._trading.close_position(ticker.upper())
+                self._invalidate_pos_cache()
+                log.info("Alpaca close_position (EXIT_LONG) %s → id=%s status=%s",
+                         ticker, order.id, order.status)
+                return {
+                    "success":  True,
+                    "order_id": str(order.id),
+                    "status":   str(order.status),
+                    "symbol":   ticker,
+                    "side":     "sell",
+                    "paper":    self._paper,
+                }
+            except Exception as e:
+                log.error("Alpaca close_position (EXIT_LONG) failed for %s: %s — falling back to SELL order", ticker, e)
+                # Fall through to regular SELL order
+
+        # For non-exit stock SELL: cancel any pending BUY orders (entry race guard).
+        if not is_crypto and side == OrderSide.SELL and not is_exit:
+            try:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums import QueryOrderStatus
                 open_req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
                 open_orders = self._trading.get_orders(filter=open_req)
                 pending_buys = [
