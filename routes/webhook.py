@@ -59,6 +59,20 @@ def webhook():
     }
     order_action = action_map.get(raw_action, raw_action)  # BUY/SELL pass through unchanged
 
+    # Infer sentiment from raw_action when the payload doesn't include it explicitly.
+    # This lets pairing logic use intent-based matching (enter_long/enter_short/exit)
+    # instead of the legacy heuristic, without requiring Pine Script changes.
+    _sentiment_map = {
+        "LONG":       "long",
+        "BUY":        "long",
+        "SHORT":      "short",
+        "SELL":       "short",
+        "EXIT_LONG":  "flat",
+        "EXIT_SHORT": "flat",
+    }
+    if not (data.get("sentiment") or "").strip():
+        data["sentiment"] = _sentiment_map.get(raw_action, "")
+
     # Apply routing rules — look up a matching enabled pipeline and override settings
     strategy_name    = (data.get("strategy") or "").strip()
     quantity         = data.get("quantity", 1)
