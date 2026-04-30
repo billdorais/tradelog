@@ -374,6 +374,29 @@ def webhook():
             ):
                 _exec_status = _exec_detail = None
                 try:
+                    # Buying power gate — block entries when available capital is too low.
+                    if action == "BUY" and is_entry and app.MIN_BUYING_POWER > 0:
+                        try:
+                            app.alpaca_broker._ensure_client()
+                            acct = app.alpaca_broker._trading.get_account()
+                            bp   = float(acct.buying_power)
+                            if bp < app.MIN_BUYING_POWER:
+                                app.log.warning(
+                                    "Buying power gate: BUY %s blocked — $%.2f available, need $%.2f (%s)",
+                                    ticker, bp, app.MIN_BUYING_POWER, strategy,
+                                )
+                                _exec_status = "blocked"
+                                _exec_detail = (
+                                    f"Buying power gate: ${bp:,.2f} available, "
+                                    f"minimum ${app.MIN_BUYING_POWER:,.2f} required"
+                                )
+                                return
+                        except Exception as _bpe:
+                            app.log.warning(
+                                "Buying power check failed for %s: %s — proceeding with order",
+                                ticker, _bpe,
+                            )
+
                     # Position gate — block new entries when Alpaca already holds the ticker.
                     # Exits (sentiment=flat / EXIT_LONG / EXIT_SHORT) always bypass this.
                     if action == "BUY" and is_entry:

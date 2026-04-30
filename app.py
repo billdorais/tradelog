@@ -58,6 +58,7 @@ eod_close_enabled   = True
 MAX_DAILY_LOSS        = float(os.environ.get("MAX_DAILY_LOSS", "0"))
 MAX_POSITION_LOSS     = float(os.environ.get("MAX_POSITION_LOSS", "0"))
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
+MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -1126,6 +1127,41 @@ def broker_status():
         brokers["Coinbase"] = coinbase_broker.status()
     _broker_status_cache = {"data": brokers, "ts": now}
     return jsonify(brokers)
+
+
+@app.route("/api/alpaca/account")
+def api_alpaca_account():
+    """Buying power, equity, and open positions — polled by the dashboard."""
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca not configured"}), 400
+    try:
+        alpaca_broker._ensure_client()
+        acct      = alpaca_broker._trading.get_account()
+        positions = alpaca_broker._get_positions_cached()
+        pos_list  = []
+        total_mv  = 0.0
+        for p in positions:
+            mv = float(p.market_value or 0)
+            total_mv += abs(mv)
+            pos_list.append({
+                "symbol":       p.symbol,
+                "qty":          float(p.qty or 0),
+                "market_value": round(mv, 2),
+                "side":         "long" if float(p.qty or 0) > 0 else "short",
+            })
+        pos_list.sort(key=lambda x: abs(x["market_value"]), reverse=True)
+        bp       = float(acct.buying_power)
+        equity   = float(acct.equity)
+        return jsonify({
+            "buying_power":    round(bp, 2),
+            "equity":          round(equity, 2),
+            "deployed":        round(total_mv, 2),
+            "open_positions":  len(pos_list),
+            "positions":       pos_list,
+            "min_buying_power": MIN_BUYING_POWER,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def _railway_ib_call(mutation_name):
