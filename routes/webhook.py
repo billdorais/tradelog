@@ -421,6 +421,7 @@ def webhook():
                             sec_type = sec_type,
                             currency = currency,
                             strategy = strategy,
+                            is_exit  = not is_entry,
                         )
                     _exec_status = "ok" if result.get("success") else "error"
                     _exec_detail = json.dumps(result)

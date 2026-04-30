@@ -77,7 +77,7 @@ class AlpacaBroker:
         acct = self._trading.get_account()
         return float(acct.equity) - float(acct.last_equity)
 
-    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy=""):
+    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False):
         """
         Place a market or limit order.
         action: BUY or SELL
@@ -145,6 +145,65 @@ class AlpacaBroker:
                     }
             except Exception as _oe:
                 log.warning("Alpaca open-order check for %s SELL failed: %s — continuing", ticker, _oe)
+
+        # For stock BUY that is an exit (EXIT_SHORT): cancel any pending SELL orders
+        # first, then use close_position.  Mirrors the existing SELL exit logic above.
+        # This handles the race where the short entry is still pending when the exit arrives.
+        if not is_crypto and side == OrderSide.BUY and is_exit:
+            try:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums import QueryOrderStatus
+                open_req   = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
+                open_orders = self._trading.get_orders(filter=open_req)
+                pending_sells = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
+                ]
+                if pending_sells:
+                    for o in pending_sells:
+                        try:
+                            self._trading.cancel_order_by_id(o.id)
+                            log.warning(
+                                "Alpaca EXIT_SHORT %s: cancelled pending SELL order %s "
+                                "(exit arrived before entry filled — not entering trade).",
+                                ticker, o.id,
+                            )
+                        except Exception as _ce:
+                            log.warning("Alpaca cancel order %s failed: %s", o.id, _ce)
+                    self._invalidate_pos_cache()
+                    return {
+                        "success":      False,
+                        "skipped":      True,
+                        "cancelled_sell": True,
+                        "error":        f"Pending SELL for {ticker} cancelled — exit arrived before fill.",
+                    }
+            except Exception as _oe:
+                log.warning("Alpaca open-order check for %s BUY-exit failed: %s — continuing", ticker, _oe)
+
+            # Use close_position so Alpaca handles the direction automatically.
+            # This is more reliable than a directional BUY when the short may not
+            # be settled yet in the positions API.
+            try:
+                positions = self._get_positions_cached()
+                pos = next((p for p in positions if p.symbol.upper() == ticker.upper()), None)
+                if pos is None:
+                    log.warning("EXIT_SHORT close_position %s: no position found — skipping", ticker)
+                    return {"success": False, "error": f"No {ticker} position to close"}
+                order = self._trading.close_position(ticker.upper())
+                self._invalidate_pos_cache()
+                log.info("Alpaca close_position (EXIT_SHORT) %s → id=%s status=%s",
+                         ticker, order.id, order.status)
+                return {
+                    "success":  True,
+                    "order_id": str(order.id),
+                    "status":   str(order.status),
+                    "symbol":   ticker,
+                    "side":     "buy",
+                    "paper":    self._paper,
+                }
+            except Exception as e:
+                log.error("Alpaca close_position (EXIT_SHORT) failed for %s: %s — falling back to BUY order", ticker, e)
+                # Fall through to regular BUY order if close_position fails
 
         # For crypto SELL: close the position via Alpaca's close_position API
         # (Alpaca doesn't support shorting crypto — this closes whatever is held)
