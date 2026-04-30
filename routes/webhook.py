@@ -350,15 +350,43 @@ def webhook():
             _opt_ctrs    = opt_contracts
 
             _strategy    = strategy_name
+            _is_entry    = not _is_exit
 
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
                 sec_type=_sec_type, currency=_currency, trade_id=_trade_id,
                 opt_prem=_opt_prem, opt_exp=_opt_exp, opt_right=_opt_right, opt_ctrs=_opt_ctrs,
-                strategy=_strategy,
+                strategy=_strategy, is_entry=_is_entry,
             ):
                 _exec_status = _exec_detail = None
                 try:
+                    # Position gate — block new entries when Alpaca already holds the ticker.
+                    # Exits (sentiment=flat / EXIT_LONG / EXIT_SHORT) always bypass this.
+                    if action == "BUY" and is_entry:
+                        try:
+                            positions = app.alpaca_broker._get_positions_cached()
+                            existing  = next(
+                                (p for p in positions
+                                 if p.symbol.upper() == ticker.upper() and float(p.qty or 0) > 0),
+                                None,
+                            )
+                            if existing:
+                                app.log.info(
+                                    "Position gate: BUY %s skipped — already holding %.0f shares (%s)",
+                                    ticker, float(existing.qty), strategy,
+                                )
+                                _exec_status = "skipped"
+                                _exec_detail = (
+                                    f"Position gate: already holding {float(existing.qty):.0f}"
+                                    f" shares of {ticker}"
+                                )
+                                return
+                        except Exception as _pe:
+                            app.log.warning(
+                                "Position gate check failed for %s: %s — proceeding with order",
+                                ticker, _pe,
+                            )
+
                     if opt_prem is not None:
                         opt_direction = "call" if action == "BUY" else "put"
                         if opt_right:
