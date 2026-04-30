@@ -468,36 +468,6 @@
     </div>
   </div>
 
-  <!-- Account / Buying Power -->
-  <div id="accountSection" style="display:none">
-    <div class="section-label">Account</div>
-    <div class="stats" style="margin-bottom:8px">
-      <!-- Buying power card -->
-      <div class="stat-card">
-        <div class="label">Buying Power</div>
-        <div class="value" id="acctBuyingPower">—</div>
-        <div id="acctBPWarn" style="font-size:0.68rem;margin-top:3px;display:none;color:#f59e0b">
-          ⚠ Below minimum — entries blocked
-        </div>
-        <div style="margin-top:8px;height:3px;border-radius:2px;background:#1e2130;overflow:hidden">
-          <div id="acctDeployBar" style="height:100%;border-radius:2px;background:#517356;width:0%;transition:width 0.4s"></div>
-        </div>
-        <div id="acctDeployLabel" style="font-size:0.65rem;color:#444;margin-top:3px">—</div>
-      </div>
-      <!-- Open positions card -->
-      <div class="stat-card">
-        <div class="label">Open Positions</div>
-        <div class="value" id="acctPositionCount">—</div>
-        <div id="acctPositionTickers" style="font-size:0.68rem;color:#555;margin-top:4px;line-height:1.6"></div>
-      </div>
-      <!-- Equity card -->
-      <div class="stat-card">
-        <div class="label">Equity</div>
-        <div class="value" id="acctEquity">—</div>
-      </div>
-    </div>
-  </div>
-
   <!-- Performance stats -->
   <div class="section-label" style="margin-top:8px">Performance (closed trades)</div>
   <div class="perf-cards">
@@ -644,6 +614,36 @@
       <div style="flex:0 0 calc(50% - 16px);min-width:280px">
         <div style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Cumulative P&amp;L</div>
         <canvas id="dailyPnlChart" height="110"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Account / Buying Power -->
+  <div id="accountSection" style="display:none">
+    <div class="section-label">Account</div>
+    <div class="stats" style="margin-bottom:8px">
+      <!-- Buying power card -->
+      <div class="stat-card">
+        <div class="label">Buying Power</div>
+        <div class="value" id="acctBuyingPower">—</div>
+        <div id="acctBPWarn" style="font-size:0.68rem;margin-top:3px;display:none;color:#f59e0b">
+          ⚠ Below minimum — entries blocked
+        </div>
+        <div style="margin-top:8px;height:3px;border-radius:2px;background:#1e2130;overflow:hidden">
+          <div id="acctDeployBar" style="height:100%;border-radius:2px;background:#517356;width:0%;transition:width 0.4s"></div>
+        </div>
+        <div id="acctDeployLabel" style="font-size:0.65rem;color:#444;margin-top:3px">—</div>
+      </div>
+      <!-- Open positions card -->
+      <div class="stat-card">
+        <div class="label">Open Positions</div>
+        <div class="value" id="acctPositionCount">—</div>
+        <div id="acctPositionTickers" style="font-size:0.68rem;color:#555;margin-top:4px;line-height:1.6"></div>
+      </div>
+      <!-- Equity card -->
+      <div class="stat-card">
+        <div class="label">Equity</div>
+        <div class="value" id="acctEquity">—</div>
       </div>
     </div>
   </div>
