@@ -490,7 +490,7 @@
     const d = new Date(s);
     if (isNaN(d)) return String(s).slice(0, 19).replace('T', ' ');
     return d.toLocaleString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit' });
+      hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
   // Cached pairs for the active drill-down so tab switches don't refilter.
