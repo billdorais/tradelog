@@ -3333,6 +3333,26 @@ def analysis_page():
     return render_template("analysis.html")
 
 
+def _consecutive_losing_days(trade_list):
+    """Count how many of the most recent consecutive trading days had negative P&L."""
+    if not trade_list:
+        return 0
+    by_date = {}
+    for t in trade_list:
+        d = t.get("date") or (t.get("exit_time") or "")[:10]
+        if d:
+            by_date[d] = round(by_date.get(d, 0.0) + t["pnl"], 2)
+    if not by_date:
+        return 0
+    streak = 0
+    for d in sorted(by_date, reverse=True):
+        if by_date[d] < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
 def _build_analysis_stats():
     """
     Pairs BUY/SELL signals from the trades table into closed round-trips.
@@ -3436,16 +3456,17 @@ def _build_analysis_stats():
         total_pnl  = round(gross_win - gross_loss, 2)
         pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
         return {
-            "trades":        len(trade_list),
-            "wins":          len(wins),
-            "losses":        len(losses),
-            "win_rate":      round(len(wins) / len(trade_list) * 100, 1),
-            "profit_factor": pf,
-            "total_pnl":     total_pnl,
-            "avg_win":       round(gross_win  / len(wins),   2) if wins   else 0,
-            "avg_loss":      round(-gross_loss / len(losses), 2) if losses else 0,
-            "largest_win":   round(max(wins),  2) if wins   else 0,
-            "largest_loss":  round(min(losses), 2) if losses else 0,
+            "trades":               len(trade_list),
+            "wins":                 len(wins),
+            "losses":               len(losses),
+            "win_rate":             round(len(wins) / len(trade_list) * 100, 1),
+            "profit_factor":        pf,
+            "total_pnl":            total_pnl,
+            "avg_win":              round(gross_win  / len(wins),   2) if wins   else 0,
+            "avg_loss":             round(-gross_loss / len(losses), 2) if losses else 0,
+            "largest_win":          round(max(wins),  2) if wins   else 0,
+            "largest_loss":         round(min(losses), 2) if losses else 0,
+            "consec_losing_days":   _consecutive_losing_days(trade_list),
         }
 
     # Separate orphan pairs (phantom round-trips from stale/mispaired signals
@@ -3804,16 +3825,17 @@ def api_alpaca_analysis():
             losses = [t["pnl"] for t in tlist if t["pnl"] <= 0]
             gw, gl = sum(wins), abs(sum(losses))
             return {
-                "trades":        len(tlist),
-                "wins":          len(wins),
-                "losses":        len(losses),
-                "win_rate":      round(len(wins) / len(tlist) * 100, 1),
-                "profit_factor": round(gw / gl, 2) if gl > 0 else None,
-                "total_pnl":     round(gw - gl, 2),
-                "avg_win":       round(gw / len(wins),   2) if wins   else 0,
-                "avg_loss":      round(-gl / len(losses), 2) if losses else 0,
-                "largest_win":   round(max(wins),  2) if wins   else 0,
-                "largest_loss":  round(min(losses), 2) if losses else 0,
+                "trades":             len(tlist),
+                "wins":               len(wins),
+                "losses":             len(losses),
+                "win_rate":           round(len(wins) / len(tlist) * 100, 1),
+                "profit_factor":      round(gw / gl, 2) if gl > 0 else None,
+                "total_pnl":          round(gw - gl, 2),
+                "avg_win":            round(gw / len(wins),   2) if wins   else 0,
+                "avg_loss":           round(-gl / len(losses), 2) if losses else 0,
+                "largest_win":        round(max(wins),  2) if wins   else 0,
+                "largest_loss":       round(min(losses), 2) if losses else 0,
+                "consec_losing_days": _consecutive_losing_days(tlist),
             }
 
         # Apply frontend exclusions (localStorage keys: "exit_time|ticker")

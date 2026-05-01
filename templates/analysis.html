@@ -195,6 +195,7 @@
             <th onclick="sortTable('stratTable',6)">Avg Loss</th>
             <th onclick="sortTable('stratTable',7)">Largest Win</th>
             <th onclick="sortTable('stratTable',8)">Largest Loss</th>
+            <th onclick="sortTable('stratTable',9)" title="Consecutive losing trading days (most recent)">Loss Streak</th>
           </tr>
         </thead>
         <tbody id="stratBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
@@ -579,7 +580,12 @@
     const body = document.getElementById('stratBody');
     const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
     if (!rows.length) { body.innerHTML = '<tr><td colspan="9" class="empty">No closed trades yet.</td></tr>'; return; }
-    body.innerHTML = rows.map(([name, s]) => `
+    body.innerHTML = rows.map(([name, s]) => {
+      const streak = s.consec_losing_days || 0;
+      const streakCls = streak === 0 ? '' : streak <= 2 ? 'style="color:#F2E7AC"' : 'style="color:#e74c3c;font-weight:600"';
+      const streakLabel = streak === 0 ? '<span style="color:#444">—</span>'
+        : `<span ${streakCls}>${streak}d</span>`;
+      return `
       <tr class="drill" data-kind="strategy" data-key="${esc(name)}" title="Click to see round-trip pairs">
         <td class="name">${esc(name)}</td>
         <td>${s.trades}</td>
@@ -590,7 +596,9 @@
         <td class="neg">-$${Math.abs(s.avg_loss).toFixed(2)}</td>
         <td class="pos">+$${s.largest_win.toFixed(2)}</td>
         <td class="neg">$${s.largest_loss.toFixed(2)}</td>
-      </tr>`).join('');
+        <td style="text-align:center">${streakLabel}</td>
+      </tr>`;
+    }).join('');
   }
 
   // ── Ticker table ───────────────────────────────────────────────────────────
