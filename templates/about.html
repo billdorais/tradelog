@@ -289,7 +289,7 @@
     </table>
 
     <h2>Webhook Payload — Stocks</h2>
-    <p>TradingView alerts POST the following JSON. The <code style="font-size:0.82rem;color:#aaa">strategy</code> field must match the pipeline name exactly. Use <code style="font-size:0.82rem;color:#aaa">{{strategy.order.alert_message}}</code> for the action field so LONG/SHORT/EXIT signals are passed through correctly.</p>
+    <p>TradingView alerts POST the following JSON. The <code style="font-size:0.82rem;color:#aaa">strategy</code> field must match the pipeline name exactly. Use <code style="font-size:0.82rem;color:#aaa">{% raw %}{{strategy.order.alert_message}}{% endraw %}</code> for the action field so LONG/SHORT/EXIT signals are passed through correctly.</p>
     <div class="flow">
       {% raw %}{<br>
       &nbsp;&nbsp;"ticker":    "{{ticker}}",<br>
@@ -451,7 +451,7 @@
         <td>Webhook Action Field</td>
         <td>
           The recommended TradingView payload now uses
-          <code style="font-size:0.82rem;color:#aaa">{{strategy.order.alert_message}}</code>
+          <code style="font-size:0.82rem;color:#aaa">{% raw %}{{strategy.order.alert_message}}{% endraw %}</code>
           for the action field so LONG/SHORT/EXIT signals pass through correctly
           and count toward performance stats.
         </td>
