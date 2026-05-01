@@ -1686,8 +1686,20 @@
 
       const tvPairs     = pairSignals(filtered);
       const ibPairs     = pairIBExecs(allIBExecs);
+      // Pass full `trades` (not filtered) for intent resolution — pairAlpacaExecs
+      // needs the complete TV sentiment lookup to classify entries vs exits correctly.
       const alpacaPairs = reconcileAlpacaPairs(pairAlpacaExecs(allAlpacaExecs, trades), allAlpacaPositions);
-      const groups      = buildGroups(tvPairs, ibPairs, alpacaPairs);
+      let groups        = buildGroups(tvPairs, ibPairs, alpacaPairs);
+      // TV-paired groups already passed the strategy filter via `filtered`. Alpaca-only
+      // groups (tv: null) leak through because pairing iterates *all* alpaca pairs by
+      // ticker — drop them unless the fill itself carries matching strategy attribution.
+      if (strategyFilter) {
+        groups = groups.filter(g => {
+          if (g.tv) return true;
+          const s = g.alpaca?.entry?.strategy || g.alpaca?.exit?.strategy || null;
+          return s === strategyFilter;
+        });
+      }
       const body     = document.getElementById('tradeBody');
 
       _allGroups   = groups;

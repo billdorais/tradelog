@@ -598,29 +598,9 @@ def _risk_monitor_loop():
 threading.Thread(target=_risk_monitor_loop, daemon=True).start()
 
 
-def _find_strategy_for_symbol(symbol):
-    """Return the most recent strategy name that traded this symbol, or None."""
-    try:
-        conn = get_db()
-        cur  = conn.cursor()
-        p    = placeholder()
-        cur.execute(
-            f"SELECT strategy FROM trades WHERE ticker={p} AND strategy IS NOT NULL "
-            f"ORDER BY id DESC LIMIT 1",
-            (symbol,),
-        )
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            return row[0] if DATABASE_URL else row["strategy"]
-    except Exception as _e:
-        log.debug("_find_strategy_for_symbol failed: %s", _e)
-    return None
-
-
 def _check_position_stops():
     """Check all open positions against MAX_POSITION_LOSS.
-    Closes offending positions and blocks the originating strategy."""
+    Closes offending positions; the originating strategy stays free to re-enter."""
     global _latest_positions
     all_positions = []
 
@@ -676,12 +656,9 @@ def _check_position_stops():
             # Don't add to _auto_closed_symbols yet — only add after a successful close
             # so that a failed close is retried on the next poll rather than silently dropped.
 
-        strategy = _find_strategy_for_symbol(symbol)
-
         log.error(
-            "POSITION STOP: %s unrealized P&L $%.2f hit limit $%.2f [%s] — "
-            "closing position, blocking strategy '%s'",
-            symbol, upnl, MAX_POSITION_LOSS, broker, strategy,
+            "POSITION STOP: %s unrealized P&L $%.2f hit limit $%.2f [%s] — closing position",
+            symbol, upnl, MAX_POSITION_LOSS, broker,
         )
 
         # Close the position — only mark as handled if the order is successfully submitted
@@ -708,22 +685,6 @@ def _check_position_stops():
         else:
             # Close failed — leave symbol out of _auto_closed_symbols so it retries next poll
             log.warning("Position stop: close order for %s failed — will retry next poll", symbol)
-            continue
-
-        # Block the strategy for the rest of the session
-        # Skip pseudo-strategies like "manual-close" that aren't real signal strategies
-        if strategy and "manual" not in strategy.lower():
-            with _risk_lock:
-                _blocked_strategies[strategy] = {
-                    "reason":   f"Position stop triggered: {symbol} loss ${upnl:.2f}",
-                    "symbol":   symbol,
-                    "loss":     round(upnl, 2),
-                    "ts":       datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                    "broker":   broker,
-                }
-            log.error("Strategy '%s' blocked — position stop on %s (loss=$%.2f)", strategy, symbol, upnl)
-        elif strategy and "manual" in strategy.lower():
-            log.warning("Position stop on %s (loss=$%.2f) — skipping block of pseudo-strategy '%s'", symbol, upnl, strategy)
 
 
 def _position_monitor_loop():

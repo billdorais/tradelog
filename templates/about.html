@@ -355,7 +355,7 @@
       <tr><td>COINBASE_KEY</td><td>—</td><td>Coinbase Advanced Trade API key. Setting this enables the Coinbase broker.</td></tr>
       <tr><td>COINBASE_SECRET</td><td>—</td><td>Coinbase API secret.</td></tr>
       <tr><td>MAX_DAILY_LOSS</td><td>0 (off)</td><td>Negative dollar value. Halts all trading and liquidates all positions when today's P&amp;L reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
-      <tr><td>MAX_POSITION_LOSS</td><td>0 (off)</td><td>Negative dollar value. Closes a single position and blocks its strategy when unrealized loss reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
+      <tr><td>MAX_POSITION_LOSS</td><td>0 (off)</td><td>Negative dollar value. Closes a single position when its unrealized loss reaches this threshold; the strategy remains free to re-enter. Configurable live from the Signal Router risk panel.</td></tr>
       <tr><td>SIGNAL_COOLDOWN_SECS</td><td>10</td><td>Seconds to suppress duplicate signals for the same strategy + ticker + action combination.</td></tr>
       <tr><td>IB_ENABLED</td><td>false</td><td>Set to <code style="font-size:0.82rem;color:#aaa">true</code> to enable the IB broker. Off by default so IB connection errors don't affect Alpaca-only deployments.</td></tr>
     </table>
