@@ -1699,13 +1699,14 @@ def api_journal_generate():
         today = _dtmod.date.today()
         week  = today.strftime("%Y-W%W")
 
-    # Derive week start/end dates from the week string
+    # Derive week start/end dates from the ISO 8601 week string (matches <input type="week">)
     try:
         year, wnum = week.split("-W")
-        week_start = _dtmod.datetime.strptime(f"{year}-W{int(wnum):02d}-1", "%Y-W%W-%w").date()
+        week_start = _dtmod.date.fromisocalendar(int(year), int(wnum), 1)  # Monday
         week_end   = week_start + _dtmod.timedelta(days=4)   # Friday
     except Exception:
-        week_start = _dtmod.date.today() - _dtmod.timedelta(days=_dtmod.date.today().weekday())
+        today = _dtmod.date.today()
+        week_start = today - _dtmod.timedelta(days=today.weekday())
         week_end   = week_start + _dtmod.timedelta(days=4)
 
     from_date = str(week_start)

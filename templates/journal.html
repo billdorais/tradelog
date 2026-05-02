@@ -121,11 +121,14 @@
 
   // Default week picker to current week
   (function() {
+    // Use ISO 8601 week number to match what <input type="week"> expects
     const d = new Date();
-    const y = d.getFullYear();
-    const start = new Date(y, 0, 1);
-    const wk = Math.ceil(((d - start) / 86400000 + start.getDay() + 1) / 7);
-    document.getElementById('weekPicker').value = `${y}-W${String(wk).padStart(2,'0')}`;
+    const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    tmp.setUTCDate(tmp.getUTCDate() + 4 - (tmp.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+    const wk = Math.ceil((((tmp - yearStart) / 86400000) + 1) / 7);
+    document.getElementById('weekPicker').value =
+      `${tmp.getUTCFullYear()}-W${String(wk).padStart(2,'0')}`;
   })();
 
   async function generate() {
