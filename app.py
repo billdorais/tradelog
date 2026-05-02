@@ -362,6 +362,17 @@ if os.environ.get("ALPACA_KEY"):
     alpaca_broker = AlpacaBroker()
     log.info("Alpaca broker initialised (paper=%s)", os.environ.get("ALPACA_PAPER", "true"))
 
+    def _prewarm_fills():
+        """Populate the fills cache in background so the first page load is instant."""
+        time.sleep(3)   # let gunicorn finish binding before making API calls
+        try:
+            _get_cached_fills()
+            log.info("Fills cache pre-warmed (%d fills)", len(_alpaca_fills_cache["data"]))
+        except Exception as _e:
+            log.warning("Fills cache pre-warm failed: %s", _e)
+
+    threading.Thread(target=_prewarm_fills, daemon=True).start()
+
 # ---------------------------------------------------------------------------
 # Coinbase broker (optional — set COINBASE_KEY + COINBASE_SECRET to enable)
 # ---------------------------------------------------------------------------

@@ -555,17 +555,16 @@ class AlpacaBroker:
             log.error("Alpaca get_portfolio_history failed: %s", e, exc_info=True)
             return []
 
-    def get_fills(self):
-        """Return all filled orders, paginating newest-first using until= cursor."""
+    def get_fills(self, days=90):
+        """Return filled orders for the last `days` days (default 90).
+        Paginating 2 years of history was causing 60s+ cold-start delays."""
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         self._ensure_client()
         try:
             result   = []
             seen_ids = set()
-            # Use 'after' to cast a wide net back 2 years, then page backwards
-            # using 'until' when there are more than 500 results.
-            after_ts  = datetime.now(timezone.utc) - timedelta(days=730)
+            after_ts  = datetime.now(timezone.utc) - timedelta(days=days)
             until_ts  = None
             while True:
                 kwargs = dict(status=QueryOrderStatus.CLOSED, limit=500, after=after_ts)
