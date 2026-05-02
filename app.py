@@ -959,6 +959,30 @@ def init_db():
     """)
     conn.commit()
 
+    # Journal entries table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS journal_entries (
+            id           SERIAL PRIMARY KEY,
+            week         TEXT UNIQUE,
+            generated_at TEXT,
+            trade_stats  TEXT,
+            market_data  TEXT,
+            ai_summary   TEXT,
+            user_notes   TEXT
+        )
+    """ if DATABASE_URL else """
+        CREATE TABLE IF NOT EXISTS journal_entries (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            week         TEXT UNIQUE,
+            generated_at TEXT,
+            trade_stats  TEXT,
+            market_data  TEXT,
+            ai_summary   TEXT,
+            user_notes   TEXT
+        )
+    """)
+    conn.commit()
+
     conn.close()
 
 
@@ -1611,6 +1635,322 @@ def dashboard():
 @app.route("/routing")
 def routing_page():
     return render_template("routing.html", webhook_token=WEBHOOK_TOKEN)
+
+
+@app.route("/journal")
+def journal():
+    return render_template("journal.html")
+
+
+@app.route("/api/journal/entries")
+def api_journal_entries():
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute("SELECT * FROM journal_entries ORDER BY week DESC")
+    rows = cur.fetchall()
+    cols = [d[0] for d in cur.description] if DATABASE_URL else None
+    entries = []
+    for r in rows:
+        e = dict(zip(cols, r)) if DATABASE_URL else dict(r)
+        for f in ("trade_stats", "market_data"):
+            try:
+                e[f] = json.loads(e[f]) if e[f] else {}
+            except Exception:
+                e[f] = {}
+        entries.append(e)
+    conn.close()
+    return jsonify(entries)
+
+
+@app.route("/api/journal/notes", methods=["PUT"])
+def api_journal_notes():
+    data  = request.get_json(silent=True) or {}
+    week  = data.get("week", "").strip()
+    notes = data.get("notes", "")
+    if not week:
+        return jsonify({"error": "week required"}), 400
+    p = placeholder()
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute(f"UPDATE journal_entries SET user_notes={p} WHERE week={p}", (notes, week))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/journal/generate", methods=["POST"])
+def api_journal_generate():
+    """Generate a weekly journal entry. Streams the AI summary via SSE."""
+    import datetime as _dtmod
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    data    = request.get_json(silent=True) or {}
+    week    = data.get("week", "").strip()   # "YYYY-WXX"
+
+    # Default to current ISO week
+    if not week:
+        today = _dtmod.date.today()
+        week  = today.strftime("%Y-W%W")
+
+    # Derive week start/end dates from the week string
+    try:
+        year, wnum = week.split("-W")
+        week_start = _dtmod.datetime.strptime(f"{year}-W{int(wnum):02d}-1", "%Y-W%W-%w").date()
+        week_end   = week_start + _dtmod.timedelta(days=4)   # Friday
+    except Exception:
+        week_start = _dtmod.date.today() - _dtmod.timedelta(days=_dtmod.date.today().weekday())
+        week_end   = week_start + _dtmod.timedelta(days=4)
+
+    from_date = str(week_start)
+    to_date   = str(week_end)
+
+    # ── Trade stats for the week ─────────────────────────────────────────
+    trade_stats = {}
+    try:
+        if alpaca_broker is not None:
+            fills = _get_cached_fills()
+            week_fills = [f for f in fills if from_date <= (f.get("time") or "")[:10] <= to_date]
+            # Build per-strategy closed pairs using the same day-scoped logic
+            from datetime import datetime as _dt2
+            conn = get_db()
+            cur  = conn.cursor()
+            cur.execute("SELECT ticker, action, received_at, strategy, sentiment FROM trades ORDER BY id ASC")
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description] if DATABASE_URL else None
+            sig_rows = [dict(zip(cols, r)) if DATABASE_URL else dict(r) for r in rows]
+            conn.close()
+
+            sig_lkp = {}
+            for t in sig_rows:
+                tk  = (t.get("ticker") or "").strip().upper()
+                act = _canonical_action(t.get("action"))
+                rcv = t.get("received_at") or ""
+                stg = (t.get("strategy") or "").strip()
+                if not stg or not tk or not rcv: continue
+                sd = "BOT" if act == "BUY" else "SLD" if act == "SELL" else None
+                if not sd: continue
+                try:
+                    ts = _dt2.fromisoformat(rcv.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                sig_lkp.setdefault((tk, sd), []).append((ts, stg))
+
+            def _rsig2(sym, side, ftime):
+                try:
+                    fts = _dt2.fromisoformat(ftime.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    return "Unknown"
+                cands = sig_lkp.get((sym.upper(), side), [])
+                if not cands: return "Unknown"
+                best = min(cands, key=lambda x: abs(x[0] - fts))
+                return best[1] if abs(best[0] - fts) <= 300 else "Unknown"
+
+            # Day-scoped FIFO pairing
+            from collections import defaultdict
+            fills_by_date = defaultdict(list)
+            seen = set()
+            for f in week_fills:
+                k = f"{f['symbol']}|{f['side']}|{f['time']}|{f['shares']}"
+                if k not in seen:
+                    seen.add(k)
+                    fills_by_date[(f.get("time") or "")[:10]].append(f)
+
+            day_closed = []
+            for day_fs in fills_by_date.values():
+                dl, ds = {}, {}
+                for f in sorted(day_fs, key=lambda x: x.get("time", "")):
+                    sym   = (f.get("symbol") or "").upper()
+                    side  = f.get("side", "")
+                    price = float(f.get("price") or 0)
+                    qty   = float(f.get("shares") or 0)
+                    strat = _rsig2(sym, side, f.get("time", ""))
+                    if side == "BOT":
+                        q = ds.setdefault(sym, [])
+                        while qty > 0 and q:
+                            ep, eq, es = q.pop(0)
+                            m = min(qty, eq)
+                            day_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es, "ticker": sym})
+                            qty -= m
+                            if eq > m: q.insert(0, (ep, eq - m, es))
+                        if qty > 0: dl.setdefault(sym, []).append((price, qty, strat))
+                    elif side == "SLD":
+                        q = dl.setdefault(sym, [])
+                        while qty > 0 and q:
+                            ep, eq, es = q.pop(0)
+                            m = min(qty, eq)
+                            day_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es, "ticker": sym})
+                            qty -= m
+                            if eq > m: q.insert(0, (ep, eq - m, es))
+                        if qty > 0: ds.setdefault(sym, []).append((price, qty, strat))
+
+            wins   = [t for t in day_closed if t["pnl"] > 0]
+            losses = [t for t in day_closed if t["pnl"] <= 0]
+            gw, gl = sum(t["pnl"] for t in wins), abs(sum(t["pnl"] for t in losses))
+            by_strat = {}
+            for t in day_closed:
+                s = t["strategy"]
+                by_strat.setdefault(s, {"pnl": 0, "trades": 0})
+                by_strat[s]["pnl"]    = round(by_strat[s]["pnl"] + t["pnl"], 2)
+                by_strat[s]["trades"] += 1
+            top    = sorted(by_strat.items(), key=lambda x: x[1]["pnl"], reverse=True)
+            trade_stats = {
+                "trades":        len(day_closed),
+                "wins":          len(wins),
+                "losses":        len(losses),
+                "win_rate":      round(len(wins) / len(day_closed) * 100, 1) if day_closed else 0,
+                "total_pnl":     round(gw - gl, 2),
+                "profit_factor": round(gw / gl, 2) if gl > 0 else None,
+                "best_strategy": top[0][0]  if top else None,
+                "best_pnl":      top[0][1]["pnl"] if top else 0,
+                "worst_strategy":top[-1][0] if len(top) > 1 else None,
+                "worst_pnl":     top[-1][1]["pnl"] if len(top) > 1 else 0,
+                "per_strategy":  {k: v for k, v in top},
+                "tickers":       sorted(set(t["ticker"] for t in day_closed)),
+            }
+    except Exception as _te:
+        log.warning("Journal trade stats error: %s", _te)
+        trade_stats = {}
+
+    # ── Market data via yfinance ─────────────────────────────────────────
+    market_data = {}
+    try:
+        import yfinance as yf
+        symbols = ["SPY", "QQQ", "^VIX"] + trade_stats.get("tickers", [])
+        raw = yf.download(symbols, start=from_date,
+                          end=str(week_end + _dtmod.timedelta(days=1)),
+                          progress=False, auto_adjust=True)
+        close = raw["Close"] if "Close" in raw.columns else raw
+        for sym in symbols:
+            label = sym.replace("^", "")
+            col   = sym if sym in close.columns else None
+            if col is None: continue
+            prices = close[col].dropna()
+            if len(prices) < 2: continue
+            weekly_ret = round((prices.iloc[-1] / prices.iloc[0] - 1) * 100, 2)
+            market_data[label] = {
+                "weekly_return": weekly_ret,
+                "open":  round(float(prices.iloc[0]),  2),
+                "close": round(float(prices.iloc[-1]), 2),
+                "high":  round(float(close[col].max()), 2),
+                "low":   round(float(close[col].min()),  2),
+            }
+        # Regime: SPY vs 20-day MA
+        spy_hist = yf.download("SPY", period="30d", progress=False, auto_adjust=True)
+        spy_close = spy_hist["Close"].dropna() if "Close" in spy_hist else spy_hist.iloc[:, 0].dropna()
+        if len(spy_close) >= 20:
+            ma20  = float(spy_close.rolling(20).mean().iloc[-1])
+            last  = float(spy_close.iloc[-1])
+            vix   = market_data.get("VIX", {}).get("close", 20)
+            if last > ma20 and vix < 20:
+                regime = "Trending / Low Volatility"
+            elif last > ma20 and vix >= 20:
+                regime = "Trending / Elevated Volatility"
+            elif last <= ma20 and vix >= 25:
+                regime = "Risk-Off"
+            else:
+                regime = "Mixed / Choppy"
+            market_data["regime"] = regime
+            market_data["spy_vs_ma20"] = round(last - ma20, 2)
+    except Exception as _me:
+        log.warning("Journal market data error: %s", _me)
+
+    # ── Persist stats + stream AI summary ───────────────────────────────
+    p = placeholder()
+    conn = get_db()
+    cur  = conn.cursor()
+    now_str = _dtmod.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Upsert entry so regeneration replaces old content
+    if DATABASE_URL:
+        cur.execute(
+            f"INSERT INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes) "
+            f"VALUES ({p},{p},{p},{p},{p},{p}) "
+            f"ON CONFLICT (week) DO UPDATE SET generated_at={p}, trade_stats={p}, market_data={p}, ai_summary=''",
+            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "",
+             now_str, json.dumps(trade_stats), json.dumps(market_data)),
+        )
+    else:
+        cur.execute(
+            "INSERT OR REPLACE INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes) "
+            f"VALUES ({p},{p},{p},{p},{p},{p})",
+            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", ""),
+        )
+    conn.commit()
+    conn.close()
+
+    # Build AI prompt
+    ts   = trade_stats
+    md   = market_data
+    spy  = md.get("SPY", {})
+    qqq  = md.get("QQQ", {})
+    vix  = md.get("VIX", {})
+    prompt = (
+        f"You are a trading coach reviewing a systematic trader's weekly performance journal.\n\n"
+        f"Week: {week} ({from_date} to {to_date})\n\n"
+        f"MARKET CONTEXT:\n"
+        f"  SPY: {spy.get('weekly_return', 'N/A')}% (open {spy.get('open','?')} → close {spy.get('close','?')})\n"
+        f"  QQQ: {qqq.get('weekly_return', 'N/A')}%\n"
+        f"  VIX: {vix.get('open','?')} → {vix.get('close','?')}\n"
+        f"  Regime: {md.get('regime', 'Unknown')}\n\n"
+        f"TICKERS TRADED:\n"
+    )
+    for sym in ts.get("tickers", []):
+        td = md.get(sym, {})
+        prompt += f"  {sym}: {td.get('weekly_return', 'N/A')}%\n"
+    prompt += (
+        f"\nTRADE PERFORMANCE:\n"
+        f"  {ts.get('trades', 0)} trades · Win rate {ts.get('win_rate', 0)}% · "
+        f"P&L ${ts.get('total_pnl', 0):+.2f} · PF {ts.get('profit_factor') or '—'}\n"
+        f"  Best strategy: {ts.get('best_strategy','—')} (${ts.get('best_pnl',0):+.2f})\n"
+        f"  Worst strategy: {ts.get('worst_strategy','—')} (${ts.get('worst_pnl',0):+.2f})\n\n"
+        f"PER-STRATEGY BREAKDOWN:\n"
+    )
+    for strat, sv in list(ts.get("per_strategy", {}).items())[:10]:
+        prompt += f"  {strat}: {sv['trades']} trades · ${sv['pnl']:+.2f}\n"
+    prompt += (
+        f"\nWrite a concise weekly trading journal entry (3-4 paragraphs). Include:\n"
+        f"1. Was the market regime favorable or unfavorable for this strategy type "
+        f"(Camarilla breakout/reversal on intraday 5-min bars)?\n"
+        f"2. Which strategies worked and which didn't, and why given the market context?\n"
+        f"3. One or two specific observations to watch for next week.\n"
+        f"Be direct and specific. No fluff. Write in second person ('your strategies...')."
+    )
+
+    def _stream():
+        client  = _anthropic.Anthropic(api_key=api_key)
+        summary = ""
+        try:
+            with client.messages.stream(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    summary += text
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as _ae:
+            yield f"data: {json.dumps({'error': str(_ae)})}\n\n"
+            return
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        # Persist the completed summary
+        try:
+            _p = placeholder()
+            _c = get_db()
+            _cur = _c.cursor()
+            _cur.execute(f"UPDATE journal_entries SET ai_summary={_p} WHERE week={_p}", (summary, week))
+            _c.commit()
+            _c.close()
+        except Exception as _pe:
+            log.warning("Journal summary persist error: %s", _pe)
+
+    return Response(stream_with_context(_stream()), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.route("/about")

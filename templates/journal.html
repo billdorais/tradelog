@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Journal — Kairos Automata</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; padding: 0 0 60px; }
+
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
+
+    .page { padding: 28px 24px; max-width: 960px; margin: 0 auto; }
+    .page-title { font-size: 1.3rem; font-weight: 600; margin-bottom: 4px; }
+    .page-sub   { font-size: 0.85rem; color: #555; margin-bottom: 28px; }
+
+    /* Generate bar */
+    .gen-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; flex-wrap: wrap; }
+    .btn { padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+    .btn-primary { background: rgba(136,191,139,0.12); border: 1px solid #88BF8B; color: #7FE098; }
+    .week-input { background: #13161f; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 7px 12px; font-size: 0.85rem; outline: none; }
+    .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #88BF8B; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 5px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Entry card */
+    .entry { background: #13161f; border: 1px solid #1e2130; border-radius: 12px; margin-bottom: 32px; overflow: hidden; }
+    .entry-head { padding: 20px 24px 16px; border-bottom: 1px solid #1e2130; }
+    .entry-week { font-size: 1.05rem; font-weight: 700; color: #fff; margin-bottom: 2px; }
+    .entry-date { font-size: 0.78rem; color: #555; }
+
+    /* Stat grid */
+    .stat-row { display: flex; gap: 0; border-bottom: 1px solid #1e2130; }
+    .stat-box { flex: 1; padding: 14px 18px; border-right: 1px solid #1e2130; }
+    .stat-box:last-child { border-right: none; }
+    .stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 5px; }
+    .stat-val { font-size: 1.1rem; font-weight: 700; color: #fff; }
+    .stat-val.pos { color: #7FE098; }
+    .stat-val.neg { color: #e74c3c; }
+    .stat-val.neu { color: #F2E7AC; }
+
+    /* Market row */
+    .market-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 14px 24px; border-bottom: 1px solid #1e2130; }
+    .mkt-pill { background: #0d0f16; border: 1px solid #1e2130; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; white-space: nowrap; }
+    .mkt-pill .sym { color: #888; margin-right: 5px; }
+    .mkt-pill .ret.pos { color: #7FE098; }
+    .mkt-pill .ret.neg { color: #e74c3c; }
+    .regime-badge { background: rgba(136,191,139,0.1); border: 1px solid rgba(136,191,139,0.3); color: #88BF8B; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; }
+
+    /* Strategy table */
+    .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; }
+    .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 10px; }
+    .strat-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1a1d2e; font-size: 0.82rem; }
+    .strat-row:last-child { border-bottom: none; }
+    .strat-name { color: #b0b0b0; font-family: monospace; font-size: 0.78rem; }
+    .strat-meta { color: #555; font-size: 0.75rem; margin-left: 6px; }
+
+    /* AI summary */
+    .ai-section { padding: 20px 24px; border-bottom: 1px solid #1e2130; }
+    .ai-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+    .ai-badge { background: linear-gradient(135deg, rgba(108,63,199,0.2), rgba(136,191,139,0.2)); border: 1px solid rgba(136,191,139,0.3); color: #88BF8B; border-radius: 4px; padding: 2px 8px; font-size: 0.68rem; }
+    .ai-text { font-size: 0.875rem; line-height: 1.75; color: #c0c0c0; white-space: pre-wrap; }
+    .ai-placeholder { color: #444; font-style: italic; font-size: 0.85rem; }
+
+    /* Notes */
+    .notes-section { padding: 20px 24px; }
+    .notes-area { width: 100%; background: #0d0f16; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 8px; padding: 12px 14px; font-size: 0.85rem; line-height: 1.6; resize: vertical; min-height: 80px; outline: none; font-family: inherit; }
+    .notes-area:focus { border-color: #517356; }
+    .save-btn { margin-top: 8px; padding: 6px 16px; background: rgba(81,115,86,0.15); border: 1px solid #517356; color: #7FE098; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+    .save-btn:hover { background: rgba(81,115,86,0.25); }
+    .save-ok { color: #7FE098; font-size: 0.78rem; margin-left: 8px; opacity: 0; transition: opacity 0.3s; }
+
+    .empty { text-align: center; padding: 60px; color: #444; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+    <h1>Kairos Automata — Trading Journal</h1>
+  </div>
+  <div style="position:relative;display:inline-block">
+    <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:180px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+      <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+      <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+      <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+      <a href="/strategies" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128200; Strategies</a>
+      <a href="/optimize" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128269; Optimizer</a>
+      <a href="/variants" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127757; Variants</a>
+      <a href="/progress" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#9989; Progress</a>
+      <a href="/journal" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128221; Journal</a>
+      <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+  <div class="page-title">Weekly Trading Journal</div>
+  <div class="page-sub">AI-generated weekly entries combining your trade stats with market context</div>
+
+  <div class="gen-bar">
+    <input type="week" id="weekPicker" class="week-input" title="Select week to generate">
+    <button class="btn btn-primary" id="genBtn" onclick="generate()">&#10024; Generate This Week</button>
+    <span style="font-size:0.78rem;color:#555">Pulls your Alpaca trades + SPY/QQQ/VIX + AI analysis</span>
+  </div>
+
+  <div id="entries"></div>
+</div>
+
+<script>
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function fmt(v) {
+    if (v == null) return '—';
+    const n = parseFloat(v);
+    return (n >= 0 ? '+' : '') + '$' + Math.abs(n).toFixed(2);
+  }
+
+  // Default week picker to current week
+  (function() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const start = new Date(y, 0, 1);
+    const wk = Math.ceil(((d - start) / 86400000 + start.getDay() + 1) / 7);
+    document.getElementById('weekPicker').value = `${y}-W${String(wk).padStart(2,'0')}`;
+  })();
+
+  async function generate() {
+    const btn  = document.getElementById('genBtn');
+    const week = document.getElementById('weekPicker').value.replace('W0','W').replace('-W','-W');
+    if (!week) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Generating…';
+
+    // Insert a live streaming card at top
+    const card = document.createElement('div');
+    card.className = 'entry';
+    card.id = 'live-entry';
+    card.innerHTML = `<div class="entry-head"><div class="entry-week">${esc(week)}</div><div class="entry-date">Generating…</div></div>
+      <div class="ai-section"><div class="ai-label"><span class="ai-badge">Claude AI</span> Weekly Analysis</div>
+      <div class="ai-text" id="live-text"><span class="ai-placeholder"><span class="spinner"></span> Fetching trade data and market conditions…</span></div></div>`;
+    const container = document.getElementById('entries');
+    container.prepend(card);
+
+    try {
+      const res = await fetch('/api/journal/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week }),
+      });
+      const reader = res.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+      let   text   = '';
+      const liveEl = document.getElementById('live-text');
+      if (liveEl) liveEl.textContent = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        for (const line of buf.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const msg = JSON.parse(line.slice(6));
+            if (msg.error) { if (liveEl) liveEl.textContent = 'Error: ' + msg.error; break; }
+            if (msg.text)  { text += msg.text; if (liveEl) liveEl.textContent = text; }
+            if (msg.done)  { buf = ''; }
+          } catch {}
+        }
+        buf = buf.split('\n').filter(l => !l.startsWith('data:')).join('\n');
+      }
+    } catch(e) {
+      const liveEl = document.getElementById('live-text');
+      if (liveEl) liveEl.textContent = 'Error: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '&#10024; Generate This Week';
+      card.remove();
+      loadEntries();
+    }
+  }
+
+  async function loadEntries() {
+    const res     = await fetch('/api/journal/entries');
+    const entries = await res.json();
+    const el      = document.getElementById('entries');
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty">No journal entries yet. Generate your first weekly entry above.</div>';
+      return;
+    }
+    el.innerHTML = entries.map(e => renderEntry(e)).join('');
+  }
+
+  function renderEntry(e) {
+    const ts  = e.trade_stats || {};
+    const md  = e.market_data || {};
+    const pnl = ts.total_pnl || 0;
+    const pnlCls = pnl >= 0 ? 'pos' : 'neg';
+    const wrCls  = (ts.win_rate || 0) >= 50 ? 'pos' : 'neg';
+    const pfCls  = ts.profit_factor >= 1.5 ? 'pos' : ts.profit_factor >= 1.0 ? 'neu' : 'neg';
+
+    // Market pills
+    const mktSyms = ['SPY','QQQ','VIX'];
+    const mktPills = mktSyms.map(sym => {
+      const d = md[sym]; if (!d) return '';
+      const ret = d.weekly_return;
+      const cls = ret > 0 ? 'pos' : ret < 0 ? 'neg' : '';
+      return `<div class="mkt-pill"><span class="sym">${sym}</span><span class="ret ${cls}">${ret >= 0 ? '+' : ''}${ret}%</span></div>`;
+    }).join('');
+    const tickerPills = (ts.tickers || []).map(sym => {
+      const d = md[sym]; if (!d) return '';
+      const ret = d.weekly_return;
+      const cls = ret > 0 ? 'pos' : ret < 0 ? 'neg' : '';
+      return `<div class="mkt-pill"><span class="sym">${sym}</span><span class="ret ${cls}">${ret >= 0 ? '+' : ''}${ret}%</span></div>`;
+    }).join('');
+    const regime = md.regime ? `<div class="regime-badge">${esc(md.regime)}</div>` : '';
+
+    // Per-strategy rows (top 8)
+    const stratRows = Object.entries(ts.per_strategy || {}).slice(0, 8).map(([name, sv]) => {
+      const pc = sv.pnl >= 0 ? '#7FE098' : '#e74c3c';
+      return `<div class="strat-row">
+        <span class="strat-name">${esc(name)}</span>
+        <span>
+          <span class="strat-meta">${sv.trades} trade${sv.trades===1?'':'s'}</span>
+          <span style="color:${pc};font-weight:600;margin-left:10px">${fmt(sv.pnl)}</span>
+        </span>
+      </div>`;
+    }).join('');
+
+    const aiContent = e.ai_summary
+      ? `<div class="ai-text">${esc(e.ai_summary)}</div>`
+      : `<div class="ai-placeholder">No AI summary — click Regenerate to generate one.</div>`;
+
+    return `<div class="entry">
+      <div class="entry-head" style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div class="entry-week">Week ${esc(e.week)}</div>
+          <div class="entry-date">Generated ${esc((e.generated_at || '').slice(0,10))}</div>
+        </div>
+        <button onclick="regenerate('${esc(e.week)}')"
+          style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer">
+          ↺ Regenerate
+        </button>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-label">Total P&L</div><div class="stat-val ${pnlCls}">${fmt(pnl)}</div></div>
+        <div class="stat-box"><div class="stat-label">Trades</div><div class="stat-val">${ts.trades || 0}</div></div>
+        <div class="stat-box"><div class="stat-label">Win Rate</div><div class="stat-val ${wrCls}">${ts.win_rate || 0}%</div></div>
+        <div class="stat-box"><div class="stat-label">Profit Factor</div><div class="stat-val ${pfCls}">${ts.profit_factor || '—'}</div></div>
+      </div>
+
+      <div class="market-row">
+        ${mktPills}
+        ${tickerPills}
+        ${regime}
+      </div>
+
+      ${stratRows ? `<div class="strat-section"><div class="section-label">Strategy Breakdown</div>${stratRows}</div>` : ''}
+
+      <div class="ai-section">
+        <div class="ai-label"><span class="ai-badge">Claude AI</span> Weekly Analysis</div>
+        ${aiContent}
+      </div>
+
+      <div class="notes-section">
+        <div class="section-label" style="margin-bottom:8px">Your Notes</div>
+        <textarea class="notes-area" id="notes-${esc(e.week)}" placeholder="Add your own observations, lessons learned, what to watch next week…">${esc(e.user_notes || '')}</textarea>
+        <div style="display:flex;align-items:center">
+          <button class="save-btn" onclick="saveNotes('${esc(e.week)}')">Save Notes</button>
+          <span class="save-ok" id="save-ok-${esc(e.week)}">✓ Saved</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  async function regenerate(week) {
+    document.getElementById('weekPicker').value =
+      week.replace('-W', '-W').replace(/-W(\d)$/, '-W0$1');
+    generate();
+  }
+
+  async function saveNotes(week) {
+    const notes = document.getElementById(`notes-${week}`)?.value || '';
+    await fetch('/api/journal/notes', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week, notes }),
+    });
+    const ok = document.getElementById(`save-ok-${week}`);
+    if (ok) { ok.style.opacity = '1'; setTimeout(() => ok.style.opacity = '0', 2000); }
+  }
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    const btn = document.getElementById('navMenuBtn');
+    const menu = document.getElementById('navMenu');
+    if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+  });
+
+  loadEntries();
+</script>
+</body>
+</html>
