@@ -1891,36 +1891,68 @@ def api_journal_generate():
     spy  = md.get("SPY", {})
     qqq  = md.get("QQQ", {})
     vix  = md.get("VIX", {})
+
+    # Sort strategies by P&L for top/bottom 5
+    all_strats = sorted(ts.get("per_strategy", {}).items(), key=lambda x: x[1]["pnl"], reverse=True)
+    top5    = all_strats[:5]
+    bot5    = all_strats[-5:] if len(all_strats) > 5 else []
+    top5_pnl = round(sum(v["pnl"] for _, v in top5), 2)
+    bot5_pnl = round(sum(v["pnl"] for _, v in bot5), 2)
+    spy_ret  = spy.get("weekly_return", 0) or 0
+    qqq_ret  = qqq.get("weekly_return", 0) or 0
+
     prompt = (
         f"You are a trading coach reviewing a systematic trader's weekly performance journal.\n\n"
         f"Week: {week} ({from_date} to {to_date})\n\n"
         f"MARKET CONTEXT:\n"
-        f"  SPY: {spy.get('weekly_return', 'N/A')}% (open {spy.get('open','?')} → close {spy.get('close','?')})\n"
-        f"  QQQ: {qqq.get('weekly_return', 'N/A')}%\n"
+        f"  SPY: {spy_ret:+.2f}% (open ${spy.get('open','?')} → close ${spy.get('close','?')})\n"
+        f"  QQQ: {qqq_ret:+.2f}%\n"
         f"  VIX: {vix.get('open','?')} → {vix.get('close','?')}\n"
         f"  Regime: {md.get('regime', 'Unknown')}\n\n"
-        f"TICKERS TRADED:\n"
+        f"TICKERS TRADED THIS WEEK:\n"
     )
     for sym in ts.get("tickers", []):
         td = md.get(sym, {})
-        prompt += f"  {sym}: {td.get('weekly_return', 'N/A')}%\n"
+        prompt += f"  {sym}: {td.get('weekly_return', 'N/A'):+.2f}% (open ${td.get('open','?')} → close ${td.get('close','?')})\n" \
+                  if isinstance(td.get('weekly_return'), (int, float)) else f"  {sym}: N/A\n"
+
     prompt += (
-        f"\nTRADE PERFORMANCE:\n"
+        f"\nOVERALL PERFORMANCE:\n"
         f"  {ts.get('trades', 0)} trades · Win rate {ts.get('win_rate', 0)}% · "
-        f"P&L ${ts.get('total_pnl', 0):+.2f} · PF {ts.get('profit_factor') or '—'}\n"
-        f"  Best strategy: {ts.get('best_strategy','—')} (${ts.get('best_pnl',0):+.2f})\n"
-        f"  Worst strategy: {ts.get('worst_strategy','—')} (${ts.get('worst_pnl',0):+.2f})\n\n"
-        f"PER-STRATEGY BREAKDOWN:\n"
+        f"Total P&L ${ts.get('total_pnl', 0):+.2f} · PF {ts.get('profit_factor') or '—'}\n\n"
+        f"TOP 5 PERFORMERS (combined P&L ${top5_pnl:+.2f} vs SPY {spy_ret:+.2f}% / QQQ {qqq_ret:+.2f}%):\n"
     )
-    for strat, sv in list(ts.get("per_strategy", {}).items())[:10]:
-        prompt += f"  {strat}: {sv['trades']} trades · ${sv['pnl']:+.2f}\n"
+    for strat, sv in top5:
+        ticker = strat.split('_')[1] if '_' in strat else ''
+        tk_ret = md.get(ticker, {}).get('weekly_return', 'N/A')
+        tk_str = f" | {ticker} stock {tk_ret:+.2f}%" if isinstance(tk_ret, (int, float)) else ""
+        prompt += f"  {strat}: {sv['trades']} trades · ${sv['pnl']:+.2f}{tk_str}\n"
+
+    if bot5:
+        prompt += f"\nBOTTOM 5 PERFORMERS (combined P&L ${bot5_pnl:+.2f}):\n"
+        for strat, sv in reversed(bot5):
+            ticker = strat.split('_')[1] if '_' in strat else ''
+            tk_ret = md.get(ticker, {}).get('weekly_return', 'N/A')
+            tk_str = f" | {ticker} stock {tk_ret:+.2f}%" if isinstance(tk_ret, (int, float)) else ""
+            prompt += f"  {strat}: {sv['trades']} trades · ${sv['pnl']:+.2f}{tk_str}\n"
+
     prompt += (
-        f"\nWrite a concise weekly trading journal entry (3-4 paragraphs). Include:\n"
-        f"1. Was the market regime favorable or unfavorable for this strategy type "
-        f"(Camarilla breakout/reversal on intraday 5-min bars)?\n"
-        f"2. Which strategies worked and which didn't, and why given the market context?\n"
-        f"3. One or two specific observations to watch for next week.\n"
-        f"Be direct and specific. No fluff. Write in second person ('your strategies...')."
+        f"\nWrite a weekly trading journal entry with these FOUR sections. Use the exact headers shown:\n\n"
+        f"**Market Regime & Setup Availability**\n"
+        f"Was the regime favorable for Camarilla breakout/reversal strategies on 5-min bars? "
+        f"Reference VIX level and SPY/QQQ direction specifically.\n\n"
+        f"**Top 5 Analysis**\n"
+        f"Combined P&L was ${top5_pnl:+.2f}. For each top strategy, state whether the P&L was driven by "
+        f"the stock outperforming SPY/QQQ, or whether your strategy captured alpha beyond what the stock itself did. "
+        f"For example: if NVDA was up 3% but your NVDA strategy made $200, that's alpha — if NVDA was up 3% "
+        f"and your strategy lost money, that's a strategy miss on a strong ticker.\n\n"
+        f"**Bottom 5 Analysis**\n"
+        f"Combined P&L was ${bot5_pnl:+.2f}. For each bottom strategy, state whether the loss was due to "
+        f"the stock moving against you (market regime) or whether the stock was actually up but the strategy "
+        f"still lost (a structural miss). This distinction matters for deciding whether to pause the strategy.\n\n"
+        f"**Next Week Watchlist**\n"
+        f"One or two specific things to monitor. Which of the bottom 5 should be paused vs given another week?\n\n"
+        f"Be direct and specific. No fluff. Keep each section to 2-3 sentences. Write in second person."
     )
 
     def _stream():
@@ -1929,7 +1961,7 @@ def api_journal_generate():
         try:
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=600,
+                max_tokens=900,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
                 for text in stream.text_stream:
