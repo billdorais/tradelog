@@ -612,6 +612,16 @@
         <input type="text" id="equityToDate" placeholder="To date"
           title="Show P&L up to this date" readonly
           style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer;width:110px">
+        <button onclick="setEquityToday()"
+          title="Show today only"
+          style="background:rgba(136,191,139,0.1);border:1px solid #2a2d3e;color:#7FE098;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">
+          Today
+        </button>
+        <button onclick="clearEquityDates()"
+          title="Show all history"
+          style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">
+          ✕
+        </button>
       </div>
     </div>
     <canvas id="equityChart" height="90"></canvas>
@@ -2805,6 +2815,25 @@
     // ── Flatpickr calendar pickers — persist dates to localStorage ────────────
     const _LS_FROM = 'kairos_date_from';
     const _LS_TO   = 'kairos_date_to';
+
+    function setEquityToday() {
+      const today = new Date().toISOString().slice(0, 10);
+      const fpFrom = document.getElementById('equityFromDate')._flatpickr;
+      const fpTo   = document.getElementById('equityToDate')._flatpickr;
+      if (fpFrom) fpFrom.setDate(today, true);
+      if (fpTo)   fpTo.setDate(today, true);
+      _saveDashboardDates();
+      applyEquityFilter();
+    }
+
+    function clearEquityDates() {
+      const fpFrom = document.getElementById('equityFromDate')._flatpickr;
+      const fpTo   = document.getElementById('equityToDate')._flatpickr;
+      if (fpFrom) fpFrom.clear();
+      if (fpTo)   fpTo.clear();
+      _saveDashboardDates();
+      applyEquityFilter();
+    }
 
     function _saveDashboardDates() {
       const f = document.getElementById('equityFromDate').value;
