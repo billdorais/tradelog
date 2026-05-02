@@ -119,6 +119,27 @@
     return (n >= 0 ? '+' : '') + '$' + Math.abs(n).toFixed(2);
   }
 
+  function weekDateRange(weekStr) {
+    // weekStr = "2026-W19" → "Apr 28 – May 2, 2026"
+    try {
+      const [yearStr, wStr] = weekStr.split('-W');
+      const year = parseInt(yearStr), wk = parseInt(wStr);
+      // ISO: Jan 4 is always in week 1
+      const jan4 = new Date(Date.UTC(year, 0, 4));
+      const w1Mon = new Date(jan4);
+      w1Mon.setUTCDate(jan4.getUTCDate() - (jan4.getUTCDay() || 7) + 1);
+      const mon = new Date(w1Mon);
+      mon.setUTCDate(w1Mon.getUTCDate() + (wk - 1) * 7);
+      const fri = new Date(mon);
+      fri.setUTCDate(mon.getUTCDate() + 4);
+      const fmt = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+      const fmtY = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+      return mon.getUTCMonth() === fri.getUTCMonth()
+        ? `${fmt(mon)} – ${fmtY(fri)}`
+        : `${fmt(mon)} – ${fmtY(fri)}`;
+    } catch { return weekStr; }
+  }
+
   // Default week picker to current week
   (function() {
     // Use ISO 8601 week number to match what <input type="week"> expects
@@ -142,7 +163,7 @@
     const card = document.createElement('div');
     card.className = 'entry';
     card.id = 'live-entry';
-    card.innerHTML = `<div class="entry-head"><div class="entry-week">${esc(week)}</div><div class="entry-date">Generating…</div></div>
+    card.innerHTML = `<div class="entry-head"><div class="entry-week">${esc(weekDateRange(week))}</div><div class="entry-date">Generating…</div></div>
       <div class="ai-section"><div class="ai-label"><span class="ai-badge">Claude AI</span> Weekly Analysis</div>
       <div class="ai-text" id="live-text"><span class="ai-placeholder"><span class="spinner"></span> Fetching trade data and market conditions…</span></div></div>`;
     const container = document.getElementById('entries');
@@ -241,8 +262,8 @@
     return `<div class="entry">
       <div class="entry-head" style="display:flex;justify-content:space-between;align-items:flex-start">
         <div>
-          <div class="entry-week">Week ${esc(e.week)}</div>
-          <div class="entry-date">Generated ${esc((e.generated_at || '').slice(0,10))}</div>
+          <div class="entry-week">${esc(weekDateRange(e.week))}</div>
+          <div class="entry-date">Week ${esc(e.week)} &nbsp;·&nbsp; Generated ${esc((e.generated_at || '').slice(0,10))}</div>
         </div>
         <button onclick="regenerate('${esc(e.week)}')"
           style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer">
