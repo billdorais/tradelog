@@ -332,6 +332,7 @@ if _IB_ENABLED and os.environ.get("IB_HOST_LIVE"):
 
 alpaca_broker = None
 _alpaca_fills_cache    = {"data": [], "ts": 0.0}
+_alpaca_fills_lock     = threading.Lock()   # prevents concurrent duplicate fetches
 _alpaca_analysis_cache = {}   # key → {"data": ..., "ts": float}
 ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
 ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
@@ -343,14 +344,19 @@ ALPACA_POSITIONS_TTL = 15  # seconds — live P&L dashboard polls every 10s; cac
 
 
 def _get_cached_fills():
-    """Return Alpaca fills from the shared cache, fetching only when stale."""
+    """Return Alpaca fills from the shared cache, fetching only when stale.
+    Lock prevents concurrent duplicate fetches (thundering herd on startup)."""
     global _alpaca_fills_cache
     now = time.time()
     if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
         return _alpaca_fills_cache["data"]
-    fills = alpaca_broker.get_fills()
-    _alpaca_fills_cache = {"data": fills, "ts": now}
-    return fills
+    with _alpaca_fills_lock:
+        # Re-check inside lock — another thread may have populated while we waited
+        if time.time() - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
+            return _alpaca_fills_cache["data"]
+        fills = alpaca_broker.get_fills()
+        _alpaca_fills_cache = {"data": fills, "ts": time.time()}
+    return _alpaca_fills_cache["data"]
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
