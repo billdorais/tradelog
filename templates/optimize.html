@@ -988,10 +988,9 @@
   let _fanResults = [];
 
   function _showFanout() {
-    // Called when optimizer results arrive — reveal Step 2 and pre-fill ticker
     document.getElementById('fanoutSection').style.display = '';
-    const top = results.filter(r => r.run_id === currentRunId)
-                        .sort((a,b) => (b.score||0)-(a.score||0))[0];
+    const runResults = currentRunId ? results.filter(r => r.run_id === currentRunId) : results;
+    const top = (runResults.length ? runResults : results).sort((a,b) => (b.score||0)-(a.score||0))[0];
     if (!top) return;
     const cur = document.getElementById('fanoutTickers').value.trim();
     if (!cur) document.getElementById('fanoutTickers').value = top.ticker;
@@ -1002,25 +1001,20 @@
   }
 
   async function runFanout() {
-    const top = results.filter(r => r.run_id === currentRunId)
-                        .sort((a,b) => (b.score||0)-(a.score||0))[0];
-    if (!top) return;
+    // Prefer current run; fall back to best result across all loaded results
+    const runResults = currentRunId
+      ? results.filter(r => r.run_id === currentRunId)
+      : results;
+    const top = (runResults.length ? runResults : results)
+                  .sort((a,b) => (b.score||0)-(a.score||0))[0];
+    if (!top) {
+      const ll = document.getElementById('fanProgressLog');
+      document.getElementById('fanProgressWrap').style.display = '';
+      ll.innerHTML = '<div class="log-line log-warn">No optimizer results found — run the optimizer first.</div>';
+      return;
+    }
 
-    const tickersRaw = document.getElementById('fanoutTickers').value;
-    const tickers = [...new Set([
-      top.ticker.toUpperCase(),
-      ...tickersRaw.split(',').map(t => t.trim().toUpperCase()).filter(Boolean),
-    ])];
-    const timeframes = [...document.querySelectorAll('#fanoutTfGrid .tf-btn.active')]
-                         .map(b => b.dataset.tf);
-    if (!timeframes.length) { alert('Select at least one timeframe.'); return; }
-
-    const gates = {
-      min_pf:     parseFloat(document.getElementById('fanGatePf').value)     || 1.3,
-      min_trades: parseInt(document.getElementById('fanGateTrades').value)   || 10,
-      max_dd_pct: parseFloat(document.getElementById('fanGateDd').value)     || 20,
-    };
-
+    // Show progress area immediately so the user sees feedback
     const btn = document.getElementById('fanRunBtn');
     btn.disabled = true; btn.textContent = 'Running…';
     _fanResults = [];
@@ -1029,6 +1023,30 @@
     document.getElementById('fanProgressLog').innerHTML       = '';
     document.getElementById('fanProgressFill').style.width    = '0%';
     document.getElementById('fanProvisionBtn').style.display  = 'none';
+
+    const tickersRaw = document.getElementById('fanoutTickers').value;
+    const tickers = [...new Set([
+      top.ticker.toUpperCase(),
+      ...tickersRaw.split(',').map(t => t.trim().toUpperCase()).filter(Boolean),
+    ])];
+    const timeframes = [...document.querySelectorAll('#fanoutTfGrid .tf-btn.active')]
+                         .map(b => b.dataset.tf);
+    if (!timeframes.length) {
+      document.getElementById('fanProgressLog').innerHTML = '<div class="log-line log-warn">Select at least one timeframe.</div>';
+      btn.disabled = false; btn.textContent = 'Run Fan Out';
+      return;
+    }
+
+    const gates = {
+      min_pf:     parseFloat(document.getElementById('fanGatePf').value)     || 1.3,
+      min_trades: parseInt(document.getElementById('fanGateTrades').value)   || 10,
+      max_dd_pct: parseFloat(document.getElementById('fanGateDd').value)     || 20,
+    };
+
+    document.getElementById('fanProgressLog').innerHTML =
+      `<div class="log-line">Strategy: <strong style="color:#ccc">${top.strategy}</strong> · `+
+      `Params: ${Object.entries(top.params||{}).map(([k,v])=>k+'='+v).join(', ')||'defaults'} · `+
+      `Testing ${tickers.length} ticker(s) × ${timeframes.length} TF(s)</div>`;
 
     try {
       const res = await fetch('/api/bt/fanout', {
