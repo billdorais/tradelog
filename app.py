@@ -3070,6 +3070,8 @@ def bt_optimize():
     maximize       = body.get("maximize",    "Sharpe Ratio")
     param_ranges   = body.get("param_ranges", {})
     strategy_code  = body.get("strategy_code", "")
+    multi_ticker   = bool(body.get("multi_ticker", False))
+    agg_metric     = body.get("agg_metric", "avg_sharpe")   # avg_sharpe|avg_pf|pass_count|min_pf
 
     class _NpEnc(_json.JSONEncoder):
         def default(self, o):
@@ -3149,6 +3151,159 @@ def bt_optimize():
         done   = 0
         run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
+        def _snap_eq(s_run, n=200):
+            """Snapshot equity curve immediately — bt._equity_curve is overwritten on each run."""
+            try:
+                ec   = s_run._equity_curve["Equity"]
+                step = max(1, len(ec) // n)
+                ec_s = ec.iloc[::step]
+                return {"dates":  [str(d)[:10] for d in ec_s.index],
+                        "values": [round(float(v), 2) for v in ec_s.values]}
+            except Exception:
+                return None
+
+        # ── Multi-ticker mode: find params that work across all tickers ──────
+        if multi_ticker and len(tickers) > 1:
+            import itertools as _it, random as _rnd
+
+            def _f(v, n=2):
+                try:
+                    fv = float(v or 0)
+                    if fv != fv or fv == float('inf') or fv == float('-inf'): return None
+                    return round(fv, n)
+                except Exception: return 0
+
+            def _make_stats(s):
+                return {
+                    "Return [%]":        _f(s.get("Return [%]")),
+                    "Sharpe Ratio":      _f(s.get("Sharpe Ratio"), 3),
+                    "Max. Drawdown [%]": _f(s.get("Max. Drawdown [%]")),
+                    "Win Rate [%]":      _f(s.get("Win Rate [%]")),
+                    "# Trades":          int(s.get("# Trades") or 0),
+                    "Profit Factor":     _f(s.get("Profit Factor"), 3),
+                    "Calmar Ratio":      _f(s.get("Calmar Ratio"), 3),
+                    "Equity Final [$]":  _f(s.get("Equity Final [$]"), 2),
+                }
+
+            # Step 1: Load all datasets upfront
+            all_pairs = [(t, tf) for t in tickers for tf in timeframes]
+            datasets  = {}   # (ticker, tf) → df
+            yield _sse({"type": "progress", "msg": f"Loading data for {len(all_pairs)} ticker/TF pairs…", "pct": 1})
+            for tk, tf in all_pairs:
+                try:
+                    if data_source == "alpaca":
+                        from strategies.data import fetch_bars_alpaca
+                        raw = fetch_bars_alpaca(tk, start_date, end_date, tf)
+                    else:
+                        from strategies.data import fetch_bars
+                        raw = fetch_bars(tk, start_date, end_date, tf)
+                    if len(raw) < 30:
+                        yield _sse({"type": "warning", "msg": f"{tk}/{tf}: only {len(raw)} bars — skipped"}); continue
+                    df = _pd.DataFrame(raw).set_index("time")
+                    df.index = _pd.to_datetime(df.index)
+                    df.columns = [c.title() for c in df.columns]
+                    df = df[["Open", "High", "Low", "Close"]].dropna(); df["Volume"] = 0
+                    if tf in _INTRADAY_TF: df = _filter_rth(df)
+                    datasets[(tk, tf)] = df
+                except Exception as _de:
+                    yield _sse({"type": "warning", "msg": f"{tk}/{tf} data error: {_de}"})
+            if not datasets:
+                yield _sse({"type": "error", "msg": "No data loaded for any ticker"}); return
+
+            # Step 2: Sample param combos (fewer trials since each runs on all tickers)
+            if opt_kwargs:
+                grid_size = 1
+                for vals in opt_kwargs.values(): grid_size *= len(vals)
+                n_multi = min(max(15, 120 // len(datasets)), grid_size)
+                yield _sse({"type": "progress", "msg": f"Sampling {n_multi} param combos across {len(datasets)} datasets…", "pct": 5})
+                combos, seen = [], set()
+                attempts = 0
+                while len(combos) < n_multi and attempts < n_multi * 10:
+                    attempts += 1
+                    p = {k: _rnd.choice(v) for k, v in opt_kwargs.items()}
+                    key = tuple(sorted(p.items()))
+                    if key not in seen:
+                        seen.add(key); combos.append(p)
+            else:
+                combos = [{}]
+
+            # Step 3: Score each combo across all tickers
+            def _agg_score(ticker_stats):
+                valid = [s for s in ticker_stats if s and s.get("# Trades", 0) >= 3]
+                if not valid: return 0.0
+                if agg_metric == "avg_pf":
+                    return sum(_f(s.get("Profit Factor"), 4) or 0 for s in valid) / len(valid)
+                elif agg_metric == "pass_count":
+                    return sum(1 for s in valid
+                               if (_f(s.get("Profit Factor"), 4) or 0) >= 1.3
+                               and abs(_f(s.get("Max. Drawdown [%]"), 2) or 100) <= 20
+                               and s.get("# Trades", 0) >= 10)
+                elif agg_metric == "min_pf":
+                    pfs = [(_f(s.get("Profit Factor"), 4) or 0) for s in valid]
+                    return min(pfs) if pfs else 0
+                else:   # avg_sharpe (default)
+                    return sum(_f(s.get("Sharpe Ratio"), 4) or 0 for s in valid) / len(valid)
+
+            scored_combos = []
+            for ci, p_ov in enumerate(combos):
+                pct = 5 + int(ci / len(combos) * 85)
+                yield _sse({"type": "progress",
+                            "msg": f"Combo {ci+1}/{len(combos)}: {' · '.join(f'{k}={v}' for k,v in p_ov.items()) or 'defaults'}",
+                            "pct": pct})
+                ticker_stats = {}
+                ref_eq = None   # equity curve from first successful ticker (for chart)
+                for (tk, tf), df in datasets.items():
+                    try:
+                        bt = Backtest(df, strategy_cls, cash=cash, commission=commission,
+                                      exclusive_orders=True,
+                                      trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
+                        s = bt.run(**p_ov)
+                        ticker_stats[(tk, tf)] = _make_stats(s)
+                        if ref_eq is None:
+                            ref_eq = _snap_eq(s)   # reuse helper from single-ticker path
+                    except Exception:
+                        ticker_stats[(tk, tf)] = None
+
+                combined = _agg_score(list(ticker_stats.values()))
+                scored_combos.append((p_ov, combined, ticker_stats, ref_eq))
+
+            # Step 4: Yield top 3
+            scored_combos.sort(key=lambda x: x[1], reverse=True)
+            yield _sse({"type": "progress", "msg": "Ranking results…", "pct": 95})
+            for rank, (p_ov, combined, ticker_stats, ref_eq) in enumerate(scored_combos[:3]):
+                all_stats = [s for s in ticker_stats.values() if s]
+                n_pass = sum(1 for s in all_stats
+                             if (s.get("Profit Factor") or 0) >= 1.3
+                             and abs(s.get("Max. Drawdown [%]") or 100) <= 20
+                             and s.get("# Trades", 0) >= 10)
+                avg_ret    = round(sum(s.get("Return [%]") or 0    for s in all_stats) / max(len(all_stats),1), 2)
+                avg_sharpe = round(sum(s.get("Sharpe Ratio") or 0  for s in all_stats) / max(len(all_stats),1), 3)
+                avg_pf     = round(sum(s.get("Profit Factor") or 0 for s in all_stats) / max(len(all_stats),1), 3)
+                min_pf     = round(min((s.get("Profit Factor") or 0) for s in all_stats), 3) if all_stats else 0
+                avg_trades = int(sum(s.get("# Trades") or 0        for s in all_stats) / max(len(all_stats),1))
+                per_ticker_out = {f"{tk}/{tf}": ts for (tk, tf), ts in ticker_stats.items()}
+                row = {
+                    "type": "result", "run_id": run_id,
+                    "strategy": strategy_name,
+                    "ticker": "MULTI", "timeframe": "/".join(timeframes),
+                    "multi_ticker": True,
+                    "params": p_ov, "rank": rank + 1,
+                    "score": round(combined, 4),
+                    "equity_curve": ref_eq,
+                    "agg_metric": agg_metric,
+                    "stats": {
+                        "Return [%]": avg_ret, "Sharpe Ratio": avg_sharpe,
+                        "Profit Factor": avg_pf, "Min PF": min_pf,
+                        "# Trades": avg_trades,
+                        "Passes": f"{n_pass}/{len(datasets)}",
+                    },
+                    "per_ticker": per_ticker_out,
+                    "n_pass": n_pass, "n_total": len(datasets),
+                }
+                yield _sse(row)
+            yield _sse({"type": "done", "run_id": run_id})
+            return   # ← skip the per-ticker loop below
+
         for ticker in tickers:
             for tf in timeframes:
                 done += 1
@@ -3213,21 +3368,6 @@ def bt_optimize():
 
                     bt = Backtest(df, strategy_cls, cash=cash, commission=commission, exclusive_orders=True,
                                   trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
-
-                    def _snap_eq(s_run, n=200):
-                        """Snapshot the equity curve immediately after bt.run().
-                        bt._equity_curve is overwritten on every run so we must
-                        capture it before the next call, not after sorting."""
-                        try:
-                            ec   = s_run._equity_curve["Equity"]
-                            step = max(1, len(ec) // n)
-                            ec_s = ec.iloc[::step]
-                            return {
-                                "dates":  [str(d)[:10] for d in ec_s.index],
-                                "values": [round(float(v), 2) for v in ec_s.values],
-                            }
-                        except Exception:
-                            return None
 
                     combo_results = []   # list of (params_dict, stats, eq_curve)
 

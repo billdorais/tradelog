@@ -220,7 +220,32 @@
   </div>
 
   <div class="card">
-    <div class="card-title">Tickers &amp; Timeframes</div>
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <span>Tickers &amp; Timeframes</span>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.82rem;font-weight:500;color:#ccc;text-transform:none;letter-spacing:0">
+        <input type="checkbox" id="multiTickerToggle" onchange="toggleMultiMode()"
+               style="accent-color:#7FE098;width:15px;height:15px;cursor:pointer">
+        Multi-Ticker Mode
+        <span style="color:#555;font-size:0.72rem;font-weight:400">&nbsp;— find params that work across all tickers</span>
+      </label>
+    </div>
+    <!-- Multi-ticker options (hidden until toggle is on) -->
+    <div id="multiTickerOpts" style="display:none;margin-bottom:14px;padding:12px 14px;background:#0a0a0a;border:1px solid #1e2130;border-radius:8px">
+      <div style="font-size:0.72rem;color:#7FE098;font-weight:600;margin-bottom:8px">&#9733; Multi-Ticker Mode Active</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:10px;line-height:1.5">
+        Each param combo runs on <strong style="color:#ccc">all tickers simultaneously</strong> and is scored by how well it performs across the whole universe.
+        Returns the top 3 combos that are most robust across your ticker list.
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="font-size:0.72rem;color:#666;font-weight:600;text-transform:uppercase">Score By</label>
+        <select id="aggMetric" style="background:#111113;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 10px;font-size:0.82rem">
+          <option value="avg_sharpe">Avg Sharpe (recommended)</option>
+          <option value="avg_pf">Avg Profit Factor</option>
+          <option value="pass_count">Pass Count (# tickers meeting gates)</option>
+          <option value="min_pf">Worst-Case PF (most conservative)</option>
+        </select>
+      </div>
+    </div>
     <div class="form-row" style="margin-bottom:16px">
       <div class="field" style="grid-column:span 3">
         <label>Tickers (comma-separated)</label>
@@ -573,17 +598,20 @@
       };
     }
 
+    const isMulti = document.getElementById('multiTickerToggle').checked;
     const payload = {
       strategy_type:  'saved',
       strategy_name:  slug,
       tickers, timeframes,
-      start_date:  document.getElementById('startDate').value,
-      end_date:    document.getElementById('endDate').value,
-      cash:        parseFloat(document.getElementById('cash').value),
-      commission:  parseFloat(document.getElementById('commission').value) / 100,
-      data_source: document.getElementById('dataSource').value,
-      maximize:    document.getElementById('maximize').value,
+      start_date:   document.getElementById('startDate').value,
+      end_date:     document.getElementById('endDate').value,
+      cash:         parseFloat(document.getElementById('cash').value),
+      commission:   parseFloat(document.getElementById('commission').value) / 100,
+      data_source:  document.getElementById('dataSource').value,
+      maximize:     document.getElementById('maximize').value,
       param_ranges: paramRanges,
+      multi_ticker: isMulti,
+      agg_metric:   document.getElementById('aggMetric').value,
     };
 
     currentRunId = null;  // reset so first result sets the new run's ID
@@ -694,11 +722,52 @@
 
     const tbody = document.getElementById('resultsBody');
     tbody.innerHTML = sorted.map((r, i) => {
-      const isBase = !!r.baseline;
-      const rankClass = !isBase && sortKey === 'score' ? ['rank-1','rank-2','rank-3'][i] || '' : '';
-      const isBest = i === 0 && sortKey === 'score' && !isBase;
-      const pStr   = isBase ? '<span style="color:#F2E7AC;font-size:0.75rem">DEFAULT PARAMS</span>'
-                             : (Object.entries(r.params || {}).map(([k, v]) => `${k}=${v}`).join(' · ') || '—');
+      const isBase  = !!r.baseline;
+      const isMulti = !!r.multi_ticker;
+      const rankClass = !isBase && !isMulti && sortKey === 'score' ? ['rank-1','rank-2','rank-3'][i] || '' : '';
+      const isBest  = i === 0 && sortKey === 'score' && !isBase && !isMulti;
+      const pStr    = isBase ? '<span style="color:#F2E7AC;font-size:0.75rem">DEFAULT PARAMS</span>'
+                              : (Object.entries(r.params || {}).map(([k, v]) => `${k}=${v}`).join(' · ') || '—');
+      const selClass = selectedIdx === i ? 'selected-row' : '';
+
+      if (isMulti) {
+        // Multi-ticker result row
+        const nPass   = r.n_pass || 0;
+        const nTotal  = r.n_total || 1;
+        const passColor = nPass >= nTotal * 0.7 ? '#7FE098' : nPass >= nTotal * 0.4 ? '#F2E7AC' : '#ef5350';
+        const ret     = r.stats['Return [%]'] || 0;
+        const sharpe  = r.stats['Sharpe Ratio'] || 0;
+        const pf      = r.stats['Profit Factor'] || 0;
+        const minPf   = r.stats['Min PF'] || 0;
+        const trades  = r.stats['# Trades'] || 0;
+        const rankCls = ['rank-1','rank-2','rank-3'][i] || '';
+        // Per-ticker breakdown tooltip
+        const perTicker = r.per_ticker || {};
+        const perRows = Object.entries(perTicker).map(([key, s]) => {
+          if (!s) return `<div style="color:#555">${key}: error</div>`;
+          const pf2 = (s['Profit Factor'] || 0).toFixed(2);
+          const ret2 = (s['Return [%]'] || 0).toFixed(1);
+          const ok = (s['Profit Factor'] || 0) >= 1.3 && s['# Trades'] >= 10;
+          return `<div style="color:${ok ? '#7FE098' : '#ef5350'}">${key}: PF ${pf2} · ${ret2}% · ${s['# Trades']} trades</div>`;
+        }).join('');
+        return `<tr class="best-row ${selClass}" style="border-left:3px solid #7FA8E0" onclick="selectRow(${i}, event)">
+          <td class="${rankCls}">${i+1} ★</td>
+          <td colspan="2"><span class="badge" style="background:rgba(127,168,224,0.15);color:#7FA8E0">MULTI ${nTotal}</span></td>
+          <td style="font-size:0.78rem;color:#888">${pStr}</td>
+          <td style="font-weight:700;color:#7FA8E0">${typeof r.score === 'number' ? r.score.toFixed(4) : r.score}</td>
+          <td style="font-weight:700;color:${passColor}">${nPass}/${nTotal} pass</td>
+          <td class="${ret >= 0 ? 'pos' : 'neg'}">${ret.toFixed(2)}% avg</td>
+          <td>${sharpe.toFixed(3)} avg</td>
+          <td style="color:#555">—</td>
+          <td style="color:#555">—</td>
+          <td class="${pf >= 1.3 ? 'pos' : 'neg'}">${pf.toFixed(3)} avg</td>
+          <td style="font-size:0.75rem;color:#555">
+            <details><summary style="cursor:pointer;color:#555">per ticker ▾</summary>
+            <div style="margin-top:4px;font-size:0.72rem;line-height:1.7">${perRows}</div></details>
+          </td>
+        </tr>`;
+      }
+
       const startCash = parseFloat(document.getElementById('cash')?.value) || 10000;
       const equityFinal = r.stats['Equity Final [$]'] || 0;
       const pnl    = equityFinal ? equityFinal - startCash : null;
@@ -710,7 +779,6 @@
       const pf     = r.stats['Profit Factor'];
       const pfStr  = (pf == null || pf === Infinity || pf > 999 || isNaN(pf)) ? '∞' : pf.toFixed(3);
       const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + '$' + pnl.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
-      const selClass = selectedIdx === i ? 'selected-row' : '';
       return `<tr class="${isBest ? 'best-row' : ''} ${selClass}"
                   style="${isBase ? 'border-left:3px solid #F2E7AC' : ''}"
                   onclick="selectRow(${i}, event)">
@@ -1022,6 +1090,12 @@
     if (!top) return;
     const cur = document.getElementById('fanoutTickers').value.trim();
     if (!cur) document.getElementById('fanoutTickers').value = top.ticker;
+  }
+
+  function toggleMultiMode() {
+    const on = document.getElementById('multiTickerToggle').checked;
+    document.getElementById('multiTickerOpts').style.display = on ? '' : 'none';
+    // In multi-ticker mode, single-ticker maximize still applies per-run inside the loop
   }
 
   function toggleFanTf(btn) {
