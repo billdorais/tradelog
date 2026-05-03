@@ -23,7 +23,7 @@
     .subtitle { font-size: 0.88rem; color: #666; margin-bottom: 28px; }
 
     /* ── Cards ───────────────────────────────────────────────── */
-    .card { background: #26201C; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
+    .card { background: #111113; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
     .card-title { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 16px; font-weight: 600; }
 
     /* ── Form grid ───────────────────────────────────────────── */
@@ -65,7 +65,7 @@
 
     /* ── Progress ────────────────────────────────────────────── */
     .progress-wrap { margin-bottom: 6px; }
-    .progress-bar-bg { background: #26201C; border: 1px solid #1e2130; border-radius: 6px; height: 8px; overflow: hidden; }
+    .progress-bar-bg { background: #111113; border: 1px solid #1e2130; border-radius: 6px; height: 8px; overflow: hidden; }
     .progress-bar-fill { height: 100%; background: #7FA8E0; border-radius: 6px; transition: width 0.3s; width: 0%; }
     .progress-log { margin-top: 10px; font-size: 0.8rem; color: #555; max-height: 80px; overflow-y: auto; }
     .progress-log .log-line { padding: 2px 0; }
@@ -893,11 +893,12 @@
         label,
         data: r.equity_curve.values,
         borderColor: CURVE_COLORS[i],
-        backgroundColor: CURVE_COLORS[i] + '18',
-        borderWidth: i === 0 ? 2.5 : 1.5,
+        backgroundColor: i === 0 ? CURVE_COLORS[i] + '12' : 'transparent',
+        borderWidth: 2.5,
         pointRadius: 0,
         tension: 0.3,
         fill: i === 0,
+        order: 3 - i,   // rank 1 drawn on top
       };
     });
 
