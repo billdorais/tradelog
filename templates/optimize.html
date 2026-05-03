@@ -66,7 +66,7 @@
     /* ── Progress ────────────────────────────────────────────── */
     .progress-wrap { margin-bottom: 6px; }
     .progress-bar-bg { background: #26201C; border: 1px solid #1e2130; border-radius: 6px; height: 8px; overflow: hidden; }
-    .progress-bar-fill { height: 100%; background: #517356; border-radius: 6px; transition: width 0.3s; width: 0%; }
+    .progress-bar-fill { height: 100%; background: #7FA8E0; border-radius: 6px; transition: width 0.3s; width: 0%; }
     .progress-log { margin-top: 10px; font-size: 0.8rem; color: #555; max-height: 80px; overflow-y: auto; }
     .progress-log .log-line { padding: 2px 0; }
     .log-warn { color: #F2E7AC; }
@@ -102,10 +102,12 @@
     table.results tr.selected-row td { background: rgba(81,115,86,0.12) !important; }
 
     .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
-    .badge-blue  { background: rgba(81,115,86,0.15); color: #7FE098; }
+    .badge-blue  { background: rgba(127,168,224,0.15); color: #7FA8E0; }
     .badge-gray  { background: rgba(255,255,255,0.07); color: #888; }
     .pos { color: #7FE098; } .neg { color: #ef5350; }
     .rank-1 { font-weight: 700; color: #7FE098; }
+    .rank-2 { font-weight: 700; color: #E07FA0; }
+    .rank-3 { font-weight: 700; color: #7FA8E0; }
 
     .empty { text-align: center; padding: 60px 20px; color: #333; font-size: 0.9rem; }
 
@@ -643,6 +645,7 @@
     const tbody = document.getElementById('resultsBody');
     tbody.innerHTML = sorted.map((r, i) => {
       const isBase = !!r.baseline;
+      const rankClass = !isBase && sortKey === 'score' ? ['rank-1','rank-2','rank-3'][i] || '' : '';
       const isBest = i === 0 && sortKey === 'score' && !isBase;
       const pStr   = isBase ? '<span style="color:#F2E7AC;font-size:0.75rem">DEFAULT PARAMS</span>'
                              : (Object.entries(r.params || {}).map(([k, v]) => `${k}=${v}`).join(' · ') || '—');
@@ -661,7 +664,7 @@
       return `<tr class="${isBest ? 'best-row' : ''} ${selClass}"
                   style="${isBase ? 'border-left:3px solid #F2E7AC' : ''}"
                   onclick="selectRow(${i}, event)">
-        <td class="${isBest ? 'rank-1' : ''}">${isBase ? '—' : i + 1}${isBest ? ' ★' : ''}</td>
+        <td class="${rankClass}">${isBase ? '—' : i + 1}${isBest ? ' ★' : ''}</td>
         <td><span class="badge ${isBase ? '' : 'badge-blue'}" style="${isBase ? 'background:rgba(242,231,172,0.15);color:#F2E7AC' : ''}">${r.ticker}</span></td>
         <td><span class="badge badge-gray">${r.timeframe}</span></td>
         <td style="font-size:0.78rem;color:#888">${pStr}</td>
@@ -865,7 +868,9 @@
 
   // ── Equity curve chart ─────────────────────────────────────────
   let _equityChart = null;
-  const CURVE_COLORS = ['#7FE098', '#7FE098', '#F2E7AC'];
+  // Complementary palette — evenly spaced ~120° apart on the colour wheel:
+  // #7FE098 mint green (hue 150°) · #E07FA0 rose pink (hue 340°) · #7FA8E0 sky blue (hue 215°)
+  const CURVE_COLORS = ['#7FE098', '#E07FA0', '#7FA8E0'];
 
   function renderEquityChart() {
     // Top-3 from the current run only (so sweeping one param shows that param varying)
