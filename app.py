@@ -3400,6 +3400,7 @@ def bt_fanout():
                                     "status": "error", "reason": "insufficient data"})
                         continue
 
+                    df.columns = [c.title() for c in df.columns]
                     if tf not in ("1d",):
                         df = _filter_rth(df)
 
