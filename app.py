@@ -3349,7 +3349,7 @@ def bt_fanout():
 
         try:
             conn = get_db(); cur = conn.cursor(); p = placeholder()
-            cur.execute(f"SELECT code FROM bt_strategies WHERE slug={p}", (_slug,))
+            cur.execute(f"SELECT code FROM user_strategies WHERE slug={p}", (_slug,))
             row = cur.fetchone(); conn.close()
         except Exception as _dbe:
             yield _sse({"type": "error", "msg": f"DB error: {_dbe}"})
