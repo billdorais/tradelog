@@ -1114,19 +1114,38 @@ def broker_status():
     now = time.time()
     if _broker_status_cache["data"] is not None and (now - _broker_status_cache["ts"]) < BROKER_STATUS_TTL:
         return jsonify(_broker_status_cache["data"])
+
+    # Run each broker status check in a thread with a hard timeout so a
+    # hung broker (e.g. Coinbase SSL stall) never blocks the dashboard.
+    import concurrent.futures as _cf
     brokers = {}
-    brokers["IB"] = ib_broker.status() if ib_broker else {
-        "connected": False, "broker": "IB",
-        "note": "IB disabled (set IB_ENABLED=1 to enable)" if not _IB_ENABLED else "IB_HOST not set",
-    }
-    if ib_broker_live is not None:
-        st = ib_broker_live.status()
-        st["mode"] = "live"
-        brokers["IB_LIVE"] = st
-    if alpaca_broker is not None:
-        brokers["Alpaca"] = alpaca_broker.status()
-    if coinbase_broker is not None:
-        brokers["Coinbase"] = coinbase_broker.status()
+    tasks = {}
+    with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+        if ib_broker:
+            tasks["IB"] = ex.submit(ib_broker.status)
+        else:
+            brokers["IB"] = {
+                "connected": False, "broker": "IB",
+                "note": "IB disabled (set IB_ENABLED=1 to enable)" if not _IB_ENABLED else "IB_HOST not set",
+            }
+        if ib_broker_live is not None:
+            tasks["IB_LIVE"] = ex.submit(ib_broker_live.status)
+        if alpaca_broker is not None:
+            tasks["Alpaca"] = ex.submit(alpaca_broker.status)
+        if coinbase_broker is not None:
+            tasks["Coinbase"] = ex.submit(coinbase_broker.status)
+
+        for name, fut in tasks.items():
+            try:
+                result = fut.result(timeout=10)
+                if name == "IB_LIVE":
+                    result["mode"] = "live"
+                brokers[name] = result
+            except _cf.TimeoutError:
+                brokers[name] = {"broker": name, "connected": False, "error": "status check timed out"}
+            except Exception as e:
+                brokers[name] = {"broker": name, "connected": False, "error": str(e)}
+
     _broker_status_cache = {"data": brokers, "ts": now}
     return jsonify(brokers)
 
