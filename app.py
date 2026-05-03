@@ -3214,7 +3214,22 @@ def bt_optimize():
                     bt = Backtest(df, strategy_cls, cash=cash, commission=commission, exclusive_orders=True,
                                   trade_on_close=getattr(strategy_cls, '_trade_on_close', False))
 
-                    combo_results = []   # list of (params_dict, stats)
+                    def _snap_eq(s_run, n=200):
+                        """Snapshot the equity curve immediately after bt.run().
+                        bt._equity_curve is overwritten on every run so we must
+                        capture it before the next call, not after sorting."""
+                        try:
+                            ec   = s_run._equity_curve["Equity"]
+                            step = max(1, len(ec) // n)
+                            ec_s = ec.iloc[::step]
+                            return {
+                                "dates":  [str(d)[:10] for d in ec_s.index],
+                                "values": [round(float(v), 2) for v in ec_s.values],
+                            }
+                        except Exception:
+                            return None
+
+                    combo_results = []   # list of (params_dict, stats, eq_curve)
 
                     if opt_kwargs:
                         grid_size = 1
@@ -3229,7 +3244,8 @@ def bt_optimize():
                             # Full grid - every combination, full stats
                             for combo in _it.product(*opt_kwargs.values()):
                                 p_ov = dict(zip(opt_kwargs.keys(), combo))
-                                combo_results.append((p_ov, bt.run(**p_ov)))
+                                _s = bt.run(**p_ov)
+                                combo_results.append((p_ov, _s, _snap_eq(_s)))
                         else:
                             # Random search - bypass bt.optimize() which hangs on large spaces.
                             # Sample combos uniformly; more trials than SAMBO's max_tries.
@@ -3248,33 +3264,24 @@ def bt_optimize():
                                 if key in seen:
                                     continue
                                 seen.add(key)
-                                combo_results.append((p_ov, bt.run(**p_ov)))
+                                _s = bt.run(**p_ov)
+                                combo_results.append((p_ov, _s, _snap_eq(_s)))
                     else:
                         yield _sse({"type": "progress",
                                     "msg": f"Running {ticker}/{tf} at defaultsâ€¦", "pct": pct + 1})
-                        combo_results.append(({}, bt.run()))
+                        _s = bt.run()
+                        combo_results.append(({}, _s, _snap_eq(_s)))
 
                     # Sort descending by maximize metric
                     combo_results.sort(
                         key=lambda x: float(x[1].get(maximize) or 0), reverse=True)
 
                     p_ph = placeholder()
-                    for rank, (p_ov, s) in enumerate(combo_results):
+                    for rank, (p_ov, s, eq_curve) in enumerate(combo_results):
                         sd    = _make_stats(s)
                         score = _f(s.get(maximize), 4)
-                        # Attach equity curve for top-3 results (downsampled to ≤200 pts)
-                        eq_curve = None
-                        if rank < 3:
-                            try:
-                                ec = s._equity_curve["Equity"]
-                                step_ec = max(1, len(ec) // 200)
-                                ec_s = ec.iloc[::step_ec]
-                                eq_curve = {
-                                    "dates":  [str(d)[:10] for d in ec_s.index],
-                                    "values": [round(float(v), 2) for v in ec_s.values],
-                                }
-                            except Exception:
-                                pass
+                        # eq_curve was captured immediately after bt.run() to avoid
+                        # bt._equity_curve being overwritten by subsequent runs
 
                         row   = {
                             "type": "result",
