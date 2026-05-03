@@ -18,42 +18,27 @@
     h1 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
     .subtitle { font-size: 0.88rem; color: #666; margin-bottom: 28px; }
 
-    .card { background: #26201C; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
+    .card { background: #111113; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
     .card-title { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 16px; font-weight: 600; }
 
-    textarea { width: 100%; min-height: 380px; background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
-               color: #e0e0e0; padding: 14px; font-size: 0.82rem; font-family: 'Consolas', 'Monaco', monospace;
-               line-height: 1.5; resize: vertical; }
-    textarea:focus { outline: none; border-color: #7FE098; }
-
-    .btn { background: #517356; color: #fff; border: none; border-radius: 8px;
-           padding: 11px 32px; font-size: 0.95rem; font-weight: 700; cursor: pointer; font-family: inherit; }
-    .btn:hover { background: #3a5040; }
-    .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
-    .btn-sec { background: transparent; border: 1px solid #2a2d3e; color: #aaa; }
-    .btn-sec:hover { background: rgba(255,255,255,0.04); color: #fff; }
-    .btn-apply { background: #517356; }
-    .btn-apply:hover { background: #1f8848; }
-
-    .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
-    .status-line { font-size: 0.85rem; color: #888; }
-
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 6px; }
-    th { padding: 9px 10px; text-align: left; font-size: 0.68rem; color: #666;
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { padding: 9px 12px; text-align: left; font-size: 0.68rem; color: #666;
          text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #1e2130; font-weight: 600; }
-    td { padding: 8px 10px; border-bottom: 1px solid #0d0d0d; vertical-align: middle; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    tr.pass  { background: rgba(81,115,86,0.05); }
-    tr.fail  { background: rgba(239,83,80,0.03); }
-    tr.error { background: rgba(255,152,0,0.05); }
-    .badge { display:inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700;
-             letter-spacing: 0.04em; text-transform: uppercase; }
-    .badge.pass  { background: rgba(81,115,86,0.18);  color: #7FE098; }
-    .badge.fail  { background: rgba(239,83,80,0.18);  color: #ef5350; }
-    .badge.error { background: rgba(255,152,0,0.18);  color: #ff9800; }
-    .reason { color: #888; font-size: 0.8rem; }
-    .tv-note { margin-top: 14px; font-size: 0.82rem; color: #888; line-height: 1.6; }
-    .tv-note code { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 4px; padding: 1px 6px; color: #7FE098; font-size: 0.8rem; }
+    td { padding: 9px 12px; border-bottom: 1px solid #0d0d0d; color: #b0b0b0; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    td.name { color: #e0e0e0; font-family: monospace; font-size: 0.8rem; font-weight: 500; }
+    .pos { color: #7FE098; } .neg { color: #ef5350; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; }
+    .badge-on  { background: rgba(81,115,86,0.18);  color: #7FE098; }
+    .badge-off { background: rgba(255,255,255,0.07); color: #666; }
+
+    .btn-deprovision { background: transparent; border: 1px solid #3a2020; color: #ef5350;
+                       border-radius: 5px; padding: 3px 10px; font-size: 0.75rem; cursor: pointer; font-family: inherit; }
+    .btn-deprovision:hover { background: rgba(239,83,80,0.1); }
+    .hint { text-align: center; padding: 40px; color: #444; font-size: 0.88rem; line-height: 1.7; }
+    .hint a { color: #7FE098; text-decoration: none; }
+    .hint a:hover { text-decoration: underline; }
 
     #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
                  font-size: 0.9rem; border-bottom: 1px solid #1e2130; }
@@ -89,309 +74,85 @@
 </div>
 
 <div class="page">
-  <h1>Variant Grid</h1>
-  <div class="subtitle">Fan out a strategy across tickers and timeframes. Each variant is walk-forward backtested
-    with an in-sample / out-of-sample gate. Survivors become routing rules.</div>
+  <h1>Provisioned Variants</h1>
+  <p class="subtitle">Routing rules created from fan-out results. Use the Optimizer → Step 2 to add new variants.</p>
 
   <div class="card">
-    <div class="card-title">Available strategies</div>
-    <div id="stratList" class="status-line" style="line-height:1.7">Loading…</div>
-    <div class="tv-note" style="margin-top:10px">
-      Use any slug above as a <code>strategies:</code> entry in the config.
-      To add a brand-new strategy: go to <a href="/strategies" style="color:#88BF8B">Strategies</a>,
-      paste Pine Script, click <strong>Convert &amp; Preview</strong>, then <strong>Save</strong>.
-      The new slug will appear here after refresh. Saved strategies live in the <code>user_strategies</code> DB table.
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Active Routing Rules</span>
+      <a href="/optimize" style="font-size:0.75rem;color:#7FE098;text-decoration:none;font-weight:600">+ Fan Out on Optimizer →</a>
     </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Config (variants.json format)</div>
-    <textarea id="cfg" spellcheck="false"></textarea>
-    <div class="row">
-      <button class="btn" id="runBtn" onclick="runVariants()">Run Backtest</button>
-      <button class="btn btn-sec" onclick="resetConfig()">Reset to default</button>
-      <span class="status-line" id="status"></span>
-    </div>
-  </div>
-
-  <div class="card" id="resultsCard" style="display:none">
-    <div class="card-title">Results</div>
-    <div id="summary" class="status-line" style="margin-bottom: 12px"></div>
-    <div style="overflow-x:auto">
-      <table id="resultsTable">
-        <thead>
-          <tr>
-            <th>Rule name</th>
-            <th>Status</th>
-            <th class="num">IS Sharpe</th>
-            <th class="num">OOS Sharpe</th>
-            <th class="num">IS Trades</th>
-            <th class="num">OOS Trades</th>
-            <th>Reason</th>
-          </tr>
-        </thead>
-        <tbody id="resultsBody"></tbody>
+    <div id="rulesWrap">
+      <table>
+        <thead><tr>
+          <th>Rule Name</th>
+          <th>Broker</th>
+          <th>Qty</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="rulesBody">
+          <tr><td colspan="6" style="text-align:center;padding:30px;color:#444">Loading…</td></tr>
+        </tbody>
       </table>
-    </div>
-    <div class="row">
-      <button class="btn btn-apply" id="applyBtn" onclick="applyRules()" disabled>Apply Survivors as Routing Rules</button>
-      <span class="status-line" id="applyStatus"></span>
-    </div>
-    <div class="tv-note" id="tvNote" style="display:none">
-      <strong style="color:#ccc">TradingView setup:</strong>
-      For each survivor, create an alert on the matching ticker/timeframe chart with the alert name set to the rule name
-      (e.g. <code>CAM_AAPL_BREAKOUT_5M</code>). The rule matches by name, so the alert fires the right pipeline.
     </div>
   </div>
 </div>
 
 <script>
-// Base config — defaults section is populated from /api/bt/strategies on load
-const DEFAULT_CFG = {
-  start_date: "2026-01-01",
-  end_date:   "2026-04-25",
-  n_folds:    3,
-  gate: { min_train_sharpe: 0.8, oos_ratio: 0.7, min_trades: 5 },
-  defaults: {},
-  variants: [{
-    tickers:    ["SPY", "QQQ"],
-    tfs:        ["5m", "15m"],
-    strategies: [],
-    broker:     "alpaca-paper",
-    quantity:   1
-  }]
-};
-
-let lastResults = [];
-
-function toggleNavMenu() {
-  const m = document.getElementById('navMenu');
-  m.style.display = (m.style.display === 'block') ? 'none' : 'block';
-}
-document.addEventListener('click', e => {
-  if (!document.getElementById('navMenuBtn').contains(e.target) &&
-      !document.getElementById('navMenu').contains(e.target))
-    document.getElementById('navMenu').style.display = 'none';
-});
-
-function resetConfig() {
-  document.getElementById('cfg').value = JSON.stringify(DEFAULT_CFG, null, 2);
-  refreshSlugHighlights();
-}
-
-function fmtNum(n, digits) {
-  if (n === null || n === undefined || !isFinite(n)) return '—';
-  return Number(n).toFixed(digits);
-}
-
-async function runVariants() {
-  const btn    = document.getElementById('runBtn');
-  const status = document.getElementById('status');
-  let cfg;
-  try {
-    cfg = JSON.parse(document.getElementById('cfg').value);
-  } catch (e) {
-    status.textContent = 'Invalid JSON: ' + e.message;
-    status.style.color = '#ef5350';
-    return;
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = (m.style.display === 'block') ? 'none' : 'block';
   }
-  btn.disabled = true;
-  btn.textContent = 'Running…';
-  status.style.color = '#888';
-  status.textContent = 'Backtesting (this may take 10–60s per variant)…';
-  try {
-    const res = await fetch('/api/variants/run', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(cfg),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
-    lastResults = data.results || [];
-    renderResults(lastResults);
-    status.textContent = `Done — ${lastResults.length} variant(s) evaluated.`;
-    status.style.color = '#7FE098';
-  } catch (e) {
-    status.textContent = 'Error: ' + e.message;
-    status.style.color = '#ef5350';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run Backtest';
-  }
-}
-
-function renderResults(results) {
-  const body = document.getElementById('resultsBody');
-  body.innerHTML = '';
-  const passed = results.filter(r => r.status === 'pass');
-  document.getElementById('summary').textContent =
-    `${passed.length}/${results.length} passed the gate.`;
-  for (const r of results) {
-    const tr = document.createElement('tr');
-    const statusClass = r.status === 'pass' ? 'pass'
-                      : r.status === 'fail' ? 'fail' : 'error';
-    tr.className = statusClass;
-    const isStats  = r.is  || {};
-    const oosStats = r.oos || {};
-    tr.innerHTML = `
-      <td style="font-weight:600;color:#ccc">${r.name}</td>
-      <td><span class="badge ${statusClass}">${r.status}</span></td>
-      <td class="num">${fmtNum(isStats.sharpe,  2)}</td>
-      <td class="num">${fmtNum(oosStats.sharpe, 2)}</td>
-      <td class="num">${isStats.n_trades  ?? '—'}</td>
-      <td class="num">${oosStats.n_trades ?? '—'}</td>
-      <td class="reason">${r.reason || ''}</td>
-    `;
-    body.appendChild(tr);
-  }
-  document.getElementById('resultsCard').style.display = '';
-  document.getElementById('applyBtn').disabled = passed.length === 0;
-  document.getElementById('tvNote').style.display = passed.length ? '' : 'none';
-}
-
-async function applyRules() {
-  const passed = lastResults.filter(r => r.status === 'pass');
-  if (!passed.length) return;
-  const btn    = document.getElementById('applyBtn');
-  const status = document.getElementById('applyStatus');
-  btn.disabled = true;
-  btn.textContent = 'Applying…';
-  status.style.color = '#888';
-
-  // Fetch existing rules once, then upsert by name
-  let existing;
-  try {
-    existing = await fetch('/api/routing/rules').then(r => r.json());
-  } catch (e) {
-    status.textContent = 'Could not load existing rules: ' + e.message;
-    status.style.color = '#ef5350';
-    btn.disabled = false;
-    btn.textContent = 'Apply Survivors as Routing Rules';
-    return;
-  }
-  const byName = Object.fromEntries(existing.map(r => [r.name, r]));
-  let created = 0, updated = 0, errors = 0;
-  for (const v of passed) {
-    const body = JSON.stringify({ name: v.name, nodes: v.nodes });
-    try {
-      if (byName[v.name]) {
-        await fetch(`/api/routing/rules/${byName[v.name].id}`,
-          { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
-        updated++;
-      } else {
-        await fetch('/api/routing/rules',
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-        created++;
-      }
-    } catch (e) {
-      errors++;
-    }
-  }
-  status.textContent = `${created} created, ${updated} updated` + (errors ? `, ${errors} failed` : '') + '.';
-  status.style.color = errors ? '#ef5350' : '#7FE098';
-  btn.disabled = false;
-  btn.textContent = 'Apply Survivors as Routing Rules';
-}
-
-function _getConfig() {
-  try { return JSON.parse(document.getElementById('cfg').value); } catch(e) { return null; }
-}
-
-function _allConfigStrategies(cfg) {
-  const strats = new Set();
-  for (const v of (cfg?.variants || [])) (v.strategies || []).forEach(s => strats.add(s));
-  return strats;
-}
-
-function isStratActive(slug) {
-  const cfg = _getConfig();
-  return cfg ? _allConfigStrategies(cfg).has(slug) : false;
-}
-
-function toggleStrategy(slug) {
-  let cfg = _getConfig();
-  if (!cfg) { cfg = JSON.parse(JSON.stringify(DEFAULT_CFG)); }
-  if (!cfg.variants || !cfg.variants.length) cfg.variants = [{ tickers:[], tfs:['5m'], strategies:[], broker:'alpaca-paper', quantity:1 }];
-
-  const active = _allConfigStrategies(cfg).has(slug);
-  // Add to or remove from every variant that exists
-  for (const v of cfg.variants) {
-    if (!Array.isArray(v.strategies)) v.strategies = [];
-    if (active) {
-      v.strategies = v.strategies.filter(s => s !== slug);
-    } else {
-      if (!v.strategies.includes(slug)) v.strategies.push(slug);
-    }
-  }
-  document.getElementById('cfg').value = JSON.stringify(cfg, null, 2);
-
-  // Update slug chip appearance
-  const el = document.getElementById('slug_' + slug);
-  if (el) {
-    const nowActive = !active;
-    el.style.borderColor  = nowActive ? '#7FE098' : '#1e2130';
-    el.style.background   = nowActive ? 'rgba(136,191,139,0.1)' : '#0a0a0a';
-    el.style.fontWeight   = nowActive ? '700' : 'normal';
-  }
-}
-
-// Refresh slug highlights to match current config
-function refreshSlugHighlights() {
-  const active = _allConfigStrategies(_getConfig());
-  document.querySelectorAll('[id^="slug_"]').forEach(el => {
-    const slug = el.id.replace('slug_', '');
-    const on = active.has(slug);
-    el.style.borderColor = on ? '#7FE098' : '#1e2130';
-    el.style.background  = on ? 'rgba(136,191,139,0.1)' : '#0a0a0a';
-    el.style.fontWeight  = on ? '700' : 'normal';
+  document.addEventListener('click', e => {
+    if (!document.getElementById('navMenuBtn').contains(e.target) &&
+        !document.getElementById('navMenu').contains(e.target))
+      document.getElementById('navMenu').style.display = 'none';
   });
-}
 
-async function loadStrategies() {
-  const el = document.getElementById('stratList');
-  try {
-    // Fetch meta (to identify user-saved slugs) and full params in parallel
-    const [metaRes, paramsRes] = await Promise.all([
-      fetch('/api/bt/strategies/meta').then(r => r.json()),
-      fetch('/api/bt/strategies').then(r => r.json()),
-    ]);
-
-    // Only show strategies the user created
-    const userSlugs = metaRes.filter(m => m.user).map(m => m.slug).sort();
-    if (!userSlugs.length) { el.textContent = '(none — save a strategy on the Strategies page first)'; return; }
-
-    // Populate DEFAULT_CFG.defaults from actual param defaults
-    DEFAULT_CFG.defaults = {};
-    for (const slug of userSlugs) {
-      const params = paramsRes[slug] || [];
-      if (params.length) {
-        const defs = {};
-        for (const p of params) defs[p.id] = p.default;
-        DEFAULT_CFG.defaults[slug] = defs;
+  async function loadRules() {
+    const body = document.getElementById('rulesBody');
+    try {
+      const rules = await fetch('/api/routing/rules').then(r => r.json());
+      if (!rules.length) {
+        body.innerHTML = `<tr><td colspan="6" class="hint">
+          No routing rules yet.<br>
+          Run the <a href="/optimize">Optimizer</a>, find a good strategy, then use
+          <strong>Step 2 — Fan Out</strong> to test it across your ticker universe.<br>
+          Click <strong>Provision Passing → Router</strong> to add survivors here.
+        </td></tr>`;
+        return;
       }
+      body.innerHTML = rules.map(r => {
+        const nodes  = r.nodes || [];
+        const broker = (nodes.find(n => n.type === 'broker') || {}).value || '—';
+        const qty    = (nodes.find(n => n.type === 'quantity') || {}).amount ?? '—';
+        const on     = r.enabled ? '<span class="badge badge-on">ON</span>' : '<span class="badge badge-off">OFF</span>';
+        const date   = (r.created_at || '').slice(0, 10);
+        return `<tr>
+          <td class="name">${esc(r.name)}</td>
+          <td>${esc(broker)}</td>
+          <td>${qty}</td>
+          <td>${on}</td>
+          <td style="color:#555">${date}</td>
+          <td><button class="btn-deprovision" onclick="deprovision(${r.id}, '${esc(r.name)}')">Remove</button></td>
+        </tr>`;
+      }).join('');
+    } catch(e) {
+      body.innerHTML = `<tr><td colspan="6" style="color:#ef5350;padding:20px">Error loading rules: ${e.message}</td></tr>`;
     }
-
-    // Auto-select all user strategies
-    DEFAULT_CFG.variants[0].strategies = [...userSlugs];
-    resetConfig();
-
-    el.innerHTML = userSlugs.map(s =>
-      `<code onclick="toggleStrategy('${s}')" title="Click to add/remove from config"
-        style="background:#1a1612;border:1px solid #1e2130;border-radius:4px;padding:2px 8px;
-               margin:0 4px 4px 0;display:inline-block;color:#7FE098;font-size:0.8rem;
-               cursor:pointer;user-select:none;transition:border-color 0.15s"
-        onmouseover="this.style.borderColor='#7FE098'"
-        onmouseout="this.style.borderColor=isStratActive('${s}') ? '#7FE098' : '#1e2130'"
-        id="slug_${s}">${s}</code>`
-    ).join('');
-    refreshSlugHighlights();
-  } catch (e) {
-    el.textContent = 'Failed to load strategies: ' + e.message;
-    el.style.color = '#ef5350';
   }
-}
 
-loadStrategies();
+  async function deprovision(id, name) {
+    if (!confirm(`Remove routing rule "${name}"?\n\nThis will stop signals from being routed for this variant.`)) return;
+    await fetch(`/api/routing/rules/${id}`, { method: 'DELETE' });
+    loadRules();
+  }
+
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  loadRules();
 </script>
 </body>
 </html>

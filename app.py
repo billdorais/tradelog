@@ -3317,6 +3317,133 @@ def bt_optimize():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.route("/api/bt/fanout", methods=["POST"])
+def bt_fanout():
+    """Stream fan-out results: run fixed params across multiple tickers/timeframes.
+    Body: {strategy, params, tickers, timeframes, gates:{min_pf, min_trades, max_dd_pct}}"""
+    data       = request.get_json(silent=True) or {}
+    slug       = data.get("strategy", "")
+    params     = data.get("params", {})
+    tickers    = [t.strip().upper() for t in data.get("tickers", []) if t.strip()]
+    timeframes = data.get("timeframes", ["5m"])
+    gates      = data.get("gates", {})
+    min_pf     = float(gates.get("min_pf",     1.3))
+    min_trades = int(gates.get("min_trades",   10))
+    max_dd     = float(gates.get("max_dd_pct", 20.0))
+
+    if not slug or not tickers:
+        return jsonify({"error": "strategy and tickers required"}), 400
+
+    def _sse(obj): return f"data: {json.dumps(obj)}\n\n"
+
+    def generate():
+        import inspect as _ins
+        try:
+            from backtesting import Backtest as _BT
+        except ImportError:
+            yield _sse({"type": "error", "msg": "backtesting not installed"})
+            return
+
+        conn = get_db(); cur = conn.cursor(); p = placeholder()
+        cur.execute(f"SELECT code FROM bt_strategies WHERE slug={p}", (slug,))
+        row = cur.fetchone(); conn.close()
+        if not row:
+            yield _sse({"type": "error", "msg": f"Strategy {slug!r} not found"})
+            return
+
+        code = _strip_code_fences(row[0] if DATABASE_URL else row["code"])
+        ns   = {}
+        try:
+            exec(compile(code, "<fanout>", "exec"), ns)
+        except Exception as _ce:
+            yield _sse({"type": "error", "msg": f"Strategy compile error: {_ce}"})
+            return
+
+        import backtesting as _bktst
+        strategy_cls = next(
+            (v for v in ns.values()
+             if isinstance(v, type) and issubclass(v, _bktst.Strategy) and v is not _bktst.Strategy),
+            None,
+        )
+        if not strategy_cls:
+            yield _sse({"type": "error", "msg": "No Strategy subclass found in code"})
+            return
+
+        total = len(tickers) * len(timeframes)
+        done  = 0
+        for ticker in tickers:
+            for tf in timeframes:
+                done += 1
+                pct = round(done / total * 100)
+                yield _sse({"type": "progress", "ticker": ticker, "tf": tf, "pct": pct})
+                try:
+                    from strategies.data import fetch_alpaca_bars, fetch_yf_bars
+                    tf_map = {"5m": "5Min", "15m": "15Min", "30m": "30Min",
+                              "1h": "1Hour", "1d": "1Day"}
+                    try:
+                        df = fetch_alpaca_bars(ticker, tf_map.get(tf, tf),
+                                               start="2025-01-01", end=None,
+                                               alpaca_key=os.environ.get("ALPACA_KEY"),
+                                               alpaca_secret=os.environ.get("ALPACA_SECRET"))
+                    except Exception:
+                        df = fetch_yf_bars(ticker, tf)
+                    if df is None or len(df) < 50:
+                        yield _sse({"type": "result", "ticker": ticker, "tf": tf,
+                                    "status": "error", "reason": "insufficient data"})
+                        continue
+
+                    if tf not in ("1d",):
+                        df = _filter_rth(df)
+
+                    cash       = float(os.environ.get("BT_CASH",       "10000"))
+                    commission = float(os.environ.get("BT_COMMISSION", "0.001"))
+                    bt = _BT(df, strategy_cls, cash=cash, commission=commission,
+                             exclusive_orders=True,
+                             trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
+                    s  = bt.run(**params)
+
+                    pf     = float(s.get("Profit Factor")       or 0)
+                    trades = int(s.get("# Trades")              or 0)
+                    dd     = abs(float(s.get("Max. Drawdown [%]") or 0))
+                    ret    = float(s.get("Return [%]")          or 0)
+                    sharpe = float(s.get("Sharpe Ratio")        or 0)
+                    wr     = float(s.get("Win Rate [%]")        or 0)
+
+                    if trades < min_trades:
+                        status = "fail"; reason = f"only {trades} trades (need ≥{min_trades})"
+                    elif pf < min_pf:
+                        status = "fail"; reason = f"PF {pf:.2f} < {min_pf}"
+                    elif dd > max_dd:
+                        status = "fail"; reason = f"drawdown {dd:.1f}% > {max_dd}%"
+                    else:
+                        status = "pass"; reason = ""
+
+                    tf_label = tf.upper().replace("M", "MIN")
+                    name     = f"CAM_{ticker}_{slug.upper()}_{tf_label}"
+                    nodes    = [
+                        {"type": "strategy", "value": name},
+                        {"type": "quantity",  "amount": 1},
+                        {"type": "broker",    "value": "alpaca-paper"},
+                    ]
+                    yield _sse({"type": "result", "ticker": ticker, "tf": tf,
+                                "status": status, "reason": reason,
+                                "name": name, "nodes": nodes,
+                                "stats": {"pf": round(pf, 2), "trades": trades,
+                                          "return_pct": round(ret, 2),
+                                          "sharpe": round(sharpe, 2),
+                                          "max_dd": round(dd, 2),
+                                          "win_rate": round(wr, 1)}})
+                except Exception as _e:
+                    log.warning("Fan-out %s/%s error: %s", ticker, tf, _e)
+                    yield _sse({"type": "result", "ticker": ticker, "tf": tf,
+                                "status": "error", "reason": str(_e)[:120]})
+
+        yield _sse({"type": "done"})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.route("/api/bt/results", methods=["GET"])
 def bt_results_history():
     """Return last N optimization runs grouped by run_id."""

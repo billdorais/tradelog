@@ -347,6 +347,55 @@
       <div class="empty" id="resultsEmpty" style="display:none">No results yet — run the optimizer above</div>
     </div>
   </div>
+
+  <!-- ── Step 2: Fan Out ──────────────────────────────────────────── -->
+  <div id="fanoutSection" style="display:none" class="card">
+    <div class="card-title">Step 2 — Fan Out Best Params
+      <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— test the top result's params across your full ticker universe</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+      <div>
+        <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;font-weight:600">Tickers to test</div>
+        <input id="fanoutTickers" type="text" placeholder="MSFT, GOOG, AMZN, NVDA, META"
+          style="width:100%;background:#0a0a0a;border:1px solid #1e2130;border-radius:7px;color:#e0e0e0;padding:9px 11px;font-size:0.88rem;font-family:inherit">
+        <div style="font-size:0.72rem;color:#444;margin-top:4px">Comma-separated. Current ticker auto-included.</div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;font-weight:600">Timeframes</div>
+        <div class="tf-grid" id="fanoutTfGrid">
+          <button class="tf-btn active" data-tf="5m"  onclick="toggleFanTf(this)">5m</button>
+          <button class="tf-btn"        data-tf="15m" onclick="toggleFanTf(this)">15m</button>
+          <button class="tf-btn"        data-tf="30m" onclick="toggleFanTf(this)">30m</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px;align-items:flex-end">
+      <div class="field" style="min-width:110px"><label>Min Profit Factor</label><input id="fanGatePf"     type="number" value="1.3" step="0.1" min="0"></div>
+      <div class="field" style="min-width:110px"><label>Min Trades</label>       <input id="fanGateTrades" type="number" value="10"  step="1"   min="1"></div>
+      <div class="field" style="min-width:110px"><label>Max Drawdown %</label>   <input id="fanGateDd"     type="number" value="20"  step="1"   min="1"></div>
+      <button class="btn-run" id="fanRunBtn" onclick="runFanout()">Run Fan Out</button>
+    </div>
+
+    <div id="fanProgressWrap" style="display:none;margin-bottom:14px">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="fanProgressFill" style="width:0%"></div></div>
+      <div class="progress-log" id="fanProgressLog"></div>
+    </div>
+
+    <div id="fanResultsWrap" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span id="fanSummary" style="font-size:0.82rem;color:#888"></span>
+        <button class="btn-run" id="fanProvisionBtn" style="display:none;padding:8px 20px;font-size:0.85rem" onclick="provisionPassing()">Provision Passing → Router</button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="results"><thead><tr>
+          <th>Ticker</th><th>TF</th><th>Status</th>
+          <th>PF</th><th>Trades</th><th>Return %</th><th>Sharpe</th><th>Max DD %</th><th>Win %</th><th>Reason</th>
+        </tr></thead><tbody id="fanResultsBody"></tbody></table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -595,6 +644,7 @@
       setProgress(100);
       logLine('✓ Done — ' + results.length + ' result(s)', 'ok');
       document.getElementById('runStatus').textContent = `${results.length} result(s) logged`;
+      _showFanout();
     } else if (msg.type === 'error') {
       logLine('✗ ' + msg.msg, 'warn');
     }
@@ -932,6 +982,152 @@
         },
       }
     });
+  }
+
+  // ── Fan Out ────────────────────────────────────────────────────
+  let _fanResults = [];
+
+  function _showFanout() {
+    // Called when optimizer results arrive — reveal Step 2 and pre-fill ticker
+    document.getElementById('fanoutSection').style.display = '';
+    const top = results.filter(r => r.run_id === currentRunId)
+                        .sort((a,b) => (b.score||0)-(a.score||0))[0];
+    if (!top) return;
+    const cur = document.getElementById('fanoutTickers').value.trim();
+    if (!cur) document.getElementById('fanoutTickers').value = top.ticker;
+  }
+
+  function toggleFanTf(btn) {
+    btn.classList.toggle('active');
+  }
+
+  async function runFanout() {
+    const top = results.filter(r => r.run_id === currentRunId)
+                        .sort((a,b) => (b.score||0)-(a.score||0))[0];
+    if (!top) return;
+
+    const tickersRaw = document.getElementById('fanoutTickers').value;
+    const tickers = [...new Set([
+      top.ticker.toUpperCase(),
+      ...tickersRaw.split(',').map(t => t.trim().toUpperCase()).filter(Boolean),
+    ])];
+    const timeframes = [...document.querySelectorAll('#fanoutTfGrid .tf-btn.active')]
+                         .map(b => b.dataset.tf);
+    if (!timeframes.length) { alert('Select at least one timeframe.'); return; }
+
+    const gates = {
+      min_pf:     parseFloat(document.getElementById('fanGatePf').value)     || 1.3,
+      min_trades: parseInt(document.getElementById('fanGateTrades').value)   || 10,
+      max_dd_pct: parseFloat(document.getElementById('fanGateDd').value)     || 20,
+    };
+
+    const btn = document.getElementById('fanRunBtn');
+    btn.disabled = true; btn.textContent = 'Running…';
+    _fanResults = [];
+    document.getElementById('fanProgressWrap').style.display  = '';
+    document.getElementById('fanResultsWrap').style.display   = 'none';
+    document.getElementById('fanProgressLog').innerHTML       = '';
+    document.getElementById('fanProgressFill').style.width    = '0%';
+    document.getElementById('fanProvisionBtn').style.display  = 'none';
+
+    try {
+      const res = await fetch('/api/bt/fanout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategy: top.strategy, params: top.params, tickers, timeframes, gates }),
+      });
+      const reader = res.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const msg = JSON.parse(line.slice(6));
+            if (msg.type === 'progress') {
+              document.getElementById('fanProgressFill').style.width = msg.pct + '%';
+              const ll = document.getElementById('fanProgressLog');
+              ll.innerHTML += `<div class="log-line">${msg.ticker}/${msg.tf}…</div>`;
+              ll.scrollTop = ll.scrollHeight;
+            } else if (msg.type === 'result') {
+              _fanResults.push(msg);
+              renderFanRow(msg);
+            } else if (msg.type === 'done') {
+              renderFanSummary();
+            } else if (msg.type === 'error') {
+              const ll = document.getElementById('fanProgressLog');
+              ll.innerHTML += `<div class="log-line log-warn">✗ ${msg.msg}</div>`;
+            }
+          } catch {}
+        }
+      }
+    } catch(e) {
+      document.getElementById('fanProgressLog').innerHTML += `<div class="log-line log-warn">Error: ${e.message}</div>`;
+    } finally {
+      btn.disabled = false; btn.textContent = 'Run Fan Out';
+    }
+  }
+
+  function renderFanRow(r) {
+    document.getElementById('fanResultsWrap').style.display = '';
+    const body = document.getElementById('fanResultsBody');
+    const s    = r.stats || {};
+    const cls  = r.status === 'pass' ? '#7FE098' : r.status === 'fail' ? '#ef5350' : '#f59e0b';
+    const pfCls= (s.pf||0) >= 1.5 ? 'pos' : (s.pf||0) >= 1 ? '' : 'neg';
+    const tr   = document.createElement('tr');
+    tr.className = r.status === 'pass' ? 'best-row' : '';
+    tr.innerHTML = `
+      <td style="font-weight:600;color:#ccc">${r.ticker}</td>
+      <td>${r.tf}</td>
+      <td><span style="color:${cls};font-weight:700;font-size:0.8rem">${r.status.toUpperCase()}</span></td>
+      <td class="${pfCls}">${s.pf ?? '—'}</td>
+      <td>${s.trades ?? '—'}</td>
+      <td class="${(s.return_pct||0)>=0?'pos':'neg'}">${s.return_pct != null ? s.return_pct+'%' : '—'}</td>
+      <td>${s.sharpe ?? '—'}</td>
+      <td class="neg">${s.max_dd != null ? '-'+s.max_dd+'%' : '—'}</td>
+      <td class="${(s.win_rate||0)>=50?'pos':'neg'}">${s.win_rate != null ? s.win_rate+'%' : '—'}</td>
+      <td style="color:#555;font-size:0.78rem">${r.reason || ''}</td>`;
+    body.appendChild(tr);
+  }
+
+  function renderFanSummary() {
+    const passed = _fanResults.filter(r => r.status === 'pass');
+    document.getElementById('fanSummary').textContent =
+      `${passed.length} / ${_fanResults.length} passed · strategy: ${
+        results.filter(r => r.run_id === currentRunId).sort((a,b)=>(b.score||0)-(a.score||0))[0]?.strategy || ''}`;
+    const btn = document.getElementById('fanProvisionBtn');
+    btn.style.display = passed.length ? '' : 'none';
+  }
+
+  async function provisionPassing() {
+    const passed = _fanResults.filter(r => r.status === 'pass');
+    if (!passed.length) return;
+    const btn = document.getElementById('fanProvisionBtn');
+    btn.disabled = true; btn.textContent = 'Provisioning…';
+    let existing;
+    try { existing = await fetch('/api/routing/rules').then(r => r.json()); }
+    catch(e) { btn.disabled = false; btn.textContent = 'Provision Passing → Router'; return; }
+    const byName = Object.fromEntries(existing.map(r => [r.name, r]));
+    let created = 0, updated = 0;
+    for (const v of passed) {
+      const body = JSON.stringify({ name: v.name, nodes: v.nodes });
+      if (byName[v.name]) {
+        await fetch(`/api/routing/rules/${byName[v.name].id}`,
+          { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+        updated++;
+      } else {
+        await fetch('/api/routing/rules',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+        created++;
+      }
+    }
+    btn.textContent = `✓ ${created} added, ${updated} updated`;
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Provision Passing → Router'; }, 3000);
   }
 </script>
 </body>
