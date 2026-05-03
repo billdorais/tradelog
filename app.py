@@ -3395,12 +3395,17 @@ def bt_fanout():
                     except Exception:
                         df = fetch_bars(ticker, start="2025-01-01",
                                         end=None, interval=interval)
-                    if df is None or len(df) < 50:
+                    if not df or len(df) < 50:
                         yield _sse({"type": "result", "ticker": ticker, "tf": tf,
                                     "status": "error", "reason": "insufficient data"})
                         continue
 
+                    import pandas as _pd2
+                    df = _pd2.DataFrame(df).set_index("time")
+                    df.index = _pd2.to_datetime(df.index)
                     df.columns = [c.title() for c in df.columns]
+                    df = df[["Open", "High", "Low", "Close"]].dropna()
+                    df["Volume"] = 0
                     if tf not in ("1d",):
                         df = _filter_rth(df)
 
