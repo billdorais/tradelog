@@ -828,11 +828,20 @@
           if (data.error) { logLine('⚠ ' + data.error, 'warn'); continue; }
           const s = data.stats || {};
           if (s._conversion_warning) logLine('⚠ ' + s._conversion_warning, 'warn');
+          // Convert /api/bt/run equity format [{time,value}] → {dates,values}
+          let benchEq = null;
+          if (data.equity && data.equity.length) {
+            benchEq = {
+              dates:  data.equity.map(pt => new Date(pt.time * 1000).toISOString().slice(0,10)),
+              values: data.equity.map(pt => pt.value),
+            };
+          }
           results.push({
             type: 'result', baseline: true,
             run_id: 'baseline', strategy: slug,
             ticker, timeframe: tf,
             params: {},
+            equity_curve: benchEq,
             stats: {
               'Return [%]':        s['Return [%]']        ?? 0,
               'Sharpe Ratio':      s['Sharpe Ratio']      ?? 0,
@@ -948,9 +957,27 @@
         pointRadius: 0,
         tension: 0.3,
         fill: i === 0,
-        order: 3 - i,   // rank 1 drawn on top
+        order: 3 - i,
       };
     });
+
+    // Add benchmark as a dotted grey line if available
+    const benchResult = results.find(r => r.baseline && r.equity_curve &&
+      r.ticker === sorted[0].ticker && r.timeframe === sorted[0].timeframe);
+    if (benchResult) {
+      datasets.push({
+        label: `Benchmark ${benchResult.ticker}/${benchResult.timeframe} (default params)`,
+        data: benchResult.equity_curve.values,
+        borderColor: '#555',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        borderDash: [5, 4],
+        pointRadius: 0,
+        tension: 0.3,
+        fill: false,
+        order: 0,
+      });
+    }
 
     // Use dates from the first curve as labels
     const labels = sorted[0].equity_curve.dates;
