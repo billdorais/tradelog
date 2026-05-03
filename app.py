@@ -3385,16 +3385,16 @@ def bt_fanout():
                 pct = round(done / total * 100)
                 yield _sse({"type": "progress", "ticker": ticker, "tf": tf, "pct": pct})
                 try:
-                    from strategies.data import fetch_alpaca_bars, fetch_yf_bars
-                    tf_map = {"5m": "5Min", "15m": "15Min", "30m": "30Min",
-                              "1h": "1Hour", "1d": "1Day"}
+                    from strategies.data import fetch_bars_alpaca, fetch_bars
+                    tf_map = {"5m": "5m", "15m": "15m", "30m": "30m",
+                              "1h": "1h", "1d": "1d"}
+                    interval = tf_map.get(tf, tf)
                     try:
-                        df = fetch_alpaca_bars(ticker, tf_map.get(tf, tf),
-                                               start="2025-01-01", end=None,
-                                               alpaca_key=os.environ.get("ALPACA_KEY"),
-                                               alpaca_secret=os.environ.get("ALPACA_SECRET"))
+                        df = fetch_bars_alpaca(ticker, start="2025-01-01",
+                                               end=None, interval=interval)
                     except Exception:
-                        df = fetch_yf_bars(ticker, tf)
+                        df = fetch_bars(ticker, start="2025-01-01",
+                                        end=None, interval=interval)
                     if df is None or len(df) < 50:
                         yield _sse({"type": "result", "ticker": ticker, "tf": tf,
                                     "status": "error", "reason": "insufficient data"})
