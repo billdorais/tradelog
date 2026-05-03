@@ -3334,21 +3334,29 @@ def bt_fanout():
     if not slug or not tickers:
         return jsonify({"error": "strategy and tickers required"}), 400
 
-    def _sse(obj): return f"data: {json.dumps(obj)}\n\n"
+    # Capture all variables needed by generate() explicitly
+    _slug, _params, _tickers, _timeframes = slug, params, tickers, timeframes
+    _min_pf, _min_trades, _max_dd = min_pf, min_trades, max_dd
 
     def generate():
-        import inspect as _ins
+        import json as _j
+        def _sse(obj): return f"data: {_j.dumps(obj)}\n\n"
         try:
             from backtesting import Backtest as _BT
         except ImportError:
             yield _sse({"type": "error", "msg": "backtesting not installed"})
             return
 
-        conn = get_db(); cur = conn.cursor(); p = placeholder()
-        cur.execute(f"SELECT code FROM bt_strategies WHERE slug={p}", (slug,))
-        row = cur.fetchone(); conn.close()
+        try:
+            conn = get_db(); cur = conn.cursor(); p = placeholder()
+            cur.execute(f"SELECT code FROM bt_strategies WHERE slug={p}", (_slug,))
+            row = cur.fetchone(); conn.close()
+        except Exception as _dbe:
+            yield _sse({"type": "error", "msg": f"DB error: {_dbe}"})
+            return
+
         if not row:
-            yield _sse({"type": "error", "msg": f"Strategy {slug!r} not found"})
+            yield _sse({"type": "error", "msg": f"Strategy {_slug!r} not found"})
             return
 
         code = _strip_code_fences(row[0] if DATABASE_URL else row["code"])
@@ -3369,10 +3377,10 @@ def bt_fanout():
             yield _sse({"type": "error", "msg": "No Strategy subclass found in code"})
             return
 
-        total = len(tickers) * len(timeframes)
+        total = len(_tickers) * len(_timeframes)
         done  = 0
-        for ticker in tickers:
-            for tf in timeframes:
+        for ticker in _tickers:
+            for tf in _timeframes:
                 done += 1
                 pct = round(done / total * 100)
                 yield _sse({"type": "progress", "ticker": ticker, "tf": tf, "pct": pct})
@@ -3400,26 +3408,26 @@ def bt_fanout():
                     bt = _BT(df, strategy_cls, cash=cash, commission=commission,
                              exclusive_orders=True,
                              trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
-                    s  = bt.run(**params)
+                    s  = bt.run(**_params)
 
-                    pf     = float(s.get("Profit Factor")       or 0)
-                    trades = int(s.get("# Trades")              or 0)
+                    pf     = float(s.get("Profit Factor")         or 0)
+                    trades = int(s.get("# Trades")                or 0)
                     dd     = abs(float(s.get("Max. Drawdown [%]") or 0))
-                    ret    = float(s.get("Return [%]")          or 0)
-                    sharpe = float(s.get("Sharpe Ratio")        or 0)
-                    wr     = float(s.get("Win Rate [%]")        or 0)
+                    ret    = float(s.get("Return [%]")            or 0)
+                    sharpe = float(s.get("Sharpe Ratio")          or 0)
+                    wr     = float(s.get("Win Rate [%]")          or 0)
 
-                    if trades < min_trades:
-                        status = "fail"; reason = f"only {trades} trades (need ≥{min_trades})"
-                    elif pf < min_pf:
-                        status = "fail"; reason = f"PF {pf:.2f} < {min_pf}"
-                    elif dd > max_dd:
-                        status = "fail"; reason = f"drawdown {dd:.1f}% > {max_dd}%"
+                    if trades < _min_trades:
+                        status = "fail"; reason = f"only {trades} trades (need ≥{_min_trades})"
+                    elif pf < _min_pf:
+                        status = "fail"; reason = f"PF {pf:.2f} < {_min_pf}"
+                    elif dd > _max_dd:
+                        status = "fail"; reason = f"drawdown {dd:.1f}% > {_max_dd}%"
                     else:
                         status = "pass"; reason = ""
 
                     tf_label = tf.upper().replace("M", "MIN")
-                    name     = f"CAM_{ticker}_{slug.upper()}_{tf_label}"
+                    name     = f"CAM_{ticker}_{_slug.upper()}_{tf_label}"
                     nodes    = [
                         {"type": "strategy", "value": name},
                         {"type": "quantity",  "amount": 1},
