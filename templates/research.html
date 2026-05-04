@@ -395,6 +395,10 @@
         document.getElementById('saveBtn').style.display = '';
       }
     }
+    else if (msg.type === 'warning_msg') {
+      document.getElementById('analysisOut').innerHTML +=
+        `<br><span style="color:#F2E7AC">⚠ ${msg.msg}</span>`;
+    }
     else if (msg.type === 'error') {
       document.getElementById('analysisOut').innerHTML +=
         `<br><span style="color:#ef5350">✗ ${msg.msg}</span>`;

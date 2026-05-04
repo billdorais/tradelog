@@ -1760,7 +1760,7 @@ def api_agent_research():
             full_response = ""
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=2500,
+                max_tokens=4000,
                 system=_RESEARCH_SYSTEM,
                 messages=[{"role": "user", "content":
                     f"Hypothesis: {hypothesis}\n\n"
@@ -1773,12 +1773,21 @@ def api_agent_research():
 
             yield _sse({"type": "research_done", "full_text": full_response})
 
-            # Extract code block
+            # Extract code block — handle truncated responses where closing ``` never arrived
             import re as _re
             code_match = _re.search(r"```python\s*(.*?)```", full_response, _re.DOTALL)
             if not code_match:
-                yield _sse({"type": "error", "msg": "Claude did not produce a code block. Try rephrasing."}); return
-            raw_code = _strip_code_fences(code_match.group(1).strip())
+                # Fallback: take everything after ```python even if unclosed
+                open_match = _re.search(r"```python\s*(.*)", full_response, _re.DOTALL)
+                if open_match:
+                    raw_code = open_match.group(1).strip()
+                    yield _sse({"type": "warning_msg",
+                                "msg": "Response was truncated — code may be incomplete. Proceeding anyway."})
+                else:
+                    yield _sse({"type": "error",
+                                "msg": "Claude did not produce a code block. Try a simpler hypothesis."}); return
+            else:
+                raw_code = _strip_code_fences(code_match.group(1).strip())
 
             # Extract param ranges
             params_match = _re.search(r"## Param Ranges\s*```json\s*(.*?)```", full_response, _re.DOTALL)
