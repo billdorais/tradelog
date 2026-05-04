@@ -1738,6 +1738,25 @@ REQUIREMENTS:
 - Always include a hard stop loss (dollar or pct based)
 - RTH filter: only enter trades when len(self.data) > 0 and intraday
 
+INDICATORS — DO NOT write your own helpers. Import the proven ones:
+    from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd
+Each accepts numpy arrays (as you get from self.data.Close, self.data.High, etc.)
+and returns numpy arrays. They are the ONLY way to compute indicators —
+calling .ewm() / .rolling() on self.data.Close directly will crash because
+backtesting.py wraps it in an _Array, not a pandas Series.
+
+Signatures:
+    _sma(close, period)             -> ndarray
+    _ema(close, period)             -> ndarray
+    _atr(high, low, close, period)  -> ndarray
+    _rsi(close, period)             -> ndarray
+    _bbands(close, period, std_dev) -> (lower, mid, upper)
+    _macd(close, fast, slow, signal)-> (macd_line, signal_line)
+
+Use them inside self.I() like this:
+    self.ema = self.I(_ema, self.data.Close, self.ema_period)
+    self.atr = self.I(_atr, self.data.High, self.data.Low, self.data.Close, self.atr_period)
+
 DO NOT: use TA-Lib, sklearn, external APIs, more than 6 parameters, or complex ML.
 
 OUTPUT — use exactly this structure:
@@ -1753,6 +1772,7 @@ OUTPUT — use exactly this structure:
 import numpy as np
 import pandas as pd
 from backtesting import Strategy
+from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd
 
 class ResearchStrategy(Strategy):
     # parameters
@@ -1895,7 +1915,10 @@ def api_agent_research():
                         "trades":       int(s.get("# Trades") or 0),
                     })
                 except Exception as _be:
-                    results.append({"ticker": ticker, "error": str(_be)[:120]})
+                    # Keep enough of the message for the underlying cause to be visible —
+                    # backtesting.py wraps indicator failures as "Indicator '<name>' errored
+                    # with exception: <real cause>" and the cause is what we need to debug.
+                    results.append({"ticker": ticker, "error": str(_be)[:500]})
 
             yield _sse({"type": "bt_done", "results": results})
 
