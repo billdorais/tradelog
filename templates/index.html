@@ -372,7 +372,33 @@
       background: rgba(100, 120, 255, 0.15);
       color: #8899ff;
       white-space: nowrap;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
     }
+    .strategy-tag:hover {
+      background: rgba(100, 120, 255, 0.30);
+      color: #b3bfff;
+    }
+
+    /* Strategy detail modal */
+    .strat-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 3000; display: none; align-items: flex-start; justify-content: center; padding: 40px 20px; overflow-y: auto; }
+    .strat-modal-overlay.show { display: flex; }
+    .strat-modal { background: #13161f; border: 1px solid #2a2d3e; border-radius: 12px; width: 100%; max-width: 1100px; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+    .strat-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 22px; border-bottom: 1px solid #1e2130; }
+    .strat-modal-title { font-size: 0.95rem; font-weight: 600; color: #8899ff; font-family: ui-monospace, monospace; }
+    .strat-modal-close { background: transparent; border: none; color: #888; font-size: 1.2rem; cursor: pointer; padding: 4px 10px; border-radius: 4px; }
+    .strat-modal-close:hover { color: #fff; background: #2a2d3e; }
+    .strat-modal-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 14px; padding: 16px 22px; border-bottom: 1px solid #1e2130; }
+    .strat-stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; margin-bottom: 4px; }
+    .strat-stat-value { font-size: 1.05rem; font-weight: 600; color: #e0e0e0; }
+    .strat-stat-value.positive { color: #7FE098; }
+    .strat-stat-value.negative { color: #ef5350; }
+    .strat-modal-body { max-height: 60vh; overflow-y: auto; }
+    .strat-modal-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .strat-modal-table th { position: sticky; top: 0; background: #13161f; color: #888; font-weight: 500; text-align: left; padding: 8px 12px; border-bottom: 1px solid #2a2d3e; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .strat-modal-table td { padding: 8px 12px; border-bottom: 1px solid #1e2130; color: #c0c0c0; }
+    .strat-modal-table tr:hover td { background: rgba(100,120,255,0.04); }
+    .strat-modal-empty { padding: 40px; text-align: center; color: #555; font-size: 0.9rem; }
 
     .filter-bar {
       max-width: 1200px;
@@ -1610,7 +1636,7 @@
           <td style="font-size:0.78rem;color:#888">${fmtET(ex?.received_at) ?? '<span style="color:#7FE098;font-size:0.72rem">Open</span>' + closeBtn}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(ref.sentiment)}</td>
-          <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+          <td>${ref.strategy ? `<span class="strategy-tag" onclick="openStrategyModal('${escAttr(ref.strategy)}')" title="View all Alpaca trades for this strategy">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
           <td><strong>${ref.ticker ?? '—'}</strong></td>
           ${pnlCell(pnl)}
           <td>${qty ?? '—'}</td>
@@ -1658,7 +1684,7 @@
           <td style="font-size:0.78rem;color:#888">${alpTs(ex) ? fmtET(alpTs(ex)) : '<span style="color:#7FE098;font-size:0.72rem">Open</span>'}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(sentiment)}</td>
-          <td>${alpStrat ? `<span class="strategy-tag">${alpStrat}</span>` : '<span style="color:#444">—</span>'}</td>
+          <td>${alpStrat ? `<span class="strategy-tag" onclick="openStrategyModal('${escAttr(alpStrat)}')" title="View all Alpaca trades for this strategy">${alpStrat}</span>` : '<span style="color:#444">—</span>'}</td>
           <td><strong>${ref.symbol ?? '—'}</strong></td>
           ${isOpen ? '<td class="live-pnl-cell"><span style="color:#555">—</span></td>' : pnlCell(pnl)}
           <td>${qty ?? '—'}</td>
@@ -2353,7 +2379,7 @@
           <td style="font-size:0.78rem;color:#888">${ex ? fmtET(ex.received_at) : '<span style="color:#7FE098;font-size:0.72rem">Open</span>'}</td>
           <td style="color:#888;font-size:0.78rem">${dur}</td>
           <td>${sentimentBadge(ref.sentiment)}</td>
-          <td>${ref.strategy ? `<span class="strategy-tag">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
+          <td>${ref.strategy ? `<span class="strategy-tag" onclick="openStrategyModal('${escAttr(ref.strategy)}')" title="View all Alpaca trades for this strategy">${ref.strategy}</span>` : '<span style="color:#444">—</span>'}</td>
           <td><strong>${ref.ticker ?? '—'}</strong></td>
           ${pnlCell(pnl)}
           <td>${isNaN(qty) ? '—' : qty}</td>
@@ -2937,6 +2963,109 @@
         document.getElementById('acctPositionTickers').innerHTML = tickers || '<span style="color:#333">No open positions</span>';
       } catch(e) { /* Alpaca not configured or unreachable */ }
     }
+
+    // ── Strategy detail modal ──────────────────────────────────────────────
+    function openStrategyModal(strategy) {
+      if (!strategy) return;
+      const overlay = document.getElementById('stratModalOverlay');
+      document.getElementById('stratModalTitle').textContent = strategy;
+
+      // Filter Alpaca fills by server-resolved strategy field, then pair them
+      // using the same FIFO/intent-aware logic the trade feed uses.
+      const filtered = allAlpacaExecs.filter(e => (e.strategy || '') === strategy);
+      const paired   = pairAlpacaExecs(filtered, allTrades);
+      const pairs    = reconcileAlpacaPairs(paired, allAlpacaPositions);
+
+      // Compute stats from closed pairs only
+      const closed = pairs.filter(p => p.entry && p.exit);
+      const pnls = closed.map(p => {
+        const qty = p.entry.shares;
+        return p.direction === 'short'
+          ? (p.entry.price - p.exit.price) * qty
+          : (p.exit.price  - p.entry.price) * qty;
+      });
+      const wins   = pnls.filter(v => v > 0);
+      const losses = pnls.filter(v => v <= 0);
+      const total  = pnls.reduce((a,b) => a+b, 0);
+      const grossW = wins.reduce((a,b) => a+b, 0);
+      const grossL = Math.abs(losses.reduce((a,b) => a+b, 0));
+      const stats = {
+        trades:   closed.length,
+        winRate:  closed.length ? Math.round(wins.length / closed.length * 1000) / 10 : 0,
+        total:    Math.round(total * 100) / 100,
+        pf:       grossL > 0 ? Math.round(grossW / grossL * 100) / 100 : (grossW > 0 ? null : 0),
+        avgWin:   wins.length   ? Math.round(grossW / wins.length   * 100) / 100 : 0,
+        avgLoss:  losses.length ? Math.round(-grossL / losses.length * 100) / 100 : 0,
+      };
+      const totalCls = stats.total > 0 ? 'positive' : stats.total < 0 ? 'negative' : '';
+      document.getElementById('stratModalStats').innerHTML = `
+        <div><div class="strat-stat-label">Trades</div><div class="strat-stat-value">${stats.trades}</div></div>
+        <div><div class="strat-stat-label">Win Rate</div><div class="strat-stat-value">${stats.winRate}%</div></div>
+        <div><div class="strat-stat-label">Total P&L</div><div class="strat-stat-value ${totalCls}">${stats.total >= 0 ? '+' : ''}$${stats.total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+        <div><div class="strat-stat-label">Profit Factor</div><div class="strat-stat-value">${stats.pf === null ? '∞' : stats.pf}</div></div>
+        <div><div class="strat-stat-label">Avg Win</div><div class="strat-stat-value positive">+$${stats.avgWin.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+        <div><div class="strat-stat-label">Avg Loss</div><div class="strat-stat-value negative">$${stats.avgLoss.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+      `;
+
+      // Render trades table — sorted newest first
+      const body = document.getElementById('stratModalTbody');
+      if (!pairs.length) {
+        body.innerHTML = '<tr><td colspan="9" class="strat-modal-empty">No Alpaca trades for this strategy yet.</td></tr>';
+      } else {
+        const rows = pairs.map(p => {
+          const en = p.entry, ex = p.exit;
+          const ref = en || ex;
+          const qty = ref.shares;
+          const pnl = (en && ex)
+            ? (p.direction === 'short' ? (en.price - ex.price) * qty : (ex.price - en.price) * qty)
+            : null;
+          const pnlCls = pnl == null ? '' : pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '';
+          const pnlStr = pnl == null
+            ? '<span style="color:#555">—</span>'
+            : `<span class="strat-stat-value ${pnlCls}" style="font-size:0.82rem">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>`;
+          const dir = p.direction === 'short' ? '<span style="color:#ef5350">SHORT</span>' : '<span style="color:#7FE098">LONG</span>';
+          const dur = (en && ex) ? tradeDuration(en.time, ex.time) : (en ? '<span style="color:#7FE098">Open</span>' : '—');
+          return `<tr>
+            <td style="font-size:0.78rem;color:#aaa">${fmtET(en?.time) ?? '—'}</td>
+            <td style="font-size:0.78rem;color:#888">${ex ? fmtET(ex.time) : '<span style="color:#7FE098">Open</span>'}</td>
+            <td style="color:#888">${dur}</td>
+            <td>${dir}</td>
+            <td><strong>${ref.symbol ?? '—'}</strong></td>
+            <td>${qty ?? '—'}</td>
+            <td>${priceCell(en?.price)}</td>
+            <td>${priceCell(ex?.price)}</td>
+            <td>${pnlStr}</td>
+          </tr>`;
+        }).join('');
+        body.innerHTML = rows;
+      }
+      overlay.classList.add('show');
+    }
+    function closeStrategyModal() {
+      document.getElementById('stratModalOverlay').classList.remove('show');
+    }
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeStrategyModal();
+    });
   </script>
+
+  <div id="stratModalOverlay" class="strat-modal-overlay" onclick="if(event.target === this) closeStrategyModal()">
+    <div class="strat-modal">
+      <div class="strat-modal-header">
+        <div id="stratModalTitle" class="strat-modal-title">Strategy</div>
+        <button class="strat-modal-close" onclick="closeStrategyModal()" title="Close (Esc)">✕</button>
+      </div>
+      <div id="stratModalStats" class="strat-modal-stats"></div>
+      <div class="strat-modal-body">
+        <table class="strat-modal-table">
+          <thead><tr>
+            <th>Entry</th><th>Exit</th><th>Duration</th><th>Dir</th>
+            <th>Ticker</th><th>Qty</th><th>Entry $</th><th>Exit $</th><th>P&amp;L</th>
+          </tr></thead>
+          <tbody id="stratModalTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
