@@ -1736,14 +1736,23 @@ REQUIREMENTS:
 - All indicator work in init() using self.I()
 - All trade logic in next() using self.buy() / self.sell() — NO size argument
 - Always include a hard stop loss (dollar or pct based)
-- For warmup gates use `len(self.data)` (the bar count), NEVER `len(self)` — the
-  Strategy instance has no __len__ and that will crash with "object of type
-  'ResearchStrategy' has no len()". Example warmup pattern:
-      if len(self.data) < max(self.ema_period, self.atr_period):
+- For warmup gates use `len(self.data)` (the bar count seen so far), NEVER
+  `len(self)` (Strategy has no __len__) and NEVER `self.<indicator>.shape[0]`
+  (that's the FULL backtest length, so the gate would never open until the
+  very last bar — silent 0-trade outcome). Use a constant period:
+      if len(self.data) < max(self.ema_period, self.atr_period, 20):
           return
-- RTH filtering is already done server-side before the data reaches your strategy,
-  so do NOT add intraday/time-of-day checks. Just trade every bar that passes
-  your entry conditions.
+- RTH filtering is already done server-side before the data reaches your
+  strategy, so do NOT add intraday/time-of-day checks.
+- Volume IS available via self.data.Volume — feel free to use volume-based
+  filters (e.g. `self.vol_sma = self.I(_sma, self.data.Volume, 20)`).
+- Do NOT track session/range state in init() as plain instance attributes
+  (e.g. `self.range_high = None`) and check it once via `current_bar_idx ==
+  self.range_bars`. Backtests span many days, so per-day state must reset
+  daily. If you need an opening range, detect a new session by comparing
+  `self.data.index[-1].date()` to the previous bar's date and reset on
+  change. Strategies that latch state once for the whole backtest will
+  trade exactly once.
 
 INDICATORS — DO NOT write your own helpers. Import the proven ones:
     from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd
@@ -1906,7 +1915,9 @@ def api_agent_research():
                     df = _pd.DataFrame(raw).set_index("time")
                     df.index = _pd.to_datetime(df.index)
                     df.columns = [c.title() for c in df.columns]
-                    df = df[["Open","High","Low","Close"]].dropna(); df["Volume"] = 0
+                    keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+                    df = df[keep].dropna()
+                    if "Volume" not in df.columns: df["Volume"] = 0
                     df = _filter_rth(df)
                     bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
                              exclusive_orders=True,
@@ -3275,8 +3286,10 @@ def bt_run():
         df = _pd.DataFrame(raw_bars).set_index("time")
         df.index = _pd.to_datetime(df.index)
         df.columns = [c.title() for c in df.columns]
-        df = df[["Open", "High", "Low", "Close"]].dropna()
-        df["Volume"] = 0
+        keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+        df = df[keep].dropna()
+        if "Volume" not in df.columns:
+            df["Volume"] = 0
         if timeframe in _INTRADAY_TF:
             df = _filter_rth(df)
     except Exception as e:
@@ -3535,7 +3548,9 @@ def bt_optimize():
                     df = _pd.DataFrame(raw).set_index("time")
                     df.index = _pd.to_datetime(df.index)
                     df.columns = [c.title() for c in df.columns]
-                    df = df[["Open", "High", "Low", "Close"]].dropna(); df["Volume"] = 0
+                    keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+                    df = df[keep].dropna()
+                    if "Volume" not in df.columns: df["Volume"] = 0
                     if tf in _INTRADAY_TF: df = _filter_rth(df)
                     datasets[(tk, tf)] = df
                 except Exception as _de:
@@ -3673,8 +3688,10 @@ def bt_optimize():
                     df = _pd.DataFrame(raw).set_index("time")
                     df.index = _pd.to_datetime(df.index)
                     df.columns = [c.title() for c in df.columns]
-                    df = df[["Open", "High", "Low", "Close"]].dropna()
-                    df["Volume"] = 0
+                    keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+                    df = df[keep].dropna()
+                    if "Volume" not in df.columns:
+                        df["Volume"] = 0
                     if tf in _INTRADAY_TF:
                         df = _filter_rth(df)
 
@@ -3886,8 +3903,10 @@ def bt_fanout():
                     df = _pd2.DataFrame(df).set_index("time")
                     df.index = _pd2.to_datetime(df.index)
                     df.columns = [c.title() for c in df.columns]
-                    df = df[["Open", "High", "Low", "Close"]].dropna()
-                    df["Volume"] = 0
+                    keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+                    df = df[keep].dropna()
+                    if "Volume" not in df.columns:
+                        df["Volume"] = 0
                     if tf not in ("1d",):
                         df = _filter_rth(df)
 

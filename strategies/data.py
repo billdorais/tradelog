@@ -95,7 +95,11 @@ def fetch_bars(ticker, start, end, interval="1d"):
         if not (o and c):
             continue
 
-        bars.append({"time": dt, "open": o, "high": h, "low": l, "close": c})
+        try:
+            v = float(row.get("Volume", 0) or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        bars.append({"time": dt, "open": o, "high": h, "low": l, "close": c, "volume": v})
 
     log.info(f"{ticker}: parsed {len(bars)} bars")
     bars.sort(key=lambda b: b["time"])
@@ -151,11 +155,12 @@ def fetch_bars_alpaca(ticker, start, end, interval="1d"):
         if not (o and c):
             continue
         bars.append({
-            "time":  dt,
-            "open":  o,
-            "high":  float(row.get("high",   0) or 0),
-            "low":   float(row.get("low",    0) or 0),
-            "close": c,
+            "time":   dt,
+            "open":   o,
+            "high":   float(row.get("high",   0) or 0),
+            "low":    float(row.get("low",    0) or 0),
+            "close":  c,
+            "volume": float(row.get("volume", 0) or 0),
         })
 
     log.info(f"Alpaca {ticker}: {len(bars)} bars ({interval})")
