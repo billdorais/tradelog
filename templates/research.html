@@ -363,7 +363,7 @@
       document.getElementById('resultsCard').style.display = '';
       const body = document.getElementById('resultsBody');
       body.innerHTML = msg.results.map(r => {
-        if (r.error) return `<tr><td>${r.ticker}</td><td colspan="6" style="color:#ef5350">${r.error}</td></tr>`;
+        if (r.error) return `<tr><td style="color:#ccc">${r.ticker}</td><td colspan="6" style="color:#ef5350;font-size:0.78rem">${r.error} <span style="color:#555">— code bug in generated strategy; see verdict below</span></td></tr>`;
         const pf = r.pf;
         const pfCls = pf >= 1.3 ? 'pf-pass' : pf >= 1.0 ? 'pf-ok' : 'pf-fail';
         return `<tr>
@@ -379,7 +379,13 @@
     }
     else if (msg.type === 'verdict_chunk') {
       const el = document.getElementById('verdictOut');
-      el.textContent = (el.textContent === '') ? msg.text : el.textContent + msg.text;
+      el._raw = (el._raw || '') + msg.text;
+      el.innerHTML = el._raw
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/\*\*(.*?)\*\*/g,'<strong style="color:#e0e0e0">$1</strong>')
+        .replace(/^## (.+)$/gm,'<div style="color:#fff;font-weight:700;margin:10px 0 4px">$1</div>')
+        .replace(/^- (.+)$/gm,'<div style="padding-left:12px;color:#aaa">· $1</div>')
+        .replace(/\n/g,'<br>');
       document.getElementById('verdictPanel').style.display = '';
     }
     else if (msg.type === 'done') {
