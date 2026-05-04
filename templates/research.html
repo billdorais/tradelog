@@ -181,6 +181,15 @@
         <div class="phase-badge" id="ph-validate">&#9989; Validate</div>
         <div class="phase-badge" id="ph-backtest">&#128200; Backtest</div>
         <div class="phase-badge" id="ph-evaluate">&#129514; Evaluate</div>
+        <span id="phaseStatus" style="font-size:0.78rem;color:#555;margin-left:6px"></span>
+      </div>
+
+      <!-- Backtest progress bar (shown during backtest phase) -->
+      <div id="btProgressWrap" style="display:none;margin-bottom:14px">
+        <div style="background:#0a0a0a;border:1px solid #1e2130;border-radius:6px;height:6px;overflow:hidden;margin-bottom:6px">
+          <div id="btProgressFill" style="height:100%;background:#7FA8E0;border-radius:6px;width:0%;transition:width 0.3s"></div>
+        </div>
+        <div id="btProgressLog" style="font-size:0.75rem;color:#555"></div>
       </div>
 
       <div class="output-grid">
@@ -237,14 +246,29 @@
     document.getElementById('hypothesis').value = el.textContent.trim();
   }
 
+  const PHASE_ORDER = ['research','validate','backtest','evaluate'];
+  const PHASE_LABELS = {
+    research: '&#129514; Researching…',
+    validate: '&#9989; Validating code…',
+    backtest: '&#128200; Running backtests…',
+    evaluate: '&#129514; Evaluating results…',
+  };
+
   function setPhase(phase) {
-    ['research','validate','backtest','evaluate'].forEach(p => {
+    PHASE_ORDER.forEach(p => {
       const el = document.getElementById('ph-' + p);
       if (p === phase) el.className = 'phase-badge active';
-      else if (['research','validate','backtest','evaluate'].indexOf(p) <
-               ['research','validate','backtest','evaluate'].indexOf(phase))
+      else if (PHASE_ORDER.indexOf(p) < PHASE_ORDER.indexOf(phase))
         el.className = 'phase-badge done';
+      else
+        el.className = 'phase-badge';
     });
+    // Update button text
+    const btn = document.getElementById('runBtn');
+    if (PHASE_LABELS[phase]) btn.innerHTML = `<span class="spinner"></span> ${PHASE_LABELS[phase]}`;
+    // Show/hide backtest progress bar
+    document.getElementById('btProgressWrap').style.display =
+      phase === 'backtest' ? '' : 'none';
   }
 
   async function runResearch() {
@@ -322,6 +346,11 @@
       const el = document.getElementById('codeOut');
       el.textContent = msg.code;
       el.style.color = '#c0c0c0';
+    }
+    else if (msg.type === 'bt_progress') {
+      document.getElementById('btProgressFill').style.width = msg.pct + '%';
+      document.getElementById('btProgressLog').textContent =
+        `Testing ${msg.ticker} (${msg.pct}%)…`;
     }
     else if (msg.type === 'bt_done') {
       document.getElementById('resultsCard').style.display = '';
