@@ -214,6 +214,24 @@
       <div class="risk-hint" id="posStatusHint">Close the position when unrealized loss hits this value. Strategy stays active.</div>
     </div>
 
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+        <span>Trailing Stop ($)</span>
+        <span id="trailStatusBadge" class="risk-status-badge disabled">
+          <span class="risk-dot grey" id="trailStatusDot"></span>
+          <span id="trailStatusText">Disabled</span>
+        </span>
+      </div>
+      <div class="risk-input-row">
+        <input class="risk-input" id="trailLimitInput" type="number" step="1" min="0" placeholder="e.g. 30">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTrailLimit()">Set</button>
+        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTrailLimit()" title="Disable trailing stop">Off</button>
+      </div>
+      <div class="risk-hint" id="trailStatusHint">Arms once a position is up by this amount, then closes if it gives the gain back. Strategy stays active.</div>
+    </div>
+
     <div id="riskResetSection" style="display:none; margin-left:auto">
       <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
     </div>
@@ -313,6 +331,10 @@
       if (document.activeElement !== posInput && data.max_position_loss !== null) {
         posInput.value = data.max_position_loss;
       }
+      const trailInput = document.getElementById('trailLimitInput');
+      if (document.activeElement !== trailInput && data.max_trailing_giveback !== null) {
+        trailInput.value = data.max_trailing_giveback;
+      }
 
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
@@ -329,6 +351,24 @@
         posDot.className   = 'risk-dot grey';
         posText.textContent = 'Disabled';
         posHint.textContent = 'Close the position when unrealized loss hits this value. Strategy stays active.';
+      }
+
+      // Trailing stop status badge
+      const trailBadge = document.getElementById('trailStatusBadge');
+      const trailDot   = document.getElementById('trailStatusDot');
+      const trailText  = document.getElementById('trailStatusText');
+      const trailHint  = document.getElementById('trailStatusHint');
+      if (data.trailing_stop_enabled) {
+        const amt = Number(data.max_trailing_giveback).toFixed(0);
+        trailBadge.className = 'risk-status-badge active';
+        trailDot.className   = 'risk-dot green';
+        trailText.textContent = 'Active';
+        trailHint.textContent = 'Arms once a position is up $' + amt + ', then closes if it gives back $' + amt + ' from peak. Strategy stays active.';
+      } else {
+        trailBadge.className = 'risk-status-badge disabled';
+        trailDot.className   = 'risk-dot grey';
+        trailText.textContent = 'Disabled';
+        trailHint.textContent = 'Arms once a position is up by this amount, then closes if it gives the gain back. Strategy stays active.';
       }
 
       // Status badge + panel border
@@ -412,6 +452,23 @@
     catch(e) { console.error('clearPositionLimit failed:', e); }
   }
 
+  async function saveTrailLimit() {
+    const input = document.getElementById('trailLimitInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearTrailLimit(); return; }
+    const val = Math.abs(parseFloat(raw));
+    if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({max_trailing_giveback: val}); }
+    catch(e) { console.error('saveTrailLimit failed:', e); }
+  }
+
+  async function clearTrailLimit() {
+    document.getElementById('trailLimitInput').value = '';
+    try { await _postLimit({max_trailing_giveback: 0}); }
+    catch(e) { console.error('clearTrailLimit failed:', e); }
+  }
+
   async function resetRiskHalt() {
     if (!confirm('Clear the risk halt and resume trading?')) return;
     try {
@@ -487,6 +544,8 @@
       .addEventListener('keydown', e => { if (e.key === 'Enter') saveRiskLimit(); });
     document.getElementById('posLimitInput')
       .addEventListener('keydown', e => { if (e.key === 'Enter') savePositionLimit(); });
+    document.getElementById('trailLimitInput')
+      .addEventListener('keydown', e => { if (e.key === 'Enter') saveTrailLimit(); });
   });
 
   // -----------------------------------------------------------------------

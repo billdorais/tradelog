@@ -212,13 +212,23 @@
         <td>Per-Position Stop</td>
         <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code></td>
         <td>
-          A background thread polls all open positions every 30 seconds across all active brokers
+          A background thread polls all open positions every 5 seconds across all active brokers
           (Alpaca, IB paper, IB live). When any single position's unrealized P&amp;L drops to or
-          below this value, that position is closed immediately and the strategy that opened it
-          is blocked for the rest of the session — any new signals from that strategy are rejected
-          and recorded in the trade log as <em>blocked</em>. Blocked strategies appear as alert
-          cards in the risk panel with an individual <em>Unblock</em> button.
+          below this value, that position is closed immediately. The strategy stays active and is
+          free to take a new entry on the next signal.
           Set to a negative dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">-200</code>). Default: disabled.
+        </td>
+      </tr>
+      <tr>
+        <td>Trailing Stop</td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_TRAILING_GIVEBACK</code></td>
+        <td>
+          Backup trailing stop for cases where a TradingView exit alert fails to deliver. Tracks
+          each open position's peak unrealized P&amp;L since entry. Once the peak reaches the
+          giveback amount, the stop is armed; if the position then gives back that same amount
+          from peak, it is closed immediately. Only fires on profitable positions — losses are
+          left to the per-position stop above. Strategy stays active.
+          Set to a positive dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">30</code>). Default: disabled.
         </td>
       </tr>
       <tr>
@@ -358,6 +368,7 @@
       <tr><td>COINBASE_SECRET</td><td>—</td><td>Coinbase API secret.</td></tr>
       <tr><td>MAX_DAILY_LOSS</td><td>0 (off)</td><td>Negative dollar value. Halts all trading and liquidates all positions when today's P&amp;L reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
       <tr><td>MAX_POSITION_LOSS</td><td>0 (off)</td><td>Negative dollar value. Closes a single position when its unrealized loss reaches this threshold; the strategy remains free to re-enter. Configurable live from the Signal Router risk panel.</td></tr>
+      <tr><td>MAX_TRAILING_GIVEBACK</td><td>0 (off)</td><td>Positive dollar value. Backup trailing stop: arms once a position's unrealized profit reaches this amount, then closes the position if it gives back the same amount from peak. Strategy stays active. Configurable live from the Signal Router risk panel.</td></tr>
       <tr><td>SIGNAL_COOLDOWN_SECS</td><td>10</td><td>Seconds to suppress duplicate signals for the same strategy + ticker + action combination.</td></tr>
       <tr><td>IB_ENABLED</td><td>false</td><td>Set to <code style="font-size:0.82rem;color:#aaa">true</code> to enable the IB broker. Off by default so IB connection errors don't affect Alpaca-only deployments.</td></tr>
     </table>

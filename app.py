@@ -57,6 +57,7 @@ eod_close_enabled   = True
 # ---------------------------------------------------------------------------
 MAX_DAILY_LOSS        = float(os.environ.get("MAX_DAILY_LOSS", "0"))
 MAX_POSITION_LOSS     = float(os.environ.get("MAX_POSITION_LOSS", "0"))
+MAX_TRAILING_GIVEBACK = float(os.environ.get("MAX_TRAILING_GIVEBACK", "0"))
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
 MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
 
@@ -64,6 +65,7 @@ _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
 _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
 _auto_closed_symbols  = set()   # symbols already sent a position-stop close today
+_position_peaks       = {}      # {SYMBOL: peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _risk_lock            = threading.Lock()
 
@@ -616,8 +618,10 @@ threading.Thread(target=_risk_monitor_loop, daemon=True).start()
 
 
 def _check_position_stops():
-    """Check all open positions against MAX_POSITION_LOSS.
-    Closes offending positions; the originating strategy stays free to re-enter."""
+    """Check all open positions against MAX_POSITION_LOSS and MAX_TRAILING_GIVEBACK.
+    Closes offending positions; the originating strategy stays free to re-enter.
+    Trailing stop arms once a position's peak unrealized P&L reaches the giveback
+    amount, then closes if the position gives back that amount from peak."""
     global _latest_positions
     all_positions = []
 
@@ -650,12 +654,15 @@ def _check_position_stops():
     with _risk_lock:
         _latest_positions = all_positions
 
-    # Clear _auto_closed_symbols for any symbol no longer showing an open position.
+    # Clear _auto_closed_symbols + peak tracker for any symbol no longer open.
     # This allows the monitor to protect new entries in the same symbol later in the session.
     open_symbols = {p["symbol"].upper() for p in all_positions}
     with _risk_lock:
         stale = {s for s in _auto_closed_symbols if s.upper() not in open_symbols}
         _auto_closed_symbols.difference_update(stale)
+        stale_peaks = [s for s in _position_peaks if s not in open_symbols]
+        for s in stale_peaks:
+            _position_peaks.pop(s, None)
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
 
@@ -663,8 +670,29 @@ def _check_position_stops():
         upnl   = float(pos.get("unrealized_pnl") or 0)
         symbol = pos["symbol"]
         broker = pos["broker"]
+        sym_u  = symbol.upper()
 
-        if upnl > MAX_POSITION_LOSS:   # e.g. -150 > -200 → still OK
+        # Update peak tracker (always, so peak persists across polls when trailing is on).
+        peak = 0.0
+        if MAX_TRAILING_GIVEBACK > 0:
+            with _risk_lock:
+                prev = _position_peaks.get(sym_u, 0.0)
+                if upnl > prev:
+                    _position_peaks[sym_u] = upnl
+                peak = max(prev, upnl)
+
+        # Decide which (if any) stop to fire.
+        triggered = None
+        if MAX_POSITION_LOSS < 0 and upnl <= MAX_POSITION_LOSS:
+            triggered = ("fixed-loss",
+                         f"unrealized P&L ${upnl:.2f} hit fixed limit ${MAX_POSITION_LOSS:.2f}")
+        elif MAX_TRAILING_GIVEBACK > 0 \
+                and peak >= MAX_TRAILING_GIVEBACK \
+                and (peak - upnl) >= MAX_TRAILING_GIVEBACK:
+            triggered = ("trailing",
+                         f"unrealized P&L ${upnl:.2f} gave back ${peak - upnl:.2f} from peak ${peak:.2f} (trail ${MAX_TRAILING_GIVEBACK:.2f})")
+
+        if not triggered:
             continue
 
         with _risk_lock:
@@ -673,10 +701,8 @@ def _check_position_stops():
             # Don't add to _auto_closed_symbols yet — only add after a successful close
             # so that a failed close is retried on the next poll rather than silently dropped.
 
-        log.error(
-            "POSITION STOP: %s unrealized P&L $%.2f hit limit $%.2f [%s] — closing position",
-            symbol, upnl, MAX_POSITION_LOSS, broker,
-        )
+        log.error("POSITION STOP (%s): %s [%s] — %s — closing position",
+                  triggered[0], symbol, broker, triggered[1])
 
         # Close the position — only mark as handled if the order is successfully submitted
         close_ok = False
@@ -705,15 +731,15 @@ def _check_position_stops():
 
 
 def _position_monitor_loop():
-    """Background thread: poll positions every 10s, close any that breach MAX_POSITION_LOSS."""
+    """Background thread: poll positions every 5s, fire fixed-loss or trailing-giveback stops."""
     time.sleep(25)  # stagger from risk monitor
     while True:
-        if MAX_POSITION_LOSS < 0:
+        if MAX_POSITION_LOSS < 0 or MAX_TRAILING_GIVEBACK > 0:
             try:
                 _check_position_stops()
             except Exception as _e:
                 log.warning("Position monitor error: %s", _e)
-        time.sleep(10)
+        time.sleep(5)
 
 
 threading.Thread(target=_position_monitor_loop, daemon=True).start()
@@ -1361,6 +1387,8 @@ def risk_status():
         "enabled":              MAX_DAILY_LOSS < 0,
         "max_position_loss":    MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
         "position_stop_enabled": MAX_POSITION_LOSS < 0,
+        "max_trailing_giveback":   MAX_TRAILING_GIVEBACK if MAX_TRAILING_GIVEBACK != 0 else None,
+        "trailing_stop_enabled":   MAX_TRAILING_GIVEBACK > 0,
         "positions":            positions,
         "blocked_strategies":   blocked,
     })
@@ -1392,7 +1420,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_TRAILING_GIVEBACK
     data = request.get_json(silent=True) or {}
     changed = []
     if "max_daily_loss" in data:
@@ -1413,10 +1441,25 @@ def risk_set_limit():
         _save_setting("MAX_POSITION_LOSS", f"{MAX_POSITION_LOSS:g}")
         log.info("MAX_POSITION_LOSS updated to %g", MAX_POSITION_LOSS)
         changed.append("max_position_loss")
+    if "max_trailing_giveback" in data:
+        try:
+            MAX_TRAILING_GIVEBACK = float(data["max_trailing_giveback"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_trailing_giveback must be a number"}), 400
+        if MAX_TRAILING_GIVEBACK < 0:
+            MAX_TRAILING_GIVEBACK = abs(MAX_TRAILING_GIVEBACK)  # accept either sign, store positive
+        _update_env_file("MAX_TRAILING_GIVEBACK", f"{MAX_TRAILING_GIVEBACK:g}")
+        _save_setting("MAX_TRAILING_GIVEBACK", f"{MAX_TRAILING_GIVEBACK:g}")
+        log.info("MAX_TRAILING_GIVEBACK updated to %g", MAX_TRAILING_GIVEBACK)
+        if MAX_TRAILING_GIVEBACK == 0:
+            with _risk_lock:
+                _position_peaks.clear()
+        changed.append("max_trailing_giveback")
     return jsonify({
-        "max_daily_loss":    MAX_DAILY_LOSS,
-        "max_position_loss": MAX_POSITION_LOSS,
-        "changed":           changed,
+        "max_daily_loss":         MAX_DAILY_LOSS,
+        "max_position_loss":      MAX_POSITION_LOSS,
+        "max_trailing_giveback":  MAX_TRAILING_GIVEBACK,
+        "changed":                changed,
     })
 
 
@@ -5298,7 +5341,7 @@ init_db()
 
 # Load persisted risk limits from DB if env vars weren't explicitly set
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_TRAILING_GIVEBACK
     if MAX_DAILY_LOSS == 0:
         stored = _load_setting("MAX_DAILY_LOSS")
         if stored is not None:
@@ -5313,6 +5356,14 @@ def _restore_risk_settings():
             try:
                 MAX_POSITION_LOSS = float(stored)
                 log.info("Restored MAX_POSITION_LOSS=%g from DB", MAX_POSITION_LOSS)
+            except (TypeError, ValueError):
+                pass
+    if MAX_TRAILING_GIVEBACK == 0:
+        stored = _load_setting("MAX_TRAILING_GIVEBACK")
+        if stored is not None:
+            try:
+                MAX_TRAILING_GIVEBACK = float(stored)
+                log.info("Restored MAX_TRAILING_GIVEBACK=%g from DB", MAX_TRAILING_GIVEBACK)
             except (TypeError, ValueError):
                 pass
 
