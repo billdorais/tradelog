@@ -1736,7 +1736,14 @@ REQUIREMENTS:
 - All indicator work in init() using self.I()
 - All trade logic in next() using self.buy() / self.sell() — NO size argument
 - Always include a hard stop loss (dollar or pct based)
-- RTH filter: only enter trades when len(self.data) > 0 and intraday
+- For warmup gates use `len(self.data)` (the bar count), NEVER `len(self)` — the
+  Strategy instance has no __len__ and that will crash with "object of type
+  'ResearchStrategy' has no len()". Example warmup pattern:
+      if len(self.data) < max(self.ema_period, self.atr_period):
+          return
+- RTH filtering is already done server-side before the data reaches your strategy,
+  so do NOT add intraday/time-of-day checks. Just trade every bar that passes
+  your entry conditions.
 
 INDICATORS — DO NOT write your own helpers. Import the proven ones:
     from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd
