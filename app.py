@@ -3072,6 +3072,7 @@ def bt_optimize():
     strategy_code  = body.get("strategy_code", "")
     multi_ticker   = bool(body.get("multi_ticker", False))
     agg_metric     = body.get("agg_metric", "avg_sharpe")   # avg_sharpe|avg_pf|pass_count|min_pf
+    trade_size     = int(body.get("trade_size", 0) or 0)    # 0 = use cash-based sizing
 
     class _NpEnc(_json.JSONEncoder):
         def default(self, o):
@@ -3133,7 +3134,17 @@ def bt_optimize():
         if strategy_cls is None:
             yield _sse({"type": "error", "msg": "Could not resolve strategy class"}); return
 
-        # â"€â"€ Build param sequences â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+        # Fixed position size wrapper — subclass to inject share count on every order
+        if trade_size > 0:
+            _sz = trade_size
+            class _FixedSize(strategy_cls):
+                def buy(self, **kwargs):
+                    kwargs.setdefault('size', _sz); return super().buy(**kwargs)
+                def sell(self, **kwargs):
+                    kwargs.setdefault('size', _sz); return super().sell(**kwargs)
+            _FixedSize.__name__ = strategy_cls.__name__
+            strategy_cls = _FixedSize
+
         opt_kwargs = {}
         for pname, prange in param_ranges.items():
             pmin  = float(prange.get("min",  1))

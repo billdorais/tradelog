@@ -209,7 +209,13 @@
       </div>
       <div class="field">
         <label>Starting Cash ($)</label>
-        <input type="number" id="cash" value="10000" min="1000" step="1000">
+        <input type="number" id="cash" value="26000" min="1000" step="1000">
+      </div>
+      <div class="field">
+        <label>Position Size (shares)</label>
+        <input type="number" id="tradeSize" value="0" min="0" step="1"
+               title="Fixed shares per trade. 0 = use 100% of cash (default). Set to 100 for your live trading plan.">
+        <div style="font-size:0.68rem;color:#555;margin-top:3px">0 = cash-based · e.g. 100 = fixed 100 shares</div>
       </div>
       <div class="field">
         <label>Commission %</label>
@@ -612,6 +618,7 @@
       param_ranges: paramRanges,
       multi_ticker: isMulti,
       agg_metric:   document.getElementById('aggMetric').value,
+      trade_size:   parseInt(document.getElementById('tradeSize').value) || 0,
     };
 
     currentRunId = null;  // reset so first result sets the new run's ID
