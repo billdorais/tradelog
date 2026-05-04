@@ -1996,7 +1996,16 @@ def api_agent_research():
                     # Keep enough of the message for the underlying cause to be visible —
                     # backtesting.py wraps indicator failures as "Indicator '<name>' errored
                     # with exception: <real cause>" and the cause is what we need to debug.
-                    results.append({"ticker": ticker, "error": str(_be)[:500]})
+                    # Also capture the deepest user-code frame so we know WHICH line crashed.
+                    import traceback as _tb
+                    line_hint = ""
+                    try:
+                        for fr in _tb.extract_tb(_be.__traceback__):
+                            if fr.filename == "<research>":
+                                line_hint = f" [line {fr.lineno}: {fr.line}]"
+                    except Exception:
+                        pass
+                    results.append({"ticker": ticker, "error": (str(_be) + line_hint)[:500]})
 
             yield _sse({"type": "bt_done", "results": results})
 
