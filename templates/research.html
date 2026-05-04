@@ -422,6 +422,23 @@
       document.getElementById('analysisOut').innerHTML +=
         `<br><span style="color:#F2E7AC">⚠ ${msg.msg}</span>`;
     }
+    else if (msg.type === 'fix_progress') {
+      document.getElementById('btProgressLog').textContent =
+        `${msg.msg}`;
+      const errSnippet = (msg.error || '').replace(/[<>&]/g, '');
+      document.getElementById('analysisOut').innerHTML +=
+        `<br><span style="color:#F2E7AC">🔧 ${msg.msg}</span>` +
+        `<br><span style="color:#888;font-size:0.8rem">&nbsp;&nbsp;&nbsp;${errSnippet}</span>`;
+    }
+    else if (msg.type === 'code_fixed') {
+      // Update the displayed strategy code to the fixed version so the user
+      // sees what got changed (and saves the fixed version if they hit Save).
+      _code = msg.code;
+      const el = document.getElementById('codeOut');
+      if (el) el.textContent = msg.code;
+      document.getElementById('analysisOut').innerHTML +=
+        `<br><span style="color:#7FE098">✓ ${msg.msg}</span>`;
+    }
     else if (msg.type === 'error') {
       document.getElementById('analysisOut').innerHTML +=
         `<br><span style="color:#ef5350">✗ ${msg.msg}</span>`;

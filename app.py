@@ -1893,44 +1893,102 @@ def api_agent_research():
             #   (a) `<indicator>.shape[0]` in warmup gates → full-length array, gate never opens.
             #   (b) `len(self.position) > 0` → Position has no __len__, crashes on first bar.
             # Both are flagged in the system prompt but the model produces them anyway often
-            # enough that defensive substitution is worth it. Run before emitting "code"
-            # so the displayed and saved strategy is the cleaned version.
-            lint_warnings = []
-            shape_pat = _re.compile(r"\b(self\.(?!data\b)\w+)\.shape\[0\]")
-            if shape_pat.search(raw_code):
-                raw_code = shape_pat.sub("20", raw_code)
-                lint_warnings.append("auto-fix: replaced `<indicator>.shape[0]` with literal 20 "
-                                     "(was the full backtest length, killed warmup gate)")
-            pos_len_pat = _re.compile(r"len\(\s*self\.position\s*\)\s*>\s*0")
-            if pos_len_pat.search(raw_code):
-                raw_code = pos_len_pat.sub("self.position", raw_code)
-                lint_warnings.append("auto-fix: replaced `len(self.position) > 0` with `self.position` "
-                                     "(Position has no __len__)")
-            pos_len_eq_pat = _re.compile(r"len\(\s*self\.position\s*\)\s*==\s*0")
-            if pos_len_eq_pat.search(raw_code):
-                raw_code = pos_len_eq_pat.sub("not self.position", raw_code)
-                lint_warnings.append("auto-fix: replaced `len(self.position) == 0` with `not self.position`")
-            for w in lint_warnings:
+            # enough that defensive substitution is worth it.
+            shape_pat       = _re.compile(r"\b(self\.(?!data\b)\w+)\.shape\[0\]")
+            pos_len_pat     = _re.compile(r"len\(\s*self\.position\s*\)\s*>\s*0")
+            pos_len_eq_pat  = _re.compile(r"len\(\s*self\.position\s*\)\s*==\s*0")
+            def _apply_lints(code):
+                warns = []
+                if shape_pat.search(code):
+                    code = shape_pat.sub("20", code)
+                    warns.append("auto-fix: replaced `<indicator>.shape[0]` with literal 20 "
+                                 "(was the full backtest length, killed warmup gate)")
+                if pos_len_pat.search(code):
+                    code = pos_len_pat.sub("self.position", code)
+                    warns.append("auto-fix: replaced `len(self.position) > 0` with `self.position` "
+                                 "(Position has no __len__)")
+                if pos_len_eq_pat.search(code):
+                    code = pos_len_eq_pat.sub("not self.position", code)
+                    warns.append("auto-fix: replaced `len(self.position) == 0` with `not self.position`")
+                return warns, code
+
+            warns, raw_code = _apply_lints(raw_code)
+            for w in warns:
                 yield _sse({"type": "warning_msg", "msg": w})
 
             yield _sse({"type": "code", "code": raw_code, "param_ranges": param_ranges})
 
             # ── Step 2: Validate the code compiles ───────────────────────
             yield _sse({"type": "phase", "phase": "validate", "msg": "Validating strategy code…"})
-            ns = {}
+            import backtesting as _bktst
+            def _compile_strategy(code):
+                ns = {}
+                exec(compile(code, "<research>", "exec"), ns)
+                cls = next(
+                    (v for v in ns.values()
+                     if isinstance(v, type) and issubclass(v, _bktst.Strategy)
+                     and v is not _bktst.Strategy), None)
+                return cls
+
             try:
-                exec(compile(raw_code, "<research>", "exec"), ns)
+                strategy_cls = _compile_strategy(raw_code)
             except Exception as _ce:
                 yield _sse({"type": "error", "msg": f"Strategy code has a syntax error: {_ce}"}); return
-
-            import backtesting as _bktst
-            strategy_cls = next(
-                (v for v in ns.values()
-                 if isinstance(v, type) and issubclass(v, _bktst.Strategy)
-                 and v is not _bktst.Strategy), None)
             if not strategy_cls:
                 yield _sse({"type": "error", "msg": "No Strategy subclass found — Claude may have renamed it."}); return
             yield _sse({"type": "validate_ok", "class_name": strategy_cls.__name__})
+
+            # Fix-on-error: when a backtest crashes in user code, send the broken
+            # strategy + the actual error back to Sonnet for a targeted fix, then
+            # retry. Capped to keep cost + latency bounded.
+            MAX_FIX_ATTEMPTS = 2
+            fix_attempts = [0]
+            def _attempt_fix(broken_code, error_full):
+                if fix_attempts[0] >= MAX_FIX_ATTEMPTS:
+                    return None, None
+                fix_attempts[0] += 1
+                fix_prompt = (
+                    "You are debugging a backtesting.py Strategy. The code below crashed "
+                    "during bt.run() with this error:\n\n"
+                    f"ERROR: {error_full}\n\n"
+                    "Fix ONLY this specific bug. Do not refactor unrelated parts.\n\n"
+                    "Rules:\n"
+                    "- Class name must remain ResearchStrategy\n"
+                    "- Indicators come from `from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd`\n"
+                    "- Volume IS available via self.data.Volume\n"
+                    "- Use `self.position` (truthy) for in-position check; never `len(self.position)`\n"
+                    "- Use literal warmup periods (e.g. 20), never `<indicator>.shape[0]`\n"
+                    "- Initialize all session state attrs in init() to safe defaults (0 or 0.0), "
+                    "  not None, so arithmetic never hits NoneType\n"
+                    "- Per-day state must reset on date change\n"
+                    "- Keep `self._gates` instrumentation\n\n"
+                    "Return ONLY the corrected code in this exact format and nothing else:\n\n"
+                    "```python\n<corrected code>\n```\n\n"
+                    "CODE TO FIX:\n```python\n" + broken_code + "\n```\n"
+                )
+                try:
+                    resp = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=4500,
+                        messages=[{"role": "user", "content": fix_prompt}],
+                    )
+                    fix_text = resp.content[0].text if resp.content else ""
+                except Exception as _fe:
+                    log.warning("research fix call failed: %s", _fe)
+                    return None, None
+                m = _re.search(r"```python\s*(.*?)```", fix_text, _re.DOTALL) \
+                    or _re.search(r"```python\s*(.*)", fix_text, _re.DOTALL)
+                if not m:
+                    return None, None
+                new_code = _strip_code_fences(m.group(1).strip())
+                _, new_code = _apply_lints(new_code)
+                try:
+                    new_cls = _compile_strategy(new_code)
+                except Exception:
+                    return None, None
+                if not new_cls:
+                    return None, None
+                return new_code, new_cls
 
             # ── Step 3: Run backtest on each ticker ───────────────────────
             yield _sse({"type": "phase", "phase": "backtest",
@@ -1943,71 +2001,112 @@ def api_agent_research():
             for i, ticker in enumerate(tickers):
                 yield _sse({"type": "bt_progress", "ticker": ticker,
                             "pct": int(i / len(tickers) * 100)})
+
+                # Fetch + prep data once; if backtest crashes we retry the run with a
+                # fixed strategy class, but the data is invariant.
                 try:
                     try:
                         raw = fetch_bars_alpaca(ticker, start_date, end_date, timeframe)
                     except Exception:
                         raw = fetch_bars(ticker, start_date, end_date, timeframe)
-                    if not raw or len(raw) < 50:
-                        results.append({"ticker": ticker, "error": "insufficient data"}); continue
-                    df = _pd.DataFrame(raw).set_index("time")
-                    df.index = _pd.to_datetime(df.index)
-                    df.columns = [c.title() for c in df.columns]
-                    keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
-                    df = df[keep].dropna()
-                    if "Volume" not in df.columns: df["Volume"] = 0
-                    df = _filter_rth(df)
-                    bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
-                             exclusive_orders=True,
-                             trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
-                    s = bt.run()
-                    # backtesting.py returns NaN for PF/Sharpe/WinRate when 0 trades fire,
-                    # and NaN serializes as "NaN" which is invalid JSON — the client's
-                    # JSON.parse rejects it and the whole bt_done message is dropped silently.
-                    def _num(v, default=0.0):
-                        try:
-                            f = float(v)
-                            return f if f == f else default  # NaN: f != f
-                        except (TypeError, ValueError):
-                            return default
-                    # Extract per-gate diagnostic counters that Claude was told to maintain.
-                    # Surfacing these makes 0-trade outcomes debuggable — instead of
-                    # "the strategy didn't trade", the user sees WHICH filter blocked it.
-                    diag = {}
-                    try:
-                        strat_inst = getattr(s, "_strategy", None)
-                        gates = getattr(strat_inst, "_gates", None)
-                        if isinstance(gates, dict):
-                            diag = {k: int(v) for k, v in gates.items()
-                                    if isinstance(v, (int, float))}
-                    except Exception:
-                        pass
-                    results.append({
-                        "ticker":       ticker,
-                        "pf":           round(_num(s.get("Profit Factor")), 3),
-                        "sharpe":       round(_num(s.get("Sharpe Ratio")),  3),
-                        "return_pct":   round(_num(s.get("Return [%]")),    2),
-                        "win_rate":     round(_num(s.get("Win Rate [%]")),  1),
-                        "max_dd":       round(abs(_num(s.get("Max. Drawdown [%]"))), 2),
-                        "trades":       int(_num(s.get("# Trades"))),
-                        "diag":         diag,
-                    })
-                except Exception as _be:
-                    # Keep enough of the message for the underlying cause to be visible —
-                    # backtesting.py wraps indicator failures as "Indicator '<name>' errored
-                    # with exception: <real cause>" and the cause is what we need to debug.
-                    # Also capture the deepest user-code frame so we know WHICH line crashed.
-                    import traceback as _tb
-                    line_hint = ""
-                    try:
-                        for fr in _tb.extract_tb(_be.__traceback__):
-                            if fr.filename == "<research>":
-                                line_hint = f" [line {fr.lineno}: {fr.line}]"
-                    except Exception:
-                        pass
-                    results.append({"ticker": ticker, "error": (str(_be) + line_hint)[:500]})
+                except Exception as _fetch_err:
+                    results.append({"ticker": ticker, "error": f"fetch failed: {_fetch_err}"[:200]})
+                    continue
+                if not raw or len(raw) < 50:
+                    results.append({"ticker": ticker, "error": "insufficient data"})
+                    continue
+                df = _pd.DataFrame(raw).set_index("time")
+                df.index = _pd.to_datetime(df.index)
+                df.columns = [c.title() for c in df.columns]
+                keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+                df = df[keep].dropna()
+                if "Volume" not in df.columns: df["Volume"] = 0
+                df = _filter_rth(df)
 
-            yield _sse({"type": "bt_done", "results": results})
+                # Retry loop: on a code-bug crash, ask Sonnet to fix the strategy
+                # and rerun. Bounded by MAX_FIX_ATTEMPTS so a stubborn bug doesn't
+                # spin forever. Already-passed tickers keep their results; only
+                # the failing ticker (and any later ones) use the fixed code.
+                # backtesting.py returns NaN for PF/Sharpe/WinRate when 0 trades fire,
+                # and NaN serializes as "NaN" which is invalid JSON — the client's
+                # JSON.parse rejects it and the whole bt_done message is dropped silently.
+                def _num(v, default=0.0):
+                    try:
+                        f = float(v)
+                        return f if f == f else default  # NaN: f != f
+                    except (TypeError, ValueError):
+                        return default
+
+                while True:
+                    try:
+                        bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
+                                 exclusive_orders=True,
+                                 trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
+                        s = bt.run()
+                        # Extract per-gate diagnostic counters that Claude was told to maintain.
+                        # Surfacing these makes 0-trade outcomes debuggable — instead of
+                        # "the strategy didn't trade", the user sees WHICH filter blocked it.
+                        diag = {}
+                        try:
+                            strat_inst = getattr(s, "_strategy", None)
+                            gates = getattr(strat_inst, "_gates", None)
+                            if isinstance(gates, dict):
+                                diag = {k: int(v) for k, v in gates.items()
+                                        if isinstance(v, (int, float))}
+                        except Exception:
+                            pass
+                        results.append({
+                            "ticker":       ticker,
+                            "pf":           round(_num(s.get("Profit Factor")), 3),
+                            "sharpe":       round(_num(s.get("Sharpe Ratio")),  3),
+                            "return_pct":   round(_num(s.get("Return [%]")),    2),
+                            "win_rate":     round(_num(s.get("Win Rate [%]")),  1),
+                            "max_dd":       round(abs(_num(s.get("Max. Drawdown [%]"))), 2),
+                            "trades":       int(_num(s.get("# Trades"))),
+                            "diag":         diag,
+                        })
+                        break
+                    except Exception as _be:
+                        # Capture the deepest user-code frame so we know WHICH line crashed.
+                        import traceback as _tb
+                        line_hint = ""
+                        try:
+                            for fr in _tb.extract_tb(_be.__traceback__):
+                                if fr.filename == "<research>":
+                                    line_hint = f" [line {fr.lineno}: {fr.line}]"
+                        except Exception:
+                            pass
+                        error_full = (str(_be) + line_hint)[:500]
+
+                        # Only attempt a fix when the crash looks like generated-strategy code:
+                        # has a <research> frame, or a typical bug signature. Otherwise it's
+                        # an environment issue (network, missing data, etc.) — no fix to make.
+                        looks_fixable = bool(line_hint) or any(
+                            sig in str(_be) for sig in (
+                                "operand type", "has no attribute", "has no len()",
+                                "Indicator", "index out of range",
+                            )
+                        )
+                        if looks_fixable and fix_attempts[0] < MAX_FIX_ATTEMPTS:
+                            yield _sse({"type": "fix_progress",
+                                        "msg": f"{ticker} crashed — sending error to Sonnet to fix "
+                                               f"(attempt {fix_attempts[0] + 1}/{MAX_FIX_ATTEMPTS})…",
+                                        "error": error_full})
+                            new_code, new_cls = _attempt_fix(raw_code, error_full)
+                            if new_code and new_cls:
+                                raw_code     = new_code
+                                strategy_cls = new_cls
+                                yield _sse({"type": "code_fixed",
+                                            "code": raw_code,
+                                            "msg": f"Strategy patched. Retrying {ticker}…"})
+                                continue  # retry same ticker with fixed code
+                            yield _sse({"type": "warning_msg",
+                                        "msg": "Fix attempt failed — recording original error and moving on."})
+
+                        results.append({"ticker": ticker, "error": error_full})
+                        break
+
+            yield _sse({"type": "bt_done", "results": results, "code": raw_code})
 
             # ── Step 4: Claude evaluates results ─────────────────────────
             yield _sse({"type": "phase", "phase": "evaluate",
