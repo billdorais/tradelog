@@ -1672,6 +1672,237 @@ def journal():
     return render_template("journal.html")
 
 
+@app.route("/research")
+def research():
+    return render_template("research.html")
+
+
+_RESEARCH_SYSTEM = """You are an expert quantitative strategy developer helping a systematic trader.
+Context: the trader runs intraday 5-minute equity strategies (US stocks, RTH 9:30-16:00 ET),
+uses Camarilla R3/S3 and H4/L4 levels for entries, trades 100 shares per position,
+$26k account with 4x intraday margin. All existing strategies use backtesting.py.
+
+Your task: given a hypothesis, write a complete, runnable backtesting.py Strategy class.
+
+REQUIREMENTS:
+- Class name must be exactly: ResearchStrategy
+- Must subclass backtesting.Strategy
+- Parameters as class-level attributes with sensible defaults
+- _trade_on_close = True  (matches Pine Script process_orders_on_close)
+- Use only numpy (as np) and pandas (as pd) — both already imported
+- All indicator work in init() using self.I()
+- All trade logic in next() using self.buy() / self.sell() — NO size argument
+- Always include a hard stop loss (dollar or pct based)
+- RTH filter: only enter trades when len(self.data) > 0 and intraday
+
+DO NOT: use TA-Lib, sklearn, external APIs, more than 6 parameters, or complex ML.
+
+OUTPUT — use exactly this structure:
+
+## Edge Analysis
+[2-3 sentences explaining WHY this edge should exist in liquid equity markets]
+
+## Overfitting Risk
+[1-2 sentences on what could make historical results misleading]
+
+## Strategy Code
+```python
+import numpy as np
+import pandas as pd
+from backtesting import Strategy
+
+class ResearchStrategy(Strategy):
+    # parameters
+    _trade_on_close = True
+
+    def init(self):
+        pass
+
+    def next(self):
+        pass
+```
+
+## Param Ranges
+```json
+{"param_name": {"min": 0.1, "max": 1.0, "step": 0.1}}
+```
+"""
+
+
+@app.route("/api/agent/research", methods=["POST"])
+def api_agent_research():
+    """Stream a full research cycle: Claude writes strategy → backtest → Claude evaluates."""
+    import json as _j
+    data       = request.get_json(silent=True) or {}
+    hypothesis = data.get("hypothesis", "").strip()
+    tickers    = [t.strip().upper() for t in data.get("tickers", ["TSLA", "QQQ", "AMD"]) if t.strip()]
+    timeframe  = data.get("timeframe",  "5m")
+    start_date = data.get("start_date", "2025-01-01")
+    end_date   = data.get("end_date",   "") or time.strftime("%Y-%m-%d", time.gmtime())
+    cash       = float(data.get("cash", 26000))
+
+    if not hypothesis:
+        return jsonify({"error": "hypothesis required"}), 400
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+
+    def generate():
+        def _sse(obj): return f"data: {_j.dumps(obj)}\n\n"
+        try:
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=api_key)
+
+            # ── Step 1: Claude writes the strategy ───────────────────────
+            yield _sse({"type": "phase", "phase": "research",
+                        "msg": "Researching hypothesis and writing strategy code…"})
+            full_response = ""
+            with client.messages.stream(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2500,
+                system=_RESEARCH_SYSTEM,
+                messages=[{"role": "user", "content":
+                    f"Hypothesis: {hypothesis}\n\n"
+                    f"Test on: {', '.join(tickers)} at {timeframe} bars, "
+                    f"starting {start_date}."}],
+            ) as stream:
+                for text in stream.text_stream:
+                    full_response += text
+                    yield _sse({"type": "research_chunk", "text": text})
+
+            yield _sse({"type": "research_done", "full_text": full_response})
+
+            # Extract code block
+            import re as _re
+            code_match = _re.search(r"```python\s*(.*?)```", full_response, _re.DOTALL)
+            if not code_match:
+                yield _sse({"type": "error", "msg": "Claude did not produce a code block. Try rephrasing."}); return
+            raw_code = _strip_code_fences(code_match.group(1).strip())
+
+            # Extract param ranges
+            params_match = _re.search(r"## Param Ranges\s*```json\s*(.*?)```", full_response, _re.DOTALL)
+            param_ranges = {}
+            if params_match:
+                try: param_ranges = _j.loads(params_match.group(1).strip())
+                except Exception: pass
+
+            yield _sse({"type": "code", "code": raw_code, "param_ranges": param_ranges})
+
+            # ── Step 2: Validate the code compiles ───────────────────────
+            yield _sse({"type": "phase", "phase": "validate", "msg": "Validating strategy code…"})
+            ns = {}
+            try:
+                exec(compile(raw_code, "<research>", "exec"), ns)
+            except Exception as _ce:
+                yield _sse({"type": "error", "msg": f"Strategy code has a syntax error: {_ce}"}); return
+
+            import backtesting as _bktst
+            strategy_cls = next(
+                (v for v in ns.values()
+                 if isinstance(v, type) and issubclass(v, _bktst.Strategy)
+                 and v is not _bktst.Strategy), None)
+            if not strategy_cls:
+                yield _sse({"type": "error", "msg": "No Strategy subclass found — Claude may have renamed it."}); return
+            yield _sse({"type": "validate_ok", "class_name": strategy_cls.__name__})
+
+            # ── Step 3: Run backtest on each ticker ───────────────────────
+            yield _sse({"type": "phase", "phase": "backtest",
+                        "msg": f"Running backtest on {len(tickers)} tickers…"})
+            from backtesting import Backtest as _BT
+            from strategies.data import fetch_bars_alpaca, fetch_bars
+            import pandas as _pd
+
+            results = []
+            for i, ticker in enumerate(tickers):
+                yield _sse({"type": "bt_progress", "ticker": ticker,
+                            "pct": int(i / len(tickers) * 100)})
+                try:
+                    try:
+                        raw = fetch_bars_alpaca(ticker, start_date, end_date, timeframe)
+                    except Exception:
+                        raw = fetch_bars(ticker, start_date, end_date, timeframe)
+                    if not raw or len(raw) < 50:
+                        results.append({"ticker": ticker, "error": "insufficient data"}); continue
+                    df = _pd.DataFrame(raw).set_index("time")
+                    df.index = _pd.to_datetime(df.index)
+                    df.columns = [c.title() for c in df.columns]
+                    df = df[["Open","High","Low","Close"]].dropna(); df["Volume"] = 0
+                    df = _filter_rth(df)
+                    bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
+                             exclusive_orders=True,
+                             trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
+                    s = bt.run()
+                    results.append({
+                        "ticker":       ticker,
+                        "pf":           round(float(s.get("Profit Factor") or 0), 3),
+                        "sharpe":       round(float(s.get("Sharpe Ratio")  or 0), 3),
+                        "return_pct":   round(float(s.get("Return [%]")    or 0), 2),
+                        "win_rate":     round(float(s.get("Win Rate [%]")  or 0), 1),
+                        "max_dd":       round(abs(float(s.get("Max. Drawdown [%]") or 0)), 2),
+                        "trades":       int(s.get("# Trades") or 0),
+                    })
+                except Exception as _be:
+                    results.append({"ticker": ticker, "error": str(_be)[:120]})
+
+            yield _sse({"type": "bt_done", "results": results})
+
+            # ── Step 4: Claude evaluates results ─────────────────────────
+            yield _sse({"type": "phase", "phase": "evaluate",
+                        "msg": "Evaluating results…"})
+            good   = [r for r in results if "pf" in r and r["pf"] >= 1.0]
+            strong = [r for r in results if "pf" in r and r["pf"] >= 1.3]
+            avg_pf = round(sum(r.get("pf",0) for r in results if "pf" in r) /
+                           max(len([r for r in results if "pf" in r]),1), 3)
+            result_summary = "\n".join(
+                f"  {r['ticker']}: PF={r.get('pf','err')} Sharpe={r.get('sharpe','err')} "
+                f"Return={r.get('return_pct','err')}% Trades={r.get('trades','err')}"
+                for r in results)
+
+            eval_prompt = (
+                f"Strategy hypothesis: {hypothesis}\n\n"
+                f"Backtest results across {len(tickers)} tickers ({timeframe}, {start_date}–{end_date}):\n"
+                f"{result_summary}\n\n"
+                f"Summary: {len(strong)}/{len(tickers)} tickers passed PF≥1.3 · "
+                f"avg PF {avg_pf} · {len(good)}/{len(tickers)} profitable\n\n"
+                f"Provide a concise verdict (3-4 sentences):\n"
+                f"1. Is the edge real or likely overfit? Why?\n"
+                f"2. Which tickers work and why might they be different from the failures?\n"
+                f"3. One specific modification that could improve cross-ticker consistency.\n"
+                f"4. Recommend: Save and test live / Needs refinement / Abandon this approach."
+            )
+            verdict = ""
+            with client.messages.stream(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=400,
+                messages=[{"role": "user", "content": eval_prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    verdict += text
+                    yield _sse({"type": "verdict_chunk", "text": text})
+
+            # Final summary
+            passed = len(strong)
+            overall = "pass" if passed >= len(tickers) * 0.5 and avg_pf >= 1.2 else \
+                      "marginal" if passed >= 2 and avg_pf >= 1.0 else "fail"
+            yield _sse({
+                "type": "done",
+                "overall": overall,
+                "passes": passed,
+                "n_tickers": len(tickers),
+                "avg_pf": avg_pf,
+                "code": raw_code,
+                "verdict": verdict,
+            })
+
+        except Exception as _e:
+            log.exception("Research agent error")
+            yield _sse({"type": "error", "msg": str(_e)})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.route("/api/journal/entries")
 def api_journal_entries():
     conn = get_db()

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strategy Research — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #000; color: #e0e0e0; min-height: 100vh; padding: 32px 16px 60px; }
+
+    .topbar { max-width: 1100px; margin: 0 auto 28px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-left { display: flex; align-items: center; gap: 10px; }
+    .topbar-left img { height: 36px; width: 36px; image-rendering: pixelated; }
+    .topbar-left span { font-size: 1.1rem; font-weight: 700; color: #fff; }
+    .page { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .subtitle { font-size: 0.88rem; color: #555; margin-bottom: 28px; }
+
+    .card { background: #111113; border: 1px solid #1e2130; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px; }
+    .card-title { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; font-weight: 600; }
+
+    /* Hypothesis input */
+    .hypothesis-wrap { position: relative; }
+    textarea#hypothesis { width: 100%; min-height: 90px; background: #0a0a0a; border: 1px solid #2a2d3e;
+      border-radius: 8px; color: #e0e0e0; padding: 14px 16px; font-size: 0.9rem;
+      font-family: inherit; line-height: 1.6; resize: vertical; outline: none; }
+    textarea#hypothesis:focus { border-color: #7FE098; }
+    textarea#hypothesis::placeholder { color: #333; }
+
+    /* Example chips */
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .chip { background: #0a0a0a; border: 1px solid #2a2d3e; color: #666; padding: 5px 12px;
+            border-radius: 20px; font-size: 0.78rem; cursor: pointer; transition: all 0.12s; }
+    .chip:hover { border-color: #7FE098; color: #aaa; }
+
+    /* Config row */
+    .config-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 16px; align-items: flex-end; }
+    .cfg-field label { display: block; font-size: 0.7rem; color: #555; text-transform: uppercase;
+                       letter-spacing: 0.04em; margin-bottom: 4px; font-weight: 600; }
+    .cfg-field input, .cfg-field select { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 7px;
+      color: #e0e0e0; padding: 7px 10px; font-size: 0.85rem; font-family: inherit; outline: none; }
+    .cfg-field input:focus, .cfg-field select:focus { border-color: #7FE098; }
+
+    .btn-run { background: rgba(136,191,139,0.12); border: 1px solid #88BF8B; color: #7FE098;
+               padding: 10px 28px; border-radius: 8px; font-size: 0.92rem; font-weight: 700;
+               cursor: pointer; font-family: inherit; transition: background 0.15s; }
+    .btn-run:hover { background: rgba(136,191,139,0.2); }
+    .btn-run:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Phases */
+    .phase-row { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+    .phase-badge { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 600;
+                   border: 1px solid #1e2130; color: #444; background: transparent; transition: all 0.2s; }
+    .phase-badge.active { border-color: #88BF8B; color: #7FE098; background: rgba(136,191,139,0.08); }
+    .phase-badge.done   { border-color: #517356; color: #517356; }
+
+    /* Research output */
+    .output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 760px) { .output-grid { grid-template-columns: 1fr; } }
+
+    .out-panel { background: #0a0a0a; border: 1px solid #1e2130; border-radius: 8px; overflow: hidden; }
+    .out-panel-title { padding: 10px 14px; border-bottom: 1px solid #1e2130; font-size: 0.7rem;
+                       color: #555; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+    .out-panel-body { padding: 14px; max-height: 320px; overflow-y: auto; font-size: 0.82rem; line-height: 1.7; color: #b0b0b0; }
+    .out-panel-body pre { white-space: pre-wrap; font-family: 'Consolas', monospace; font-size: 0.78rem; color: #c0c0c0; }
+    .out-panel-body.verdict { color: #c8e6c9; font-size: 0.87rem; }
+
+    /* Results table */
+    .rt { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+    .rt th { padding: 8px 12px; text-align: left; font-size: 0.68rem; color: #555;
+             text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #1e2130; font-weight: 600; }
+    .rt td { padding: 8px 12px; border-bottom: 1px solid #0d0d0d; }
+    .rt tr:last-child td { border-bottom: none; }
+    .pos { color: #7FE098; } .neg { color: #ef5350; }
+    .pf-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
+    .pf-pass  { background: rgba(81,115,86,0.18); color: #7FE098; }
+    .pf-ok    { background: rgba(242,231,172,0.15); color: #F2E7AC; }
+    .pf-fail  { background: rgba(231,76,60,0.15); color: #ef5350; }
+
+    /* Overall verdict badge */
+    .verdict-banner { padding: 16px 20px; border-radius: 8px; margin-top: 14px; font-size: 0.88rem; font-weight: 600; }
+    .verdict-pass     { background: rgba(81,115,86,0.12); border: 1px solid #517356; color: #7FE098; }
+    .verdict-marginal { background: rgba(242,231,172,0.08); border: 1px solid #8a7a30; color: #F2E7AC; }
+    .verdict-fail     { background: rgba(231,76,60,0.08); border: 1px solid #7a2020; color: #ef5350; }
+
+    /* Save button */
+    .btn-save { background: rgba(81,115,86,0.15); border: 1px solid #517356; color: #7FE098;
+                padding: 9px 22px; border-radius: 8px; font-size: 0.88rem; font-weight: 700;
+                cursor: pointer; font-family: inherit; margin-top: 14px; }
+    .btn-save:hover { background: rgba(81,115,86,0.25); }
+    .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #88BF8B;
+               border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite;
+               vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #navMenu a { display: block; padding: 10px 16px; color: #ccc; text-decoration: none;
+                 font-size: 0.9rem; border-bottom: 1px solid #1e2130; }
+    #navMenu a:last-child { border-bottom: none; }
+    #navMenu a:hover { background: rgba(255,255,255,0.04); }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="cursor:pointer"></a>
+    <span>Kairos Automata — Strategy Research</span>
+  </div>
+  <div style="position:relative;display:inline-block">
+    <button id="navMenuBtn" onclick="toggleNavMenu()"
+            style="background:transparent;border:1px solid #1e2130;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#0d0d0d;
+                              border:1px solid #1e2130;border-radius:8px;min-width:190px;z-index:999;box-shadow:0 6px 24px rgba(0,0,0,0.6)">
+      <a href="/">&#127968; Dashboard</a>
+      <a href="/routing">&#128257; Signal Router</a>
+      <a href="/analysis">&#128300; Analysis</a>
+      <a href="/strategies">&#128200; Strategies</a>
+      <a href="/optimize">&#128269; Optimizer</a>
+      <a href="/variants">&#127757; Variants</a>
+      <a href="/progress">&#9989; Progress</a>
+      <a href="/research">&#129514; Research</a>
+      <a href="/journal">&#128221; Journal</a>
+      <a href="/about">&#8505; About</a>
+    </div>
+  </div>
+</div>
+
+<div class="page">
+  <h1>Strategy Research Agent</h1>
+  <p class="subtitle">Describe a strategy idea → Claude writes the code → backtests it on your universe → gives a verdict</p>
+
+  <div class="card">
+    <div class="card-title">Strategy Hypothesis</div>
+    <div class="hypothesis-wrap">
+      <textarea id="hypothesis" placeholder="e.g. A VWAP mean-reversion strategy that fades moves away from VWAP during the first 90 minutes of the session, using ATR as a dynamic stop loss."></textarea>
+    </div>
+    <div class="chips">
+      <div class="chip" onclick="setHypothesis(this)">VWAP reversion in first 90 minutes</div>
+      <div class="chip" onclick="setHypothesis(this)">Opening range breakout with ATR-based stops</div>
+      <div class="chip" onclick="setHypothesis(this)">RSI divergence at Camarilla H3/L3 levels</div>
+      <div class="chip" onclick="setHypothesis(this)">Gap fill mean reversion on morning gaps &gt;0.5%</div>
+      <div class="chip" onclick="setHypothesis(this)">Momentum breakout 30 minutes after market open</div>
+      <div class="chip" onclick="setHypothesis(this)">EMA crossover with volume confirmation</div>
+    </div>
+
+    <div class="config-row">
+      <div class="cfg-field">
+        <label>Tickers</label>
+        <input type="text" id="rTickers" value="TSLA, QQQ, AMD, NVDA, PLTR" style="width:260px">
+      </div>
+      <div class="cfg-field">
+        <label>Timeframe</label>
+        <select id="rTf">
+          <option value="5m" selected>5m</option>
+          <option value="15m">15m</option>
+          <option value="30m">30m</option>
+          <option value="1h">1h</option>
+        </select>
+      </div>
+      <div class="cfg-field">
+        <label>Start Date</label>
+        <input type="date" id="rStart" value="2025-01-01">
+      </div>
+      <div class="cfg-field">
+        <label>Cash ($)</label>
+        <input type="number" id="rCash" value="26000" style="width:100px">
+      </div>
+      <button class="btn-run" id="runBtn" onclick="runResearch()">&#129514; Research</button>
+    </div>
+  </div>
+
+  <!-- Output -->
+  <div id="outputSection" style="display:none">
+    <div class="card">
+      <div class="phase-row">
+        <div class="phase-badge" id="ph-research">&#128221; Research</div>
+        <div class="phase-badge" id="ph-validate">&#9989; Validate</div>
+        <div class="phase-badge" id="ph-backtest">&#128200; Backtest</div>
+        <div class="phase-badge" id="ph-evaluate">&#129514; Evaluate</div>
+      </div>
+
+      <div class="output-grid">
+        <div class="out-panel">
+          <div class="out-panel-title">Claude's Analysis</div>
+          <div class="out-panel-body" id="analysisOut"><span style="color:#333">Waiting…</span></div>
+        </div>
+        <div class="out-panel">
+          <div class="out-panel-title">Generated Strategy Code</div>
+          <div class="out-panel-body"><pre id="codeOut" style="color:#333">Waiting for code…</pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backtest results -->
+    <div class="card" id="resultsCard" style="display:none">
+      <div class="card-title">Backtest Results</div>
+      <table class="rt">
+        <thead><tr>
+          <th>Ticker</th><th>Profit Factor</th><th>Sharpe</th><th>Return %</th>
+          <th>Win Rate</th><th>Max DD %</th><th>Trades</th>
+        </tr></thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+
+      <div id="verdictPanel" style="display:none">
+        <div class="card-title" style="margin-top:18px">Verdict</div>
+        <div class="out-panel-body verdict" id="verdictOut" style="max-height:none;background:#0a0a0a;border:1px solid #1e2130;border-radius:8px;padding:14px"></div>
+        <div id="verdictBanner" class="verdict-banner" style="display:none"></div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:14px">
+          <button class="btn-save" id="saveBtn" style="display:none" onclick="saveStrategy()">&#128190; Save to Strategies</button>
+          <span id="saveStatus" style="font-size:0.8rem;color:#555"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let _code = '';
+  let _paramRanges = {};
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = (m.style.display === 'block') ? 'none' : 'block';
+  }
+  document.addEventListener('click', e => {
+    if (!document.getElementById('navMenuBtn').contains(e.target) &&
+        !document.getElementById('navMenu').contains(e.target))
+      document.getElementById('navMenu').style.display = 'none';
+  });
+
+  function setHypothesis(el) {
+    document.getElementById('hypothesis').value = el.textContent.trim();
+  }
+
+  function setPhase(phase) {
+    ['research','validate','backtest','evaluate'].forEach(p => {
+      const el = document.getElementById('ph-' + p);
+      if (p === phase) el.className = 'phase-badge active';
+      else if (['research','validate','backtest','evaluate'].indexOf(p) <
+               ['research','validate','backtest','evaluate'].indexOf(phase))
+        el.className = 'phase-badge done';
+    });
+  }
+
+  async function runResearch() {
+    const hypothesis = document.getElementById('hypothesis').value.trim();
+    if (!hypothesis) { alert('Enter a strategy hypothesis first.'); return; }
+
+    const tickers = document.getElementById('rTickers').value.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Researching…';
+
+    _code = ''; _paramRanges = {};
+    document.getElementById('outputSection').style.display = '';
+    document.getElementById('resultsCard').style.display   = 'none';
+    document.getElementById('verdictPanel').style.display  = 'none';
+    document.getElementById('analysisOut').innerHTML = '<span style="color:#444">Generating…</span>';
+    document.getElementById('codeOut').textContent  = 'Waiting for code…';
+    document.getElementById('codeOut').style.color  = '#333';
+    document.getElementById('resultsBody').innerHTML = '';
+    setPhase('research');
+
+    try {
+      const res = await fetch('/api/agent/research', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hypothesis,
+          tickers,
+          timeframe:  document.getElementById('rTf').value,
+          start_date: document.getElementById('rStart').value,
+          cash:       parseFloat(document.getElementById('rCash').value),
+        }),
+      });
+
+      const reader = res.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+      let   analysisText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const msg = JSON.parse(line.slice(6));
+            handleMsg(msg, tickers);
+            if (msg.type === 'research_chunk') {
+              analysisText += msg.text;
+              document.getElementById('analysisOut').innerHTML =
+                analysisText.replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
+            }
+          } catch {}
+        }
+      }
+    } catch(e) {
+      document.getElementById('analysisOut').innerHTML = `<span style="color:#ef5350">Error: ${e.message}</span>`;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '&#129514; Research';
+    }
+  }
+
+  function handleMsg(msg, tickers) {
+    if (msg.type === 'phase') {
+      const phaseMap = { research:'research', validate:'validate', backtest:'backtest', evaluate:'evaluate' };
+      if (phaseMap[msg.phase]) setPhase(phaseMap[msg.phase]);
+    }
+    else if (msg.type === 'code') {
+      _code = msg.code;
+      _paramRanges = msg.param_ranges || {};
+      const el = document.getElementById('codeOut');
+      el.textContent = msg.code;
+      el.style.color = '#c0c0c0';
+    }
+    else if (msg.type === 'bt_done') {
+      document.getElementById('resultsCard').style.display = '';
+      const body = document.getElementById('resultsBody');
+      body.innerHTML = msg.results.map(r => {
+        if (r.error) return `<tr><td>${r.ticker}</td><td colspan="6" style="color:#ef5350">${r.error}</td></tr>`;
+        const pf = r.pf;
+        const pfCls = pf >= 1.3 ? 'pf-pass' : pf >= 1.0 ? 'pf-ok' : 'pf-fail';
+        return `<tr>
+          <td style="font-weight:600;color:#ccc">${r.ticker}</td>
+          <td><span class="pf-badge ${pfCls}">${pf}</span></td>
+          <td>${r.sharpe}</td>
+          <td class="${r.return_pct >= 0 ? 'pos' : 'neg'}">${r.return_pct}%</td>
+          <td class="${r.win_rate >= 50 ? 'pos' : 'neg'}">${r.win_rate}%</td>
+          <td class="${r.max_dd > 15 ? 'neg' : ''}">${r.max_dd}%</td>
+          <td>${r.trades}</td>
+        </tr>`;
+      }).join('');
+    }
+    else if (msg.type === 'verdict_chunk') {
+      const el = document.getElementById('verdictOut');
+      el.textContent = (el.textContent === '') ? msg.text : el.textContent + msg.text;
+      document.getElementById('verdictPanel').style.display = '';
+    }
+    else if (msg.type === 'done') {
+      setPhase('evaluate');
+      document.getElementById('ph-evaluate').className = 'phase-badge done';
+      const map = { pass: 'verdict-pass', marginal: 'verdict-marginal', fail: 'verdict-fail' };
+      const labels = { pass: '✓ Recommended — save and test live', marginal: '⚠ Marginal — needs refinement', fail: '✗ Not recommended — abandon or rethink' };
+      const banner = document.getElementById('verdictBanner');
+      banner.className = 'verdict-banner ' + (map[msg.overall] || 'verdict-marginal');
+      banner.textContent = `${labels[msg.overall] || msg.overall} · ${msg.passes}/${msg.n_tickers} tickers passed · avg PF ${msg.avg_pf}`;
+      banner.style.display = '';
+      if (msg.overall !== 'fail') {
+        document.getElementById('saveBtn').style.display = '';
+      }
+    }
+    else if (msg.type === 'error') {
+      document.getElementById('analysisOut').innerHTML +=
+        `<br><span style="color:#ef5350">✗ ${msg.msg}</span>`;
+    }
+  }
+
+  async function saveStrategy() {
+    if (!_code) return;
+    const btn  = document.getElementById('saveBtn');
+    const stat = document.getElementById('saveStatus');
+    btn.disabled = true;
+    stat.textContent = 'Saving…';
+
+    const hypothesis = document.getElementById('hypothesis').value.trim();
+    const slug = 'research_' + Date.now();
+    const name = hypothesis.slice(0, 60) + (hypothesis.length > 60 ? '…' : '');
+
+    try {
+      const res = await fetch('/api/bt/strategies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, name, code: _code, pine_code: '', params: _paramRanges }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      stat.textContent = '✓ Saved! Open Optimizer to run it.';
+      stat.style.color = '#7FE098';
+      btn.textContent  = '✓ Saved';
+    } catch(e) {
+      stat.textContent = 'Error: ' + e.message;
+      stat.style.color = '#ef5350';
+      btn.disabled = false;
+    }
+  }
+</script>
+</body>
+</html>
