@@ -362,11 +362,26 @@
     else if (msg.type === 'bt_done') {
       document.getElementById('resultsCard').style.display = '';
       const body = document.getElementById('resultsBody');
+      // Render gate-counter diagnostics as a small wrap of pills. Useful when
+      // trades === 0: tells you which filter killed the entry candidates.
+      const diagRow = (r) => {
+        const d = r.diag || {};
+        const keys = Object.keys(d);
+        if (!keys.length) return '';
+        // Sort by count desc so the worst offender is first
+        keys.sort((a, b) => d[b] - d[a]);
+        const pills = keys.map(k => {
+          const isEntry = /enter|entered|trade/i.test(k);
+          const color = isEntry ? '#7FE098' : '#888';
+          return `<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:10px;background:#1a1d2e;border:1px solid #2a2d3e;font-size:0.72rem;color:${color}"><span style="color:#666">${k}:</span> ${d[k].toLocaleString()}</span>`;
+        }).join('');
+        return `<tr><td colspan="7" style="padding:4px 12px 10px;border-bottom:1px solid #1e2130"><span style="color:#555;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;margin-right:8px">${r.ticker} gates →</span>${pills}</td></tr>`;
+      };
       body.innerHTML = msg.results.map(r => {
         if (r.error) return `<tr><td style="color:#ccc">${r.ticker}</td><td colspan="6" style="color:#ef5350;font-size:0.78rem">${r.error} <span style="color:#555">— code bug in generated strategy; see verdict below</span></td></tr>`;
         const pf = r.pf;
         const pfCls = pf >= 1.3 ? 'pf-pass' : pf >= 1.0 ? 'pf-ok' : 'pf-fail';
-        return `<tr>
+        const main = `<tr>
           <td style="font-weight:600;color:#ccc">${r.ticker}</td>
           <td><span class="pf-badge ${pfCls}">${pf}</span></td>
           <td>${r.sharpe}</td>
@@ -375,6 +390,8 @@
           <td class="${r.max_dd > 15 ? 'neg' : ''}">${r.max_dd}%</td>
           <td>${r.trades}</td>
         </tr>`;
+        // Only show diagnostics row when trades==0 (otherwise it's noise)
+        return main + (r.trades === 0 ? diagRow(r) : '');
       }).join('');
     }
     else if (msg.type === 'verdict_chunk') {

@@ -1746,6 +1746,20 @@ REQUIREMENTS:
   strategy, so do NOT add intraday/time-of-day checks.
 - Volume IS available via self.data.Volume — feel free to use volume-based
   filters (e.g. `self.vol_sma = self.I(_sma, self.data.Volume, 20)`).
+- DIAGNOSTICS: at the start of init(), do `self._gates = {}`. At EVERY early
+  `return` in next() that rejects a candidate entry (warmup, entry-window,
+  range-too-wide, volume-too-low, no-breakout, ema-misaligned, etc.),
+  increment a counter immediately before the return:
+      self._gates['warmup']             = self._gates.get('warmup', 0) + 1
+      self._gates['range_too_wide']     = self._gates.get('range_too_wide', 0) + 1
+      self._gates['volume_too_low']     = self._gates.get('volume_too_low', 0) + 1
+      self._gates['no_breakout']        = self._gates.get('no_breakout', 0) + 1
+      self._gates['ema_misaligned']     = self._gates.get('ema_misaligned', 0) + 1
+      self._gates['entered_long']       = self._gates.get('entered_long', 0) + 1
+      self._gates['entered_short']      = self._gates.get('entered_short', 0) + 1
+  Use whatever names match YOUR strategy's gates. This is REQUIRED — it's the
+  only way to diagnose a 0-trade outcome (range filter? volume gate? bad EMA?).
+  Also count each successful entry under a descriptive key.
 - Do NOT track session/range state in init() as plain instance attributes
   (e.g. `self.range_high = None`) and check it once via `current_bar_idx ==
   self.range_bars`. Backtests span many days, so per-day state must reset
@@ -1932,6 +1946,18 @@ def api_agent_research():
                             return f if f == f else default  # NaN: f != f
                         except (TypeError, ValueError):
                             return default
+                    # Extract per-gate diagnostic counters that Claude was told to maintain.
+                    # Surfacing these makes 0-trade outcomes debuggable — instead of
+                    # "the strategy didn't trade", the user sees WHICH filter blocked it.
+                    diag = {}
+                    try:
+                        strat_inst = getattr(s, "_strategy", None)
+                        gates = getattr(strat_inst, "_gates", None)
+                        if isinstance(gates, dict):
+                            diag = {k: int(v) for k, v in gates.items()
+                                    if isinstance(v, (int, float))}
+                    except Exception:
+                        pass
                     results.append({
                         "ticker":       ticker,
                         "pf":           round(_num(s.get("Profit Factor")), 3),
@@ -1940,6 +1966,7 @@ def api_agent_research():
                         "win_rate":     round(_num(s.get("Win Rate [%]")),  1),
                         "max_dd":       round(abs(_num(s.get("Max. Drawdown [%]"))), 2),
                         "trades":       int(_num(s.get("# Trades"))),
+                        "diag":         diag,
                     })
                 except Exception as _be:
                     # Keep enough of the message for the underlying cause to be visible —
