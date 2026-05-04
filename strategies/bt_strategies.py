@@ -368,6 +368,114 @@ class CamarillaBreakout(Strategy):
             self.sell(); self._entry = c
 
 
+class CamarillaR3S3BreakoutPct(Strategy):
+    """Exact Python translation of CAM_BREAKOUT_R3S3 Pine Script — percentage-based exits.
+
+    Entry (Cross style — matches Pine default):
+      Long:  close[1] <= R3 and close > R3  (bar crosses R3)  and close > EMA
+      Short: close[1] >= S3 and close < S3                    and close < EMA
+      RTH bars only.
+
+    Levels (match Pine line-for-line):
+      R3 = prevClose + (prevHigh - prevLow) * 1.1 / 4
+      S3 = prevClose - (prevHigh - prevLow) * 1.1 / 4
+
+    Exits:
+      Hard stop:     stop_loss_pct     % of entry price  (Pine: lossDollars)
+      Trail trigger: trail_act_pct     % of entry price  (Pine: trailPointsDollars)
+      Trail offset:  trail_offset_pct  % of entry price  (Pine: trailOffsetDollars)
+
+    Using percentages instead of dollars means the same param set scales
+    correctly across AMD ($102), TSLA ($280), QQQ ($470), MSFT ($430) etc.
+    """
+    cam_mult         = 1.1
+    stop_loss_pct    = 0.30   # % of entry — replaces lossDollars
+    trail_act_pct    = 0.20   # % of entry — replaces trailPointsDollars
+    trail_offset_pct = 0.15   # % of entry — replaces trailOffsetDollars
+    ema_period       = 2      # matches Pine default
+    _trade_on_close  = True
+
+    def init(self):
+        cl, hi, lo = self.data.Close, self.data.High, self.data.Low
+        self.ema = self.I(lambda: _ema(cl, self.ema_period),
+                          name=f"EMA{self.ema_period}", overlay=True, color="#ffffff")
+
+        idx = self.data.index
+        is_intraday = hasattr(idx[0], 'hour') and len(set(t.date() for t in idx)) < len(idx)
+        if is_intraday:
+            daily = pd.DataFrame({'h': hi, 'l': lo, 'c': cl}, index=idx)
+            daily = daily.resample('1D').agg({'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
+            prev  = daily.shift(1)
+            ph = prev['h'].reindex(idx, method='ffill').to_numpy()
+            pl = prev['l'].reindex(idx, method='ffill').to_numpy()
+            pc = prev['c'].reindex(idx, method='ffill').to_numpy()
+        else:
+            ph = np.roll(hi, 1); ph[0] = np.nan
+            pl = np.roll(lo, 1); pl[0] = np.nan
+            pc = np.roll(cl, 1); pc[0] = np.nan
+
+        rng = ph - pl
+        # R3/S3: divisor 4  (Pine: rng * 1.1 / 4)
+        self.r3 = self.I(lambda: pc + rng * self.cam_mult / 4.0,
+                          name="R3", overlay=True, color="#ef5350")
+        self.s3 = self.I(lambda: pc - rng * self.cam_mult / 4.0,
+                          name="S3", overlay=True, color="#26a65b")
+
+        self._entry    = np.nan
+        self._trail_sl = np.nan
+
+    def next(self):
+        c    = self.data.Close[-1]
+        c1   = self.data.Close[-2] if len(self.data.Close) >= 2 else c
+        r3   = self.r3[-1]
+        s3   = self.s3[-1]
+        ema  = self.ema[-1]
+
+        if any(np.isnan(x) for x in (r3, s3, ema)):
+            return
+
+        # ── Manage open long ─────────────────────────────────────
+        if self.position.is_long:
+            stop_dist  = self._entry * self.stop_loss_pct    / 100
+            trail_act  = self._entry * self.trail_act_pct    / 100
+            trail_dist = self._entry * self.trail_offset_pct / 100
+            profit = c - self._entry
+            if profit <= -stop_dist:
+                self.position.close(); self._entry = self._trail_sl = np.nan; return
+            if profit >= trail_act:
+                new_sl = c - trail_dist
+                if np.isnan(self._trail_sl) or new_sl > self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c <= self._trail_sl:
+                self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        # ── Manage open short ────────────────────────────────────
+        if self.position.is_short:
+            stop_dist  = self._entry * self.stop_loss_pct    / 100
+            trail_act  = self._entry * self.trail_act_pct    / 100
+            trail_dist = self._entry * self.trail_offset_pct / 100
+            profit = self._entry - c
+            if profit <= -stop_dist:
+                self.position.close(); self._entry = self._trail_sl = np.nan; return
+            if profit >= trail_act:
+                new_sl = c + trail_dist
+                if np.isnan(self._trail_sl) or new_sl < self._trail_sl:
+                    self._trail_sl = new_sl
+            if not np.isnan(self._trail_sl) and c >= self._trail_sl:
+                self.position.close(); self._entry = self._trail_sl = np.nan
+            return
+
+        # ── No position — check entries (Cross style) ────────────
+        self._entry = self._trail_sl = np.nan
+        long_cross  = c > r3 and c1 <= r3 and c > ema   # matches Pine longCross + emaPassLong
+        short_cross = c < s3 and c1 >= s3 and c < ema   # matches Pine shortCross + emaPassShort
+        if long_cross:
+            self.buy();  self._entry = c
+        elif short_cross:
+            self.sell(); self._entry = c
+
+
 class CamarillaBreakoutPct(Strategy):
     """Percentage-based version of CamarillaBreakout.
 
@@ -585,6 +693,16 @@ STRATEGIES = {
             {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.20, "max": 1.50, "step": 0.10},
             {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.10, "max": 0.80, "step": 0.10},
             {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 5,    "max": 21,   "step": 1},
+        ],
+    ),
+    "cam_r3s3_breakout_pct": (
+        CamarillaR3S3BreakoutPct,
+        [
+            {"id": "cam_mult",         "label": "Cam Multiplier",     "type": "float", "default": 1.1,  "min": 0.8,  "max": 1.5,  "step": 0.05},
+            {"id": "stop_loss_pct",    "label": "Stop Loss %",        "type": "float", "default": 0.30, "min": 0.10, "max": 1.00, "step": 0.05},
+            {"id": "trail_act_pct",    "label": "Trail Trigger %",    "type": "float", "default": 0.20, "min": 0.05, "max": 0.80, "step": 0.05},
+            {"id": "trail_offset_pct", "label": "Trail Offset %",     "type": "float", "default": 0.15, "min": 0.05, "max": 0.50, "step": 0.05},
+            {"id": "ema_period",       "label": "EMA Period",         "type": "int",   "default": 2,    "min": 1,    "max": 15,   "step": 1},
         ],
     ),
     "cam_breakout_pct": (
