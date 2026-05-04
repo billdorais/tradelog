@@ -1889,6 +1889,30 @@ def api_agent_research():
                 try: param_ranges = _j.loads(params_match.group(1).strip())
                 except Exception: pass
 
+            # Auto-fix two recurring Claude bugs that defeat the entire backtest:
+            #   (a) `<indicator>.shape[0]` in warmup gates → full-length array, gate never opens.
+            #   (b) `len(self.position) > 0` → Position has no __len__, crashes on first bar.
+            # Both are flagged in the system prompt but the model produces them anyway often
+            # enough that defensive substitution is worth it. Run before emitting "code"
+            # so the displayed and saved strategy is the cleaned version.
+            lint_warnings = []
+            shape_pat = _re.compile(r"\b(self\.(?!data\b)\w+)\.shape\[0\]")
+            if shape_pat.search(raw_code):
+                raw_code = shape_pat.sub("20", raw_code)
+                lint_warnings.append("auto-fix: replaced `<indicator>.shape[0]` with literal 20 "
+                                     "(was the full backtest length, killed warmup gate)")
+            pos_len_pat = _re.compile(r"len\(\s*self\.position\s*\)\s*>\s*0")
+            if pos_len_pat.search(raw_code):
+                raw_code = pos_len_pat.sub("self.position", raw_code)
+                lint_warnings.append("auto-fix: replaced `len(self.position) > 0` with `self.position` "
+                                     "(Position has no __len__)")
+            pos_len_eq_pat = _re.compile(r"len\(\s*self\.position\s*\)\s*==\s*0")
+            if pos_len_eq_pat.search(raw_code):
+                raw_code = pos_len_eq_pat.sub("not self.position", raw_code)
+                lint_warnings.append("auto-fix: replaced `len(self.position) == 0` with `not self.position`")
+            for w in lint_warnings:
+                yield _sse({"type": "warning_msg", "msg": w})
+
             yield _sse({"type": "code", "code": raw_code, "param_ranges": param_ranges})
 
             # ── Step 2: Validate the code compiles ───────────────────────
