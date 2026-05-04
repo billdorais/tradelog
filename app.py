@@ -3276,26 +3276,35 @@ def bt_optimize():
                              if (s.get("Profit Factor") or 0) >= 1.3
                              and abs(s.get("Max. Drawdown [%]") or 100) <= 20
                              and s.get("# Trades", 0) >= 10)
-                avg_ret    = round(sum(s.get("Return [%]") or 0    for s in all_stats) / max(len(all_stats),1), 2)
-                avg_sharpe = round(sum(s.get("Sharpe Ratio") or 0  for s in all_stats) / max(len(all_stats),1), 3)
-                avg_pf     = round(sum(s.get("Profit Factor") or 0 for s in all_stats) / max(len(all_stats),1), 3)
-                min_pf     = round(min((s.get("Profit Factor") or 0) for s in all_stats), 3) if all_stats else 0
-                avg_trades = int(sum(s.get("# Trades") or 0        for s in all_stats) / max(len(all_stats),1))
+                n = max(len(all_stats), 1)
+                avg_ret    = round(sum(s.get("Return [%]")      or 0 for s in all_stats) / n, 2)
+                avg_sharpe = round(sum(s.get("Sharpe Ratio")    or 0 for s in all_stats) / n, 3)
+                avg_pf     = round(sum(s.get("Profit Factor")   or 0 for s in all_stats) / n, 3)
+                avg_wr     = round(sum(s.get("Win Rate [%]")    or 0 for s in all_stats) / n, 1)
+                avg_dd     = round(sum(s.get("Max. Drawdown [%]") or 0 for s in all_stats) / n, 2)
+                min_pf     = round(min((s.get("Profit Factor")  or 0) for s in all_stats), 3) if all_stats else 0
+                avg_trades = int(sum(s.get("# Trades")          or 0 for s in all_stats) / n)
+                avg_equity = round(sum(s.get("Equity Final [$]") or cash for s in all_stats) / n, 2)
                 per_ticker_out = {f"{tk}/{tf}": ts for (tk, tf), ts in ticker_stats.items()}
                 row = {
                     "type": "result", "run_id": run_id,
                     "strategy": strategy_name,
-                    "ticker": "MULTI", "timeframe": "/".join(timeframes),
+                    "ticker": "MULTI", "timeframe": timeframes[0] if len(timeframes)==1 else "/".join(timeframes),
                     "multi_ticker": True,
                     "params": p_ov, "rank": rank + 1,
                     "score": round(combined, 4),
                     "equity_curve": ref_eq,
                     "agg_metric": agg_metric,
                     "stats": {
-                        "Return [%]": avg_ret, "Sharpe Ratio": avg_sharpe,
-                        "Profit Factor": avg_pf, "Min PF": min_pf,
-                        "# Trades": avg_trades,
-                        "Passes": f"{n_pass}/{len(datasets)}",
+                        "Return [%]":        avg_ret,
+                        "Sharpe Ratio":      avg_sharpe,
+                        "Profit Factor":     avg_pf,
+                        "Win Rate [%]":      avg_wr,
+                        "Max. Drawdown [%]": avg_dd,
+                        "Min PF":            min_pf,
+                        "# Trades":          avg_trades,
+                        "Equity Final [$]":  avg_equity,
+                        "Passes":            f"{n_pass}/{len(datasets)}",
                     },
                     "per_ticker": per_ticker_out,
                     "n_pass": n_pass, "n_total": len(datasets),
