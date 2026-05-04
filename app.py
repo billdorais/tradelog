@@ -1912,14 +1912,23 @@ def api_agent_research():
                              exclusive_orders=True,
                              trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
                     s = bt.run()
+                    # backtesting.py returns NaN for PF/Sharpe/WinRate when 0 trades fire,
+                    # and NaN serializes as "NaN" which is invalid JSON — the client's
+                    # JSON.parse rejects it and the whole bt_done message is dropped silently.
+                    def _num(v, default=0.0):
+                        try:
+                            f = float(v)
+                            return f if f == f else default  # NaN: f != f
+                        except (TypeError, ValueError):
+                            return default
                     results.append({
                         "ticker":       ticker,
-                        "pf":           round(float(s.get("Profit Factor") or 0), 3),
-                        "sharpe":       round(float(s.get("Sharpe Ratio")  or 0), 3),
-                        "return_pct":   round(float(s.get("Return [%]")    or 0), 2),
-                        "win_rate":     round(float(s.get("Win Rate [%]")  or 0), 1),
-                        "max_dd":       round(abs(float(s.get("Max. Drawdown [%]") or 0)), 2),
-                        "trades":       int(s.get("# Trades") or 0),
+                        "pf":           round(_num(s.get("Profit Factor")), 3),
+                        "sharpe":       round(_num(s.get("Sharpe Ratio")),  3),
+                        "return_pct":   round(_num(s.get("Return [%]")),    2),
+                        "win_rate":     round(_num(s.get("Win Rate [%]")),  1),
+                        "max_dd":       round(abs(_num(s.get("Max. Drawdown [%]"))), 2),
+                        "trades":       int(_num(s.get("# Trades"))),
                     })
                 except Exception as _be:
                     # Keep enough of the message for the underlying cause to be visible —
