@@ -834,30 +834,40 @@
 
   function updateSummaryBanner(r) {
     if (!r) return;
-    const cash   = parseFloat(document.getElementById('cash').value) || 10000;
-    const eq     = r.stats['Equity Final [$]'] || cash;
-    const pnl    = eq - cash;
-    const ret    = r.stats['Return [%]'] || 0;
-    const dd     = r.stats['Max. Drawdown [%]'] || 0;
-    const ddDur  = r.stats['Max. Drawdown Duration'] || '';
+    const isMulti = !!r.multi_ticker;
+    const cash    = parseFloat(document.getElementById('cash').value) || 10000;
+    const eq      = r.stats['Equity Final [$]'] || cash;
+    const pnl     = eq - cash;
+    const ret     = r.stats['Return [%]'] || 0;
+    const dd      = r.stats['Max. Drawdown [%]'] || 0;
+    const ddDur   = r.stats['Max. Drawdown Duration'] || '';
     const nTrades = r.stats['# Trades'] || 0;
-    const wr     = r.stats['Win Rate [%]'] || 0;
-    const wins   = Math.round(wr / 100 * nTrades);
-    const pf     = r.stats['Profit Factor'];
-    const pfStr  = (pf == null || pf === Infinity || pf > 999) ? '∞' : pf.toFixed(3);
+    const wr      = r.stats['Win Rate [%]'] || 0;
+    const wins    = Math.round(wr / 100 * nTrades);
+    const pf      = r.stats['Profit Factor'];
+    const pfStr   = (pf == null || pf === Infinity || pf > 999) ? '∞' : pf.toFixed(3);
+    const avg     = isMulti ? ' avg' : '';
 
     const sign = pnl >= 0 ? '+' : '';
-    document.getElementById('sv-pnl').textContent     = `${sign}${pnl.toFixed(2)} USD`;
-    document.getElementById('sv-pnl').className       = 'tv-stat-value ' + (pnl >= 0 ? 'pos' : 'neg');
-    document.getElementById('sv-ret').textContent     = `${sign}${ret.toFixed(2)}%`;
-    document.getElementById('sv-dd').textContent      = `${dd.toFixed(2)}%`;
+    document.getElementById('sv-pnl').textContent     = isMulti
+      ? `${sign}${ret.toFixed(2)}%${avg}`
+      : `${sign}${pnl.toFixed(2)} USD`;
+    document.getElementById('sv-pnl').className       = 'tv-stat-value ' + (ret >= 0 ? 'pos' : 'neg');
+    document.getElementById('sv-ret').textContent     = `${sign}${ret.toFixed(2)}%${avg}`;
+    document.getElementById('sv-dd').textContent      = `${dd.toFixed(2)}%${avg}`;
     document.getElementById('sv-dd').className        = 'tv-stat-value ' + (dd < -10 ? 'neg' : '');
-    document.getElementById('sv-dd-dur').textContent  = ddDur ? String(ddDur).split(' ')[0] + ' days' : '';
-    document.getElementById('sv-trades').textContent  = nTrades.toLocaleString();
-    document.getElementById('sv-wr').textContent      = `${wr.toFixed(2)}%`;
+    document.getElementById('sv-dd-dur').textContent  = isMulti
+      ? (r.stats['Passes'] || '')
+      : (ddDur ? String(ddDur).split(' ')[0] + ' days' : '');
+    document.getElementById('sv-trades').textContent  = isMulti
+      ? `${nTrades}${avg}`
+      : nTrades.toLocaleString();
+    document.getElementById('sv-wr').textContent      = `${wr.toFixed(2)}%${avg}`;
     document.getElementById('sv-wr').className        = 'tv-stat-value ' + (wr >= 50 ? 'pos' : 'neg');
-    document.getElementById('sv-wr-frac').textContent = `${wins}/${nTrades}`;
-    document.getElementById('sv-pf').textContent      = pfStr;
+    document.getElementById('sv-wr-frac').textContent = isMulti ? '' : `${wins}/${nTrades}`;
+    document.getElementById('sv-pf').textContent      = isMulti ? `${pfStr}${avg}` : pfStr;
+    document.getElementById('sv-pf').className        = 'tv-stat-value '
+      + (pf != null && pf < 1.0 ? 'neg' : pf >= 1.3 ? 'pos' : '');
   }
 
   // ── Benchmark (run default params, no sweep) ───────────────────

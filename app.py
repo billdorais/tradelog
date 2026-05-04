@@ -3225,7 +3225,7 @@ def bt_optimize():
             if opt_kwargs:
                 grid_size = 1
                 for vals in opt_kwargs.values(): grid_size *= len(vals)
-                n_multi = min(max(15, 120 // len(datasets)), grid_size)
+                n_multi = min(max(30, 240 // len(datasets)), grid_size)
                 yield _sse({"type": "progress", "msg": f"Sampling {n_multi} param combos across {len(datasets)} datasets…", "pct": 5})
                 combos, seen = [], set()
                 attempts = 0
