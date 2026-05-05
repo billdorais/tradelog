@@ -1917,17 +1917,21 @@ class ResearchStrategy(Strategy):
 
 @app.route("/api/agent/research", methods=["POST"])
 def api_agent_research():
-    """Stream a full research cycle: Claude writes strategy → backtest → Claude evaluates."""
+    """Stream a full research cycle: Claude writes strategy → backtest → Claude evaluates.
+    Pass refine_code + refine_verdict to run an improvement iteration instead."""
     import json as _j
-    data       = request.get_json(silent=True) or {}
-    hypothesis = data.get("hypothesis", "").strip()
-    tickers    = [t.strip().upper() for t in data.get("tickers", ["TSLA", "QQQ", "AMD"]) if t.strip()]
-    timeframe  = data.get("timeframe",  "5m")
-    start_date = data.get("start_date", "2025-01-01")
-    end_date   = data.get("end_date",   "") or time.strftime("%Y-%m-%d", time.gmtime())
-    cash       = float(data.get("cash", 26000))
+    data          = request.get_json(silent=True) or {}
+    hypothesis    = data.get("hypothesis", "").strip()
+    tickers       = [t.strip().upper() for t in data.get("tickers", ["TSLA", "QQQ", "AMD"]) if t.strip()]
+    timeframe     = data.get("timeframe",  "5m")
+    start_date    = data.get("start_date", "2025-01-01")
+    end_date      = data.get("end_date",   "") or time.strftime("%Y-%m-%d", time.gmtime())
+    cash          = float(data.get("cash", 26000))
+    refine_code   = data.get("refine_code",   "").strip()   # existing strategy code to improve
+    refine_verdict = data.get("refine_verdict", "").strip() # verdict text with suggestions
+    is_refine     = bool(refine_code and refine_verdict)
 
-    if not hypothesis:
+    if not hypothesis and not is_refine:
         return jsonify({"error": "hypothesis required"}), 400
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -1940,18 +1944,35 @@ def api_agent_research():
             import anthropic as _ant
             client = _ant.Anthropic(api_key=api_key)
 
-            # ── Step 1: Claude writes the strategy ───────────────────────
-            yield _sse({"type": "phase", "phase": "research",
-                        "msg": "Researching hypothesis and writing strategy code…"})
+            # ── Step 1: Claude writes (or refines) the strategy ──────────
+            if is_refine:
+                yield _sse({"type": "phase", "phase": "research",
+                            "msg": "Implementing suggested improvements…"})
+                user_msg = (
+                    f"Here is a trading strategy and its backtest verdict.\n\n"
+                    f"ORIGINAL STRATEGY CODE:\n```python\n{refine_code}\n```\n\n"
+                    f"VERDICT AND SUGGESTED IMPROVEMENTS:\n{refine_verdict}\n\n"
+                    f"Implement EXACTLY the specific improvements suggested in the verdict. "
+                    f"If the verdict recommends abandoning the approach, pivot to the suggested "
+                    f"alternative. Keep the mandatory skeleton structure (warmup gate, session "
+                    f"reset, sl/tp anchored to fill=self.data.Close[-1], _trade_on_close=True). "
+                    f"Test on: {', '.join(tickers)} at {timeframe} bars, starting {start_date}."
+                )
+            else:
+                yield _sse({"type": "phase", "phase": "research",
+                            "msg": "Researching hypothesis and writing strategy code…"})
+                user_msg = (
+                    f"Hypothesis: {hypothesis}\n\n"
+                    f"Test on: {', '.join(tickers)} at {timeframe} bars, "
+                    f"starting {start_date}."
+                )
+
             full_response = ""
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=4000,
                 system=_RESEARCH_SYSTEM,
-                messages=[{"role": "user", "content":
-                    f"Hypothesis: {hypothesis}\n\n"
-                    f"Test on: {', '.join(tickers)} at {timeframe} bars, "
-                    f"starting {start_date}."}],
+                messages=[{"role": "user", "content": user_msg}],
             ) as stream:
                 for text in stream.text_stream:
                     full_response += text
