@@ -5609,33 +5609,31 @@ def api_analysis_suggest():
 
 init_db()
 
-# Load persisted risk limits from DB if env vars weren't explicitly set
+# Load persisted risk limits from DB — DB always wins over env vars so
+# changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
     global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_TRAILING_GIVEBACK
-    if MAX_DAILY_LOSS == 0:
-        stored = _load_setting("MAX_DAILY_LOSS")
-        if stored is not None:
-            try:
-                MAX_DAILY_LOSS = float(stored)
-                log.info("Restored MAX_DAILY_LOSS=%g from DB", MAX_DAILY_LOSS)
-            except (TypeError, ValueError):
-                pass
-    if MAX_POSITION_LOSS == 0:
-        stored = _load_setting("MAX_POSITION_LOSS")
-        if stored is not None:
-            try:
-                MAX_POSITION_LOSS = float(stored)
-                log.info("Restored MAX_POSITION_LOSS=%g from DB", MAX_POSITION_LOSS)
-            except (TypeError, ValueError):
-                pass
-    if MAX_TRAILING_GIVEBACK == 0:
-        stored = _load_setting("MAX_TRAILING_GIVEBACK")
-        if stored is not None:
-            try:
-                MAX_TRAILING_GIVEBACK = float(stored)
-                log.info("Restored MAX_TRAILING_GIVEBACK=%g from DB", MAX_TRAILING_GIVEBACK)
-            except (TypeError, ValueError):
-                pass
+    stored = _load_setting("MAX_DAILY_LOSS")
+    if stored is not None:
+        try:
+            MAX_DAILY_LOSS = float(stored)
+            log.info("Restored MAX_DAILY_LOSS=%g from DB", MAX_DAILY_LOSS)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("MAX_POSITION_LOSS")
+    if stored is not None:
+        try:
+            MAX_POSITION_LOSS = float(stored)
+            log.info("Restored MAX_POSITION_LOSS=%g from DB", MAX_POSITION_LOSS)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("MAX_TRAILING_GIVEBACK")
+    if stored is not None:
+        try:
+            MAX_TRAILING_GIVEBACK = float(stored)
+            log.info("Restored MAX_TRAILING_GIVEBACK=%g from DB", MAX_TRAILING_GIVEBACK)
+        except (TypeError, ValueError):
+            pass
 
 _restore_risk_settings()
 
