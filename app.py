@@ -1185,26 +1185,35 @@ def api_alpaca_account():
         alpaca_broker._ensure_client()
         acct      = alpaca_broker._trading.get_account()
         positions = alpaca_broker._get_positions_cached()
-        pos_list  = []
-        total_mv  = 0.0
+        pos_list     = []
+        total_mv     = 0.0
+        total_upnl   = 0.0
         for p in positions:
-            mv = float(p.market_value or 0)
-            total_mv += abs(mv)
+            mv   = float(p.market_value or 0)
+            upnl = float(p.unrealized_pl or 0) if p.unrealized_pl is not None else 0.0
+            total_mv   += abs(mv)
+            total_upnl += upnl
             pos_list.append({
-                "symbol":       p.symbol,
-                "qty":          float(p.qty or 0),
-                "market_value": round(mv, 2),
-                "side":         "long" if float(p.qty or 0) > 0 else "short",
+                "symbol":          p.symbol,
+                "qty":             float(p.qty or 0),
+                "market_value":    round(mv, 2),
+                "unrealized_pnl":  round(upnl, 2),
+                "avg_entry_price": round(float(p.avg_entry_price or 0), 2),
+                "current_price":   round(float(p.current_price or 0), 2),
+                "side":            "long" if float(p.qty or 0) > 0 else "short",
             })
         pos_list.sort(key=lambda x: abs(x["market_value"]), reverse=True)
         bp       = float(acct.buying_power)
         equity   = float(acct.equity)
+        daily_pnl = _compute_daily_pnl()
         return jsonify({
-            "buying_power":    round(bp, 2),
-            "equity":          round(equity, 2),
-            "deployed":        round(total_mv, 2),
-            "open_positions":  len(pos_list),
-            "positions":       pos_list,
+            "buying_power":     round(bp, 2),
+            "equity":           round(equity, 2),
+            "deployed":         round(total_mv, 2),
+            "open_positions":   len(pos_list),
+            "unrealized_pnl":   round(total_upnl, 2),
+            "daily_pnl":        round(daily_pnl, 2) if daily_pnl is not None else None,
+            "positions":        pos_list,
             "min_buying_power": MIN_BUYING_POWER,
         })
     except Exception as e:

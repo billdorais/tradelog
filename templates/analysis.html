@@ -177,6 +177,13 @@
   <!-- Overall stats -->
   <div class="stat-grid" id="overallStats"></div>
 
+  <!-- Alpaca reconciliation panel (Alpaca mode only) -->
+  <div id="reconPanel" style="display:none;background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-bottom:20px;font-size:0.85rem">
+    <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:10px">Alpaca Reconciliation</div>
+    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap" id="reconRow"></div>
+    <div style="font-size:0.72rem;color:#555;margin-top:8px" id="reconPositions"></div>
+  </div>
+
   <!-- Strategy leaderboard -->
   <div class="section">
     <div class="section-title">
@@ -381,6 +388,7 @@
     document.getElementById('srcSignals').style.color      = src === 'signals' ? '#e0e0e0' : '#666';
     document.getElementById('srcAlpaca').style.background  = src === 'alpaca'  ? '#1a1d2e' : 'transparent';
     document.getElementById('srcAlpaca').style.color       = src === 'alpaca'  ? '#e0e0e0' : '#666';
+    if (src !== 'alpaca') document.getElementById('reconPanel').style.display = 'none';
     load();
   }
 
@@ -444,6 +452,7 @@
     renderTickerTable(data.per_ticker  || {});
     renderDaily(data.daily   || []);
     renderWeekly(data.weekly || []);
+    if (activeSource === 'alpaca') loadReconciliation();
   }
 
   // ── Overall stats ──────────────────────────────────────────────────────────
@@ -477,6 +486,60 @@
       <div class="stat-value ${cls}">${value}</div>
     </div>`;
   }
+
+  // ── Alpaca reconciliation ─────────────────────────────────────────────────
+  async function loadReconciliation() {
+    const panel = document.getElementById('reconPanel');
+    try {
+      const res  = await fetch('/api/alpaca/account');
+      const acct = await res.json();
+      if (acct.error) { panel.style.display = 'none'; return; }
+
+      const closedPnl    = analysisData?.overall?.total_pnl ?? 0;
+      const unrealPnl    = acct.unrealized_pnl ?? 0;
+      const alpacaDaily  = acct.daily_pnl;
+      const explained    = closedPnl + unrealPnl;
+      const gap          = alpacaDaily != null ? round2(alpacaDaily - explained) : null;
+
+      const col = v => v >= 0 ? '#7FE098' : '#e74c3c';
+      const fmtV = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+
+      const parts = [
+        `<span style="color:#aaa">Closed P&L: <strong style="color:${col(closedPnl)}">${fmtV(closedPnl)}</strong></span>`,
+        `<span style="color:#555;padding:0 10px">+</span>`,
+        `<span style="color:#aaa">Open Unrealized: <strong style="color:${col(unrealPnl)}">${fmtV(unrealPnl)}</strong></span>`,
+        `<span style="color:#555;padding:0 10px">=</span>`,
+        `<span style="color:#aaa">Total: <strong style="color:${col(explained)}">${fmtV(explained)}</strong></span>`,
+      ];
+      if (alpacaDaily != null) {
+        parts.push(`<span style="color:#555;padding:0 10px">vs Alpaca Daily:</span>`);
+        parts.push(`<strong style="color:${col(alpacaDaily)}">${fmtV(alpacaDaily)}</strong>`);
+        if (Math.abs(gap) > 1) {
+          parts.push(`<span style="color:#888;font-size:0.78rem;padding-left:10px">(gap ${fmtV(gap)} — likely fills outside date range or fees)</span>`);
+        } else {
+          parts.push(`<span style="color:#7FE098;font-size:0.78rem;padding-left:10px">✓ matched</span>`);
+        }
+      }
+      document.getElementById('reconRow').innerHTML = parts.join('');
+
+      const positions = acct.positions || [];
+      if (positions.length > 0) {
+        const posStr = positions.map(p => {
+          const upnl = p.unrealized_pnl || 0;
+          const c = upnl >= 0 ? '#7FE098' : '#e74c3c';
+          return `<span style="margin-right:14px">${p.symbol} ${p.qty > 0 ? 'L' : 'S'} ${Math.abs(p.qty)} · <span style="color:${c}">${fmtV(upnl)}</span></span>`;
+        }).join('');
+        document.getElementById('reconPositions').innerHTML = 'Open positions: ' + posStr;
+      } else {
+        document.getElementById('reconPositions').textContent = 'No open positions.';
+      }
+      panel.style.display = 'block';
+    } catch(e) {
+      panel.style.display = 'none';
+    }
+  }
+
+  function round2(v) { return Math.round(v * 100) / 100; }
 
   function fmt(v) {
     if (v == null || v === '') return '—';
