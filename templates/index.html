@@ -2969,11 +2969,24 @@
       const overlay = document.getElementById('stratModalOverlay');
       document.getElementById('stratModalTitle').textContent = strategy;
 
-      // Filter Alpaca fills by server-resolved strategy field, then pair them
-      // using the same FIFO/intent-aware logic the trade feed uses.
-      const filtered = allAlpacaExecs.filter(e => (e.strategy || '') === strategy);
-      const paired   = pairAlpacaExecs(filtered, allTrades);
-      const pairs    = reconcileAlpacaPairs(paired, allAlpacaPositions);
+      // Use the same full group pipeline as the trade feed so strategy
+      // attribution matches what is displayed (TV-signal strategy takes
+      // priority over the fill's server-resolved strategy field).
+      const allAlpacaPairs = reconcileAlpacaPairs(
+        pairAlpacaExecs(allAlpacaExecs, allTrades), allAlpacaPositions
+      );
+      const allGroups = buildGroups(pairSignals(allTrades), [], allAlpacaPairs);
+      const stratGroups = allGroups.filter(g => {
+        const alpaca = g.alpaca;
+        if (!alpaca) return false;
+        const tvStrat = g.tv?.entry?.strategy || g.tv?.exit?.strategy || null;
+        const fillStrat = alpaca.entry?.strategy || alpaca.exit?.strategy || null;
+        return (tvStrat || fillStrat) === strategy;
+      });
+      const pairs = stratGroups
+        .map(g => g.alpaca)
+        .filter(Boolean)
+        .sort((a, b) => ((b.entry || b.exit)?.time || '').localeCompare((a.entry || a.exit)?.time || ''));
 
       // Compute stats from closed pairs only
       const closed = pairs.filter(p => p.entry && p.exit);
