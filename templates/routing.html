@@ -555,7 +555,7 @@
     rules = await res.json();
     renderAll();
     await loadRisk();
-    setInterval(loadRisk, 15000);  // refresh P&L + status every 15s
+    setInterval(loadRisk, 5000);  // refresh P&L + status every 5s
   }
 
   // -----------------------------------------------------------------------

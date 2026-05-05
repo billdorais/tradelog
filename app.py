@@ -731,7 +731,7 @@ def _check_position_stops():
 
 
 def _position_monitor_loop():
-    """Background thread: poll positions every 5s, fire fixed-loss or trailing-giveback stops."""
+    """Background thread: poll positions every 3s, fire fixed-loss or trailing-giveback stops."""
     time.sleep(25)  # stagger from risk monitor
     while True:
         if MAX_POSITION_LOSS < 0 or MAX_TRAILING_GIVEBACK > 0:
@@ -739,7 +739,7 @@ def _position_monitor_loop():
                 _check_position_stops()
             except Exception as _e:
                 log.warning("Position monitor error: %s", _e)
-        time.sleep(5)
+        time.sleep(3)
 
 
 threading.Thread(target=_position_monitor_loop, daemon=True).start()
