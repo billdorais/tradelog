@@ -603,7 +603,7 @@
     const label  = which === 'orphans' ? 'orphan' : 'round-trip';
     const totalPnl = rows.reduce((s, p) => s + p.pnl, 0);
     document.getElementById('pairsSub').textContent =
-      `${rows.length} ${label}${rows.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · sorted by |P&L|`;
+      `${rows.length} ${label}${rows.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · newest first`;
     const head = document.getElementById('pairsHead');
     head.innerHTML = which === 'orphans'
       ? `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th>Reason</th></tr>`
@@ -616,8 +616,8 @@
     const closed  = (analysisData && analysisData.closed)  || [];
     const orphans = (analysisData && analysisData.orphans) || [];
     const matches = arr => arr.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
-    const clean   = matches(closed).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
-    const orph    = matches(orphans).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+    const clean   = matches(closed).sort((a, b) => (b.entry_time || '').localeCompare(a.entry_time || ''));
+    const orph    = matches(orphans).sort((a, b) => (b.entry_time || '').localeCompare(a.entry_time || ''));
     _activePairs = { clean, orphans: orph, key };
     document.getElementById('pairsTitle').textContent = key;
     document.getElementById('pairsCleanCount').textContent  = ` (${clean.length})`;
