@@ -2278,22 +2278,33 @@ def api_agent_research():
                 f"Return={r.get('return_pct','err')}% Trades={r.get('trades','err')}"
                 for r in results)
 
+            # Include gate diagnostics in eval so Claude can diagnose 0-trade runs
+            gate_summary = "\n".join(
+                f"  {r['ticker']} gates: {r.get('gates', {})}" for r in results if r.get('gates'))
+
             eval_prompt = (
                 f"Strategy hypothesis: {hypothesis}\n\n"
+                f"Strategy code:\n```python\n{raw_code}\n```\n\n"
                 f"Backtest results across {len(tickers)} tickers ({timeframe}, {start_date}–{end_date}):\n"
                 f"{result_summary}\n\n"
-                f"Summary: {len(strong)}/{len(tickers)} tickers passed PF≥1.3 · "
+                + (f"Gate diagnostics (bars rejected per filter):\n{gate_summary}\n\n" if gate_summary else "")
+                + f"Summary: {len(strong)}/{len(tickers)} tickers passed PF≥1.3 · "
                 f"avg PF {avg_pf} · {len(good)}/{len(tickers)} profitable\n\n"
-                f"Provide a concise verdict (3-4 sentences):\n"
-                f"1. Is the edge real or likely overfit? Why?\n"
-                f"2. Which tickers work and why might they be different from the failures?\n"
-                f"3. One specific modification that could improve cross-ticker consistency.\n"
-                f"4. Recommend: Save and test live / Needs refinement / Abandon this approach."
+                f"Provide a structured verdict using EXACTLY these 4 numbered points:\n\n"
+                f"1. **Edge assessment**: Is the edge real or overfit? Cite specific numbers (PF, Sharpe, trade count).\n"
+                f"2. **Failure diagnosis**: What specific gate, parameter, or logic is causing losses or 0 trades? "
+                f"Reference actual gate counts or code lines.\n"
+                f"3. **Concrete fix** (this MUST be actionable code-level changes, not vague suggestions):\n"
+                f"   - Change parameter X from N to M because ...\n"
+                f"   - Replace condition `<code>` with `<code>` because ...\n"
+                f"   - Add filter: `if <condition>: return` to reject ... \n"
+                f"   List every change needed — this section will be fed directly to an LLM to implement.\n"
+                f"4. **Recommendation**: Save and test live / Refine (run iteration) / Abandon."
             )
             verdict = ""
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=400,
+                max_tokens=700,
                 messages=[{"role": "user", "content": eval_prompt}],
             ) as stream:
                 for text in stream.text_stream:

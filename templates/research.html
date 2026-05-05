@@ -428,7 +428,7 @@
     else if (msg.type === 'code_warnings') {
       const out = document.getElementById('analysisOut');
       (msg.warnings || []).forEach(w => {
-        out.innerHTML += `<br><span style="color:#F2E7AC;font-size:0.85rem">${esc(w)}</span>`;
+        out.innerHTML += `<br><span style="color:#F2E7AC;font-size:0.85rem">${_escHtml(w)}</span>`;
       });
     }
     else if (msg.type === 'warning_msg') {
@@ -458,13 +458,17 @@
     }
   }
 
+  function _escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
   async function runRefine() {
-    if (!_code || !_verdictText) return;
+    if (!_code || !_verdictText) { console.warn('runRefine: missing code or verdict'); return; }
     _iterationCount++;
     const iterNum = _iterationCount;
 
-    // Archive the current results panel into iteration history
-    const hist = document.getElementById('iterationHistory');
+    // Archive the current results into a collapsible history panel
+    const hist         = document.getElementById('iterationHistory');
     const resultsHtml  = document.getElementById('resultsCard').innerHTML;
     const verdictHtml  = document.getElementById('verdictOut').innerHTML;
     const bannerHtml   = document.getElementById('verdictBanner').outerHTML;
@@ -472,34 +476,35 @@
     hist.innerHTML += `
       <details style="margin-bottom:18px;background:#0d0f16;border:1px solid #1e2130;border-radius:10px;padding:14px">
         <summary style="cursor:pointer;font-size:0.85rem;font-weight:600;color:#888;list-style:none">
-          ▸ Iteration ${iterNum} results (click to expand)
+          ▸ Iteration ${iterNum} (click to expand)
         </summary>
-        <div style="margin-top:12px;font-size:0.82rem;color:#aaa">${resultsHtml}</div>
+        <div style="margin-top:12px;font-size:0.82rem">${resultsHtml}</div>
         <div style="margin-top:10px;font-size:0.82rem;color:#aaa">${verdictHtml}</div>
         <div style="margin-top:6px">${bannerHtml}</div>
         <details style="margin-top:10px">
-          <summary style="cursor:pointer;font-size:0.75rem;color:#555">Strategy code</summary>
-          <pre style="margin-top:8px;font-size:0.72rem;color:#7FE098;white-space:pre-wrap">${esc(codeSnapshot)}</pre>
+          <summary style="cursor:pointer;font-size:0.75rem;color:#555">Strategy code used</summary>
+          <pre style="margin-top:8px;font-size:0.72rem;color:#7FE098;white-space:pre-wrap">${_escHtml(codeSnapshot)}</pre>
         </details>
       </details>`;
 
-    // Reset output panels for the new iteration
     const btn = document.getElementById('refineBtn');
     btn.disabled = true;
     btn.textContent = '⟳ Implementing improvements…';
-    document.getElementById('saveBtn').style.display = 'none';
+    document.getElementById('saveBtn').style.display    = 'none';
+    document.getElementById('refineBtn').style.display  = 'none';
     document.getElementById('verdictPanel').style.display = 'none';
     document.getElementById('verdictBanner').style.display = 'none';
     document.getElementById('resultsCard').style.display   = 'none';
-    document.getElementById('analysisOut').innerHTML = `<span style="color:#F2E7AC">Iteration ${iterNum + 1}: implementing verdict improvements…</span>`;
-    document.getElementById('codeOut').textContent = 'Generating refined strategy…';
-    document.getElementById('codeOut').style.color = '#333';
+    document.getElementById('analysisOut').innerHTML = `<span style="color:#F2E7AC">Iteration ${iterNum + 1}: applying improvements…</span>`;
+    document.getElementById('codeOut').textContent  = 'Generating refined strategy…';
+    document.getElementById('codeOut').style.color  = '#333';
     document.getElementById('resultsBody').innerHTML = '';
     document.getElementById('verdictOut')._raw = '';
     setPhase('research');
 
     const prevCode    = _code;
     const prevVerdict = _verdictText;
+    const tickers     = document.getElementById('rTickers').value.split(',').map(t=>t.trim().toUpperCase()).filter(Boolean);
     _code = ''; _verdictText = '';
 
     try {
@@ -508,7 +513,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           hypothesis:     document.getElementById('hypothesis').value.trim(),
-          tickers:        document.getElementById('rTickers').value.split(',').map(t=>t.trim().toUpperCase()).filter(Boolean),
+          tickers,
           timeframe:      document.getElementById('rTf').value,
           start_date:     document.getElementById('rStart').value,
           cash:           parseFloat(document.getElementById('rCash').value),
@@ -516,22 +521,36 @@
           refine_verdict: prevVerdict,
         }),
       });
+
+      // Same SSE parsing as runResearch (split by \n\n then by \n per event)
       const reader = res.body.getReader();
       const dec    = new TextDecoder();
       let   buf    = '';
+      let   analysisText = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop();
-        for (const part of parts) {
-          if (!part.startsWith('data: ')) continue;
-          try { handleMsg(JSON.parse(part.slice(6))); } catch(e) {}
+        const events = buf.split('\n\n');
+        buf = events.pop();
+        for (const event of events) {
+          for (const line of event.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const msg = JSON.parse(line.slice(6));
+              handleMsg(msg, tickers);
+              if (msg.type === 'research_chunk') {
+                analysisText += msg.text;
+                document.getElementById('analysisOut').innerHTML =
+                  analysisText.replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
+              }
+            } catch(e) { console.warn('SSE parse:', e.message); }
+          }
         }
       }
     } catch(e) {
-      document.getElementById('analysisOut').innerHTML += `<br><span style="color:#ef5350">Refine error: ${esc(String(e))}</span>`;
+      document.getElementById('analysisOut').innerHTML +=
+        `<br><span style="color:#ef5350">Refine error: ${_escHtml(String(e))}</span>`;
     }
     btn.disabled = false;
     btn.innerHTML = '&#9883; Implement Improvements &amp; Retest';
