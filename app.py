@@ -1830,7 +1830,8 @@ Use them inside self.I() like this:
 
 DO NOT: use TA-Lib, sklearn, external APIs, more than 6 parameters, or complex ML.
 
-OUTPUT — use exactly this structure:
+OUTPUT — use exactly this structure. The Strategy Code section MUST follow the
+template below — fill in the marked sections, do NOT restructure the skeleton:
 
 ## Edge Analysis
 [2-3 sentences explaining WHY this edge should exist in liquid equity markets]
@@ -1846,14 +1847,65 @@ from backtesting import Strategy
 from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd
 
 class ResearchStrategy(Strategy):
-    # parameters
     _trade_on_close = True
 
+    # ── FILL IN: numeric parameters only ──────────────────────────────────
+    atr_period  = 14
+    sl_mult     = 2.0   # stop  = fill ± atr * sl_mult
+    tp_mult     = 3.0   # tp    = fill ∓ atr * tp_mult
+    # add up to 4 more strategy-specific params here
+
     def init(self):
-        pass
+        self._gates = {}
+        # ── FILL IN: indicators via self.I() ──────────────────────────────
+        # self.ema  = self.I(_ema, self.data.Close, self.ema_period)
+        # self.rsi  = self.I(_rsi, self.data.Close, self.rsi_period)
+        self.atr  = self.I(_atr, self.data.High, self.data.Low, self.data.Close, self.atr_period)
+        # session-level state (reset in next() on date change)
+        self._prev_date = None
+        # add other per-session vars here initialised to 0.0 / False
 
     def next(self):
-        pass
+        # ── DO NOT MODIFY: warmup gate ─────────────────────────────────────
+        if len(self.data) < 20:
+            self._gates['warmup'] = self._gates.get('warmup', 0) + 1
+            return
+
+        # ── DO NOT MODIFY: session reset ──────────────────────────────────
+        cur_date = self.data.index[-1].date()
+        if cur_date != self._prev_date:
+            self._prev_date = cur_date
+            # reset any per-session vars here (e.g. self._range_set = False)
+
+        # ── DO NOT MODIFY: skip if already in a position ──────────────────
+        if self.position:
+            return
+
+        # ── FILL IN: compute entry signals ────────────────────────────────
+        long_signal  = False   # replace with your condition
+        short_signal = False   # replace with your condition
+
+        # ── FILL IN: optional entry filters (add gates before each return) ─
+        # if some_filter_fails:
+        #     self._gates['filter_name'] = self._gates.get('filter_name', 0) + 1
+        #     return
+
+        # ── DO NOT MODIFY: sl/tp anchored to actual fill price ─────────────
+        fill    = self.data.Close[-1]
+        atr_val = self.atr[-1]
+        if np.isnan(atr_val) or atr_val <= 0:
+            self._gates['invalid_atr'] = self._gates.get('invalid_atr', 0) + 1
+            return
+
+        if long_signal:
+            self.buy(sl=fill - atr_val * self.sl_mult,
+                     tp=fill + atr_val * self.tp_mult)
+            self._gates['entered_long'] = self._gates.get('entered_long', 0) + 1
+
+        elif short_signal:
+            self.sell(sl=fill + atr_val * self.sl_mult,
+                      tp=fill - atr_val * self.tp_mult)
+            self._gates['entered_short'] = self._gates.get('entered_short', 0) + 1
 ```
 
 ## Param Ranges
