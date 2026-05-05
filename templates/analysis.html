@@ -203,10 +203,11 @@
             <th onclick="sortTable('stratTable',6)">Avg Loss</th>
             <th onclick="sortTable('stratTable',7)">Largest Win</th>
             <th onclick="sortTable('stratTable',8)">Largest Loss</th>
-            <th onclick="sortTable('stratTable',9)" title="Consecutive losing trading days (most recent)">Loss Streak</th>
+            <th onclick="sortTable('stratTable',9)"  title="Consecutive losing trading days (most recent)">Loss Streak</th>
+            <th onclick="sortTable('stratTable',10)" title="Consecutive winning trading days (most recent)">Win Streak</th>
           </tr>
         </thead>
-        <tbody id="stratBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
+        <tbody id="stratBody"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -651,12 +652,16 @@
   function renderStratTable(map) {
     const body = document.getElementById('stratBody');
     const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
-    if (!rows.length) { body.innerHTML = '<tr><td colspan="9" class="empty">No closed trades yet.</td></tr>'; return; }
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="10" class="empty">No closed trades yet.</td></tr>'; return; }
     body.innerHTML = rows.map(([name, s]) => {
-      const streak = s.consec_losing_days || 0;
-      const streakCls = streak === 0 ? '' : streak <= 2 ? 'style="color:#F2E7AC"' : 'style="color:#e74c3c;font-weight:600"';
-      const streakLabel = streak === 0 ? '<span style="color:#444">—</span>'
-        : `<span ${streakCls}>${streak}d</span>`;
+      const loseStreak = s.consec_losing_days || 0;
+      const loseCls    = loseStreak === 0 ? '' : loseStreak <= 2 ? 'style="color:#F2E7AC"' : 'style="color:#e74c3c;font-weight:600"';
+      const loseLabel  = loseStreak === 0 ? '<span style="color:#444">—</span>'
+        : `<span ${loseCls}>${loseStreak}d</span>`;
+      const winStreak  = s.consec_winning_days || 0;
+      const winCls     = winStreak === 0 ? '' : winStreak <= 2 ? 'style="color:#7FE098"' : 'style="color:#7FE098;font-weight:600"';
+      const winLabel   = winStreak === 0 ? '<span style="color:#444">—</span>'
+        : `<span ${winCls}>${winStreak}d</span>`;
       return `
       <tr class="drill" data-kind="strategy" data-key="${esc(name)}" title="Click to see round-trip pairs">
         <td class="name">${esc(name)}</td>
@@ -668,7 +673,8 @@
         <td class="neg">-$${Math.abs(s.avg_loss).toFixed(2)}</td>
         <td class="pos">+$${s.largest_win.toFixed(2)}</td>
         <td class="neg">$${s.largest_loss.toFixed(2)}</td>
-        <td style="text-align:center">${streakLabel}</td>
+        <td style="text-align:center">${loseLabel}</td>
+        <td style="text-align:center">${winLabel}</td>
       </tr>`;
     }).join('');
   }

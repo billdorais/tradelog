@@ -4575,6 +4575,26 @@ def _consecutive_losing_days(trade_list):
     return streak
 
 
+def _consecutive_winning_days(trade_list):
+    """Count how many of the most recent consecutive trading days had positive P&L."""
+    if not trade_list:
+        return 0
+    by_date = {}
+    for t in trade_list:
+        d = t.get("date") or (t.get("exit_time") or "")[:10]
+        if d:
+            by_date[d] = round(by_date.get(d, 0.0) + t["pnl"], 2)
+    if not by_date:
+        return 0
+    streak = 0
+    for d in sorted(by_date, reverse=True):
+        if by_date[d] > 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
 def _build_analysis_stats():
     """
     Pairs BUY/SELL signals from the trades table into closed round-trips.
@@ -4689,6 +4709,7 @@ def _build_analysis_stats():
             "largest_win":          round(max(wins),  2) if wins   else 0,
             "largest_loss":         round(min(losses), 2) if losses else 0,
             "consec_losing_days":   _consecutive_losing_days(trade_list),
+            "consec_winning_days":  _consecutive_winning_days(trade_list),
         }
 
     # Separate orphan pairs (phantom round-trips from stale/mispaired signals
@@ -5057,7 +5078,8 @@ def api_alpaca_analysis():
                 "avg_loss":           round(-gl / len(losses), 2) if losses else 0,
                 "largest_win":        round(max(wins),  2) if wins   else 0,
                 "largest_loss":       round(min(losses), 2) if losses else 0,
-                "consec_losing_days": _consecutive_losing_days(tlist),
+                "consec_losing_days":  _consecutive_losing_days(tlist),
+                "consec_winning_days": _consecutive_winning_days(tlist),
             }
 
         # Apply frontend exclusions (localStorage keys: "exit_time|ticker")
