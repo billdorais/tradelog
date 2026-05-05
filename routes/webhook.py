@@ -397,25 +397,30 @@ def webhook():
                                 ticker, _bpe,
                             )
 
-                    # Position gate — block new entries when Alpaca already holds the ticker.
+                    # Position gate — block new entries when Alpaca already holds the ticker
+                    # in EITHER direction.  Uses abs(qty) so a short position (negative qty)
+                    # also blocks a new long entry and vice versa — prevents simultaneous
+                    # long+short on the same ticker.
                     # Exits (sentiment=flat / EXIT_LONG / EXIT_SHORT) always bypass this.
-                    if action == "BUY" and is_entry:
+                    if action in ("BUY", "SELL") and is_entry:
                         try:
                             positions = app.alpaca_broker._get_positions_cached()
                             existing  = next(
                                 (p for p in positions
-                                 if p.symbol.upper() == ticker.upper() and float(p.qty or 0) > 0),
+                                 if p.symbol.upper() == ticker.upper() and abs(float(p.qty or 0)) > 0),
                                 None,
                             )
                             if existing:
+                                held_qty = float(existing.qty)
+                                held_side = "long" if held_qty > 0 else "short"
                                 app.log.info(
-                                    "Position gate: BUY %s skipped — already holding %.0f shares (%s)",
-                                    ticker, float(existing.qty), strategy,
+                                    "Position gate: %s %s skipped — already holding %.0f shares %s (%s)",
+                                    action, ticker, abs(held_qty), held_side, strategy,
                                 )
                                 _exec_status = "skipped"
                                 _exec_detail = (
-                                    f"Position gate: already holding {float(existing.qty):.0f}"
-                                    f" shares of {ticker}"
+                                    f"Position gate: already holding {abs(held_qty):.0f}"
+                                    f" shares {held_side} of {ticker}"
                                 )
                                 return
                         except Exception as _pe:
