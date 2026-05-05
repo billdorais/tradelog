@@ -2161,13 +2161,26 @@ def api_agent_research():
                             "pct": int(i / len(tickers) * 100),
                             "msg": f"Fetching {ticker} data…"})
 
-                # Fetch + prep data once; if backtest crashes we retry the run with a
-                # fixed strategy class, but the data is invariant.
+                # Fetch + prep data — run in thread too so we can heartbeat during fetch.
                 try:
-                    try:
-                        raw = fetch_bars_alpaca(ticker, start_date, end_date, timeframe)
-                    except Exception:
-                        raw = fetch_bars(ticker, start_date, end_date, timeframe)
+                    from concurrent.futures import ThreadPoolExecutor as _TPE2, TimeoutError as _ToutE2
+                    def _fetch():
+                        try:
+                            return fetch_bars_alpaca(ticker, start_date, end_date, timeframe)
+                        except Exception:
+                            return fetch_bars(ticker, start_date, end_date, timeframe)
+                    with _TPE2(max_workers=1) as _ex2:
+                        _ff = _ex2.submit(_fetch)
+                        _fe = 0
+                        while True:
+                            try:
+                                raw = _ff.result(timeout=5)
+                                break
+                            except _ToutE2:
+                                _fe += 5
+                                if _fe >= 60:
+                                    raise Exception(f"data fetch timed out after 60s for {ticker}")
+                                yield ": heartbeat\n\n"
                 except Exception as _fetch_err:
                     results.append({"ticker": ticker, "error": f"fetch failed: {_fetch_err}"[:200]})
                     continue
@@ -2205,15 +2218,26 @@ def api_agent_research():
                         bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
                                  exclusive_orders=True,
                                  trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
-                        # Run with a 90-second timeout so a slow/infinite-loop strategy
-                        # doesn't stall the entire stream on a single ticker.
+                        # Run with a 90-second hard timeout. Poll every 5 seconds so
+                        # we can emit SSE heartbeat comments — this keeps Railway's
+                        # reverse proxy from killing the idle connection mid-backtest.
                         from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _ToutE
                         with _TPE(max_workers=1) as _ex:
                             _fut = _ex.submit(bt.run)
-                            try:
-                                s = _fut.result(timeout=90)
-                            except _ToutE:
-                                raise RuntimeError(f"backtest timed out after 90s on {ticker} — strategy may have an infinite loop or O(n²) operation in next()")
+                            _elapsed = 0
+                            while True:
+                                try:
+                                    s = _fut.result(timeout=5)
+                                    break
+                                except _ToutE:
+                                    _elapsed += 5
+                                    if _elapsed >= 90:
+                                        _fut.cancel()
+                                        raise RuntimeError(
+                                            f"backtest timed out after 90s on {ticker}"
+                                            " — strategy may have an infinite loop or"
+                                            " O(n²) operation in next()")
+                                    yield ": heartbeat\n\n"  # keeps proxy connection alive
                         # Extract per-gate diagnostic counters that Claude was told to maintain.
                         # Surfacing these makes 0-trade outcomes debuggable — instead of
                         # "the strategy didn't trade", the user sees WHICH filter blocked it.
