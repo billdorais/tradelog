@@ -4768,7 +4768,7 @@ def api_analysis():
         return jsonify({"error": str(e)}), 500
 
 
-_INTRADAY_TOKENS = ("_1MIN", "_3MIN", "_5MIN", "_15MIN", "_30MIN")
+_INTRADAY_TOKENS = ("_1MIN", "_01MIN", "_3MIN", "_03MIN", "_5MIN", "_05MIN", "_15MIN", "_30MIN")
 
 def _classify_orphan(pair):
     """Return (is_orphan, reason) for a closed round-trip.
