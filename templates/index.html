@@ -1033,16 +1033,30 @@
       if (e) e.stopPropagation();
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
-      if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
-        _cachedFullStats = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json());
-        _cachedFromDate  = fromDate;
-        _cachedToDate    = toDate;
-      }
       const pnlByStrat = {};
-      for (const p of (_cachedFullStats.equity_curve || [])) {
-        if (p.strategy && p.pnl != null)
-          pnlByStrat[p.strategy] = (pnlByStrat[p.strategy] || 0) + p.pnl;
+
+      if (activeTab === 'alpaca') {
+        // Rank by actual Alpaca fill P&L — same source as the chart
+        const params = new URLSearchParams();
+        if (fromDate) params.set('from_date', fromDate);
+        if (toDate)   params.set('to_date',   toDate);
+        const data = await fetch('/api/alpaca/analysis?' + params).then(r => r.json()).catch(() => ({}));
+        for (const [strat, s] of Object.entries(data.per_strategy || {})) {
+          if (s.total_pnl != null) pnlByStrat[strat] = s.total_pnl;
+        }
+      } else {
+        // TV signals mode
+        if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
+          _cachedFullStats = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json());
+          _cachedFromDate  = fromDate;
+          _cachedToDate    = toDate;
+        }
+        for (const p of (_cachedFullStats.equity_curve || [])) {
+          if (p.strategy && p.pnl != null)
+            pnlByStrat[p.strategy] = (pnlByStrat[p.strategy] || 0) + p.pnl;
+        }
       }
+
       const top = Object.entries(pnlByStrat)
         .sort((a, b) => b[1] - a[1])
         .slice(0, n)
