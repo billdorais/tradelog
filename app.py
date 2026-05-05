@@ -4308,6 +4308,43 @@ def alpaca_trades():
         return jsonify([])
 
 
+@app.route("/api/alpaca/after-hours")
+def alpaca_after_hours():
+    """Return fills that executed outside regular market hours (9:30–16:00 ET)."""
+    if alpaca_broker is None:
+        return jsonify([])
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    MARKET_OPEN  = (9, 30)
+    MARKET_CLOSE = (16, 0)
+    fills = _get_cached_fills()
+    after_hours = []
+    for f in fills:
+        t_str = f.get("time") or ""
+        if not t_str:
+            continue
+        try:
+            dt_utc = _dt.fromisoformat(t_str.replace("Z", "+00:00"))
+            dt_et  = dt_utc.astimezone(ET)
+            hm = (dt_et.hour, dt_et.minute)
+            if hm < MARKET_OPEN or hm >= MARKET_CLOSE:
+                after_hours.append({
+                    "time":     t_str,
+                    "time_et":  dt_et.strftime("%Y-%m-%d %H:%M:%S ET"),
+                    "symbol":   f.get("symbol"),
+                    "side":     f.get("side"),
+                    "shares":   f.get("shares"),
+                    "price":    f.get("price"),
+                    "strategy": f.get("strategy"),
+                    "order_id": f.get("order_id"),
+                })
+        except Exception:
+            continue
+    after_hours.sort(key=lambda x: x["time"], reverse=True)
+    return jsonify(after_hours)
+
+
 @app.route("/api/ib/trades")
 def ib_trades():
     conn = get_db()
