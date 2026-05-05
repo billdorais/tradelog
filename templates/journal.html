@@ -50,7 +50,7 @@
     .regime-badge { background: rgba(136,191,139,0.1); border: 1px solid rgba(136,191,139,0.3); color: #88BF8B; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; }
 
     /* Strategy table */
-    .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; }
+    .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; max-height: 320px; overflow-y: auto; }
     .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 10px; }
     .strat-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1a1d2e; font-size: 0.82rem; }
     .strat-row:last-child { border-bottom: none; }
@@ -244,8 +244,10 @@
     }).join('');
     const regime = md.regime ? `<div class="regime-badge">${esc(md.regime)}</div>` : '';
 
-    // Per-strategy rows (top 8)
-    const stratRows = Object.entries(ts.per_strategy || {}).slice(0, 8).map(([name, sv]) => {
+    // All strategies, sorted by absolute P&L so biggest movers appear first
+    const stratRows = Object.entries(ts.per_strategy || {})
+      .sort((a, b) => Math.abs(b[1].pnl) - Math.abs(a[1].pnl))
+      .map(([name, sv]) => {
       const pc = sv.pnl >= 0 ? '#7FE098' : '#e74c3c';
       return `<div class="strat-row">
         <span class="strat-name">${esc(name)}</span>
