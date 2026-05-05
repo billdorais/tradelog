@@ -1751,6 +1751,18 @@ REQUIREMENTS:
   The order hasn't filled yet — the close() is a no-op, the position stays
   open forever, and you get 0 completed trades with a phantom "return" from
   the open position at backtest end. This is the most common silent bug.
+- SL/TP MUST be relative to self.data.Close[-1], NOT a theoretical entry
+  price (e.g. or_high, pivot level, prior close). With _trade_on_close=True
+  the actual fill IS the current close. If you compute sl/tp from a level that
+  is already above/below the close, backtesting.py will reject with:
+      "Long orders require: SL < LIMIT < TP"
+      "Short orders require: TP < LIMIT < SL"
+  Always do:
+      fill = self.data.Close[-1]
+      self.buy(sl=fill - atr_val * self.sl_mult, tp=fill + atr_val * self.tp_mult)
+      self.sell(sl=fill + atr_val * self.sl_mult, tp=fill - atr_val * self.tp_mult)
+  You can still use level-based signals (or_high, r3, etc.) to TRIGGER entry,
+  but anchor the sl/tp to the fill price.
 - Always include a hard stop loss (dollar or pct based)
 - For warmup gates use `len(self.data)` (the bar count seen so far), NEVER
   `len(self)` (Strategy has no __len__) and NEVER `self.<indicator>.shape[0]`
@@ -1991,6 +2003,16 @@ def api_agent_research():
                     "backtest, not per day. Use the 20-bar rolling proxy instead: "
                     "_sma(tp*v, 20) / _sma(v, 20)."
                 )
+            import re as _re2
+            if _re2.search(r"entry_price\s*=\s*self\.(or_high|or_low|data\.Open|data\.High|data\.Low)", raw_code) \
+               and ("sl=stop_loss" in raw_code or "sl=sl_price" in raw_code):
+                _code_warnings.append(
+                    "⚠ sl/tp appear to be anchored to a level (or_high/or_low/Open) rather "
+                    "than self.data.Close[-1]. With _trade_on_close=True the fill IS the close — "
+                    "if the close has already moved past the level the order will be rejected "
+                    "with 'Long/Short orders require: SL < LIMIT < TP'. "
+                    "Fix: fill=self.data.Close[-1]; sl=fill±atr*mult; tp=fill∓atr*mult."
+                )
             if _code_warnings:
                 yield _sse({"type": "code_warnings", "warnings": _code_warnings})
 
@@ -2019,7 +2041,12 @@ def api_agent_research():
                     "- Initialize all session state attrs in init() to safe defaults (0 or 0.0), "
                     "  not None, so arithmetic never hits NoneType\n"
                     "- Per-day state must reset on date change\n"
-                    "- Keep `self._gates` instrumentation\n\n"
+                    "- Keep `self._gates` instrumentation\n"
+                    "- SL/TP MUST be relative to self.data.Close[-1] (the actual fill price "
+                    "  when _trade_on_close=True), NOT a theoretical level like or_high/or_low. "
+                    "  If you see 'Long orders require: SL < LIMIT < TP' or 'Short orders require: "
+                    "  TP < LIMIT < SL', it means sl/tp were anchored to the wrong price. "
+                    "  Fix: fill = self.data.Close[-1]; sl = fill ± atr*mult; tp = fill ∓ atr*mult\n\n"
                     "Return ONLY the corrected code in this exact format and nothing else:\n\n"
                     "```python\n<corrected code>\n```\n\n"
                     "CODE TO FIX:\n```python\n" + broken_code + "\n```\n"
