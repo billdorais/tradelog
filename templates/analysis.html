@@ -451,11 +451,19 @@
     const pf   = s.profit_factor;
     const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
     const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+    const orphanPnl = s.orphan_pnl;
+    const orphanCard = (activeSource === 'alpaca' && orphanPnl != null && orphanPnl !== 0)
+      ? card(`Orphan P&L (${s.orphan_count || 0})`,
+             fmt(orphanPnl),
+             orphanPnl >= 0 ? 'pos' : 'neg',
+             'Real executions: cross-day holds or direction-mismatched fills — included in Total P&L')
+      : '';
     document.getElementById('overallStats').innerHTML = `
       ${card('Total Trades',    s.trades    || 0,                       '')}
       ${card('Win Rate',        (s.win_rate || 0) + '%',               (s.win_rate||0) >= 50 ? 'pos' : 'neg')}
       ${card('Profit Factor',   pf != null ? pf : '—',                 pfCls)}
       ${card('Total P&L',       fmt(s.total_pnl),                      pnlCls)}
+      ${orphanCard}
       ${card('Avg Win',         fmt(s.avg_win),                        'pos')}
       ${card('Avg Loss',        fmt(s.avg_loss),                       'neg')}
       ${card('Largest Win',     fmt(s.largest_win),                    'pos')}
@@ -463,8 +471,8 @@
     `;
   }
 
-  function card(label, value, cls) {
-    return `<div class="stat-card">
+  function card(label, value, cls, title) {
+    return `<div class="stat-card"${title ? ` title="${title}"` : ''}>
       <div class="stat-label">${label}</div>
       <div class="stat-value ${cls}">${value}</div>
     </div>`;

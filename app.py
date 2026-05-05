@@ -2234,28 +2234,32 @@ def api_journal_generate():
     from_date = str(week_start)
     to_date   = str(week_end)
 
-    # ── Trade stats for the week ─────────────────────────────────────────
+    # ── Trade stats for the week (same LIFO logic as /api/alpaca/analysis) ──
     trade_stats = {}
     try:
         if alpaca_broker is not None:
+            from datetime import datetime as _dt2
             fills = _get_cached_fills()
             week_fills = [f for f in fills if from_date <= (f.get("time") or "")[:10] <= to_date]
-            # Build per-strategy closed pairs using the same day-scoped logic
-            from datetime import datetime as _dt2
+
+            # Build signal lookup (ticker, side) → [(ts, strategy, sentiment)]
             conn = get_db()
             cur  = conn.cursor()
-            cur.execute("SELECT ticker, action, received_at, strategy, sentiment FROM trades ORDER BY id ASC")
+            cur.execute("SELECT ticker, action, sentiment, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
             rows = cur.fetchall()
             cols = [d[0] for d in cur.description] if DATABASE_URL else None
             sig_rows = [dict(zip(cols, r)) if DATABASE_URL else dict(r) for r in rows]
             conn.close()
 
-            sig_lkp = {}
+            _j_sig_lkp = {}
             for t in sig_rows:
+                if (t.get("exec_status") or "").lower() in ("blocked", "skipped", "error"):
+                    continue
                 tk  = (t.get("ticker") or "").strip().upper()
                 act = _canonical_action(t.get("action"))
                 rcv = t.get("received_at") or ""
                 stg = (t.get("strategy") or "").strip()
+                snt = (t.get("sentiment") or "").strip().lower()
                 if not stg or not tk or not rcv: continue
                 sd = "BOT" if act == "BUY" else "SLD" if act == "SELL" else None
                 if not sd: continue
@@ -2263,71 +2267,102 @@ def api_journal_generate():
                     ts = _dt2.fromisoformat(rcv.replace("Z", "+00:00")).timestamp()
                 except Exception:
                     continue
-                sig_lkp.setdefault((tk, sd), []).append((ts, stg))
+                _j_sig_lkp.setdefault((tk, sd), []).append((ts, stg, snt))
 
-            def _rsig2(sym, side, ftime):
+            def _j_resolve(sym, side, ftime, order_id=""):
                 try:
                     fts = _dt2.fromisoformat(ftime.replace("Z", "+00:00")).timestamp()
                 except Exception:
-                    return "Unknown"
-                cands = sig_lkp.get((sym.upper(), side), [])
-                if not cands: return "Unknown"
-                best = min(cands, key=lambda x: abs(x[0] - fts))
-                return best[1] if abs(best[0] - fts) <= 300 else "Unknown"
+                    return "Unknown", ""
+                cands = _j_sig_lkp.get((sym.upper(), side), [])
+                if cands:
+                    best = min(cands, key=lambda x: abs(x[0] - fts))
+                    if abs(best[0] - fts) <= 300:
+                        return best[1], best[2]
+                if order_id and order_id.startswith("kairos-"):
+                    parts = order_id.split("-", 2)
+                    if len(parts) == 3 and parts[1]:
+                        return parts[1], ""
+                return "Unknown", ""
 
-            # Day-scoped FIFO pairing
-            from collections import defaultdict
-            fills_by_date = defaultdict(list)
+            # Deduplicate + sort
             seen = set()
+            deduped = []
             for f in week_fills:
                 k = f"{f['symbol']}|{f['side']}|{f['time']}|{f['shares']}"
                 if k not in seen:
                     seen.add(k)
-                    fills_by_date[(f.get("time") or "")[:10]].append(f)
+                    deduped.append(f)
+            deduped.sort(key=lambda f: (f.get("time") or ""))
 
-            day_closed = []
-            for day_fs in fills_by_date.values():
-                dl, ds = {}, {}
-                for f in sorted(day_fs, key=lambda x: x.get("time", "")):
-                    sym   = (f.get("symbol") or "").upper()
-                    side  = f.get("side", "")
-                    price = float(f.get("price") or 0)
-                    qty   = float(f.get("shares") or 0)
-                    strat = _rsig2(sym, side, f.get("time", ""))
-                    if side == "BOT":
-                        q = ds.setdefault(sym, [])
-                        while qty > 0 and q:
-                            ep, eq, es = q.pop(0)
-                            m = min(qty, eq)
-                            day_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es, "ticker": sym})
-                            qty -= m
-                            if eq > m: q.insert(0, (ep, eq - m, es))
-                        if qty > 0: dl.setdefault(sym, []).append((price, qty, strat))
-                    elif side == "SLD":
-                        q = dl.setdefault(sym, [])
-                        while qty > 0 and q:
-                            ep, eq, es = q.pop(0)
-                            m = min(qty, eq)
-                            day_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es, "ticker": sym})
-                            qty -= m
-                            if eq > m: q.insert(0, (ep, eq - m, es))
-                        if qty > 0: ds.setdefault(sym, []).append((price, qty, strat))
+            # LIFO pairing (mirrors analysis page)
+            j_open_longs, j_open_shorts, j_closed = {}, {}, []
+            for f in deduped:
+                sym      = (f.get("symbol") or "").upper()
+                side     = f.get("side", "")
+                price    = float(f.get("price") or 0)
+                qty      = float(f.get("shares") or 0)
+                fill_ts  = f.get("time", "")
+                date_str = fill_ts[:10] if fill_ts else ""
+                strat, sentiment = _j_resolve(sym, side, fill_ts, f.get("order_id", ""))
+                if sentiment == "flat":   intent = "exit"
+                elif sentiment == "long": intent = "enter_long"
+                elif sentiment == "short":intent = "enter_short"
+                else:                     intent = "legacy"
+                if side == "BOT":
+                    if intent == "enter_long":
+                        j_open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                        continue
+                    q = j_open_shorts.setdefault(sym, [])
+                    while qty > 0 and q:
+                        ep, eq, et, es = q.pop(-1)
+                        m = min(qty, eq)
+                        j_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es, "ticker": sym,
+                                         "date": date_str, "entry_time": et, "exit_time": fill_ts, "side": "SHORT",
+                                         "entry_price": ep, "exit_price": price, "qty": m})
+                        qty -= m
+                        if eq > m: q.append((ep, eq - m, et, es))
+                    if qty > 0 and intent == "legacy":
+                        j_open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                elif side == "SLD":
+                    if intent == "enter_short":
+                        j_open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                        continue
+                    q = j_open_longs.setdefault(sym, [])
+                    while qty > 0 and q:
+                        ep, eq, et, es = q.pop(-1)
+                        m = min(qty, eq)
+                        j_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es, "ticker": sym,
+                                         "date": date_str, "entry_time": et, "exit_time": fill_ts, "side": "LONG",
+                                         "entry_price": ep, "exit_price": price, "qty": m})
+                        qty -= m
+                        if eq > m: q.append((ep, eq - m, et, es))
+                    if qty > 0 and intent == "legacy":
+                        j_open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
-            wins   = [t for t in day_closed if t["pnl"] > 0]
-            losses = [t for t in day_closed if t["pnl"] <= 0]
+            # Classify orphans; per-strategy uses clean pairs only
+            j_orphans, j_clean = [], []
+            for c in j_closed:
+                is_orph, _ = _classify_orphan(c)
+                (j_orphans if is_orph else j_clean).append(c)
+
+            # Overall total includes orphans (real executions); per-strategy uses clean
+            all_j = j_clean + j_orphans
+            wins   = [t for t in all_j if t["pnl"] > 0]
+            losses = [t for t in all_j if t["pnl"] <= 0]
             gw, gl = sum(t["pnl"] for t in wins), abs(sum(t["pnl"] for t in losses))
             by_strat = {}
-            for t in day_closed:
+            for t in j_clean:
                 s = t["strategy"]
                 by_strat.setdefault(s, {"pnl": 0, "trades": 0})
                 by_strat[s]["pnl"]    = round(by_strat[s]["pnl"] + t["pnl"], 2)
                 by_strat[s]["trades"] += 1
-            top    = sorted(by_strat.items(), key=lambda x: x[1]["pnl"], reverse=True)
+            top = sorted(by_strat.items(), key=lambda x: x[1]["pnl"], reverse=True)
             trade_stats = {
-                "trades":        len(day_closed),
+                "trades":        len(all_j),
                 "wins":          len(wins),
                 "losses":        len(losses),
-                "win_rate":      round(len(wins) / len(day_closed) * 100, 1) if day_closed else 0,
+                "win_rate":      round(len(wins) / len(all_j) * 100, 1) if all_j else 0,
                 "total_pnl":     round(gw - gl, 2),
                 "profit_factor": round(gw / gl, 2) if gl > 0 else None,
                 "best_strategy": top[0][0]  if top else None,
@@ -2335,7 +2370,7 @@ def api_journal_generate():
                 "worst_strategy":top[-1][0] if len(top) > 1 else None,
                 "worst_pnl":     top[-1][1]["pnl"] if len(top) > 1 else 0,
                 "per_strategy":  {k: v for k, v in top},
-                "tickers":       sorted(set(t["ticker"] for t in day_closed)),
+                "tickers":       sorted(set(t["ticker"] for t in all_j)),
             }
     except Exception as _te:
         log.warning("Journal trade stats error: %s", _te)
@@ -5231,8 +5266,17 @@ def api_alpaca_analysis():
                     "both_matched":  _is_matched(c.get("entry_strategy")) and _is_matched(c.get("exit_strategy")),
                 })
 
+        # Overall total uses ALL LIFO pairs (clean + orphan) so it matches
+        # Alpaca realized P&L.  Orphans are real executions; excluding them
+        # creates a gap vs the Alpaca account equity change.
+        all_lifo = closed + orphans
+        overall = _stats(all_lifo) or {}
+        if orphans:
+            overall["orphan_pnl"]   = round(sum(c["pnl"] for c in orphans), 2)
+            overall["orphan_count"] = len(orphans)
+
         result = {
-            "overall":      _stats(daily_closed) or {},
+            "overall":      overall,
             "per_strategy": per_strategy,
             "per_ticker":   per_ticker,
             "daily":        daily,
