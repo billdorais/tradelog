@@ -416,6 +416,12 @@
         document.getElementById('saveBtn').style.display = '';
       }
     }
+    else if (msg.type === 'code_warnings') {
+      const out = document.getElementById('analysisOut');
+      (msg.warnings || []).forEach(w => {
+        out.innerHTML += `<br><span style="color:#F2E7AC;font-size:0.85rem">${esc(w)}</span>`;
+      });
+    }
     else if (msg.type === 'warning_msg') {
       document.getElementById('analysisOut').innerHTML +=
         `<br><span style="color:#F2E7AC">⚠ ${msg.msg}</span>`;

@@ -1744,6 +1744,13 @@ REQUIREMENTS:
 - Use only numpy (as np) and pandas (as pd) — both already imported
 - All indicator work in init() using self.I()
 - All trade logic in next() using self.buy() / self.sell() — NO size argument
+- STOP LOSS / TAKE PROFIT: always pass sl= and tp= directly to buy()/sell():
+      self.buy(sl=stop_price, tp=tp_price)
+      self.sell(sl=stop_price, tp=tp_price)
+  NEVER call self.position.close() in the same next() bar as a buy()/sell().
+  The order hasn't filled yet — the close() is a no-op, the position stays
+  open forever, and you get 0 completed trades with a phantom "return" from
+  the open position at backtest end. This is the most common silent bug.
 - Always include a hard stop loss (dollar or pct based)
 - For warmup gates use `len(self.data)` (the bar count seen so far), NEVER
   `len(self)` (Strategy has no __len__) and NEVER `self.<indicator>.shape[0]`
@@ -1752,7 +1759,20 @@ REQUIREMENTS:
       if len(self.data) < max(self.ema_period, self.atr_period, 20):
           return
 - RTH filtering is already done server-side before the data reaches your
-  strategy, so do NOT add intraday/time-of-day checks.
+  strategy, so do NOT add intraday/time-of-day checks. Do NOT count
+  `_bars_in_session` or add an `entry_window` gate — you'll mostly get
+  `outside_window` rejections and 0 trades.
+- VWAP: np.cumsum() is cumulative across the ENTIRE backtest, not per-day.
+  A multi-year VWAP is meaningless. Compute rolling VWAP per day instead:
+      def _rolling_vwap(h, l, c, v):
+          tp = (h + l + c) / 3
+          result = np.full_like(c, np.nan)
+          from datetime import date  # index dates available via data.index
+          return result  # not practical inside self.I() — instead use a
+                         # 20-bar rolling proxy: _sma(tp*v, 20) / _sma(v, 20)
+  The simplest correct VWAP proxy in backtesting.py:
+      self.vwap = self.I(lambda h,l,c,v: _sma((h+l+c)/3*v, 20) / _sma(v, 20),
+                         self.data.High, self.data.Low, self.data.Close, self.data.Volume)
 - Volume IS available via self.data.Volume — feel free to use volume-based
   filters (e.g. `self.vol_sma = self.I(_sma, self.data.Volume, 20)`).
 - DIAGNOSTICS: at the start of init(), do `self._gates = {}`. At EVERY early
@@ -1945,6 +1965,35 @@ def api_agent_research():
                 yield _sse({"type": "error", "msg": f"Strategy code has a syntax error: {_ce}"}); return
             if not strategy_cls:
                 yield _sse({"type": "error", "msg": "No Strategy subclass found — Claude may have renamed it."}); return
+
+            # Static checks for the most common silent bugs before burning a backtest run
+            _code_warnings = []
+            if "self.buy()" in raw_code or "self.sell()" in raw_code:
+                # buy()/sell() with no sl= means no stop — check if position.close() is
+                # used as a manual stop in the same method (the no-op pattern)
+                import re as _re
+                if _re.search(r"self\.(buy|sell)\(\s*\).*\n.*self\.position\.close\(\)", raw_code) or \
+                   _re.search(r"self\.(buy|sell)\(\s*\)[^\n]*\n[^\n]*self\.position\.close\(\)", raw_code):
+                    _code_warnings.append(
+                        "⚠ Detected self.buy()/sell() followed by self.position.close() "
+                        "on the next line — the position hasn't filled yet so close() is a "
+                        "no-op. Use self.buy(sl=..., tp=...) instead."
+                    )
+            if "_bars_in_session" in raw_code or "entry_window" in raw_code:
+                _code_warnings.append(
+                    "⚠ Strategy has an entry_window/bars_in_session gate — RTH data is "
+                    "already pre-filtered, so this will likely reject most bars as "
+                    "'outside_window' and produce 0 trades."
+                )
+            if "np.cumsum" in raw_code and "vwap" in raw_code.lower():
+                _code_warnings.append(
+                    "⚠ np.cumsum used for VWAP — this accumulates across the entire "
+                    "backtest, not per day. Use the 20-bar rolling proxy instead: "
+                    "_sma(tp*v, 20) / _sma(v, 20)."
+                )
+            if _code_warnings:
+                yield _sse({"type": "code_warnings", "warnings": _code_warnings})
+
             yield _sse({"type": "validate_ok", "class_name": strategy_cls.__name__})
 
             # Fix-on-error: when a backtest crashes in user code, send the broken
