@@ -2158,7 +2158,8 @@ def api_agent_research():
             results = []
             for i, ticker in enumerate(tickers):
                 yield _sse({"type": "bt_progress", "ticker": ticker,
-                            "pct": int(i / len(tickers) * 100)})
+                            "pct": int(i / len(tickers) * 100),
+                            "msg": f"Fetching {ticker} data…"})
 
                 # Fetch + prep data once; if backtest crashes we retry the run with a
                 # fixed strategy class, but the data is invariant.
@@ -2195,12 +2196,24 @@ def api_agent_research():
                     except (TypeError, ValueError):
                         return default
 
+                yield _sse({"type": "bt_progress", "ticker": ticker,
+                            "pct": int(i / len(tickers) * 100),
+                            "msg": f"Running backtest on {ticker}…"})
+
                 while True:
                     try:
                         bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
                                  exclusive_orders=True,
                                  trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
-                        s = bt.run()
+                        # Run with a 90-second timeout so a slow/infinite-loop strategy
+                        # doesn't stall the entire stream on a single ticker.
+                        from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _ToutE
+                        with _TPE(max_workers=1) as _ex:
+                            _fut = _ex.submit(bt.run)
+                            try:
+                                s = _fut.result(timeout=90)
+                            except _ToutE:
+                                raise RuntimeError(f"backtest timed out after 90s on {ticker} — strategy may have an infinite loop or O(n²) operation in next()")
                         # Extract per-gate diagnostic counters that Claude was told to maintain.
                         # Surfacing these makes 0-trade outcomes debuggable — instead of
                         # "the strategy didn't trade", the user sees WHICH filter blocked it.

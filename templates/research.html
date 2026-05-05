@@ -361,7 +361,7 @@
     else if (msg.type === 'bt_progress') {
       document.getElementById('btProgressFill').style.width = msg.pct + '%';
       document.getElementById('btProgressLog').textContent =
-        `Testing ${msg.ticker} (${msg.pct}%)…`;
+        msg.msg ? `${msg.msg} (${msg.pct}%)` : `Testing ${msg.ticker} (${msg.pct}%)…`;
     }
     else if (msg.type === 'bt_done') {
       document.getElementById('resultsCard').style.display = '';
