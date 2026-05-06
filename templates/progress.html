@@ -231,6 +231,14 @@
         <button class="status-chip"         data-status="complete" onclick="setStatusFilter('complete')">Complete</button>
       </div>
       <span id="filterCount" style="font-size:0.78rem;color:#666;white-space:nowrap"></span>
+      <button id="deleteEmptyBtn" onclick="deleteEmptyStrategies()" disabled
+              style="background:transparent;border:1px solid #3a1a1a;color:#888;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              onmouseover="if(!this.disabled){this.style.background='rgba(231,76,60,0.1)';this.style.color='#e74c3c'}"
+              onmouseout="if(!this.disabled){this.style.background='transparent';this.style.color='#aaa'}"
+              title="Delete every strategy that has zero fills in the trades table">
+        Delete empty
+      </button>
     </div>
   </div>
 
@@ -298,10 +306,33 @@
     return null;
   }
 
+  let _fillStats = {};
+
   async function loadRules() {
-    const res = await fetch('/api/routing/rules');
-    _rules = await res.json();
+    const [rulesRes, fillRes] = await Promise.all([
+      fetch('/api/routing/rules'),
+      fetch('/api/progress/fill_stats').catch(() => null),
+    ]);
+    _rules = await rulesRes.json();
+    _fillStats = (fillRes && fillRes.ok) ? await fillRes.json() : {};
     render();
+  }
+
+  function _relTime(iso) {
+    if (!iso) return '';
+    const s = iso.includes('T') || iso.endsWith('Z') ? iso : iso + 'Z';
+    const t = new Date(s.includes('T') ? s : s.replace(' ', 'T'));
+    const ms = Date.now() - t.getTime();
+    if (!isFinite(ms) || ms < 0) return '';
+    const m = Math.floor(ms / 60000);
+    if (m < 1)    return 'just now';
+    if (m < 60)   return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24)   return h + 'h ago';
+    const d = Math.floor(h / 24);
+    if (d < 30)   return d + 'd ago';
+    const mo = Math.floor(d / 30);
+    return mo + 'mo ago';
   }
 
   let _statusFilter = 'all';
@@ -360,6 +391,24 @@
         : `${tickers.length} of ${allTickers.length} visible`;
     }
 
+    // Bulk-delete button: enabled iff any rule has zero fills
+    const emptyRules = _rules.filter(r => {
+      const meta = parseRuleName(r.name);
+      if (!meta) return false;  // ignore non-CAM_* rules
+      const fs = _fillStats[r.name];
+      return !fs || fs.count === 0;
+    });
+    const delBtn = document.getElementById('deleteEmptyBtn');
+    if (delBtn) {
+      const n = emptyRules.length;
+      delBtn.disabled = n === 0;
+      delBtn.textContent = n === 0 ? 'Delete empty' : `Delete ${n} empty`;
+      delBtn.style.opacity = n === 0 ? '0.4' : '1';
+      delBtn.style.cursor  = n === 0 ? 'not-allowed' : 'pointer';
+      delBtn.style.color   = n === 0 ? '#666' : '#aaa';
+      delBtn.dataset.targets = JSON.stringify(emptyRules.map(r => r.id));
+    }
+
     if (!allTickers.length) {
       root.innerHTML = '<div class="card" style="color:#666">No CAM_* alerts yet. Add a ticker above.</div>';
       return;
@@ -381,9 +430,13 @@
           for (const r of matches) {
             const checked = r.tv_alert_created ? 'checked' : '';
             const doneClass = r.tv_alert_created ? 'done' : '';
+            const fs = _fillStats[r.name];
+            const fillBadge = fs && fs.count > 0
+              ? `<span style="font-size:0.72rem;color:#7FE098;background:rgba(127,224,152,0.08);border:1px solid #2a3a30;padding:1px 6px;border-radius:3px;margin-left:4px" title="Last fill: ${fs.last_at || '—'}">${fs.count} fill${fs.count===1?'':'s'} · ${_relTime(fs.last_at)}</span>`
+              : '';
             rows.push(`<div class="alert-row ${doneClass}">
               <input type="checkbox" ${checked} onchange="toggleAlert(${r.id}, this.checked)">
-              <span style="display:flex;align-items:center;gap:6px">
+              <span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                 <button class="alert-name-btn" onclick="openPayloadModal('${r.name}')">${r.name}</button>
                 <button onclick="renameAlert(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Rename"
                   style="background:transparent;border:none;color:#444;cursor:pointer;font-size:0.85rem;
@@ -391,6 +444,7 @@
                 <button onclick="deleteStrategy(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Delete this strategy (also removes from Signal Router)"
                   style="background:transparent;border:none;color:#666;cursor:pointer;font-size:0.85rem;
                          padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#666'">✕</button>
+                ${fillBadge}
               </span>
               <span class="meta">${r.meta.timeframe}</span>
             </div>`);
@@ -429,6 +483,25 @@
     }
     if (failed) showToast(`${failed} rule(s) failed to delete`, '#e74c3c');
     else showToast(`${ticker} removed`, '#7FE098');
+    loadRules();
+  }
+
+  async function deleteEmptyStrategies() {
+    const btn = document.getElementById('deleteEmptyBtn');
+    const ids = JSON.parse(btn.dataset.targets || '[]');
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} strategies that have zero fills?\nThis removes the routing rules from the Signal Router. Trade history is unaffected.`)) return;
+    btn.disabled = true;
+    btn.textContent = 'Deleting…';
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        const r = await fetch(`/api/routing/rules/${id}`, { method: 'DELETE' });
+        if (!r.ok) failed++;
+      } catch(e) { failed++; }
+    }
+    if (failed) showToast(`${failed} rule(s) failed to delete`, '#e74c3c');
+    else showToast(`${ids.length} empty strategies removed`, '#7FE098');
     loadRules();
   }
 

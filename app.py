@@ -3218,6 +3218,33 @@ def progress_add_ticker():
     })
 
 
+@app.route("/api/progress/fill_stats")
+def progress_fill_stats():
+    """Per-strategy fill counts and most-recent fill timestamp.
+    Drives the per-row "X fills · Y ago" annotation and the
+    "delete empty (zero-fill) strategies" bulk action on /progress."""
+    out = {}
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "SELECT strategy, COUNT(*) AS n, MAX(received_at) AS last_at "
+            "FROM trades WHERE strategy IS NOT NULL AND strategy != '' "
+            "GROUP BY strategy"
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for r in rows:
+            if DATABASE_URL:
+                name, n, last_at = r[0], r[1], r[2]
+            else:
+                name, n, last_at = r["strategy"], r["n"], r["last_at"]
+            out[name] = {"count": int(n or 0), "last_at": last_at or ""}
+    except Exception as _e:
+        log.warning("progress_fill_stats failed: %s", _e)
+    return jsonify(out)
+
+
 @app.route("/api/progress/fix_strategy_mismatch", methods=["POST"])
 def progress_fix_strategy_mismatch():
     """One-shot cleanup: where a rule's name differs from its strategy node value, fix the node."""
