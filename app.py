@@ -3927,34 +3927,49 @@ def api_bt_strategy_source():
     params = data.get("params", {})  # {param_name: value}
 
     from strategies.bt_strategies import STRATEGIES
-    if slug not in STRATEGIES:
-        return jsonify({"error": f"Strategy '{slug}' not found"}), 404
+    raw = None
 
-    cls = STRATEGIES[slug]
-    try:
-        raw = inspect.getsource(cls)
-    except Exception as e:
-        return jsonify({"error": f"Could not get source: {e}"}), 500
-
-    # Rename class to ResearchStrategy
-    source = _re.sub(r'\bclass\s+' + _re.escape(cls.__name__) + r'\b',
-                     'class ResearchStrategy', raw)
+    if slug in STRATEGIES:
+        # Built-in strategy — extract source via inspect
+        cls = STRATEGIES[slug]
+        try:
+            raw = inspect.getsource(cls)
+            # Rename class
+            raw = _re.sub(r'\bclass\s+' + _re.escape(cls.__name__) + r'\b',
+                          'class ResearchStrategy', raw)
+        except Exception as e:
+            return jsonify({"error": f"Could not get source: {e}"}), 500
+    else:
+        # User-uploaded strategy — code is stored in DB
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"SELECT code FROM user_strategies WHERE slug = {placeholder()}", (slug,))
+        row = cur.fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return jsonify({"error": f"Strategy '{slug}' not found"}), 404
+        raw = _strip_code_fences(row[0])
+        # Rename whatever class is in there to ResearchStrategy
+        raw = _re.sub(r'\bclass\s+\w+\s*\(', 'class ResearchStrategy(', raw, count=1)
 
     # Apply best params: replace each `param = <value>` class-level default
     for param, value in params.items():
-        source = _re.sub(
+        raw = _re.sub(
             r'(^\s{4}' + _re.escape(param) + r'\s*=\s*)[^\n#]+',
             lambda m, v=value: m.group(1) + repr(v),
-            source, flags=_re.MULTILINE
+            raw, flags=_re.MULTILINE
         )
 
-    # Prepend the required imports (strategy file helpers are module-level)
+    # Ensure required imports are present
     preamble = (
         "import numpy as np\nimport pandas as pd\n"
         "from backtesting import Strategy\n"
         "from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd\n\n"
     )
-    return jsonify({"code": preamble + source, "class_name": "ResearchStrategy"})
+    # Only prepend if not already present
+    if "from backtesting import" not in raw:
+        raw = preamble + raw
+    return jsonify({"code": raw, "class_name": "ResearchStrategy"})
 
 
 @app.route("/api/bt/run", methods=["POST"])
