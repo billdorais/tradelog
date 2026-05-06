@@ -2370,6 +2370,293 @@ def api_agent_research():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ---------------------------------------------------------------------------
+# Agent optimization loop
+# ---------------------------------------------------------------------------
+
+@app.route("/api/agent/optimize", methods=["POST"])
+def api_agent_optimize():
+    """SSE: automated single-parameter hill-climbing optimization loop.
+    Proposes one parameter change per iteration, accepts if avg Sharpe improves,
+    reverts otherwise. Stops after max_failures consecutive non-improvements."""
+    import json as _j
+    data       = request.get_json(silent=True) or {}
+    code       = data.get("code",       "").strip()
+    tickers    = [t.strip().upper() for t in data.get("tickers", []) if t.strip()]
+    timeframe  = data.get("timeframe",  "5m")
+    start_date = data.get("start_date", "2025-01-01")
+    end_date   = data.get("end_date",   "") or time.strftime("%Y-%m-%d", time.gmtime())
+    val_start  = data.get("val_start",  "")
+    val_end    = data.get("val_end",    "")
+    cash       = float(data.get("cash", 26000))
+    max_iter   = int(data.get("max_iterations", 10))
+    max_fail   = int(data.get("max_failures",   5))
+
+    if not code or not tickers:
+        return jsonify({"error": "code and tickers required"}), 400
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+
+    def generate():
+        def _sse(obj): return f"data: {_j.dumps(obj)}\n\n"
+        import re as _re
+        import anthropic as _ant
+        import pandas as _pd
+        from backtesting import Backtest as _BT
+        from strategies.data import fetch_bars_alpaca, fetch_bars
+        from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _ToutE
+        client = _ant.Anthropic(api_key=api_key)
+
+        def _num(v, default=0.0):
+            try:
+                f = float(v)
+                return f if f == f else default
+            except (TypeError, ValueError):
+                return default
+
+        def _compile_cls(src):
+            import backtesting as _bktst
+            ns = {"__builtins__": __builtins__}
+            exec(compile(src, "<opt>", "exec"), ns)
+            return next((v for v in ns.values()
+                         if isinstance(v, type) and issubclass(v, _bktst.Strategy)
+                         and v is not _bktst.Strategy), None)
+
+        def _run_ticker_gen(strategy_cls, ticker, s_date, e_date):
+            """Generator: yields ('hb',None) heartbeats or ('result', dict)."""
+            try:
+                def _fetch():
+                    try:    return fetch_bars_alpaca(ticker, s_date, e_date, timeframe)
+                    except: return fetch_bars(ticker, s_date, e_date, timeframe)
+                with _TPE(max_workers=1) as ex:
+                    ff = ex.submit(_fetch)
+                    elapsed = 0
+                    while True:
+                        try:
+                            raw = ff.result(timeout=5); break
+                        except _ToutE:
+                            elapsed += 5
+                            if elapsed >= 60:
+                                raise RuntimeError(f"data fetch timeout for {ticker}")
+                            yield ("hb", None)
+                if not raw or len(raw) < 50:
+                    yield ("result", {"ticker": ticker, "sharpe": 0.0, "pf": 0.0,
+                                      "trades": 0, "error": "insufficient data"}); return
+                df = _pd.DataFrame(raw).set_index("time")
+                df.index = _pd.to_datetime(df.index)
+                df.columns = [c.title() for c in df.columns]
+                keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+                df = df[keep].dropna()
+                if "Volume" not in df.columns: df["Volume"] = 0
+                df = _filter_rth(df)
+                bt = _BT(df, strategy_cls, cash=cash, commission=0.0005,
+                         exclusive_orders=True,
+                         trade_on_close=getattr(strategy_cls, "_trade_on_close", False))
+                with _TPE(max_workers=1) as ex2:
+                    fut = ex2.submit(bt.run)
+                    elapsed = 0
+                    while True:
+                        try:
+                            s = fut.result(timeout=5); break
+                        except _ToutE:
+                            elapsed += 5
+                            if elapsed >= 90:
+                                raise RuntimeError(f"backtest timeout for {ticker}")
+                            yield ("hb", None)
+                yield ("result", {
+                    "ticker":   ticker,
+                    "sharpe":   round(_num(s.get("Sharpe Ratio")),  3),
+                    "pf":       round(_num(s.get("Profit Factor")), 3),
+                    "trades":   int(_num(s.get("# Trades"))),
+                    "ret_pct":  round(_num(s.get("Return [%]")),    2),
+                    "win_rate": round(_num(s.get("Win Rate [%]")),  1),
+                    "max_dd":   round(abs(_num(s.get("Max. Drawdown [%]"))), 2),
+                })
+            except Exception as _e:
+                yield ("result", {"ticker": ticker, "sharpe": 0.0, "pf": 0.0,
+                                  "trades": 0, "error": str(_e)[:120]})
+
+        def _run_all_gen(strategy_cls, s_date, e_date):
+            """Generator: yields heartbeats then ('done', results_list)."""
+            results = []
+            for ticker in tickers:
+                for item in _run_ticker_gen(strategy_cls, ticker, s_date, e_date):
+                    if item[0] == "hb": yield ("hb", None)
+                    else:               results.append(item[1])
+            yield ("done", results)
+
+        def _avg(results, key):
+            vals = [r[key] for r in results if key in r and "error" not in r]
+            return round(sum(vals) / len(vals), 3) if vals else 0.0
+
+        try:
+            # ── Baseline ─────────────────────────────────────────────────
+            yield _sse({"type": "opt_phase", "phase": "baseline",
+                        "msg": "Running baseline backtest…"})
+            base_cls = _compile_cls(code)
+            if not base_cls:
+                yield _sse({"type": "opt_error", "msg": "Could not compile strategy"}); return
+            base_results = []
+            for item in _run_all_gen(base_cls, start_date, end_date):
+                if item[0] == "hb": yield ": heartbeat\n\n"
+                elif item[0] == "done": base_results = item[1]
+            best_code    = code
+            best_cls     = base_cls
+            best_results = base_results
+            best_sharpe  = _avg(base_results, "sharpe")
+            best_pf      = _avg(base_results, "pf")
+            yield _sse({"type": "opt_baseline", "results": base_results,
+                        "avg_sharpe": best_sharpe, "avg_pf": best_pf})
+
+            history, consec_fail = [], 0
+
+            # ── Optimization loop ────────────────────────────────────────
+            for iteration in range(1, max_iter + 1):
+                if consec_fail >= max_fail:
+                    yield _sse({"type": "opt_stopped", "iteration": iteration,
+                                "reason": f"{max_fail} consecutive non-improvements — likely at local maximum"})
+                    break
+
+                yield _sse({"type": "opt_iter_start", "iteration": iteration,
+                            "msg": f"Iteration {iteration}/{max_iter}: proposing change…"})
+
+                history_str = "\n".join(
+                    f"  [{h['iter']}] {h['param']}={h['old']}→{h['new']} "
+                    f"Sharpe {h['sharpe_before']}→{h['sharpe_after']} "
+                    f"({'✓' if h['accepted'] else '✗'})"
+                    for h in history) or "  (none yet — first iteration)"
+
+                result_lines = "\n".join(
+                    f"  {r['ticker']}: Sharpe={r.get('sharpe',0)} PF={r.get('pf',0)} "
+                    f"Trades={r.get('trades',0)} Ret={r.get('ret_pct',0)}%"
+                    + (f" [ERR: {r['error']}]" if "error" in r else "")
+                    for r in best_results)
+
+                opt_prompt = (
+                    "You are a trading strategy parameter optimizer. Given the current strategy "
+                    "and its backtest results, propose ONE parameter change to improve average "
+                    "Sharpe Ratio across all tickers.\n\n"
+                    "EVALUATION HIERARCHY: 1. Sharpe Ratio  2. Profit Factor\n\n"
+                    "RULES:\n"
+                    "- Change ONLY ONE numeric class-level parameter value\n"
+                    "- Do NOT modify init() or next() code in any way\n"
+                    "- Propose a specific number, not a range\n"
+                    "- Do not repeat a (param, direction) combination from history\n"
+                    "- Low trade count (<5/ticker) → loosen entry threshold or widen ATR mult\n"
+                    "- Negative Sharpe + many trades → tighten stops or raise entry threshold\n\n"
+                    f"CURRENT BEST: Avg Sharpe={best_sharpe} | Avg PF={best_pf}\n"
+                    f"Per ticker:\n{result_lines}\n\n"
+                    f"TRIED CHANGES:\n{history_str}\n\n"
+                    f"STRATEGY CODE:\n```python\n{best_code}\n```\n\n"
+                    "Output EXACTLY this format — nothing else:\n"
+                    "## Change\n"
+                    "param: <name>\n"
+                    "old: <current_value>\n"
+                    "new: <new_value>\n"
+                    "reasoning: <1-2 sentences>\n\n"
+                    "## Code\n"
+                    "```python\n<full strategy code with ONLY that one value changed>\n```"
+                )
+
+                opt_resp = ""
+                with client.messages.stream(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=3000,
+                    messages=[{"role": "user", "content": opt_prompt}],
+                ) as stream:
+                    for txt in stream.text_stream:
+                        opt_resp += txt
+                        yield _sse({"type": "opt_chunk", "iteration": iteration, "text": txt})
+
+                # Parse the structured response
+                chg = _re.search(
+                    r"## Change\s*\nparam:\s*(\S+)\s*\nold:\s*(\S+)\s*\nnew:\s*(\S+)\s*\nreasoning:\s*(.+?)(?=\n\n## Code|\Z)",
+                    opt_resp, _re.DOTALL)
+                cde = _re.search(r"```python\s*(.*?)```", opt_resp, _re.DOTALL)
+
+                if not chg or not cde:
+                    yield _sse({"type": "opt_iter_result", "iteration": iteration,
+                                "accepted": False, "reason": "parse error — skipping",
+                                "sharpe_before": best_sharpe, "sharpe_after": None})
+                    consec_fail += 1; continue
+
+                param_name = chg.group(1).strip()
+                old_val    = chg.group(2).strip()
+                new_val    = chg.group(3).strip()
+                reasoning  = chg.group(4).strip()
+                new_code   = _strip_code_fences(cde.group(1).strip())
+                _, new_code = _apply_lints(new_code)
+
+                try:
+                    new_cls = _compile_cls(new_code)
+                    if not new_cls: raise RuntimeError("No Strategy subclass found")
+                except Exception as ce:
+                    yield _sse({"type": "opt_iter_result", "iteration": iteration,
+                                "accepted": False, "reason": f"compile error: {ce}",
+                                "param": param_name, "old": old_val, "new": new_val,
+                                "sharpe_before": best_sharpe, "sharpe_after": None})
+                    consec_fail += 1; continue
+
+                yield _sse({"type": "opt_testing", "iteration": iteration,
+                            "param": param_name, "old": old_val, "new": new_val})
+
+                new_results = []
+                for item in _run_all_gen(new_cls, start_date, end_date):
+                    if item[0] == "hb": yield ": heartbeat\n\n"
+                    elif item[0] == "done": new_results = item[1]
+
+                new_sharpe = _avg(new_results, "sharpe")
+                new_pf     = _avg(new_results, "pf")
+                accepted   = new_sharpe > best_sharpe
+
+                h = {"iter": iteration, "param": param_name, "old": old_val,
+                     "new": new_val, "reasoning": reasoning,
+                     "sharpe_before": best_sharpe, "sharpe_after": new_sharpe,
+                     "pf_before": best_pf, "pf_after": new_pf,
+                     "accepted": accepted, "results": new_results}
+                history.append(h)
+
+                if accepted:
+                    best_code, best_cls, best_results = new_code, new_cls, new_results
+                    best_sharpe, best_pf = new_sharpe, new_pf
+                    consec_fail = 0
+                else:
+                    consec_fail += 1
+
+                yield _sse({**h, "type": "opt_iter_result",
+                            "consec_fail": consec_fail,
+                            "best_sharpe": best_sharpe})
+
+            # ── Out-of-sample validation ─────────────────────────────────
+            val_results = None
+            if val_start and val_end and best_code != code:
+                yield _sse({"type": "opt_phase", "phase": "validation",
+                            "msg": f"Validating best params out-of-sample ({val_start} to {val_end})…"})
+                val_results = []
+                val_cls = _compile_cls(best_code)
+                for item in _run_all_gen(val_cls, val_start, val_end):
+                    if item[0] == "hb": yield ": heartbeat\n\n"
+                    elif item[0] == "done": val_results = item[1]
+
+            yield _sse({"type": "opt_done",
+                        "best_code":    best_code,
+                        "best_sharpe":  best_sharpe,
+                        "best_pf":      best_pf,
+                        "base_sharpe":  _avg(base_results, "sharpe"),
+                        "base_pf":      _avg(base_results, "pf"),
+                        "best_results": best_results,
+                        "val_results":  val_results,
+                        "history":      history,
+                        "improved":     best_code != code})
+        except Exception as _e:
+            log.exception("Optimize agent error")
+            yield _sse({"type": "opt_error", "msg": str(_e)})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.route("/api/journal/entries")
 def api_journal_entries():
     conn = get_db()

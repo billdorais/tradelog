@@ -220,7 +220,82 @@
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px">
           <button class="btn-save" id="saveBtn" style="display:none" onclick="saveStrategy()">&#128190; Save to Strategies</button>
           <button id="refineBtn" style="display:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:500;background:rgba(242,231,172,0.1);border:1px solid #5a4a1a;color:#F2E7AC" onclick="runRefine()">&#9883; Implement Improvements &amp; Retest</button>
+          <button id="agentLoopBtn" style="display:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:500;background:rgba(127,224,152,0.08);border:1px solid #2a5a36;color:#7FE098" onclick="toggleAgentPanel()">&#127887; Agent Loop</button>
           <span id="saveStatus" style="font-size:0.8rem;color:#555"></span>
+        </div>
+
+        <!-- Agent Loop config panel (shown when button toggled) -->
+        <div id="agentPanel" style="display:none;margin-top:16px;background:#0d1210;border:1px solid #1e3028;border-radius:10px;padding:16px">
+          <div style="font-size:0.85rem;font-weight:600;color:#7FE098;margin-bottom:12px">&#127887; Agent Parameter Optimization Loop</div>
+          <div style="font-size:0.78rem;color:#666;margin-bottom:14px;line-height:1.5">
+            Automatically proposes one parameter change per iteration, backtests it, and accepts if avg Sharpe improves.
+            Stops after <strong style="color:#aaa">5 consecutive non-improvements</strong>.
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+            <div>
+              <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Max Iterations</div>
+              <input id="optMaxIter" type="number" value="10" min="1" max="20"
+                style="background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:80px">
+            </div>
+            <div>
+              <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val Start (out-of-sample)</div>
+              <input id="optValStart" type="date"
+                style="background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
+            </div>
+            <div>
+              <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val End</div>
+              <input id="optValEnd" type="date"
+                style="background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
+            </div>
+            <button id="optRunBtn" onclick="runAgentLoop()"
+              style="padding:8px 20px;background:rgba(127,224,152,0.12);border:1px solid #7FE098;color:#7FE098;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:600">
+              &#9654; Start
+            </button>
+          </div>
+
+          <!-- Progress -->
+          <div id="optProgress" style="display:none;margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#555;margin-bottom:4px">
+              <span id="optProgressMsg">Running…</span>
+              <span id="optIterLabel"></span>
+            </div>
+            <div style="background:#1a1d2e;border-radius:4px;height:4px">
+              <div id="optProgressBar" style="background:#7FE098;height:4px;border-radius:4px;width:0%;transition:width 0.3s"></div>
+            </div>
+          </div>
+
+          <!-- Iteration table -->
+          <div id="optTableWrap" style="display:none">
+            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+              <thead>
+                <tr style="color:#555;text-transform:uppercase;letter-spacing:0.06em;font-size:0.68rem;border-bottom:1px solid #1e2130">
+                  <th style="text-align:left;padding:5px 8px">#</th>
+                  <th style="text-align:left;padding:5px 8px">Changed</th>
+                  <th style="text-align:center;padding:5px 8px">Avg Sharpe</th>
+                  <th style="text-align:center;padding:5px 8px">Avg PF</th>
+                  <th style="text-align:center;padding:5px 8px">Result</th>
+                  <th style="text-align:left;padding:5px 8px">Reasoning</th>
+                </tr>
+              </thead>
+              <tbody id="optTableBody"></tbody>
+            </table>
+          </div>
+
+          <!-- Best result summary -->
+          <div id="optBestWrap" style="display:none;margin-top:16px;padding:12px;background:#0a140e;border:1px solid #1e3028;border-radius:8px">
+            <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#517356;margin-bottom:8px">Best Result</div>
+            <div id="optBestSummary"></div>
+            <button id="optSaveBtn" onclick="saveOptimized()"
+              style="margin-top:10px;padding:7px 16px;background:rgba(127,224,152,0.12);border:1px solid #7FE098;color:#7FE098;border-radius:6px;cursor:pointer;font-size:0.82rem;font-weight:600">
+              &#128190; Save Optimized Strategy
+            </button>
+          </div>
+
+          <!-- Validation results -->
+          <div id="optValWrap" style="display:none;margin-top:12px;padding:12px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px">
+            <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:8px">Out-of-Sample Validation</div>
+            <div id="optValSummary"></div>
+          </div>
         </div>
       </div>
 
@@ -421,9 +496,10 @@
       if (msg.overall !== 'fail') {
         document.getElementById('saveBtn').style.display = '';
       }
-      // Capture verdict text for refinement and show Refine button
+      // Capture verdict text for refinement and show action buttons
       _verdictText = document.getElementById('verdictOut')._raw || '';
       document.getElementById('refineBtn').style.display = '';
+      document.getElementById('agentLoopBtn').style.display = '';
     }
     else if (msg.type === 'code_warnings') {
       const out = document.getElementById('analysisOut');
@@ -554,6 +630,168 @@
     }
     btn.disabled = false;
     btn.innerHTML = '&#9883; Implement Improvements &amp; Retest';
+  }
+
+  // ── Agent Loop ────────────────────────────────────────────────────────────
+  let _optBestCode = '';
+
+  function toggleAgentPanel() {
+    const p = document.getElementById('agentPanel');
+    p.style.display = p.style.display === 'none' ? '' : 'none';
+  }
+
+  function _fmtSharpe(v) {
+    if (v == null) return '—';
+    const n = Number(v);
+    const cls = n >= 0.5 ? '#7FE098' : n >= 0 ? '#F2E7AC' : '#ef5350';
+    return `<strong style="color:${cls}">${n.toFixed(3)}</strong>`;
+  }
+
+  async function runAgentLoop() {
+    if (!_code) { alert('No strategy code — run a research first.'); return; }
+    const maxIter   = parseInt(document.getElementById('optMaxIter').value) || 10;
+    const valStart  = document.getElementById('optValStart').value;
+    const valEnd    = document.getElementById('optValEnd').value;
+    const tickers   = document.getElementById('rTickers').value.split(',').map(t=>t.trim().toUpperCase()).filter(Boolean);
+
+    const runBtn = document.getElementById('optRunBtn');
+    runBtn.disabled = true; runBtn.textContent = '⏳ Running…';
+    document.getElementById('optProgress').style.display   = '';
+    document.getElementById('optTableWrap').style.display  = '';
+    document.getElementById('optBestWrap').style.display   = 'none';
+    document.getElementById('optValWrap').style.display    = 'none';
+    document.getElementById('optTableBody').innerHTML      = '';
+    document.getElementById('optProgressBar').style.width  = '0%';
+    _optBestCode = _code;
+
+    try {
+      const res = await fetch('/api/agent/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: _code, tickers,
+          timeframe:      document.getElementById('rTf').value,
+          start_date:     document.getElementById('rStart').value,
+          cash:           parseFloat(document.getElementById('rCash').value),
+          val_start:      valStart,
+          val_end:        valEnd,
+          max_iterations: maxIter,
+          max_failures:   5,
+        }),
+      });
+
+      const reader = res.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const events = buf.split('\n\n');
+        buf = events.pop();
+        for (const event of events) {
+          for (const line of event.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try { handleOptMsg(JSON.parse(line.slice(6)), maxIter); }
+            catch(e) { console.warn('opt SSE parse:', e.message); }
+          }
+        }
+      }
+    } catch(e) {
+      document.getElementById('optProgressMsg').textContent = 'Error: ' + e.message;
+    }
+    runBtn.disabled = false; runBtn.textContent = '▶ Start';
+  }
+
+  function handleOptMsg(msg, maxIter) {
+    const pb  = document.getElementById('optProgressBar');
+    const pm  = document.getElementById('optProgressMsg');
+    const il  = document.getElementById('optIterLabel');
+
+    if (msg.type === 'opt_phase') {
+      pm.textContent = msg.msg;
+    }
+    else if (msg.type === 'opt_baseline') {
+      pm.textContent = `Baseline: Avg Sharpe ${msg.avg_sharpe} · PF ${msg.avg_pf}`;
+      pb.style.width = '5%';
+    }
+    else if (msg.type === 'opt_iter_start') {
+      pm.textContent = msg.msg;
+      il.textContent = `${msg.iteration}/${maxIter}`;
+      pb.style.width  = Math.round(msg.iteration / maxIter * 85) + '%';
+    }
+    else if (msg.type === 'opt_testing') {
+      pm.textContent = `Testing ${msg.param}: ${msg.old} → ${msg.new}…`;
+    }
+    else if (msg.type === 'opt_iter_result') {
+      const body   = document.getElementById('optTableBody');
+      const accept = msg.accepted;
+      const delta  = msg.sharpe_after != null
+        ? (msg.sharpe_after - msg.sharpe_before).toFixed(3)
+        : '—';
+      const deltaColor = accept ? '#7FE098' : '#ef5350';
+      const badge = accept
+        ? '<span style="color:#7FE098;font-weight:700">✓ Accept</span>'
+        : '<span style="color:#ef5350">✗ Reject</span>';
+      body.innerHTML += `<tr style="border-bottom:1px solid #0f1117">
+        <td style="padding:6px 8px;color:#555">${msg.iter}</td>
+        <td style="padding:6px 8px;color:#e0e0e0"><code style="font-size:0.78rem">${_escHtml(msg.param || '')}=${_escHtml(String(msg.old || ''))}→<strong>${_escHtml(String(msg.new || ''))}</strong></code></td>
+        <td style="padding:6px 8px;text-align:center">${_fmtSharpe(msg.sharpe_before)} → ${_fmtSharpe(msg.sharpe_after)} <span style="color:${deltaColor};font-size:0.75rem">(${delta >= 0 ? '+' : ''}${delta})</span></td>
+        <td style="padding:6px 8px;text-align:center;color:#aaa">${msg.pf_after != null ? Number(msg.pf_after).toFixed(3) : '—'}</td>
+        <td style="padding:6px 8px;text-align:center">${badge}</td>
+        <td style="padding:6px 8px;color:#666;font-size:0.75rem;max-width:220px">${_escHtml(msg.reasoning || '')}</td>
+      </tr>`;
+    }
+    else if (msg.type === 'opt_stopped') {
+      pm.textContent = '⏹ ' + msg.reason;
+      pb.style.width = '90%';
+    }
+    else if (msg.type === 'opt_done') {
+      pb.style.width = '100%';
+      _optBestCode = msg.best_code || _code;
+      const improved = msg.improved;
+      const baseS = Number(msg.base_sharpe).toFixed(3);
+      const bestS = Number(msg.best_sharpe).toFixed(3);
+      const delta = (msg.best_sharpe - msg.base_sharpe).toFixed(3);
+      pm.textContent = improved
+        ? `✓ Done — Sharpe improved ${baseS} → ${bestS} (+${delta})`
+        : '— No improvement found over baseline';
+
+      // Best result summary
+      const bw = document.getElementById('optBestWrap');
+      bw.style.display = '';
+      const rows = (msg.best_results || []).map(r =>
+        `<span style="margin-right:14px;font-size:0.8rem"><strong style="color:#aaa">${_escHtml(r.ticker)}</strong> Sharpe=<span style="color:#7FE098">${r.sharpe}</span> PF=${r.pf} T=${r.trades}</span>`
+      ).join('');
+      document.getElementById('optBestSummary').innerHTML =
+        `<div style="margin-bottom:6px;color:#aaa;font-size:0.82rem">
+          Avg Sharpe: ${_fmtSharpe(msg.best_sharpe)} (was ${_fmtSharpe(msg.base_sharpe)}) &nbsp;·&nbsp;
+          Avg PF: <strong>${Number(msg.best_pf).toFixed(3)}</strong>
+         </div><div>${rows}</div>`;
+
+      // Out-of-sample
+      if (msg.val_results && msg.val_results.length) {
+        const vw = document.getElementById('optValWrap');
+        vw.style.display = '';
+        const vRows = msg.val_results.map(r =>
+          `<span style="margin-right:14px;font-size:0.8rem"><strong style="color:#aaa">${_escHtml(r.ticker)}</strong> Sharpe=${_fmtSharpe(r.sharpe)} PF=${r.pf} T=${r.trades}</span>`
+        ).join('');
+        const valAvgS = msg.val_results.filter(r=>!r.error).reduce((s,r)=>s+r.sharpe,0) / Math.max(1,msg.val_results.filter(r=>!r.error).length);
+        document.getElementById('optValSummary').innerHTML =
+          `<div style="margin-bottom:6px;color:#aaa;font-size:0.82rem">Avg Sharpe (OOS): ${_fmtSharpe(valAvgS.toFixed(3))}</div><div>${vRows}</div>`;
+      }
+    }
+    else if (msg.type === 'opt_error') {
+      document.getElementById('optProgressMsg').textContent = '✗ Error: ' + msg.msg;
+    }
+  }
+
+  function saveOptimized() {
+    if (!_optBestCode) return;
+    _code = _optBestCode;
+    document.getElementById('codeOut').textContent = _code;
+    document.getElementById('optSaveBtn').textContent = '✓ Loaded into editor';
+    document.getElementById('saveBtn').style.display = '';
   }
 
   async function saveStrategy() {
