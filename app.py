@@ -3134,13 +3134,51 @@ def _progress_default_nodes(name):
 
 @app.route("/api/progress/add_ticker", methods=["POST"])
 def progress_add_ticker():
-    """Create the 12 routing rules for a ticker (idempotent) and return the TV alert checklist."""
+    """Create routing rules for a ticker (idempotent) and return the alert checklist.
+
+    Two modes:
+      - "camarilla" (default): 12 rules = 2 strategies × 2 levels × 3 timeframes
+      - "single":              1 rule from `strategy_slug` + `timeframe`, with an
+                               optional `rule_name` override. Useful for non-Camarilla
+                               strategies (research-generated, opening-range, etc.)
+                               that don't fit the BREAKOUT/REVERSAL × R3/R4 grid.
+    """
     data   = request.get_json(silent=True) or {}
     ticker = (data.get("ticker") or "").strip().upper()
     if not ticker or not ticker.replace("_", "").isalnum():
         return jsonify({"error": "ticker required (alphanumeric)"}), 400
 
-    specs = _progress_alert_specs(ticker)
+    mode = (data.get("mode") or "camarilla").strip().lower()
+    if mode == "single":
+        strategy_slug = (data.get("strategy_slug") or "").strip().upper()
+        timeframe     = (data.get("timeframe") or "").strip().upper()
+        rule_name_in  = (data.get("rule_name") or "").strip()
+        if not strategy_slug or not strategy_slug.replace("_", "").isalnum():
+            return jsonify({"error": "strategy_slug required (alphanumeric)"}), 400
+        if not timeframe:
+            return jsonify({"error": "timeframe required (e.g. 5MIN, 1H, 1D)"}), 400
+        rule_name = rule_name_in or f"{ticker}_{strategy_slug}_{timeframe}"
+        specs = [{
+            "name":      rule_name,
+            "ticker":    ticker,
+            "strategy":  strategy_slug,
+            "level":     "",
+            "timeframe": timeframe,
+            "tv_settings": {
+                "pine_script": "(custom)",
+                "level":       "",
+                "interval":    timeframe.replace("MIN", "").replace("M", "") if "MIN" in timeframe or timeframe.endswith("M") else timeframe,
+            },
+            "pine_inputs": {
+                "strategy_id": rule_name,
+                "broker":      "alpaca-paper",
+                "qty":         100,
+            },
+            "alert_message": "{{strategy.order.alert_message}}",
+        }]
+    else:
+        specs = _progress_alert_specs(ticker)
+
     conn  = get_db()
     cur   = conn.cursor()
     p     = placeholder()
@@ -3173,6 +3211,7 @@ def progress_add_ticker():
 
     return jsonify({
         "ticker":   ticker,
+        "mode":     mode,
         "created":  created,
         "skipped":  skipped,
         "specs":    specs,

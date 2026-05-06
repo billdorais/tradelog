@@ -160,12 +160,42 @@
 
   <div class="card">
     <div class="card-title">Add a new ticker</div>
+
+    <div class="row" style="margin-bottom:12px;gap:14px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ccc">
+        <input type="radio" name="addMode" value="camarilla" checked onchange="toggleAddMode()"
+               style="accent-color:#7FE098">
+        Camarilla preset <span style="color:#666;font-size:0.78rem">(12 rules)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ccc">
+        <input type="radio" name="addMode" value="single" onchange="toggleAddMode()"
+               style="accent-color:#7FE098">
+        Single custom strategy <span style="color:#666;font-size:0.78rem">(1 rule)</span>
+      </label>
+    </div>
+
     <div class="row">
       <input type="text" id="newTicker" placeholder="QQQ" maxlength="10" style="width:140px;text-transform:uppercase">
+      <div id="singleModeFields" style="display:none;gap:10px;flex-wrap:wrap;align-items:center">
+        <select id="newStrategy" onchange="updateRuleNamePreview()"
+                style="background:#0a0a0a;border:1px solid #1e2130;border-radius:7px;color:#e0e0e0;padding:9px 12px;font-size:0.88rem;font-family:inherit;min-width:200px">
+          <option value="">— Choose strategy —</option>
+        </select>
+        <select id="newTimeframe" onchange="updateRuleNamePreview()"
+                style="background:#0a0a0a;border:1px solid #1e2130;border-radius:7px;color:#e0e0e0;padding:9px 12px;font-size:0.88rem;font-family:inherit">
+          <option value="5MIN">5 min</option>
+          <option value="15MIN">15 min</option>
+          <option value="30MIN">30 min</option>
+          <option value="1H">1 hour</option>
+          <option value="1D">1 day</option>
+        </select>
+        <input type="text" id="newRuleName" placeholder="rule name (auto)"
+               style="width:280px;font-family:'Consolas',monospace;font-size:0.8rem">
+      </div>
       <button class="btn" id="addTickerBtn" onclick="addTicker()">+ Add ticker</button>
       <span id="addStatus" style="font-size:0.8rem;color:#888"></span>
     </div>
-    <div style="font-size:0.78rem;color:#666;margin-top:8px">
+    <div id="addModeHint" style="font-size:0.78rem;color:#666;margin-top:8px">
       Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.
     </div>
   </div>
@@ -388,24 +418,92 @@
     }
   }
 
+  function _currentAddMode() {
+    const r = document.querySelector('input[name="addMode"]:checked');
+    return r ? r.value : 'camarilla';
+  }
+
+  function toggleAddMode() {
+    const mode = _currentAddMode();
+    document.getElementById('singleModeFields').style.display = mode === 'single' ? 'inline-flex' : 'none';
+    document.getElementById('addModeHint').textContent = mode === 'single'
+      ? 'Creates 1 routing rule for this ticker + strategy + timeframe combination.'
+      : 'Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.';
+    if (mode === 'single') populateStrategyDropdown();
+    updateRuleNamePreview();
+  }
+
+  let _strategiesLoaded = false;
+  async function populateStrategyDropdown() {
+    if (_strategiesLoaded) return;
+    try {
+      const res  = await fetch('/api/bt/strategies/meta');
+      const list = await res.json();
+      // Show user-saved strategies first (the typical pick), built-ins below
+      const ordered = (list || []).slice().sort((a, b) => {
+        if (a.user !== b.user) return a.user ? -1 : 1;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+      const opts = ordered.map(s => {
+        const tag = s.user ? '' : ' (built-in)';
+        return `<option value="${s.slug}">${s.name || s.slug}${tag}</option>`;
+      }).join('');
+      const sel = document.getElementById('newStrategy');
+      sel.innerHTML = '<option value="">— Choose strategy —</option>' + opts;
+      _strategiesLoaded = true;
+    } catch (e) {
+      console.warn('Strategy list fetch failed:', e);
+    }
+  }
+
+  function updateRuleNamePreview() {
+    if (_currentAddMode() !== 'single') return;
+    const ticker = (document.getElementById('newTicker').value || '').trim().toUpperCase();
+    const slug   = (document.getElementById('newStrategy').value || '').trim().toUpperCase();
+    const tf     = document.getElementById('newTimeframe').value;
+    const out    = document.getElementById('newRuleName');
+    // Don't overwrite if user has typed a custom name
+    if (out.dataset.userEdited === '1') return;
+    out.value = (ticker && slug && tf) ? `${ticker}_${slug}_${tf}` : '';
+  }
+
+  document.getElementById('newRuleName').addEventListener('input', e => {
+    e.target.dataset.userEdited = '1';
+  });
+  document.getElementById('newTicker').addEventListener('input', updateRuleNamePreview);
+
   async function addTicker() {
     const inp  = document.getElementById('newTicker');
     const btn  = document.getElementById('addTickerBtn');
     const stat = document.getElementById('addStatus');
     const ticker = (inp.value || '').trim().toUpperCase();
     if (!ticker) { stat.textContent = 'Enter a ticker.'; return; }
+    const mode = _currentAddMode();
+    const body = { ticker, mode };
+    if (mode === 'single') {
+      const slug = (document.getElementById('newStrategy').value || '').trim();
+      const tf   = document.getElementById('newTimeframe').value;
+      const name = (document.getElementById('newRuleName').value || '').trim();
+      if (!slug) { stat.textContent = 'Pick a strategy.'; return; }
+      body.strategy_slug = slug.toUpperCase();
+      body.timeframe     = tf;
+      if (name) body.rule_name = name;
+    }
     btn.disabled = true; stat.textContent = 'Creating rules…';
     try {
       const res = await fetch('/api/progress/add_ticker', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'failed');
       stat.innerHTML = `Created <strong style="color:#88BF8B">${data.created.length}</strong>, skipped ${data.skipped.length} existing.`;
       renderChecklist(data);
       inp.value = '';
+      // Reset single-mode fields for next add
+      const ruleName = document.getElementById('newRuleName');
+      ruleName.value = ''; delete ruleName.dataset.userEdited;
       await loadRules();
     } catch (e) {
       stat.innerHTML = `<span style="color:#ef5350">Error: ${e.message}</span>`;
