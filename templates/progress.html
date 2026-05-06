@@ -300,6 +300,9 @@
                 <button onclick="renameAlert(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Rename"
                   style="background:transparent;border:none;color:#444;cursor:pointer;font-size:0.85rem;
                          padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#aaa'" onmouseout="this.style.color='#444'">✎</button>
+                <button onclick="deleteStrategy(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Delete this strategy (also removes from Signal Router)"
+                  style="background:transparent;border:none;color:#3a1a1a;cursor:pointer;font-size:0.85rem;
+                         padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#3a1a1a'">✕</button>
               </span>
               <span class="meta">${r.meta.timeframe}</span>
             </div>`);
@@ -339,6 +342,21 @@
     if (failed) showToast(`${failed} rule(s) failed to delete`, '#e74c3c');
     else showToast(`${ticker} removed`, '#7FE098');
     loadRules();
+  }
+
+  async function deleteStrategy(ruleId, name) {
+    if (!confirm(`Delete strategy "${name}"?\nThis removes the routing rule from the Signal Router. Trade history is preserved.`)) return;
+    try {
+      const r = await fetch(`/api/routing/rules/${ruleId}`, { method: 'DELETE' });
+      if (!r.ok) {
+        showToast('Delete failed', '#e74c3c');
+        return;
+      }
+      showToast(`${name} removed`, '#7FE098');
+      loadRules();
+    } catch(e) {
+      showToast('Delete failed: ' + e.message, '#e74c3c');
+    }
   }
 
   async function renameAlert(ruleId, currentName) {
