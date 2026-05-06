@@ -1915,6 +1915,28 @@ class ResearchStrategy(Strategy):
 """
 
 
+import re as _lint_re
+_shape_pat     = _lint_re.compile(r"\b(self\.(?!data\b)\w+)\.shape\[0\]")
+_pos_len_pat   = _lint_re.compile(r"len\(\s*self\.position\s*\)\s*>\s*0")
+_pos_len_eq_pat= _lint_re.compile(r"len\(\s*self\.position\s*\)\s*==\s*0")
+
+def _apply_lints(code):
+    """Auto-fix common Claude-generated strategy bugs. Returns (warnings, fixed_code)."""
+    warns = []
+    if _shape_pat.search(code):
+        code = _shape_pat.sub("20", code)
+        warns.append("auto-fix: replaced `<indicator>.shape[0]` with literal 20 "
+                     "(was the full backtest length, killed warmup gate)")
+    if _pos_len_pat.search(code):
+        code = _pos_len_pat.sub("self.position", code)
+        warns.append("auto-fix: replaced `len(self.position) > 0` with `self.position` "
+                     "(Position has no __len__)")
+    if _pos_len_eq_pat.search(code):
+        code = _pos_len_eq_pat.sub("not self.position", code)
+        warns.append("auto-fix: replaced `len(self.position) == 0` with `not self.position`")
+    return warns, code
+
+
 @app.route("/api/agent/research", methods=["POST"])
 def api_agent_research():
     """Stream a full research cycle: Claude writes strategy → backtest → Claude evaluates.
@@ -2002,29 +2024,6 @@ def api_agent_research():
             if params_match:
                 try: param_ranges = _j.loads(params_match.group(1).strip())
                 except Exception: pass
-
-            # Auto-fix two recurring Claude bugs that defeat the entire backtest:
-            #   (a) `<indicator>.shape[0]` in warmup gates → full-length array, gate never opens.
-            #   (b) `len(self.position) > 0` → Position has no __len__, crashes on first bar.
-            # Both are flagged in the system prompt but the model produces them anyway often
-            # enough that defensive substitution is worth it.
-            shape_pat       = _re.compile(r"\b(self\.(?!data\b)\w+)\.shape\[0\]")
-            pos_len_pat     = _re.compile(r"len\(\s*self\.position\s*\)\s*>\s*0")
-            pos_len_eq_pat  = _re.compile(r"len\(\s*self\.position\s*\)\s*==\s*0")
-            def _apply_lints(code):
-                warns = []
-                if shape_pat.search(code):
-                    code = shape_pat.sub("20", code)
-                    warns.append("auto-fix: replaced `<indicator>.shape[0]` with literal 20 "
-                                 "(was the full backtest length, killed warmup gate)")
-                if pos_len_pat.search(code):
-                    code = pos_len_pat.sub("self.position", code)
-                    warns.append("auto-fix: replaced `len(self.position) > 0` with `self.position` "
-                                 "(Position has no __len__)")
-                if pos_len_eq_pat.search(code):
-                    code = pos_len_eq_pat.sub("not self.position", code)
-                    warns.append("auto-fix: replaced `len(self.position) == 0` with `not self.position`")
-                return warns, code
 
             warns, raw_code = _apply_lints(raw_code)
             for w in warns:
