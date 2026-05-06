@@ -379,74 +379,6 @@
     </div>
   </div>
 
-  <!-- ── Step 3: Agent Loop ───────────────────────────────────────── -->
-  <div id="agentLoopSection" style="display:none" class="card">
-    <div class="card-title">Step 3 — Agent Loop
-      <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— fine-tune the best params one change at a time using AI</span>
-    </div>
-    <div style="font-size:0.78rem;color:#555;margin-bottom:14px;line-height:1.5">
-      Takes the rank-1 parameters as the starting point and iteratively proposes single-parameter
-      changes, accepting each only if avg Sharpe improves. Stops after 5 consecutive non-improvements.
-    </div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
-      <div>
-        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Max Iterations</div>
-        <input id="optMaxIterOpt" type="number" value="10" min="1" max="20"
-          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:80px">
-      </div>
-      <div>
-        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val Start (out-of-sample)</div>
-        <input id="optValStartOpt" type="date"
-          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
-      </div>
-      <div>
-        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val End</div>
-        <input id="optValEndOpt" type="date"
-          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
-      </div>
-      <button id="optRunBtnOpt" onclick="runOptAgentLoop()"
-        style="padding:9px 22px;background:rgba(127,224,152,0.12);border:1px solid #7FE098;color:#7FE098;border-radius:7px;cursor:pointer;font-size:0.88rem;font-weight:600">
-        &#9654; Start Agent Loop
-      </button>
-    </div>
-
-    <div id="optProgressOpt" style="display:none;margin-bottom:14px">
-      <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#555;margin-bottom:4px">
-        <span id="optProgressMsgOpt">Running…</span>
-        <span id="optIterLabelOpt"></span>
-      </div>
-      <div style="background:#1a1d2e;border-radius:4px;height:4px">
-        <div id="optProgressBarOpt" style="background:#7FE098;height:4px;border-radius:4px;width:0%;transition:width 0.3s"></div>
-      </div>
-    </div>
-
-    <div id="optTableWrapOpt" style="display:none">
-      <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-        <thead>
-          <tr style="color:#555;text-transform:uppercase;letter-spacing:0.06em;font-size:0.68rem;border-bottom:1px solid #1e2130">
-            <th style="text-align:left;padding:5px 8px">#</th>
-            <th style="text-align:left;padding:5px 8px">Changed</th>
-            <th style="text-align:center;padding:5px 8px">Avg Sharpe</th>
-            <th style="text-align:center;padding:5px 8px">Avg PF</th>
-            <th style="text-align:center;padding:5px 8px">Result</th>
-            <th style="text-align:left;padding:5px 8px">Reasoning</th>
-          </tr>
-        </thead>
-        <tbody id="optTableBodyOpt"></tbody>
-      </table>
-    </div>
-
-    <div id="optBestWrapOpt" style="display:none;margin-top:16px;padding:12px;background:#0a140e;border:1px solid #1e3028;border-radius:8px">
-      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#517356;margin-bottom:8px">Best Params Found</div>
-      <div id="optBestSummaryOpt"></div>
-    </div>
-
-    <div id="optValWrapOpt" style="display:none;margin-top:12px;padding:12px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px">
-      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:8px">Out-of-Sample Validation</div>
-      <div id="optValSummaryOpt"></div>
-    </div>
-  </div>
-
   <!-- ── Step 2: Fan Out ──────────────────────────────────────────── -->
   <div id="fanoutSection" style="display:none" class="card">
     <div class="card-title">Step 2 — Fan Out Best Params
@@ -495,6 +427,69 @@
       </div>
     </div>
   </div>
+
+  <!-- ── Step 3: Agent Loop ───────────────────────────────────────── -->
+  <div id="agentLoopSection" style="display:none" class="card">
+    <div class="card-title">Step 3 — Agent Loop
+      <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— fine-tune the best params one change at a time using AI</span>
+    </div>
+    <div style="font-size:0.78rem;color:#555;margin-bottom:14px;line-height:1.5">
+      Takes the rank-1 parameters as the starting point and proposes single-parameter changes,
+      accepting each only if avg Sharpe improves. Stops after 5 consecutive non-improvements.
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+      <div>
+        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Max Iterations</div>
+        <input id="optMaxIterOpt" type="number" value="10" min="1" max="20"
+          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:80px">
+      </div>
+      <div>
+        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val Start (out-of-sample)</div>
+        <input id="optValStartOpt" type="date"
+          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
+      </div>
+      <div>
+        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val End</div>
+        <input id="optValEndOpt" type="date"
+          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
+      </div>
+      <button id="optRunBtnOpt" onclick="runOptAgentLoop()"
+        style="padding:9px 22px;background:rgba(127,224,152,0.12);border:1px solid #7FE098;color:#7FE098;border-radius:7px;cursor:pointer;font-size:0.88rem;font-weight:600">
+        &#9654; Start Agent Loop
+      </button>
+    </div>
+    <div id="optProgressOpt" style="display:none;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#555;margin-bottom:4px">
+        <span id="optProgressMsgOpt">Running…</span>
+        <span id="optIterLabelOpt"></span>
+      </div>
+      <div style="background:#1a1d2e;border-radius:4px;height:4px">
+        <div id="optProgressBarOpt" style="background:#7FE098;height:4px;border-radius:4px;width:0%;transition:width 0.3s"></div>
+      </div>
+    </div>
+    <div id="optTableWrapOpt" style="display:none">
+      <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+        <thead><tr style="color:#555;text-transform:uppercase;letter-spacing:0.06em;font-size:0.68rem;border-bottom:1px solid #1e2130">
+          <th style="text-align:left;padding:5px 8px">#</th>
+          <th style="text-align:left;padding:5px 8px">Changed</th>
+          <th style="text-align:center;padding:5px 8px">Avg Sharpe</th>
+          <th style="text-align:center;padding:5px 8px">Avg PF</th>
+          <th style="text-align:center;padding:5px 8px">Result</th>
+          <th style="text-align:left;padding:5px 8px">Reasoning</th>
+        </tr></thead>
+        <tbody id="optTableBodyOpt"></tbody>
+      </table>
+    </div>
+    <div id="optBestWrapOpt" style="display:none;margin-top:16px;padding:12px;background:#0a140e;border:1px solid #1e3028;border-radius:8px">
+      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#517356;margin-bottom:8px">Best Params Found</div>
+      <div id="optBestSummaryOpt"></div>
+    </div>
+    <div id="optValWrapOpt" style="display:none;margin-top:12px;padding:12px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px">
+      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:8px">Out-of-Sample Validation</div>
+      <div id="optValSummaryOpt"></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
