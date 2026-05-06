@@ -3917,6 +3917,46 @@ def bt_convert_verify():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.route("/api/bt/strategy-source", methods=["POST"])
+def api_bt_strategy_source():
+    """Return a strategy class renamed to ResearchStrategy with best params applied.
+    Used by the optimizer page's Agent Loop to kick off parameter fine-tuning."""
+    import inspect, re as _re
+    data   = request.get_json(silent=True) or {}
+    slug   = data.get("slug", "").strip()
+    params = data.get("params", {})  # {param_name: value}
+
+    from strategies.bt_strategies import STRATEGIES
+    if slug not in STRATEGIES:
+        return jsonify({"error": f"Strategy '{slug}' not found"}), 404
+
+    cls = STRATEGIES[slug]
+    try:
+        raw = inspect.getsource(cls)
+    except Exception as e:
+        return jsonify({"error": f"Could not get source: {e}"}), 500
+
+    # Rename class to ResearchStrategy
+    source = _re.sub(r'\bclass\s+' + _re.escape(cls.__name__) + r'\b',
+                     'class ResearchStrategy', raw)
+
+    # Apply best params: replace each `param = <value>` class-level default
+    for param, value in params.items():
+        source = _re.sub(
+            r'(^\s{4}' + _re.escape(param) + r'\s*=\s*)[^\n#]+',
+            lambda m, v=value: m.group(1) + repr(v),
+            source, flags=_re.MULTILINE
+        )
+
+    # Prepend the required imports (strategy file helpers are module-level)
+    preamble = (
+        "import numpy as np\nimport pandas as pd\n"
+        "from backtesting import Strategy\n"
+        "from strategies.bt_strategies import _sma, _ema, _atr, _rsi, _bbands, _macd\n\n"
+    )
+    return jsonify({"code": preamble + source, "class_name": "ResearchStrategy"})
+
+
 @app.route("/api/bt/run", methods=["POST"])
 def bt_run():
     import math

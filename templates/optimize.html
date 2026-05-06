@@ -379,6 +379,74 @@
     </div>
   </div>
 
+  <!-- ── Step 3: Agent Loop ───────────────────────────────────────── -->
+  <div id="agentLoopSection" style="display:none" class="card">
+    <div class="card-title">Step 3 — Agent Loop
+      <span style="color:#444;font-weight:400;text-transform:none;letter-spacing:0">— fine-tune the best params one change at a time using AI</span>
+    </div>
+    <div style="font-size:0.78rem;color:#555;margin-bottom:14px;line-height:1.5">
+      Takes the rank-1 parameters as the starting point and iteratively proposes single-parameter
+      changes, accepting each only if avg Sharpe improves. Stops after 5 consecutive non-improvements.
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+      <div>
+        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Max Iterations</div>
+        <input id="optMaxIterOpt" type="number" value="10" min="1" max="20"
+          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:80px">
+      </div>
+      <div>
+        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val Start (out-of-sample)</div>
+        <input id="optValStartOpt" type="date"
+          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
+      </div>
+      <div>
+        <div style="font-size:0.7rem;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Val End</div>
+        <input id="optValEndOpt" type="date"
+          style="background:#0a0a0a;border:1px solid #1e2130;color:#e0e0e0;border-radius:6px;padding:6px 10px;font-size:0.85rem;width:150px">
+      </div>
+      <button id="optRunBtnOpt" onclick="runOptAgentLoop()"
+        style="padding:9px 22px;background:rgba(127,224,152,0.12);border:1px solid #7FE098;color:#7FE098;border-radius:7px;cursor:pointer;font-size:0.88rem;font-weight:600">
+        &#9654; Start Agent Loop
+      </button>
+    </div>
+
+    <div id="optProgressOpt" style="display:none;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#555;margin-bottom:4px">
+        <span id="optProgressMsgOpt">Running…</span>
+        <span id="optIterLabelOpt"></span>
+      </div>
+      <div style="background:#1a1d2e;border-radius:4px;height:4px">
+        <div id="optProgressBarOpt" style="background:#7FE098;height:4px;border-radius:4px;width:0%;transition:width 0.3s"></div>
+      </div>
+    </div>
+
+    <div id="optTableWrapOpt" style="display:none">
+      <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+        <thead>
+          <tr style="color:#555;text-transform:uppercase;letter-spacing:0.06em;font-size:0.68rem;border-bottom:1px solid #1e2130">
+            <th style="text-align:left;padding:5px 8px">#</th>
+            <th style="text-align:left;padding:5px 8px">Changed</th>
+            <th style="text-align:center;padding:5px 8px">Avg Sharpe</th>
+            <th style="text-align:center;padding:5px 8px">Avg PF</th>
+            <th style="text-align:center;padding:5px 8px">Result</th>
+            <th style="text-align:left;padding:5px 8px">Reasoning</th>
+          </tr>
+        </thead>
+        <tbody id="optTableBodyOpt"></tbody>
+      </table>
+    </div>
+
+    <div id="optBestWrapOpt" style="display:none;margin-top:16px;padding:12px;background:#0a140e;border:1px solid #1e3028;border-radius:8px">
+      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#517356;margin-bottom:8px">Best Params Found</div>
+      <div id="optBestSummaryOpt"></div>
+    </div>
+
+    <div id="optValWrapOpt" style="display:none;margin-top:12px;padding:12px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px">
+      <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:8px">Out-of-Sample Validation</div>
+      <div id="optValSummaryOpt"></div>
+    </div>
+  </div>
+
   <!-- ── Step 2: Fan Out ──────────────────────────────────────────── -->
   <div id="fanoutSection" style="display:none" class="card">
     <div class="card-title">Step 2 — Fan Out Best Params
@@ -1102,11 +1170,167 @@
 
   function _showFanout() {
     document.getElementById('fanoutSection').style.display = '';
+    document.getElementById('agentLoopSection').style.display = '';
     const runResults = currentRunId ? results.filter(r => r.run_id === currentRunId) : results;
     const top = (runResults.length ? runResults : results).sort((a,b) => (b.score||0)-(a.score||0))[0];
     if (!top) return;
     const cur = document.getElementById('fanoutTickers').value.trim();
     if (!cur) document.getElementById('fanoutTickers').value = top.ticker;
+  }
+
+  // ── Agent Loop helpers (shared format with research.html) ──────────
+  function _fmtSharpeOpt(v) {
+    if (v == null) return '—';
+    const n = Number(v);
+    const cls = n >= 0.5 ? '#7FE098' : n >= 0 ? '#F2E7AC' : '#ef5350';
+    return `<strong style="color:${cls}">${n.toFixed(3)}</strong>`;
+  }
+  function _escOpt(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function runOptAgentLoop() {
+    const runResults = currentRunId ? results.filter(r => r.run_id === currentRunId) : results;
+    const top = (runResults.length ? runResults : results).sort((a,b) => (b.score||0)-(a.score||0))[0];
+    if (!top) { alert('No optimizer results yet — run the optimizer first.'); return; }
+
+    const maxIter  = parseInt(document.getElementById('optMaxIterOpt').value) || 10;
+    const valStart = document.getElementById('optValStartOpt').value;
+    const valEnd   = document.getElementById('optValEndOpt').value;
+    const ticker   = top.ticker;
+    const tf       = top.timeframe || document.getElementById('timeframe')?.value || '5m';
+    const startDate= document.getElementById('startDate')?.value || '2025-01-01';
+    const cash     = parseFloat(document.getElementById('cash')?.value) || 26000;
+
+    const runBtn = document.getElementById('optRunBtnOpt');
+    runBtn.disabled = true; runBtn.textContent = '⏳ Loading strategy…';
+    document.getElementById('optProgressOpt').style.display  = '';
+    document.getElementById('optTableWrapOpt').style.display = '';
+    document.getElementById('optBestWrapOpt').style.display  = 'none';
+    document.getElementById('optValWrapOpt').style.display   = 'none';
+    document.getElementById('optTableBodyOpt').innerHTML     = '';
+    document.getElementById('optProgressBarOpt').style.width = '0%';
+    document.getElementById('optProgressMsgOpt').textContent = 'Fetching strategy source…';
+
+    // Step 1: get strategy source with best params applied
+    let stratCode = '';
+    try {
+      const src = await fetch('/api/bt/strategy-source', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ slug: activeSlug, params: top.params || {} }),
+      }).then(r => r.json());
+      if (src.error) throw new Error(src.error);
+      stratCode = src.code;
+    } catch(e) {
+      document.getElementById('optProgressMsgOpt').textContent = '✗ ' + e.message;
+      runBtn.disabled = false; runBtn.textContent = '▶ Start Agent Loop';
+      return;
+    }
+
+    runBtn.textContent = '⏳ Running…';
+    document.getElementById('optProgressMsgOpt').textContent = 'Starting agent loop…';
+
+    // Step 2: run the agent loop SSE stream
+    try {
+      const res = await fetch('/api/agent/optimize', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          code: stratCode, tickers: [ticker], timeframe: tf,
+          start_date: startDate, val_start: valStart, val_end: valEnd,
+          cash, max_iterations: maxIter, max_failures: 5,
+        }),
+      });
+      const reader = res.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const events = buf.split('\n\n');
+        buf = events.pop();
+        for (const event of events) {
+          for (const line of event.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try { _handleOptMsgOpt(JSON.parse(line.slice(6)), maxIter); }
+            catch(e) { console.warn('opt SSE parse:', e.message); }
+          }
+        }
+      }
+    } catch(e) {
+      document.getElementById('optProgressMsgOpt').textContent = '✗ Error: ' + e.message;
+    }
+    runBtn.disabled = false; runBtn.textContent = '▶ Start Agent Loop';
+  }
+
+  function _handleOptMsgOpt(msg, maxIter) {
+    const pb = document.getElementById('optProgressBarOpt');
+    const pm = document.getElementById('optProgressMsgOpt');
+    const il = document.getElementById('optIterLabelOpt');
+
+    if (msg.type === 'opt_phase') { pm.textContent = msg.msg; }
+    else if (msg.type === 'opt_baseline') {
+      pm.textContent = `Baseline: Avg Sharpe ${msg.avg_sharpe} · PF ${msg.avg_pf}`;
+      pb.style.width = '5%';
+    }
+    else if (msg.type === 'opt_ticker') {
+      const iterBase = msg.phase === 'baseline' ? 0 : msg.phase === 'validation' ? 95
+                     : Math.round((msg.iteration - 1) / maxIter * 85) + 5;
+      pb.style.width = Math.min(95, iterBase + 5) + '%';
+      pm.textContent = `${msg.phase === 'baseline' ? 'Baseline' : msg.phase === 'validation' ? 'Validation' : `Iter ${msg.iteration}`}: testing ${msg.ticker}…`;
+      if (msg.phase === 'iter') il.textContent = `${msg.iteration}/${maxIter}`;
+    }
+    else if (msg.type === 'opt_iter_start') {
+      pm.textContent = msg.msg;
+      il.textContent = `${msg.iteration}/${maxIter}`;
+      pb.style.width = Math.round(msg.iteration / maxIter * 85) + '%';
+    }
+    else if (msg.type === 'opt_testing') {
+      pm.textContent = `Iter ${msg.iteration}: ${msg.param} ${msg.old} → ${msg.new}…`;
+    }
+    else if (msg.type === 'opt_iter_result') {
+      const body = document.getElementById('optTableBodyOpt');
+      const accept = msg.accepted;
+      const delta = msg.sharpe_after != null ? (msg.sharpe_after - msg.sharpe_before).toFixed(3) : '—';
+      const deltaColor = accept ? '#7FE098' : '#ef5350';
+      body.innerHTML += `<tr style="border-bottom:1px solid #0f1117">
+        <td style="padding:6px 8px;color:#555">${msg.iter}</td>
+        <td style="padding:6px 8px"><code style="font-size:0.78rem">${_escOpt(msg.param||'')}=${_escOpt(String(msg.old||''))}→<strong>${_escOpt(String(msg.new||''))}</strong></code></td>
+        <td style="padding:6px 8px;text-align:center">${_fmtSharpeOpt(msg.sharpe_before)} → ${_fmtSharpeOpt(msg.sharpe_after)} <span style="color:${deltaColor};font-size:0.75rem">(${delta >= 0 ? '+' : ''}${delta})</span></td>
+        <td style="padding:6px 8px;text-align:center;color:#aaa">${msg.pf_after != null ? Number(msg.pf_after).toFixed(3) : '—'}</td>
+        <td style="padding:6px 8px;text-align:center">${accept ? '<span style="color:#7FE098;font-weight:700">✓</span>' : '<span style="color:#ef5350">✗</span>'}</td>
+        <td style="padding:6px 8px;color:#666;font-size:0.75rem;max-width:220px">${_escOpt(msg.reasoning||'')}</td>
+      </tr>`;
+    }
+    else if (msg.type === 'opt_stopped') {
+      pm.textContent = '⏹ ' + msg.reason; pb.style.width = '90%';
+    }
+    else if (msg.type === 'opt_done') {
+      pb.style.width = '100%';
+      const improved = msg.improved;
+      const baseS = Number(msg.base_sharpe).toFixed(3);
+      const bestS = Number(msg.best_sharpe).toFixed(3);
+      pm.textContent = improved
+        ? `✓ Done — Sharpe ${baseS} → ${bestS} (+${(msg.best_sharpe - msg.base_sharpe).toFixed(3)})`
+        : '— No improvement found over baseline';
+      const bw = document.getElementById('optBestWrapOpt');
+      bw.style.display = '';
+      const rows = (msg.best_results || []).map(r =>
+        `<span style="margin-right:14px;font-size:0.8rem"><strong style="color:#aaa">${_escOpt(r.ticker)}</strong> Sharpe=${_fmtSharpeOpt(r.sharpe)} PF=${r.pf} T=${r.trades}</span>`
+      ).join('');
+      document.getElementById('optBestSummaryOpt').innerHTML =
+        `<div style="margin-bottom:6px;color:#aaa;font-size:0.82rem">Avg Sharpe: ${_fmtSharpeOpt(msg.best_sharpe)} (was ${_fmtSharpeOpt(msg.base_sharpe)})</div><div>${rows}</div>`;
+      if (msg.val_results && msg.val_results.length) {
+        document.getElementById('optValWrapOpt').style.display = '';
+        const vRows = msg.val_results.map(r =>
+          `<span style="margin-right:14px;font-size:0.8rem"><strong style="color:#aaa">${_escOpt(r.ticker)}</strong> Sharpe=${_fmtSharpeOpt(r.sharpe)} PF=${r.pf} T=${r.trades}</span>`
+        ).join('');
+        document.getElementById('optValSummaryOpt').innerHTML = vRows;
+      }
+    }
+    else if (msg.type === 'opt_error') {
+      pm.textContent = '✗ ' + msg.msg;
+    }
   }
 
   function toggleMultiMode() {
