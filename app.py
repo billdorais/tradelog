@@ -2477,12 +2477,16 @@ def api_agent_optimize():
                                   "trades": 0, "error": str(_e)[:120]})
 
         def _run_all_gen(strategy_cls, s_date, e_date):
-            """Generator: yields heartbeats then ('done', results_list)."""
+            """Generator: yields ('hb',None) heartbeats, ('ticker_start', info),
+            ('ticker_done', result), then ('done', results_list) at the end."""
             results = []
-            for ticker in tickers:
+            for i, ticker in enumerate(tickers):
+                yield ("ticker_start", {"ticker": ticker, "i": i, "n": len(tickers)})
                 for item in _run_ticker_gen(strategy_cls, ticker, s_date, e_date):
                     if item[0] == "hb": yield ("hb", None)
-                    else:               results.append(item[1])
+                    else:
+                        results.append(item[1])
+                        yield ("ticker_done", item[1])
             yield ("done", results)
 
         def _avg(results, key):
@@ -2498,8 +2502,14 @@ def api_agent_optimize():
                 yield _sse({"type": "opt_error", "msg": "Could not compile strategy"}); return
             base_results = []
             for item in _run_all_gen(base_cls, start_date, end_date):
-                if item[0] == "hb": yield ": heartbeat\n\n"
-                elif item[0] == "done": base_results = item[1]
+                if item[0] == "hb":
+                    yield ": heartbeat\n\n"
+                elif item[0] == "ticker_start":
+                    yield _sse({"type": "opt_ticker", "phase": "baseline",
+                                "ticker": item[1]["ticker"], "i": item[1]["i"],
+                                "n": item[1]["n"]})
+                elif item[0] == "done":
+                    base_results = item[1]
             best_code    = code
             best_cls     = base_cls
             best_results = base_results
@@ -2602,8 +2612,15 @@ def api_agent_optimize():
 
                 new_results = []
                 for item in _run_all_gen(new_cls, start_date, end_date):
-                    if item[0] == "hb": yield ": heartbeat\n\n"
-                    elif item[0] == "done": new_results = item[1]
+                    if item[0] == "hb":
+                        yield ": heartbeat\n\n"
+                    elif item[0] == "ticker_start":
+                        yield _sse({"type": "opt_ticker", "phase": "iter",
+                                    "iteration": iteration,
+                                    "ticker": item[1]["ticker"],
+                                    "i": item[1]["i"], "n": item[1]["n"]})
+                    elif item[0] == "done":
+                        new_results = item[1]
 
                 new_sharpe = _avg(new_results, "sharpe")
                 new_pf     = _avg(new_results, "pf")
@@ -2635,8 +2652,14 @@ def api_agent_optimize():
                 val_results = []
                 val_cls = _compile_cls(best_code)
                 for item in _run_all_gen(val_cls, val_start, val_end):
-                    if item[0] == "hb": yield ": heartbeat\n\n"
-                    elif item[0] == "done": val_results = item[1]
+                    if item[0] == "hb":
+                        yield ": heartbeat\n\n"
+                    elif item[0] == "ticker_start":
+                        yield _sse({"type": "opt_ticker", "phase": "validation",
+                                    "ticker": item[1]["ticker"],
+                                    "i": item[1]["i"], "n": item[1]["n"]})
+                    elif item[0] == "done":
+                        val_results = item[1]
 
             yield _sse({"type": "opt_done",
                         "best_code":    best_code,

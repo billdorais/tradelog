@@ -721,7 +721,19 @@
       pb.style.width  = Math.round(msg.iteration / maxIter * 85) + '%';
     }
     else if (msg.type === 'opt_testing') {
-      pm.textContent = `Testing ${msg.param}: ${msg.old} → ${msg.new}…`;
+      pm.textContent = `Iter ${msg.iteration}: ${msg.param} ${msg.old} → ${msg.new}  ·  running tickers…`;
+    }
+    else if (msg.type === 'opt_ticker') {
+      const iterBase = msg.phase === 'baseline' ? 0
+                     : msg.phase === 'validation' ? 95
+                     : Math.round((msg.iteration - 1) / maxIter * 85) + 5;
+      const tickerPct = Math.round(msg.i / msg.n * (msg.phase === 'baseline' ? 5 : 10));
+      pb.style.width = Math.min(95, iterBase + tickerPct) + '%';
+      const phaseLabel = msg.phase === 'baseline' ? 'Baseline'
+                       : msg.phase === 'validation' ? 'Validation'
+                       : `Iter ${msg.iteration}`;
+      pm.textContent = `${phaseLabel}: testing ${msg.ticker} (${msg.i + 1}/${msg.n})…`;
+      il.textContent = msg.phase === 'iter' ? `${msg.iteration}/${maxIter}` : '';
     }
     else if (msg.type === 'opt_iter_result') {
       const body   = document.getElementById('optTableBody');
