@@ -47,7 +47,7 @@
     .mkt-pill .sym { color: #888; margin-right: 5px; }
     .mkt-pill .ret.pos { color: #7FE098; }
     .mkt-pill .ret.neg { color: #e74c3c; }
-    .regime-badge { background: rgba(136,191,139,0.1); border: 1px solid rgba(136,191,139,0.3); color: #88BF8B; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; }
+    .regime-badge { border: 1px solid; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; display: inline-flex; align-items: center; gap: 5px; }
 
     /* Strategy table */
     .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; max-height: 320px; overflow-y: auto; }
@@ -241,7 +241,23 @@
       const cls = ret > 0 ? 'pos' : ret < 0 ? 'neg' : '';
       return `<div class="mkt-pill"><span class="sym">${sym}</span><span class="ret ${cls}">${ret >= 0 ? '+' : ''}${ret}%</span></div>`;
     }).join('');
-    const regime = md.regime ? `<div class="regime-badge">${esc(md.regime)}</div>` : '';
+    const regime = (() => {
+      if (!md.regime) return '';
+      const r = md.regime;
+      const vixClose = md.VIX && md.VIX.close != null ? md.VIX.close : null;
+      const vixStr = vixClose !== null ? ` · VIX ${vixClose}` : '';
+      let icon, bg, border, color;
+      if (r.includes('Low Volatility')) {
+        icon = '↗'; bg = 'rgba(127,224,152,0.1)'; border = 'rgba(127,224,152,0.3)'; color = '#7FE098';
+      } else if (r.includes('Elevated Volatility')) {
+        icon = '⚡'; bg = 'rgba(242,231,172,0.1)'; border = 'rgba(242,231,172,0.3)'; color = '#F2E7AC';
+      } else if (r === 'Risk-Off') {
+        icon = '↘'; bg = 'rgba(231,76,60,0.1)'; border = 'rgba(231,76,60,0.3)'; color = '#e74c3c';
+      } else {
+        icon = '≈'; bg = 'rgba(136,136,136,0.1)'; border = 'rgba(136,136,136,0.3)'; color = '#888';
+      }
+      return `<div class="regime-badge" style="background:${bg};border-color:${border};color:${color}">${icon} ${esc(r)}${esc(vixStr)}</div>`;
+    })();
 
     // All strategies, sorted by absolute P&L so biggest movers appear first
     const stratRows = Object.entries(ts.per_strategy || {})
