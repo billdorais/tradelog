@@ -261,7 +261,7 @@
 
     // All strategies, sorted by absolute P&L so biggest movers appear first
     const stratRows = Object.entries(ts.per_strategy || {})
-      .sort((a, b) => Math.abs(b[1].pnl) - Math.abs(a[1].pnl))
+      .sort((a, b) => b[1].pnl - a[1].pnl)
       .map(([name, sv]) => {
       const pc = sv.pnl >= 0 ? '#7FE098' : '#e74c3c';
       return `<div class="strat-row">
