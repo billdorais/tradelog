@@ -155,6 +155,10 @@
           style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
                  padding:5px 8px;font-size:0.8rem;cursor:pointer;outline:none"
           onchange="saveDates();load()">
+        <button onclick="setToday()"
+          title="Show today only"
+          style="background:rgba(136,191,139,0.1);border:1px solid #2a2d3e;color:#7FE098;border-radius:6px;
+                 padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Today</button>
         <button onclick="clearDates()"
           title="Show all history"
           style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;
@@ -427,6 +431,14 @@
     document.getElementById('analysisTo').value   = '';
     localStorage.removeItem(LS_FROM);
     localStorage.removeItem(LS_TO);
+    load();
+  }
+
+  function setToday() {
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById('analysisFrom').value = today;
+    document.getElementById('analysisTo').value   = today;
+    saveDates();
     load();
   }
 
