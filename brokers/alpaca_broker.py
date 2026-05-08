@@ -77,7 +77,7 @@ class AlpacaBroker:
         acct = self._trading.get_account()
         return float(acct.equity) - float(acct.last_equity)
 
-    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False):
+    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False, stop_loss=None, trail_offset=None, trail_mode="dollars"):
         """
         Place a market or limit order.
         action: BUY or SELL
@@ -314,10 +314,10 @@ class AlpacaBroker:
                     client_order_id  = _client_oid,
                 )
             order = self._trading.submit_order(req)
-            self._invalidate_pos_cache()  # position state changed
+            self._invalidate_pos_cache()
             log.info("Alpaca order submitted: %s %s %s → id=%s status=%s",
                      action, qty, ticker, order.id, order.status)
-            return {
+            result = {
                 "success":  True,
                 "order_id": str(order.id),
                 "status":   str(order.status),
@@ -326,6 +326,41 @@ class AlpacaBroker:
                 "side":     action,
                 "paper":    self._paper,
             }
+            # Attach broker-side trailing stop for stock entries when exit_params node is configured.
+            # trail_offset takes priority; falls back to stop_loss as the trailing distance.
+            _exit_trail = trail_offset or stop_loss
+            if not is_exit and _exit_trail and not is_crypto:
+                try:
+                    from alpaca.trading.requests import TrailingStopOrderRequest
+                    _trail_side = OrderSide.SELL if action.upper() == "BUY" else OrderSide.BUY
+                    _trail_val  = round(float(_exit_trail), 4)
+                    if trail_mode == "percent":
+                        _trail_req = TrailingStopOrderRequest(
+                            symbol        = ticker,
+                            qty           = qty,
+                            side          = _trail_side,
+                            time_in_force = TimeInForce.GTC,
+                            trail_percent = _trail_val,
+                        )
+                        log.info("Alpaca trailing stop: %s %s trail=%.2f%% → submitting",
+                                 _trail_side.value, ticker, _trail_val)
+                    else:
+                        _trail_req = TrailingStopOrderRequest(
+                            symbol        = ticker,
+                            qty           = qty,
+                            side          = _trail_side,
+                            time_in_force = TimeInForce.GTC,
+                            trail_price   = _trail_val,
+                        )
+                        log.info("Alpaca trailing stop: %s %s trail=$%.2f → submitting",
+                                 _trail_side.value, ticker, _trail_val)
+                    _trail_order = self._trading.submit_order(_trail_req)
+                    result["trail_order_id"] = str(_trail_order.id)
+                    result["trail_value"]    = _trail_val
+                    result["trail_mode"]     = trail_mode
+                except Exception as _te:
+                    log.warning("Trailing stop failed for %s: %s — entry order still placed", ticker, _te)
+            return result
         except Exception as e:
             log.error("Alpaca order failed for %s %s %s: %s", action, qty, ticker, e)
             return {"success": False, "error": str(e)}

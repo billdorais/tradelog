@@ -68,6 +68,7 @@
     .node-options_config  { background: #2a2318; border-color: #c8832a; color: #F2E7AC; min-width: 130px; }
     .node-trading_hours   { background: #1a2820; border-color: #7FE098; color: #7FE098; min-width: 120px; }
     .node-crypto_qty      { background: #1e2810; border-color: #F2E7AC; color: #F2E7AC; min-width: 120px; }
+    .node-exit_params     { background: #231810; border-color: #c86428; color: #F2C07A; min-width: 120px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #7FE098; color: #7FE098; }
@@ -271,6 +272,7 @@
   <div class="palette-item" onclick="addNode('ticker')"><span class="palette-dot" style="background:#2a9898"></span>Ticker Override</div>
   <div class="palette-item" onclick="addNode('trading_hours')"><span class="palette-dot" style="background:#2a7898"></span>Trading Hours</div>
   <div class="palette-item" onclick="addNode('crypto_qty')"><span class="palette-dot" style="background:#c8a500"></span>Crypto Dollar Qty (BTC/ETH…)</div>
+  <div class="palette-item" onclick="addNode('exit_params')"><span class="palette-dot" style="background:#c86428"></span>Exit Params (Stop / Trail)</div>
 </div>
 
 <!-- Edit modal -->
@@ -677,6 +679,7 @@
       case 'options_config': return 'node-options_config';
       case 'trading_hours':  return 'node-trading_hours';
       case 'crypto_qty':     return 'node-crypto_qty';
+      case 'exit_params':    return 'node-exit_params';
       default:               return 'node-strategy';
     }
   }
@@ -685,7 +688,7 @@
     const map = {
       strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument',
       mode: 'Mode', broker: 'Broker', ticker: 'Ticker', options_config: 'Options',
-      trading_hours: 'Hours', crypto_qty: 'Crypto $',
+      trading_hours: 'Hours', crypto_qty: 'Crypto $', exit_params: 'Exit',
     };
     return map[node.type] || node.type;
   }
@@ -722,6 +725,14 @@
       }
       case 'crypto_qty':
         return `$${node.dollars || 10} → ${node.symbol || 'BTC'}`;
+      case 'exit_params': {
+        const sym = node.mode === 'percent' ? '%' : '$';
+        const parts = [];
+        if (node.stop_loss)     parts.push(`SL ${sym}${node.stop_loss}`);
+        if (node.trail_trigger) parts.push(`TT ${sym}${node.trail_trigger}`);
+        if (node.trail_offset)  parts.push(`Trail ${sym}${node.trail_offset}`);
+        return parts.join(' · ') || '—';
+      }
       default: return '—';
     }
   }
@@ -1043,6 +1054,36 @@
             Fetching price…
           </div>`;
 
+      case 'exit_params': {
+        const epMode = v.mode || 'dollars';
+        const epUnit = epMode === 'percent' ? '%' : '$';
+        return `
+          <div class="form-group">
+            <label>Mode</label>
+            <select id="f_ep_mode" onchange="document.getElementById('ep_unit_label').textContent=this.value==='percent'?'%':'$'; document.querySelectorAll('.ep-unit').forEach(el=>el.textContent=this.value==='percent'?'%':'$')">
+              <option value="dollars" ${epMode==='dollars'?'selected':''}>Dollar amount ($)</option>
+              <option value="percent" ${epMode==='percent'?'selected':''}>Percentage (%)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Stop Loss <span class="ep-unit">${epUnit}</span></label>
+            <input id="f_ep_stop_loss" type="number" min="0" step="0.01" value="${v.stop_loss ?? ''}" placeholder="e.g. 0.25">
+          </div>
+          <div class="form-group">
+            <label>Trail Trigger <span class="ep-unit">${epUnit}</span> <span style="color:#555;font-weight:normal">— reference only</span></label>
+            <input id="f_ep_trail_trigger" type="number" min="0" step="0.01" value="${v.trail_trigger ?? ''}" placeholder="e.g. 0.15">
+          </div>
+          <div class="form-group">
+            <label>Trail Offset <span class="ep-unit">${epUnit}</span></label>
+            <input id="f_ep_trail_offset" type="number" min="0" step="0.01" value="${v.trail_offset ?? ''}" placeholder="e.g. 0.15">
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">
+            Kairos attaches a broker-side trailing stop to each BUY/SELL entry.
+            <strong style="color:#888">Trail Offset</strong> is used if set; otherwise <strong style="color:#888">Stop Loss</strong> is the trailing distance.
+            TradingView exit signals still work as a manual override.
+          </p>`;
+      }
+
       default: return '';
     }
   }
@@ -1107,6 +1148,12 @@
       case 'crypto_qty':
         node.symbol  = document.getElementById('f_cq_symbol').value  || 'BTC';
         node.dollars = parseFloat(document.getElementById('f_cq_dollars').value) || 10;
+        break;
+      case 'exit_params':
+        node.mode          = document.getElementById('f_ep_mode').value || 'dollars';
+        node.stop_loss     = parseFloat(document.getElementById('f_ep_stop_loss').value)     || null;
+        node.trail_trigger = parseFloat(document.getElementById('f_ep_trail_trigger').value) || null;
+        node.trail_offset  = parseFloat(document.getElementById('f_ep_trail_offset').value)  || null;
         break;
     }
 
