@@ -252,6 +252,14 @@
     </div>
   </div>
 
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+    <input type="text" id="pipelineSearch" placeholder="Filter pipelines (TSLA, BREAKOUT, 5MIN…)"
+           oninput="renderAll()"
+           style="flex:1;min-width:240px;background:#0a0a0a;border:1px solid #2a2d3e;border-radius:7px;
+                  color:#e0e0e0;padding:8px 12px;font-size:0.88rem;font-family:inherit;outline:none">
+    <span id="pipelineFilterCount" style="font-size:0.78rem;color:#666;white-space:nowrap"></span>
+  </div>
+
   <div class="pipelines" id="pipelines">
     <div class="empty-state" id="emptyState">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="10" y1="6.5" x2="14" y2="6.5"/><line x1="10" y1="17.5" x2="14" y2="17.5"/></svg>
@@ -614,12 +622,35 @@
     [...container.querySelectorAll('.pipeline-wrap')].forEach(el => el.remove());
 
     if (rules.length === 0) { empty.style.display = 'block'; return; }
-    empty.style.display = 'none';
 
     // Sort alphabetically for display (does not change match priority in DB)
     const sorted = [...rules].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
-    sorted.forEach(rule => {
+    // Filter by search query — matches pipeline name (case-insensitive substring).
+    // A token like "TSLA" hits any pipeline whose name contains TSLA, which covers
+    // ticker filtering as well as strategy/timeframe substrings.
+    const q = (document.getElementById('pipelineSearch')?.value || '').trim().toLowerCase();
+    const filtered = q ? sorted.filter(r => r.name.toLowerCase().includes(q)) : sorted;
+
+    const countEl = document.getElementById('pipelineFilterCount');
+    if (countEl) {
+      countEl.textContent = q
+        ? `${filtered.length} of ${sorted.length} match`
+        : `${sorted.length} pipeline${sorted.length === 1 ? '' : 's'}`;
+    }
+
+    if (filtered.length === 0) {
+      // Empty-state messaging differs by cause: nothing-yet vs filter-no-match
+      empty.style.display = 'block';
+      const p = empty.querySelector('p');
+      if (p) p.innerHTML = q
+        ? `No pipelines match <strong>"${escHtml(q)}"</strong>.<br>Clear the filter to see all ${sorted.length}.`
+        : 'No pipelines yet.<br>Click <strong>+ New Pipeline</strong> to build your first routing rule.';
+      return;
+    }
+    empty.style.display = 'none';
+
+    filtered.forEach(rule => {
       const { border, bg } = _pipelineColors(rule.name);
       const wrap = document.createElement('div');
       wrap.className = 'pipeline-wrap' + (rule.enabled ? '' : ' disabled');
