@@ -190,9 +190,14 @@
 
   <!-- Strategy leaderboard -->
   <div class="section">
-    <div class="section-title">
-      Strategy Leaderboard
-      <span>click column headers to sort</span>
+    <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span>Strategy Leaderboard</span>
+      <input type="text" id="stratFilter" placeholder="Filter (TSLA, BREAKOUT, 5MIN…)"
+             oninput="filterStratTable()"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
+                    padding:5px 10px;font-size:0.78rem;outline:none;width:240px">
+      <span id="stratFilterCount" style="font-size:0.72rem;color:#666"></span>
+      <span style="margin-left:auto">click column headers to sort</span>
     </div>
     <div class="tbl-wrap">
       <table id="stratTable">
@@ -218,7 +223,14 @@
 
   <!-- Ticker breakdown -->
   <div class="section">
-    <div class="section-title">Ticker Breakdown</div>
+    <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span>Ticker Breakdown</span>
+      <input type="text" id="tickerFilter" placeholder="Filter ticker (TSLA, QQQ…)"
+             oninput="filterTickerTable()"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
+                    padding:5px 10px;font-size:0.78rem;outline:none;width:200px">
+      <span id="tickerFilterCount" style="font-size:0.72rem;color:#666"></span>
+    </div>
     <div class="tbl-wrap">
       <table id="tickerTable">
         <thead>
@@ -698,10 +710,24 @@
   }
 
   // ── Strategy table ─────────────────────────────────────────────────────────
+  let _lastStratMap  = {};
+  let _lastTickerMap = {};
+
+  function filterStratTable()  { renderStratTable(_lastStratMap); }
+  function filterTickerTable() { renderTickerTable(_lastTickerMap); }
+
   function renderStratTable(map) {
+    _lastStratMap = map;
     const body = document.getElementById('stratBody');
-    const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
-    if (!rows.length) { body.innerHTML = '<tr><td colspan="10" class="empty">No closed trades yet.</td></tr>'; return; }
+    const all  = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    const q    = (document.getElementById('stratFilter')?.value || '').trim().toLowerCase();
+    const rows = q ? all.filter(([name]) => name.toLowerCase().includes(q)) : all;
+    const countEl = document.getElementById('stratFilterCount');
+    if (countEl) countEl.textContent = q
+      ? `${rows.length} of ${all.length} match`
+      : (all.length ? `${all.length} strategies` : '');
+    if (!all.length) { body.innerHTML = '<tr><td colspan="10" class="empty">No closed trades yet.</td></tr>'; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="10" class="empty">No strategies match "${esc(q)}".</td></tr>`; return; }
     body.innerHTML = rows.map(([name, s]) => {
       const loseStreak = s.consec_losing_days || 0;
       const loseCls    = loseStreak === 0 ? '' : loseStreak <= 2 ? 'style="color:#F2E7AC"' : 'style="color:#e74c3c;font-weight:600"';
@@ -730,9 +756,17 @@
 
   // ── Ticker table ───────────────────────────────────────────────────────────
   function renderTickerTable(map) {
+    _lastTickerMap = map;
     const body = document.getElementById('tickerBody');
-    const rows = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
-    if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No closed trades yet.</td></tr>'; return; }
+    const all  = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    const q    = (document.getElementById('tickerFilter')?.value || '').trim().toLowerCase();
+    const rows = q ? all.filter(([ticker]) => ticker.toLowerCase().includes(q)) : all;
+    const countEl = document.getElementById('tickerFilterCount');
+    if (countEl) countEl.textContent = q
+      ? `${rows.length} of ${all.length} match`
+      : (all.length ? `${all.length} tickers` : '');
+    if (!all.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No closed trades yet.</td></tr>'; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="7" class="empty">No tickers match "${esc(q)}".</td></tr>`; return; }
     body.innerHTML = rows.map(([ticker, s]) => `
       <tr class="drill" data-kind="ticker" data-key="${esc(ticker)}" title="Click to see round-trip pairs">
         <td class="name">${esc(ticker)}</td>
