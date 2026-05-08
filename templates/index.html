@@ -481,6 +481,14 @@
       <div class="label">Sell Signals</div>
       <div class="value" style="color:#ef5350" id="statSells">—</div>
     </div>
+    <div class="stat-card" title="TV signals with sentiment=long (intent to enter long)">
+      <div class="label">Long Signals</div>
+      <div class="value" style="color:#7FE098" id="statLongs">—</div>
+    </div>
+    <div class="stat-card" title="TV signals with sentiment=short (intent to enter short)">
+      <div class="label">Short Signals</div>
+      <div class="value" style="color:#ef5350" id="statShorts">—</div>
+    </div>
     <div class="stat-card">
       <div class="label">Tickers</div>
       <div class="value" id="statTickers">—</div>
@@ -1115,6 +1123,14 @@
       document.getElementById('statTotal').textContent    = deduped.length;
       document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
       document.getElementById('statSells').textContent    = deduped.filter(e => e.side === 'SLD').length;
+      // Long/Short: derive from TV signals (sentiment field) filtered to the same
+      // date range. Alpaca fills don't carry directional intent — only side (BOT/SLD).
+      const tvForRange = (allTrades || []).filter(t => {
+        const ra = (t.received_at || '').slice(0, 10);
+        return (!fromDate || ra >= fromDate) && (!toDate || ra <= toDate);
+      });
+      document.getElementById('statLongs').textContent    = tvForRange.filter(t => (t.sentiment || '').toLowerCase() === 'long').length;
+      document.getElementById('statShorts').textContent   = tvForRange.filter(t => (t.sentiment || '').toLowerCase() === 'short').length;
       document.getElementById('statTickers').textContent  = new Set(deduped.map(e => e.symbol).filter(Boolean)).size;
       document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
       document.getElementById('statErrors').textContent   = '—';
@@ -1768,6 +1784,8 @@
       document.getElementById('statTotal').textContent    = filtered.length;
       document.getElementById('statBuys').textContent     = filtered.filter(t => canonAction(t.action) === 'BUY').length;
       document.getElementById('statSells').textContent    = filtered.filter(t => canonAction(t.action) === 'SELL').length;
+      document.getElementById('statLongs').textContent    = filtered.filter(t => (t.sentiment || '').toLowerCase() === 'long').length;
+      document.getElementById('statShorts').textContent   = filtered.filter(t => (t.sentiment || '').toLowerCase() === 'short').length;
       document.getElementById('statTickers').textContent  = new Set(filtered.map(t => t.ticker).filter(Boolean)).size;
       document.getElementById('statExecuted').textContent = filtered.filter(t => t.exec_status === 'ok').length;
       document.getElementById('statErrors').textContent   = filtered.filter(t => t.exec_status === 'error').length;
