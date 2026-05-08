@@ -5441,6 +5441,10 @@ def _build_analysis_stats():
         weekly.append({"week": w["label"], "pnl": w["pnl"], "trades": w["trades"], "cumulative": cumulative})
 
     overall = _stats_from_trades(closed) or {}
+    # Directional split — feeds the "Long Win Rate / Short Win Rate" cards on
+    # the analysis page so the user can see which side of the book is performing.
+    overall["long"]  = _stats_from_trades([c for c in closed if c.get("side") == "LONG"])  or {}
+    overall["short"] = _stats_from_trades([c for c in closed if c.get("side") == "SHORT"]) or {}
 
     return {
         "overall":      overall,
@@ -5969,6 +5973,10 @@ def api_alpaca_analysis():
         if orphans:
             overall["orphan_pnl"]   = round(sum(c["pnl"] for c in orphans), 2)
             overall["orphan_count"] = len(orphans)
+        # Directional split — feeds the "Long Win Rate / Short Win Rate" cards
+        # on the analysis page so the user can see which side performs better.
+        overall["long"]  = _stats([c for c in all_lifo if c.get("side") == "LONG"])  or {}
+        overall["short"] = _stats([c for c in all_lifo if c.get("side") == "SHORT"]) or {}
 
         result = {
             "overall":      overall,

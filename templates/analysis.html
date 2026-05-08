@@ -486,9 +486,28 @@
              orphanPnl >= 0 ? 'pos' : 'neg',
              'Real executions: cross-day holds or direction-mismatched fills — included in Total P&L')
       : '';
+    // Directional win-rate cards. Show as "WR% (wins/total)" so the user
+    // sees both rate and sample size — a 100% win rate over 2 trades is not
+    // the same signal as 70% over 50 trades.
+    const longS  = s.long  || {};
+    const shortS = s.short || {};
+    const _dirCard = (label, st, title) => {
+      if (!st || !st.trades) return card(label, '—', 'neu', title + ' (no closed trades on this side)');
+      const wr   = st.win_rate || 0;
+      const cls  = wr >= 50 ? 'pos' : 'neg';
+      const sub  = `${st.wins || 0}/${st.trades} · P&L ${fmt(st.total_pnl)}`;
+      return `<div class="stat-card" title="${title}">
+        <div class="stat-label">${label}</div>
+        <div class="stat-value ${cls}">${wr}%</div>
+        <div style="font-size:0.72rem;color:#666;margin-top:4px">${sub}</div>
+      </div>`;
+    };
+
     document.getElementById('overallStats').innerHTML = `
       ${card('Total Trades',    s.trades    || 0,                       '')}
       ${card('Win Rate',        (s.win_rate || 0) + '%',               (s.win_rate||0) >= 50 ? 'pos' : 'neg')}
+      ${_dirCard('Long Win Rate',  longS,  'Win rate on LONG trades only')}
+      ${_dirCard('Short Win Rate', shortS, 'Win rate on SHORT trades only')}
       ${card('Profit Factor',   pf != null ? pf : '—',                 pfCls)}
       ${card('Total P&L',       fmt(s.total_pnl),                      pnlCls)}
       ${orphanCard}
