@@ -295,14 +295,24 @@
   // New: CAM_{TICKER}_{STRATEGY}_{LEVEL}_{TF}     e.g. CAM_SPY_BREAKOUT_R4S4_05MIN
   const _RE_OLD = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)(?:_v\d+)?_(0?\d+MIN)$/i;
   const _RE_NEW = /^CAM_([A-Z0-9]+)_(BREAKOUT|REVERSAL)_(R\dS\d)_(0?\d+MIN)$/i;
+  // Single-strategy rules created from the "Single custom strategy" mode follow
+  // {TICKER}_{any_slug}_{TF}. The TF suffix (digits + MIN/H/D) anchors the split;
+  // anything between the leading ticker and the trailing TF is the slug.
+  const _RE_CUSTOM = /^([A-Z][A-Z0-9]*)_(.+)_(0?\d+MIN|\d+H|\d+D)$/i;
 
   function parseRuleName(name) {
     let m = _RE_OLD.exec(name || '');
     if (m) return { ticker: m[1].toUpperCase(), level: m[2].toUpperCase(),
-                    strategy: m[3].toUpperCase(), timeframe: m[4].toUpperCase() };
+                    strategy: m[3].toUpperCase(), timeframe: m[4].toUpperCase(),
+                    custom: false };
     m = _RE_NEW.exec(name || '');
     if (m) return { ticker: m[1].toUpperCase(), level: m[3].toUpperCase(),
-                    strategy: m[2].toUpperCase(), timeframe: m[4].toUpperCase() };
+                    strategy: m[2].toUpperCase(), timeframe: m[4].toUpperCase(),
+                    custom: false };
+    m = _RE_CUSTOM.exec(name || '');
+    if (m) return { ticker: m[1].toUpperCase(), level: '',
+                    strategy: m[2].toUpperCase(), timeframe: m[3].toUpperCase(),
+                    custom: true };
     return null;
   }
 
@@ -422,38 +432,46 @@
       const done = items.filter(r => r.tv_alert_created).length;
       const total = items.length;
       const pillClass = done === total ? 'complete' : (done > 0 ? 'partial' : '');
+      const _renderRow = (r) => {
+        const checked = r.tv_alert_created ? 'checked' : '';
+        const doneClass = r.tv_alert_created ? 'done' : '';
+        const fs = _fillStats[r.name];
+        const fillBadge = fs && fs.count > 0
+          ? `<span style="font-size:0.72rem;color:#7FE098;background:rgba(127,224,152,0.08);border:1px solid #2a3a30;padding:1px 6px;border-radius:3px;margin-left:4px" title="Last fill: ${fs.last_at || '—'}">${fs.count} fill${fs.count===1?'':'s'} · ${_relTime(fs.last_at)}</span>`
+          : '';
+        return `<div class="alert-row ${doneClass}">
+          <input type="checkbox" ${checked} onchange="toggleAlert(${r.id}, this.checked)">
+          <span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <button class="alert-name-btn" onclick="openPayloadModal('${r.name}')">${r.name}</button>
+            <button onclick="renameAlert(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Rename"
+              style="background:transparent;border:none;color:#444;cursor:pointer;font-size:0.85rem;
+                     padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#aaa'" onmouseout="this.style.color='#444'">✎</button>
+            <button onclick="deleteStrategy(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Delete this strategy (also removes from Signal Router)"
+              style="background:transparent;border:none;color:#666;cursor:pointer;font-size:0.85rem;
+                     padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#666'">✕</button>
+            ${fillBadge}
+          </span>
+          <span class="meta">${r.meta.timeframe}</span>
+        </div>`;
+      };
       const renderGroup = (strat, levelOrder) => {
         const rows = [];
         for (const lvl of levelOrder) {
-          const matches = items.filter(r => r.meta.strategy === strat && r.meta.level === lvl)
+          const matches = items.filter(r => !r.meta.custom && r.meta.strategy === strat && r.meta.level === lvl)
                                .sort((a, b) => TF_ORDER[a.meta.timeframe] - TF_ORDER[b.meta.timeframe]);
-          for (const r of matches) {
-            const checked = r.tv_alert_created ? 'checked' : '';
-            const doneClass = r.tv_alert_created ? 'done' : '';
-            const fs = _fillStats[r.name];
-            const fillBadge = fs && fs.count > 0
-              ? `<span style="font-size:0.72rem;color:#7FE098;background:rgba(127,224,152,0.08);border:1px solid #2a3a30;padding:1px 6px;border-radius:3px;margin-left:4px" title="Last fill: ${fs.last_at || '—'}">${fs.count} fill${fs.count===1?'':'s'} · ${_relTime(fs.last_at)}</span>`
-              : '';
-            rows.push(`<div class="alert-row ${doneClass}">
-              <input type="checkbox" ${checked} onchange="toggleAlert(${r.id}, this.checked)">
-              <span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                <button class="alert-name-btn" onclick="openPayloadModal('${r.name}')">${r.name}</button>
-                <button onclick="renameAlert(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Rename"
-                  style="background:transparent;border:none;color:#444;cursor:pointer;font-size:0.85rem;
-                         padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#aaa'" onmouseout="this.style.color='#444'">✎</button>
-                <button onclick="deleteStrategy(${r.id},'${r.name.replace(/'/g,"\\'")}')" title="Delete this strategy (also removes from Signal Router)"
-                  style="background:transparent;border:none;color:#666;cursor:pointer;font-size:0.85rem;
-                         padding:0;line-height:1;flex-shrink:0" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#666'">✕</button>
-                ${fillBadge}
-              </span>
-              <span class="meta">${r.meta.timeframe}</span>
-            </div>`);
-          }
+          for (const r of matches) rows.push(_renderRow(r));
           if (matches.length) rows.push('<div style="height:6px"></div>');
         }
         return rows.join('');
       };
+      const breakoutItems = items.filter(r => !r.meta.custom && r.meta.strategy === 'BREAKOUT');
+      const reversalItems = items.filter(r => !r.meta.custom && r.meta.strategy === 'REVERSAL');
+      const customItems   = items.filter(r => r.meta.custom)
+                                 .sort((a, b) => a.name.localeCompare(b.name));
       const itemIds = JSON.stringify(items.map(r => r.id));
+      const customSection = customItems.length
+        ? `<div class="group-label">Custom</div>${customItems.map(_renderRow).join('')}`
+        : '';
       return `<div class="card ticker-section">
         <div class="ticker-header">
           <span class="ticker-name">${t}</span>
@@ -464,10 +482,9 @@
             onmouseover="this.style.background='rgba(231,76,60,0.1)'"
             onmouseout="this.style.background='transparent'">Delete ticker</button>
         </div>
-        <div class="group-label">Breakout</div>
-        ${renderGroup('BREAKOUT', ['R3S3', 'R4S4'])}
-        <div class="group-label">Reversal</div>
-        ${renderGroup('REVERSAL', ['R3S3', 'R4S4'])}
+        ${breakoutItems.length ? '<div class="group-label">Breakout</div>' + renderGroup('BREAKOUT', ['R3S3', 'R4S4']) : ''}
+        ${reversalItems.length ? '<div class="group-label">Reversal</div>' + renderGroup('REVERSAL', ['R3S3', 'R4S4']) : ''}
+        ${customSection}
       </div>`;
     }).join('');
   }
@@ -687,7 +704,15 @@
   {% endraw %}
 
   function tvSettingsFor(meta) {
-    const tfMap = { '05MIN': '5', '5MIN': '5', '15MIN': '15', '30MIN': '30' };
+    const tfMap = { '05MIN': '5', '5MIN': '5', '15MIN': '15', '30MIN': '30',
+                    '1H': '60', '1D': 'D' };
+    if (meta.custom) {
+      return {
+        pine_script: '(custom)',
+        level:       '',
+        interval:    tfMap[meta.timeframe] || meta.timeframe,
+      };
+    }
     const levelShort = meta.level === 'R4S4' ? 'R4' : 'R3';
     return {
       pine_script: `CAM_${meta.strategy}_${meta.level}`,
