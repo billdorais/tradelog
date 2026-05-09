@@ -3087,12 +3087,13 @@ PROGRESS_LEVELS     = ["R3S3", "R4S4"]
 PROGRESS_TIMEFRAMES = ["05MIN", "15MIN", "30MIN"]
 
 
-def _progress_alert_specs(ticker):
+def _progress_alert_specs(ticker, timeframes=None):
     ticker = ticker.strip().upper()
+    tfs = timeframes or PROGRESS_TIMEFRAMES
     specs = []
     for strat in PROGRESS_STRATEGIES:
         for level in PROGRESS_LEVELS:
-            for tf in PROGRESS_TIMEFRAMES:
+            for tf in tfs:
                 name = f"CAM_{ticker}_{strat}_{level}_{tf}"
                 tv_interval = {"05MIN": "5", "15MIN": "15", "30MIN": "30"}[tf]
                 specs.append({
@@ -3149,7 +3150,9 @@ def progress_add_ticker():
         return jsonify({"error": "ticker required (alphanumeric)"}), 400
 
     mode = (data.get("mode") or "camarilla").strip().lower()
-    if mode == "single":
+    if mode == "cam5min":
+        specs = _progress_alert_specs(ticker, timeframes=["05MIN"])
+    elif mode == "single":
         strategy_slug = (data.get("strategy_slug") or "").strip().upper()
         timeframe     = (data.get("timeframe") or "").strip().upper()
         rule_name_in  = (data.get("rule_name") or "").strip()

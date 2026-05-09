@@ -174,6 +174,11 @@
         Camarilla preset <span style="color:#666;font-size:0.78rem">(12 rules)</span>
       </label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ccc">
+        <input type="radio" name="addMode" value="cam5min" onchange="toggleAddMode()"
+               style="accent-color:#7FE098">
+        5min only preset <span style="color:#666;font-size:0.78rem">(4 rules)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ccc">
         <input type="radio" name="addMode" value="single" onchange="toggleAddMode()"
                style="accent-color:#7FE098">
         Single custom strategy <span style="color:#666;font-size:0.78rem">(1 rule)</span>
@@ -622,9 +627,12 @@
   function toggleAddMode() {
     const mode = _currentAddMode();
     document.getElementById('singleModeFields').style.display = mode === 'single' ? 'inline-flex' : 'none';
-    document.getElementById('addModeHint').textContent = mode === 'single'
-      ? 'Creates 1 routing rule for this ticker + strategy + timeframe combination.'
-      : 'Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.';
+    const hints = {
+      camarilla: 'Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.',
+      cam5min:   'Creates 4 routing rules (BREAKOUT + REVERSAL × R3S3 + R4S4, 5min only). Existing rule names are skipped.',
+      single:    'Creates 1 routing rule for this ticker + strategy + timeframe combination.',
+    };
+    document.getElementById('addModeHint').textContent = hints[mode] || hints.camarilla;
     if (mode === 'single') populateStrategyDropdown();
     updateRuleNamePreview();
   }
