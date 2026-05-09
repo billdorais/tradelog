@@ -229,6 +229,7 @@
         <button class="status-chip"         data-status="empty"    onclick="setStatusFilter('empty')">Not started</button>
         <button class="status-chip"         data-status="partial"  onclick="setStatusFilter('partial')">Partial</button>
         <button class="status-chip"         data-status="complete" onclick="setStatusFilter('complete')">Complete</button>
+        <button class="status-chip"         data-status="custom"   onclick="setStatusFilter('custom')">Custom</button>
       </div>
       <span id="filterCount" style="font-size:0.78rem;color:#666;white-space:nowrap"></span>
       <button id="deleteEmptyBtn" onclick="deleteEmptyStrategies()" disabled
@@ -240,6 +241,12 @@
         Delete empty
       </button>
     </div>
+  </div>
+
+  <div id="customFilterPanel" style="display:none;padding:12px 18px;background:#13161f;border:1px solid #1e2130;border-radius:8px;margin-bottom:12px">
+    <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin-bottom:10px">Show only tickers with these strategies</div>
+    <div id="customChips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    <div style="font-size:0.72rem;color:#444;margin-top:10px">Select one or more — tickers must have at least one matching strategy</div>
   </div>
 
   <div id="tickerSections"></div>
@@ -346,11 +353,45 @@
   }
 
   let _statusFilter = 'all';
+  let _customPatterns = new Set();
+
   function setStatusFilter(s) {
     _statusFilter = s;
     document.querySelectorAll('#statusChips .status-chip').forEach(b => {
       b.classList.toggle('active', b.dataset.status === s);
     });
+    const panel = document.getElementById('customFilterPanel');
+    if (panel) {
+      panel.style.display = s === 'custom' ? 'block' : 'none';
+      if (s === 'custom') buildCustomPanel();
+    }
+    render();
+  }
+
+  function _patternKey(meta) {
+    return meta.level
+      ? `${meta.strategy}_${meta.level}_${meta.timeframe}`
+      : `${meta.strategy}_${meta.timeframe}`;
+  }
+
+  function buildCustomPanel() {
+    const patterns = new Set();
+    for (const r of _rules) {
+      const meta = parseRuleName(r.name);
+      if (meta) patterns.add(_patternKey(meta));
+    }
+    const el = document.getElementById('customChips');
+    if (!el) return;
+    el.innerHTML = [...patterns].sort().map(p => {
+      const on = _customPatterns.has(p);
+      return `<button class="status-chip${on ? ' active' : ''}" onclick="toggleCustomPattern('${p}')">${p}</button>`;
+    }).join('');
+  }
+
+  function toggleCustomPattern(p) {
+    if (_customPatterns.has(p)) _customPatterns.delete(p);
+    else _customPatterns.add(p);
+    buildCustomPanel();
     render();
   }
 
@@ -385,10 +426,17 @@
     const root = document.getElementById('tickerSections');
     const allTickers = Object.keys(byTicker).sort();
 
-    // Apply filters: search query (matches ticker OR any rule name) + status chip
+    // Apply filters: search query (matches ticker OR any rule name) + status chip + custom patterns
     const q = (document.getElementById('filterSearch')?.value || '').trim().toLowerCase();
     const tickers = allTickers.filter(t => {
-      if (_statusFilter !== 'all' && _statusOf(byTicker[t]) !== _statusFilter) return false;
+      if (_statusFilter === 'custom') {
+        if (_customPatterns.size > 0) {
+          const hasMatch = byTicker[t].some(r => _customPatterns.has(_patternKey(r.meta)));
+          if (!hasMatch) return false;
+        }
+      } else if (_statusFilter !== 'all' && _statusOf(byTicker[t]) !== _statusFilter) {
+        return false;
+      }
       if (!q) return true;
       if (t.toLowerCase().includes(q)) return true;
       return byTicker[t].some(r => r.name.toLowerCase().includes(q));
