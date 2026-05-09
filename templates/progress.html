@@ -187,6 +187,18 @@
 
     <div class="row">
       <input type="text" id="newTicker" placeholder="QQQ" maxlength="10" style="width:140px;text-transform:uppercase">
+      <div id="presetVersionField" style="display:inline-flex;align-items:center;gap:6px">
+        <span style="font-size:0.78rem;color:#666">Version</span>
+        <select id="newVersion"
+                style="background:#0a0a0a;border:1px solid #1e2130;border-radius:7px;color:#e0e0e0;padding:7px 10px;font-size:0.85rem;font-family:inherit">
+          <option value="">— none —</option>
+          <option value="V01">V01</option>
+          <option value="V02">V02</option>
+          <option value="V03">V03</option>
+          <option value="V04">V04</option>
+          <option value="V05">V05</option>
+        </select>
+      </div>
       <div id="singleModeFields" style="display:none;gap:10px;flex-wrap:wrap;align-items:center">
         <select id="newStrategy" onchange="updateRuleNamePreview()"
                 style="background:#0a0a0a;border:1px solid #1e2130;border-radius:7px;color:#e0e0e0;padding:9px 12px;font-size:0.88rem;font-family:inherit;min-width:200px">
@@ -305,8 +317,10 @@
 
   // Old: CAM_{TICKER}_{LEVEL}_{STRATEGY}_v1_{TF}  e.g. CAM_SPY_R4S4_BREAKOUT_v1_05MIN
   // New: CAM_{TICKER}_{STRATEGY}_{LEVEL}_{TF}     e.g. CAM_SPY_BREAKOUT_R4S4_05MIN
+  // Versioned: {TICKER}_CAM_{STRATEGY}_{LEVEL}_{VER}_{TF}  e.g. SPY_CAM_BREAKOUT_R3S3_V02_5MIN
   const _RE_OLD = /^CAM_([A-Z0-9]+)_(R\dS\d)_(BREAKOUT|REVERSAL)(?:_v\d+)?_(0?\d+MIN)$/i;
   const _RE_NEW = /^CAM_([A-Z0-9]+)_(BREAKOUT|REVERSAL)_(R\dS\d)_(0?\d+MIN)$/i;
+  const _RE_VER = /^([A-Z0-9]+)_CAM_(BREAKOUT|REVERSAL)_(R\dS\d)_(V\d+)_(0?\d+MIN|\d+H|\d+D)$/i;
   // Single-strategy rules created from the "Single custom strategy" mode follow
   // {TICKER}_{any_slug}_{TF}. The TF suffix (digits + MIN/H/D) anchors the split;
   // anything between the leading ticker and the trailing TF is the slug.
@@ -321,6 +335,10 @@
     if (m) return { ticker: m[1].toUpperCase(), level: m[3].toUpperCase(),
                     strategy: m[2].toUpperCase(), timeframe: m[4].toUpperCase(),
                     custom: false };
+    m = _RE_VER.exec(name || '');
+    if (m) return { ticker: m[1].toUpperCase(), strategy: m[2].toUpperCase(),
+                    level: m[3].toUpperCase(), timeframe: m[5].toUpperCase(),
+                    version: m[4].toUpperCase(), custom: false };
     m = _RE_CUSTOM.exec(name || '');
     if (m) return { ticker: m[1].toUpperCase(), level: '',
                     strategy: m[2].toUpperCase(), timeframe: m[3].toUpperCase(),
@@ -626,7 +644,8 @@
 
   function toggleAddMode() {
     const mode = _currentAddMode();
-    document.getElementById('singleModeFields').style.display = mode === 'single' ? 'inline-flex' : 'none';
+    document.getElementById('singleModeFields').style.display    = mode === 'single' ? 'inline-flex' : 'none';
+    document.getElementById('presetVersionField').style.display  = mode === 'single' ? 'none' : 'inline-flex';
     const hints = {
       camarilla: 'Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.',
       cam5min:   'Creates 4 routing rules (BREAKOUT + REVERSAL × R3S3 + R4S4, 5min only). Existing rule names are skipped.',
@@ -682,8 +701,10 @@
     const stat = document.getElementById('addStatus');
     const ticker = (inp.value || '').trim().toUpperCase();
     if (!ticker) { stat.textContent = 'Enter a ticker.'; return; }
-    const mode = _currentAddMode();
+    const mode    = _currentAddMode();
+    const version = (document.getElementById('newVersion')?.value || '').trim();
     const body = { ticker, mode };
+    if (version) body.version = version;
     if (mode === 'single') {
       const slug = (document.getElementById('newStrategy').value || '').trim();
       const tf   = document.getElementById('newTimeframe').value;

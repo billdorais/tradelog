@@ -3087,15 +3087,20 @@ PROGRESS_LEVELS     = ["R3S3", "R4S4"]
 PROGRESS_TIMEFRAMES = ["05MIN", "15MIN", "30MIN"]
 
 
-def _progress_alert_specs(ticker, timeframes=None):
+def _progress_alert_specs(ticker, timeframes=None, version=None):
     ticker = ticker.strip().upper()
     tfs = timeframes or PROGRESS_TIMEFRAMES
+    ver = (version or "").strip().upper()  # e.g. "V02" or ""
     specs = []
     for strat in PROGRESS_STRATEGIES:
         for level in PROGRESS_LEVELS:
             for tf in tfs:
-                name = f"CAM_{ticker}_{strat}_{level}_{tf}"
-                tv_interval = {"05MIN": "5", "15MIN": "15", "30MIN": "30"}[tf]
+                tf_display = tf.lstrip("0") if tf.startswith("0") else tf  # 05MIN → 5MIN
+                if ver:
+                    name = f"{ticker}_CAM_{strat}_{level}_{ver}_{tf_display}"
+                else:
+                    name = f"CAM_{ticker}_{strat}_{level}_{tf}"
+                tv_interval = {"05MIN": "5", "5MIN": "5", "15MIN": "15", "30MIN": "30"}.get(tf, "5")
                 specs.append({
                     "name":       name,
                     "ticker":     ticker,
@@ -3149,9 +3154,12 @@ def progress_add_ticker():
     if not ticker or not ticker.replace("_", "").isalnum():
         return jsonify({"error": "ticker required (alphanumeric)"}), 400
 
-    mode = (data.get("mode") or "camarilla").strip().lower()
+    mode    = (data.get("mode")    or "camarilla").strip().lower()
+    version = (data.get("version") or "").strip().upper()  # e.g. "V02"
     if mode == "cam5min":
-        specs = _progress_alert_specs(ticker, timeframes=["05MIN"])
+        specs = _progress_alert_specs(ticker, timeframes=["05MIN"], version=version)
+    elif mode == "camarilla" and version:
+        specs = _progress_alert_specs(ticker, version=version)
     elif mode == "single":
         strategy_slug = (data.get("strategy_slug") or "").strip().upper()
         timeframe     = (data.get("timeframe") or "").strip().upper()
