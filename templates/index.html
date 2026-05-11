@@ -2293,9 +2293,11 @@
                   let idStr = '';
                   if (ids) {
                     if (ids.ticker != null) {
-                      // Alpaca mode: show ticker + trade P&L
+                      // Alpaca mode: show ticker + trade P&L with explicit sign
+                      // ('+' for win, '-' for loss) and use Math.abs so the dollar
+                      // figure is never bare without a sign indicator.
                       const tpnl = ids.pnl != null ? ids.pnl : 0;
-                      const tsign = tpnl >= 0 ? '+' : '';
+                      const tsign = tpnl > 0 ? '+' : tpnl < 0 ? '-' : '';
                       idStr = `  [${ids.ticker}  trade: ${tsign}$${Math.abs(tpnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}]`;
                       if (onPointClick) idStr += '  ✕ click to remove';
                     } else {
@@ -2303,6 +2305,17 @@
                     }
                   }
                   return sign + '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + idStr;
+                },
+                // Color the tooltip text by the *trade* P&L sign when available.
+                // Chart.js canvas tooltips can't color individual tokens, so this
+                // colors the whole line — green for winners, red for losers, neutral
+                // when no per-trade pnl is attached (e.g. signals/IB tab).
+                labelTextColor: ctx => {
+                  const ids = tradeIds && tradeIds[ctx.dataIndex];
+                  if (ids && ids.ticker != null && ids.pnl != null) {
+                    return ids.pnl > 0 ? '#7FE098' : ids.pnl < 0 ? '#ef5350' : '#e0e0e0';
+                  }
+                  return '#e0e0e0';
                 },
               },
             },
