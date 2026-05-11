@@ -77,7 +77,7 @@ class AlpacaBroker:
         acct = self._trading.get_account()
         return float(acct.equity) - float(acct.last_equity)
 
-    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False, stop_loss=None, trail_offset=None, trail_mode="dollars"):
+    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False, stop_loss=None, trail_offset=None, trail_mode="dollars", hard_stop_dollars=None, ref_price=None):
         """
         Place a market or limit order.
         action: BUY or SELL
@@ -117,6 +117,18 @@ class AlpacaBroker:
                 from alpaca.trading.enums import QueryOrderStatus
                 open_req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
                 open_orders = self._trading.get_orders(filter=open_req)
+                # Also cancel any pending SELL orders (our hard stop / trailing stop for the long)
+                # so they don't fire after close_position takes the position to zero.
+                pending_sells = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
+                ]
+                for o in pending_sells:
+                    try:
+                        self._trading.cancel_order_by_id(o.id)
+                        log.info("Alpaca EXIT_LONG %s: cancelled pending SELL stop %s before close", ticker, o.id)
+                    except Exception as _ce:
+                        log.warning("Alpaca cancel pending SELL %s failed: %s", o.id, _ce)
                 pending_buys = [
                     o for o in (open_orders or [])
                     if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
@@ -215,6 +227,18 @@ class AlpacaBroker:
                 from alpaca.trading.enums import QueryOrderStatus
                 open_req   = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
                 open_orders = self._trading.get_orders(filter=open_req)
+                # Also cancel any pending BUY orders (our hard stop / trailing stop for the short)
+                # so they don't fire after close_position takes the position to zero.
+                pending_buys_to_cancel = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
+                ]
+                for o in pending_buys_to_cancel:
+                    try:
+                        self._trading.cancel_order_by_id(o.id)
+                        log.info("Alpaca EXIT_SHORT %s: cancelled pending BUY stop %s before close", ticker, o.id)
+                    except Exception as _ce:
+                        log.warning("Alpaca cancel pending BUY %s failed: %s", o.id, _ce)
                 pending_sells = [
                     o for o in (open_orders or [])
                     if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
@@ -360,6 +384,37 @@ class AlpacaBroker:
                     result["trail_mode"]     = trail_mode
                 except Exception as _te:
                     log.warning("Trailing stop failed for %s: %s — entry order still placed", ticker, _te)
+            # Attach a HARD broker-side stop loss for the per-position-stop limit.
+            # Sits at Alpaca — fires in milliseconds when triggered, vs the soft
+            # Kairos polling stop which slips on fast-moving stocks.
+            if not is_exit and hard_stop_dollars and float(hard_stop_dollars) > 0 and not is_crypto:
+                try:
+                    from alpaca.trading.requests import StopOrderRequest
+                    _ref = float(ref_price) if ref_price else (float(price) if price else 0.0)
+                    if _ref <= 0:
+                        log.warning("Hard stop skipped for %s: no reference price available", ticker)
+                    else:
+                        _per_share = float(hard_stop_dollars) / float(qty or 1)
+                        if action.upper() == "BUY":
+                            _stop_px   = round(_ref - _per_share, 2)
+                            _stop_side = OrderSide.SELL
+                        else:
+                            _stop_px   = round(_ref + _per_share, 2)
+                            _stop_side = OrderSide.BUY
+                        _stop_req = StopOrderRequest(
+                            symbol        = ticker,
+                            qty           = qty,
+                            side          = _stop_side,
+                            time_in_force = TimeInForce.GTC,
+                            stop_price    = _stop_px,
+                        )
+                        _stop_order = self._trading.submit_order(_stop_req)
+                        result["hard_stop_order_id"] = str(_stop_order.id)
+                        result["hard_stop_price"]    = _stop_px
+                        log.info("Alpaca hard stop: %s %s @ %.2f → submitted (ref=$%.2f, $%.2f/share)",
+                                 _stop_side.value, ticker, _stop_px, _ref, _per_share)
+                except Exception as _hs:
+                    log.warning("Hard stop failed for %s: %s — entry order still placed", ticker, _hs)
             return result
         except Exception as e:
             log.error("Alpaca order failed for %s %s %s: %s", action, qty, ticker, e)

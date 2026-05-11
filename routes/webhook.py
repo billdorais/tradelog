@@ -467,18 +467,31 @@ def webhook():
                             target_premium = float(opt_prem),
                         )
                     else:
+                        # Per-position-stop → hard broker-side stop on entry.
+                        # Reads MAX_POSITION_LOSS from app module so the user-facing limit
+                        # set in /routing is the same one the broker stop uses.
+                        _hard_stop = None
+                        _ref_price = None
+                        if is_entry and getattr(app, "MAX_POSITION_LOSS", 0) < 0:
+                            _hard_stop = abs(float(app.MAX_POSITION_LOSS))
+                            try:
+                                _ref_price = float(data.get("price") or 0) or None
+                            except (TypeError, ValueError):
+                                _ref_price = None
                         result = app.alpaca_broker.place_order(
-                            ticker       = ticker,
-                            action       = action,
-                            quantity     = qty,
-                            price        = price,
-                            sec_type     = sec_type,
-                            currency     = currency,
-                            strategy     = strategy,
-                            is_exit      = not is_entry,
-                            stop_loss    = ep_stop_loss    if is_entry else None,
-                            trail_offset = ep_trail_offset if is_entry else None,
-                            trail_mode   = ep_trail_mode,
+                            ticker            = ticker,
+                            action            = action,
+                            quantity          = qty,
+                            price             = price,
+                            sec_type          = sec_type,
+                            currency          = currency,
+                            strategy          = strategy,
+                            is_exit           = not is_entry,
+                            stop_loss         = ep_stop_loss    if is_entry else None,
+                            trail_offset      = ep_trail_offset if is_entry else None,
+                            trail_mode        = ep_trail_mode,
+                            hard_stop_dollars = _hard_stop,
+                            ref_price         = _ref_price,
                         )
                     _exec_status = "ok" if result.get("success") else "error"
                     _exec_detail = json.dumps(result)
