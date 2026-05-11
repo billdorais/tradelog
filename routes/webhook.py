@@ -88,6 +88,7 @@ def webhook():
     use_live_broker = False  # True = route to ib_broker_live instead of ib_broker
     broker_targets  = []     # populated by broker nodes; supports multi-broker pipelines
     ep_stop_loss     = None   # set by exit_params node
+    ep_hard_stop     = None   # per-pipeline hard-stop override ($, set by exit_params node)
     ep_trail_trigger = None
     ep_trail_offset  = None
     ep_trail_mode    = "dollars"
@@ -180,6 +181,9 @@ def webhook():
                     ep_trail_trigger = n.get("trail_trigger")
                     ep_trail_offset  = n.get("trail_offset")
                     ep_trail_mode    = n.get("mode", "dollars")
+                    # Per-pipeline override of the global MAX_POSITION_LOSS.
+                    # Always in DOLLARS — not affected by exit_params mode.
+                    ep_hard_stop     = n.get("hard_stop")
             if broker_targets:
                 broker_name = ",".join(broker_targets)
             app.log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
@@ -378,6 +382,7 @@ def webhook():
             _ep_trail_trigger = ep_trail_trigger
             _ep_trail_offset  = ep_trail_offset
             _ep_trail_mode    = ep_trail_mode
+            _ep_hard_stop     = ep_hard_stop
 
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
@@ -386,6 +391,7 @@ def webhook():
                 strategy=_strategy, is_entry=_is_entry,
                 ep_stop_loss=_ep_stop_loss, ep_trail_trigger=_ep_trail_trigger,
                 ep_trail_offset=_ep_trail_offset, ep_trail_mode=_ep_trail_mode,
+                ep_hard_stop=_ep_hard_stop,
             ):
                 _exec_status = _exec_detail = None
                 try:
@@ -468,16 +474,21 @@ def webhook():
                         )
                     else:
                         # Per-position-stop → hard broker-side stop on entry.
-                        # Reads MAX_POSITION_LOSS from app module so the user-facing limit
-                        # set in /routing is the same one the broker stop uses.
+                        # Resolution order: pipeline exit_params.hard_stop (per-rule override)
+                        # → global MAX_POSITION_LOSS (set from the Signal Router risk panel).
+                        # Always positive dollars; ref_price comes from the TV alert close.
                         _hard_stop = None
                         _ref_price = None
-                        if is_entry and getattr(app, "MAX_POSITION_LOSS", 0) < 0:
-                            _hard_stop = abs(float(app.MAX_POSITION_LOSS))
-                            try:
-                                _ref_price = float(data.get("price") or 0) or None
-                            except (TypeError, ValueError):
-                                _ref_price = None
+                        if is_entry:
+                            if ep_hard_stop and float(ep_hard_stop) > 0:
+                                _hard_stop = abs(float(ep_hard_stop))
+                            elif getattr(app, "MAX_POSITION_LOSS", 0) < 0:
+                                _hard_stop = abs(float(app.MAX_POSITION_LOSS))
+                            if _hard_stop:
+                                try:
+                                    _ref_price = float(data.get("price") or 0) or None
+                                except (TypeError, ValueError):
+                                    _ref_price = None
                         result = app.alpaca_broker.place_order(
                             ticker            = ticker,
                             action            = action,

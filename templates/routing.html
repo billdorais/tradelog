@@ -759,6 +759,7 @@
       case 'exit_params': {
         const sym = node.mode === 'percent' ? '%' : '$';
         const parts = [];
+        if (node.hard_stop)     parts.push(`Hard $${node.hard_stop}`);
         if (node.stop_loss)     parts.push(`SL ${sym}${node.stop_loss}`);
         if (node.trail_trigger) parts.push(`TT ${sym}${node.trail_trigger}`);
         if (node.trail_offset)  parts.push(`Trail ${sym}${node.trail_offset}`);
@@ -1097,7 +1098,15 @@
             </select>
           </div>
           <div class="form-group">
-            <label>Stop Loss <span class="ep-unit">${epUnit}</span></label>
+            <label>Hard Stop <span style="color:#7FE098">($)</span> <span style="color:#555;font-weight:normal">— per-pipeline override</span></label>
+            <input id="f_ep_hard_stop" type="number" min="0" step="1" value="${v.hard_stop ?? ''}" placeholder="e.g. 50">
+            <p style="font-size:0.74rem;color:#666;margin-top:4px">
+              Always in dollars. Overrides the global Per-Position Stop for this pipeline only.
+              Submitted to Alpaca as a stop order on entry — fires in milliseconds.
+            </p>
+          </div>
+          <div class="form-group">
+            <label>Stop Loss <span class="ep-unit">${epUnit}</span> <span style="color:#555;font-weight:normal">— trailing distance fallback</span></label>
             <input id="f_ep_stop_loss" type="number" min="0" step="0.01" value="${v.stop_loss ?? ''}" placeholder="e.g. 0.25">
           </div>
           <div class="form-group">
@@ -1182,6 +1191,7 @@
         break;
       case 'exit_params':
         node.mode          = document.getElementById('f_ep_mode').value || 'dollars';
+        node.hard_stop     = parseFloat(document.getElementById('f_ep_hard_stop').value)     || null;
         node.stop_loss     = parseFloat(document.getElementById('f_ep_stop_loss').value)     || null;
         node.trail_trigger = parseFloat(document.getElementById('f_ep_trail_trigger').value) || null;
         node.trail_offset  = parseFloat(document.getElementById('f_ep_trail_offset').value)  || null;

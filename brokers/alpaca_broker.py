@@ -388,11 +388,17 @@ class AlpacaBroker:
             # Sits at Alpaca — fires in milliseconds when triggered, vs the soft
             # Kairos polling stop which slips on fast-moving stocks.
             if not is_exit and hard_stop_dollars and float(hard_stop_dollars) > 0 and not is_crypto:
+                log.info("Hard stop attempt: %s %s qty=%s dollars=%s ref_price=%s price=%s",
+                         action, ticker, qty, hard_stop_dollars, ref_price, price)
                 try:
                     from alpaca.trading.requests import StopOrderRequest
                     _ref = float(ref_price) if ref_price else (float(price) if price else 0.0)
                     if _ref <= 0:
-                        log.warning("Hard stop skipped for %s: no reference price available", ticker)
+                        log.warning("Hard stop SKIPPED for %s: no reference price available "
+                                    "(ref_price=%s, price=%s) — entry placed without hard stop. "
+                                    "Falls back to Kairos polling stop.",
+                                    ticker, ref_price, price)
+                        result["hard_stop_skipped"] = "no_ref_price"
                     else:
                         _per_share = float(hard_stop_dollars) / float(qty or 1)
                         if action.upper() == "BUY":
@@ -411,10 +417,15 @@ class AlpacaBroker:
                         _stop_order = self._trading.submit_order(_stop_req)
                         result["hard_stop_order_id"] = str(_stop_order.id)
                         result["hard_stop_price"]    = _stop_px
-                        log.info("Alpaca hard stop: %s %s @ %.2f → submitted (ref=$%.2f, $%.2f/share)",
-                                 _stop_side.value, ticker, _stop_px, _ref, _per_share)
+                        log.info("Hard stop SUBMITTED: %s %s @ %.2f (ref=$%.2f, $%.2f/share) "
+                                 "→ order_id=%s",
+                                 _stop_side.value, ticker, _stop_px, _ref, _per_share,
+                                 _stop_order.id)
                 except Exception as _hs:
-                    log.warning("Hard stop failed for %s: %s — entry order still placed", ticker, _hs)
+                    log.error("Hard stop FAILED for %s (ref_price=%s, dollars=%s): %s "
+                              "— entry order still placed, falls back to polling stop",
+                              ticker, ref_price, hard_stop_dollars, _hs, exc_info=True)
+                    result["hard_stop_error"] = str(_hs)[:200]
             return result
         except Exception as e:
             log.error("Alpaca order failed for %s %s %s: %s", action, qty, ticker, e)
