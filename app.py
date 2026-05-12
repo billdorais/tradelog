@@ -1663,6 +1663,33 @@ def api_crypto_price():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/market/prices")
+def api_market_prices():
+    """Return latest close prices for a comma-separated list of symbols via yfinance."""
+    symbols = [s.strip().upper() for s in (request.args.get("symbols") or "").split(",") if s.strip()]
+    if not symbols:
+        return jsonify({})
+    try:
+        import yfinance as yf
+        raw   = yf.download(symbols, period="5d", progress=False, auto_adjust=True)
+        close = raw["Close"] if "Close" in raw.columns else raw
+        result = {}
+        if len(symbols) == 1:
+            prices = close.dropna()
+            if not prices.empty:
+                result[symbols[0]] = round(float(prices.iloc[-1]), 2)
+        else:
+            for sym in symbols:
+                if sym in close.columns:
+                    prices = close[sym].dropna()
+                    if not prices.empty:
+                        result[sym] = round(float(prices.iloc[-1]), 2)
+        return jsonify(result)
+    except Exception as _e:
+        log.warning("api_market_prices failed: %s", _e)
+        return jsonify({})
+
+
 @app.route("/api/broker/close-all", methods=["POST"])
 def broker_close_all():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")

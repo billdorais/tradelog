@@ -68,7 +68,7 @@
     .node-options_config  { background: #2a2318; border-color: #c8832a; color: #F2E7AC; min-width: 130px; }
     .node-trading_hours   { background: #1a2820; border-color: #7FE098; color: #7FE098; min-width: 120px; }
     .node-crypto_qty      { background: #1e2810; border-color: #F2E7AC; color: #F2E7AC; min-width: 120px; }
-    .node-exit_params     { background: #231810; border-color: #c86428; color: #F2C07A; min-width: 120px; }
+    .node-exit_params     { background: #231810; border-color: #c86428; color: #F2C07A; min-width: 120px; height: auto; min-height: 60px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #7FE098; color: #7FE098; }
@@ -572,6 +572,7 @@
     renderAll();
     await loadRisk();
     setInterval(loadRisk, 5000);  // refresh P&L + status every 5s
+    fetchPrices();                // async — re-renders when prices arrive
   }
 
   // -----------------------------------------------------------------------
@@ -693,14 +694,45 @@
     return html;
   }
 
+  let _prices = {};
+
+  async function fetchPrices() {
+    const tickers = new Set();
+    for (const r of rules) {
+      const meta = parseRuleName(r.name);
+      if (meta && meta.ticker) tickers.add(meta.ticker);
+    }
+    if (!tickers.size) return;
+    try {
+      const res = await fetch(`/api/market/prices?symbols=${[...tickers].join(',')}`);
+      _prices = await res.json();
+      renderAll();
+    } catch(e) { console.warn('Price fetch failed:', e); }
+  }
+
   function renderNode(ruleId, node, idx) {
     const cls   = nodeClass(node);
     const label = nodeLabel(node);
     const value = nodeValue(node);
+
+    let pctBadge = '';
+    if (node.type === 'exit_params' && node.stop_loss && node.mode !== 'percent') {
+      const rule   = rules.find(r => r.id === ruleId);
+      const meta   = rule ? parseRuleName(rule.name) : null;
+      const price  = meta ? _prices[meta.ticker] : null;
+      if (price) {
+        const pct   = (node.stop_loss / price * 100);
+        const color = pct >= 0.30 ? '#7FE098' : pct >= 0.15 ? '#F2E7AC' : '#e74c3c';
+        const tip   = pct < 0.15 ? ' — very tight' : pct < 0.30 ? ' — tight' : ' — ok';
+        pctBadge = `<div style="font-size:0.6rem;color:${color};margin-top:2px">${pct.toFixed(2)}% of $${price}${tip}</div>`;
+      }
+    }
+
     return `
       <div class="node ${cls}" onclick="openNodeEditor(${ruleId}, ${idx})">
         <div class="node-label">${label}</div>
         <div class="node-value">${escHtml(value)}</div>
+        ${pctBadge}
         <div class="node-delete" onclick="deleteNode(event, ${ruleId}, ${idx})">&#10005;</div>
       </div>`;
   }
@@ -808,6 +840,7 @@
     });
     const data = await res.json();
     await loadRules();
+    fetchPrices();
     alert(`Done — added exit params to ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}, skipped ${data.skipped} that already had one.`);
   }
 
