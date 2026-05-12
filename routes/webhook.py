@@ -395,17 +395,6 @@ def webhook():
             ):
                 _exec_status = _exec_detail = None
                 try:
-                    # If exit_params node is active, the broker trailing stop manages exits.
-                    # Drop any TradingView exit signal so both don't race to close the position.
-                    if not is_entry and (ep_stop_loss or ep_trail_offset):
-                        app.log.info(
-                            "exit_params active for %s — TV exit signal dropped, Alpaca trailing stop manages exit",
-                            ticker,
-                        )
-                        _exec_status = "skipped"
-                        _exec_detail = "exit_params node active — broker-side trailing stop manages exit"
-                        return
-
                     # Buying power gate — block entries when available capital is too low.
                     if action == "BUY" and is_entry and app.MIN_BUYING_POWER > 0:
                         try:
