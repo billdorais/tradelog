@@ -26,9 +26,18 @@ webhook_bp = Blueprint("webhook", __name__)
 def _broker_family(target: str) -> str:
     if target in ("ib", "ib-paper", "ib-live"):
         return "ib"
-    if target in ("alpaca", "alpaca-paper", "alpaca-live"):
+    if target in ("alpaca", "alpaca-paper", "alpaca-live",
+                  "alpaca-paper-2", "alpaca-live-2"):
         return "alpaca"
     return target
+
+
+def _resolve_alpaca_broker(target: str):
+    """Return the AlpacaBroker instance for a given target name."""
+    import app as _app
+    if target in ("alpaca-paper-2", "alpaca-live-2"):
+        return _app.alpaca_broker2
+    return _app.alpaca_broker
 
 
 @webhook_bp.route("/webhook", methods=["POST"])
@@ -373,7 +382,8 @@ def webhook():
 
     # --- Alpaca (async — order placement can take 1–3 s; we return 200 first) ---
     for target in alpaca_targets:
-        if app.alpaca_broker is None:
+        _broker_inst = _resolve_alpaca_broker(target)
+        if _broker_inst is None:
             if conn:
                 app._update_exec(cur, trade_id, "error",
                                  "Alpaca broker not initialised — set ALPACA_KEY + ALPACA_SECRET env vars")
@@ -412,6 +422,7 @@ def webhook():
             _ep_trail_offset  = ep_trail_offset
             _ep_trail_mode    = ep_trail_mode
             _ep_hard_stop     = ep_hard_stop
+            _broker_captured  = _broker_inst
 
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
@@ -421,14 +432,15 @@ def webhook():
                 ep_stop_loss=_ep_stop_loss, ep_trail_trigger=_ep_trail_trigger,
                 ep_trail_offset=_ep_trail_offset, ep_trail_mode=_ep_trail_mode,
                 ep_hard_stop=_ep_hard_stop,
+                broker=_broker_captured,
             ):
                 _exec_status = _exec_detail = None
                 try:
                     # Buying power gate — block entries when available capital is too low.
                     if action == "BUY" and is_entry and app.MIN_BUYING_POWER > 0:
                         try:
-                            app.alpaca_broker._ensure_client()
-                            acct = app.alpaca_broker._trading.get_account()
+                            broker._ensure_client()
+                            acct = broker._trading.get_account()
                             bp   = float(acct.buying_power)
                             if bp < app.MIN_BUYING_POWER:
                                 app.log.warning(
@@ -454,7 +466,7 @@ def webhook():
                     # Exits (sentiment=flat / EXIT_LONG / EXIT_SHORT) always bypass this.
                     if action in ("BUY", "SELL") and is_entry:
                         try:
-                            positions = app.alpaca_broker._get_positions_cached()
+                            positions = broker._get_positions_cached()
                             existing  = next(
                                 (p for p in positions
                                  if p.symbol.upper() == ticker.upper() and abs(float(p.qty or 0)) > 0),
@@ -483,7 +495,7 @@ def webhook():
                         opt_direction = "call" if action == "BUY" else "put"
                         if opt_right:
                             opt_direction = "call" if opt_right == "C" else "put"
-                        result = app.alpaca_broker.place_option_order(
+                        result = broker.place_option_order(
                             underlying     = ticker,
                             direction      = opt_direction,
                             expiry_type    = opt_exp or "friday",
@@ -507,7 +519,7 @@ def webhook():
                                     _ref_price = float(data.get("price") or 0) or None
                                 except (TypeError, ValueError):
                                     _ref_price = None
-                        result = app.alpaca_broker.place_order(
+                        result = broker.place_order(
                             ticker            = ticker,
                             action            = action,
                             quantity          = qty,

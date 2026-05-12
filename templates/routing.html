@@ -63,6 +63,8 @@
     .node-broker-alpaca     { background: #182a1a; border-color: #7FE098; color: #7FE098; }
     .node-broker-alpaca-paper { background: #1e2020; border-color: #e0e0e0; color: #ffffff; }
     .node-broker-alpaca-live  { background: #0e2814; border-color: #7FE098; color: #7FE098; }
+    .node-broker-alpaca-paper-2 { background: #1a1030; border-color: #a78bfa; color: #c4b5fd; }
+    .node-broker-alpaca-live-2  { background: #0e1428; border-color: #818cf8; color: #a5b4fc; }
     .node-broker-coinbase   { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
     .node-ticker          { background: #1a2820; border-color: #7FE098; color: #7FE098; }
     .node-options_config  { background: #2a2318; border-color: #c8832a; color: #F2E7AC; min-width: 130px; }
@@ -822,6 +824,7 @@
         const bmap = {
           'ib': 'IB Paper', 'ib-paper': 'IB Paper', 'ib-live': 'IB Live',
           'alpaca': 'Alpaca Paper', 'alpaca-paper': 'Alpaca Paper', 'alpaca-live': 'Alpaca Live',
+          'alpaca-paper-2': 'Alpaca Refined', 'alpaca-live-2': 'Alpaca Refined Live',
           'coinbase': 'Coinbase',
         };
         return bmap[node.value] || node.value || 'IB Paper';
@@ -1049,6 +1052,8 @@
               <option value="ib-live"      ${bv==='ib-live'      ? 'selected':''}>Interactive Brokers — Live</option>
               <option value="alpaca-paper" ${bv==='alpaca-paper' ? 'selected':''}>Alpaca — Paper</option>
               <option value="alpaca-live"  ${bv==='alpaca-live'  ? 'selected':''}>Alpaca — Live</option>
+              <option value="alpaca-paper-2" ${bv==='alpaca-paper-2' ? 'selected':''}>Alpaca Paper — Refined (account 2)</option>
+              <option value="alpaca-live-2"  ${bv==='alpaca-live-2'  ? 'selected':''}>Alpaca Live — Refined (account 2)</option>
               <option value="coinbase"     ${bv==='coinbase'     ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;

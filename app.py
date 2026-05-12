@@ -364,6 +364,17 @@ if os.environ.get("ALPACA_KEY"):
     alpaca_broker = AlpacaBroker()
     log.info("Alpaca broker initialised (paper=%s)", os.environ.get("ALPACA_PAPER", "true"))
 
+alpaca_broker2 = None
+if os.environ.get("ALPACA_KEY2"):
+    from brokers.alpaca_broker import AlpacaBroker as _AB2
+    _paper2 = os.environ.get("ALPACA_PAPER2", "true").lower() != "false"
+    alpaca_broker2 = _AB2(
+        key    = os.environ.get("ALPACA_KEY2"),
+        secret = os.environ.get("ALPACA_SECRET2"),
+        paper  = _paper2,
+    )
+    log.info("Alpaca broker 2 initialised (paper=%s)", _paper2)
+
     def _prewarm_fills():
         """Populate the fills cache in background so the first page load is instant."""
         time.sleep(3)   # let gunicorn finish binding before making API calls
