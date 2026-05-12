@@ -718,8 +718,10 @@
     let pctBadge = '';
     if (node.type === 'exit_params' && node.stop_loss && node.mode !== 'percent') {
       const rule   = rules.find(r => r.id === ruleId);
-      const meta   = rule ? parseRuleName(rule.name) : null;
-      const price  = meta ? _prices[meta.ticker] : null;
+      // Extract ticker: CAM_SPY_... → SPY, SPY_CAM_... → SPY
+      const parts  = rule ? rule.name.toUpperCase().split('_') : [];
+      const ticker = parts[0] === 'CAM' ? parts[1] : parts[0];
+      const price  = ticker ? _prices[ticker] : null;
       if (price) {
         const pct   = (node.stop_loss / price * 100);
         const color = pct >= 0.30 ? '#7FE098' : pct >= 0.15 ? '#F2E7AC' : '#e74c3c';
