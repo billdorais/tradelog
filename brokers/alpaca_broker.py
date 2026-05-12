@@ -358,23 +358,26 @@ class AlpacaBroker:
                     from alpaca.trading.requests import TrailingStopOrderRequest
                     _trail_side = OrderSide.SELL if action.upper() == "BUY" else OrderSide.BUY
                     _trail_val  = round(float(_exit_trail), 4)
+                    _trail_oid = f"kairos-trail-{_strat_slug}-{int(_time.time())}"
                     if trail_mode == "percent":
                         _trail_req = TrailingStopOrderRequest(
-                            symbol        = ticker,
-                            qty           = qty,
-                            side          = _trail_side,
-                            time_in_force = TimeInForce.GTC,
-                            trail_percent = _trail_val,
+                            symbol           = ticker,
+                            qty              = qty,
+                            side             = _trail_side,
+                            time_in_force    = TimeInForce.GTC,
+                            trail_percent    = _trail_val,
+                            client_order_id  = _trail_oid,
                         )
                         log.info("Alpaca trailing stop: %s %s trail=%.2f%% → submitting",
                                  _trail_side.value, ticker, _trail_val)
                     else:
                         _trail_req = TrailingStopOrderRequest(
-                            symbol        = ticker,
-                            qty           = qty,
-                            side          = _trail_side,
-                            time_in_force = TimeInForce.GTC,
-                            trail_price   = _trail_val,
+                            symbol           = ticker,
+                            qty              = qty,
+                            side             = _trail_side,
+                            time_in_force    = TimeInForce.GTC,
+                            trail_price      = _trail_val,
+                            client_order_id  = _trail_oid,
                         )
                         log.info("Alpaca trailing stop: %s %s trail=$%.2f → submitting",
                                  _trail_side.value, ticker, _trail_val)
