@@ -273,6 +273,24 @@
     </div>
   </div>
 
+  <div id="blockedPanel" style="display:none;background:#1a0e0e;border:1px solid #5a1a1a;border-radius:8px;padding:14px 18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:#e74c3c">
+        ⚠ Blocked Signals — TradingView alerts with no matching routing rule
+      </div>
+      <span style="font-size:0.72rem;color:#666">Fix the Routing Strategy ID in the TV Pine script inputs</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <thead><tr style="color:#555;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.04em">
+        <th style="text-align:left;padding:0 12px 6px 0">Strategy ID sent by TV</th>
+        <th style="text-align:left;padding:0 12px 6px 0">Ticker</th>
+        <th style="text-align:left;padding:0 12px 6px 0">Last seen</th>
+        <th style="text-align:right;padding:0 0 6px 0">Count (7d)</th>
+      </tr></thead>
+      <tbody id="blockedTbody"></tbody>
+    </table>
+  </div>
+
   <div class="pipelines" id="pipelines">
     <div class="empty-state" id="emptyState">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="10" y1="6.5" x2="14" y2="6.5"/><line x1="10" y1="17.5" x2="14" y2="17.5"/></svg>
@@ -580,6 +598,29 @@
     await loadRisk();
     setInterval(loadRisk, 5000);  // refresh P&L + status every 5s
     fetchPrices();                // async — re-renders when prices arrive
+    loadBlockedSignals();         // async — shows unmatched TV alerts
+  }
+
+  async function loadBlockedSignals() {
+    try {
+      const res  = await fetch('/api/webhook/blocked');
+      const rows = await res.json();
+      const panel = document.getElementById('blockedPanel');
+      const tbody = document.getElementById('blockedTbody');
+      if (!panel || !tbody) return;
+      if (!rows.length) { panel.style.display = 'none'; return; }
+      panel.style.display = 'block';
+      tbody.innerHTML = rows.map(r => {
+        const d = new Date(r.last_seen.endsWith('Z') ? r.last_seen : r.last_seen + 'Z');
+        const when = isNaN(d) ? r.last_seen : d.toLocaleString();
+        return `<tr style="border-top:1px solid #2a1010">
+          <td style="padding:6px 12px 6px 0;font-family:monospace;color:#f57070">${escHtml(r.strategy)}</td>
+          <td style="padding:6px 12px 6px 0;color:#aaa">${escHtml(r.ticker || '—')}</td>
+          <td style="padding:6px 12px 6px 0;color:#666;font-size:0.78rem">${escHtml(when)}</td>
+          <td style="padding:6px 0;text-align:right;color:#e74c3c">${r.count}</td>
+        </tr>`;
+      }).join('');
+    } catch(e) { console.warn('loadBlockedSignals failed:', e); }
   }
 
   // -----------------------------------------------------------------------

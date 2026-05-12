@@ -220,6 +220,18 @@ def webhook():
             "Update the TradingView alert's strategy ID to match a routing rule name.",
             strategy_name, ticker, raw_action,
         )
+        try:
+            _bc = app.get_db(); _bcur = _bc.cursor()
+            _bid = app._insert_trade(_bcur, (
+                ticker, raw_action, data.get("sentiment"), data.get("quantity"),
+                data.get("price"), data.get("time"), data.get("interval"),
+                received_at, strategy_name, broker_name,
+            ))
+            app._update_exec(_bcur, _bid, "blocked",
+                f"No routing rule matches '{strategy_name}' — update the Routing Strategy ID in TradingView")
+            _bc.commit(); _bc.close()
+        except Exception as _be:
+            app.log.debug("Failed to log blocked signal: %s", _be)
         return jsonify({
             "status": "blocked",
             "reason": f"No routing rule matches strategy '{strategy_name}'. "

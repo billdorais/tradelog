@@ -3284,6 +3284,43 @@ def progress_fill_stats():
     return jsonify(out)
 
 
+@app.route("/api/webhook/blocked")
+def api_blocked_signals():
+    """Recent signals blocked because no routing rule matched their strategy name."""
+    days = int(request.args.get("days", 7))
+    try:
+        conn = get_db(); cur = conn.cursor(); p = placeholder()
+        cur.execute(
+            f"SELECT strategy, ticker, action, received_at, exec_detail "
+            f"FROM trades WHERE exec_status={p} "
+            f"AND received_at >= datetime('now', '-{days} days') "
+            f"ORDER BY received_at DESC LIMIT 200",
+            ("blocked",),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        seen = {}
+        for r in rows:
+            strategy = (r[0] if DATABASE_URL else r["strategy"]) or ""
+            ticker   = (r[1] if DATABASE_URL else r["ticker"])   or ""
+            action   = (r[2] if DATABASE_URL else r["action"])   or ""
+            ts       = (r[3] if DATABASE_URL else r["received_at"]) or ""
+            detail   = (r[4] if DATABASE_URL else r["exec_detail"]) or ""
+            key = strategy
+            if key not in seen:
+                seen[key] = {"strategy": strategy, "ticker": ticker,
+                             "last_action": action, "last_seen": ts,
+                             "detail": detail, "count": 0}
+            seen[key]["count"] += 1
+            if ts > seen[key]["last_seen"]:
+                seen[key]["last_seen"] = ts
+                seen[key]["last_action"] = action
+        return jsonify(sorted(seen.values(), key=lambda x: x["last_seen"], reverse=True))
+    except Exception as e:
+        log.warning("api_blocked_signals failed: %s", e)
+        return jsonify([])
+
+
 @app.route("/api/routing/rules/bulk_add_exit_params", methods=["POST"])
 def bulk_add_exit_params():
     """Add a default exit_params node to every routing rule that doesn't already have one."""
