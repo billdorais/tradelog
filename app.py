@@ -3135,6 +3135,7 @@ def _progress_default_nodes(name):
         {"type": "instrument",    "value": "STK"},
         {"type": "broker",        "value": "alpaca-paper"},
         {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
+        {"type": "exit_params",   "stop_loss": 0.50, "trail_trigger": None, "trail_offset": None, "mode": "dollars"},
     ]
 
 
@@ -3254,6 +3255,35 @@ def progress_fill_stats():
     except Exception as _e:
         log.warning("progress_fill_stats failed: %s", _e)
     return jsonify(out)
+
+
+@app.route("/api/routing/rules/bulk_add_exit_params", methods=["POST"])
+def bulk_add_exit_params():
+    """Add a default exit_params node to every routing rule that doesn't already have one."""
+    data      = request.get_json(silent=True) or {}
+    stop_loss = float(data.get("stop_loss", 0.50))
+    conn  = get_db()
+    cur   = conn.cursor()
+    p     = placeholder()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    updated = skipped = 0
+    for row in rows:
+        rule_id   = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        if any(n.get("type") == "exit_params" for n in nodes):
+            skipped += 1
+            continue
+        nodes.append({"type": "exit_params", "stop_loss": stop_loss,
+                      "trail_trigger": None, "trail_offset": None, "mode": "dollars"})
+        cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}",
+                    (json.dumps(nodes), rule_id))
+        updated += 1
+    conn.commit()
+    conn.close()
+    log.info("bulk_add_exit_params: updated=%d skipped=%d stop_loss=$%.2f", updated, skipped, stop_loss)
+    return jsonify({"updated": updated, "skipped": skipped, "stop_loss": stop_loss})
 
 
 @app.route("/api/progress/fix_strategy_mismatch", methods=["POST"])
