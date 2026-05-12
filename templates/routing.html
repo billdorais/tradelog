@@ -258,12 +258,19 @@
            style="flex:1;min-width:240px;background:#0a0a0a;border:1px solid #2a2d3e;border-radius:7px;
                   color:#e0e0e0;padding:8px 12px;font-size:0.88rem;font-family:inherit;outline:none">
     <span id="pipelineFilterCount" style="font-size:0.78rem;color:#666;white-space:nowrap"></span>
-    <button onclick="bulkAddExitParams()"
-            style="background:transparent;border:1px solid #c86428;color:#F2C07A;border-radius:6px;
-                   padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Add a $0.50/share stop loss node to every pipeline that doesn't already have one">
-      + $0.50 stop to all
-    </button>
+    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c86428;border-radius:6px;overflow:hidden">
+      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">$</span>
+      <input id="bulkStopInput" type="number" min="0.01" step="0.05" value="0.50"
+             style="width:60px;background:transparent;border:none;color:#F2C07A;font-size:0.78rem;
+                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
+             title="Stop loss per share">
+      <button onclick="bulkAddExitParams()"
+              style="background:transparent;border:none;border-left:1px solid #c86428;color:#F2C07A;
+                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Add this stop loss to every pipeline that doesn't already have one">
+        stop to all
+      </button>
+    </div>
   </div>
 
   <div class="pipelines" id="pipelines">
@@ -833,12 +840,13 @@
   }
 
   async function bulkAddExitParams() {
+    const stopVal = parseFloat(document.getElementById('bulkStopInput')?.value) || 0.50;
     const n = rules.filter(r => !r.nodes.some(n => n.type === 'exit_params')).length;
     if (n === 0) { alert('All pipelines already have an Exit Params node.'); return; }
-    if (!confirm(`Add a $0.50/share stop loss node to ${n} pipeline${n > 1 ? 's' : ''} that don't have one?\n\nThis is $50 max loss per trade at 100 shares. You can edit individual nodes afterwards.`)) return;
+    if (!confirm(`Add a $${stopVal.toFixed(2)}/share stop loss node to ${n} pipeline${n > 1 ? 's' : ''} that don't have one?\n\nYou can edit individual nodes afterwards.`)) return;
     const res  = await fetch('/api/routing/rules/bulk_add_exit_params', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stop_loss: 0.50 }),
+      body: JSON.stringify({ stop_loss: stopVal }),
     });
     const data = await res.json();
     await load();
