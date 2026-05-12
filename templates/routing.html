@@ -839,8 +839,7 @@
       body: JSON.stringify({ stop_loss: 0.50 }),
     });
     const data = await res.json();
-    await loadRules();
-    fetchPrices();
+    await load();
     alert(`Done — added exit params to ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}, skipped ${data.skipped} that already had one.`);
   }
 
