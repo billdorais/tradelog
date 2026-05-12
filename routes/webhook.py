@@ -93,13 +93,15 @@ def webhook():
     ep_trail_offset  = None
     ep_trail_mode    = "dollars"
 
-    matched_rule_id = None  # set when a routing rule matches; used to flip tv_alert_created
+    matched_rule_id   = None  # set when a routing rule matches; used to flip tv_alert_created
+    _routing_rule_count = 0   # total enabled rules; used for whitelist enforcement below
     try:
         rconn = app.get_db()
         rcur  = rconn.cursor()
         rcur.execute("SELECT id, nodes FROM routing_rules WHERE enabled=1 ORDER BY COALESCE(sort_order, id) ASC")
         rule_rows = rcur.fetchall()
         rconn.close()
+        _routing_rule_count = len(rule_rows)
         for rrow in rule_rows:
             rule_id   = rrow[0] if app.DATABASE_URL else rrow["id"]
             nodes_raw = rrow[1] if app.DATABASE_URL else rrow["nodes"]
@@ -208,6 +210,21 @@ def webhook():
             fconn.close()
         except Exception as _fe:
             app.log.debug("tv_alert_created flip failed: %s", _fe)
+
+    # Whitelist enforcement: if routing rules exist but none matched, block the signal.
+    # Prevents old/unupdated TV alerts (wrong strategy ID, template placeholder names, etc.)
+    # from slipping through and executing against default settings.
+    if _routing_rule_count > 0 and matched_rule_id is None:
+        app.log.warning(
+            "Signal BLOCKED — no enabled routing rule matches strategy '%s' (ticker=%s action=%s). "
+            "Update the TradingView alert's strategy ID to match a routing rule name.",
+            strategy_name, ticker, raw_action,
+        )
+        return jsonify({
+            "status": "blocked",
+            "reason": f"No routing rule matches strategy '{strategy_name}'. "
+                      "Check the Routing Strategy ID in your TradingView Pine script inputs.",
+        }), 200
 
     # If no broker nodes fired from pipeline, fall back to the single broker_name from request body
     if not broker_targets and broker_name:
