@@ -197,7 +197,21 @@
              style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
                     padding:5px 10px;font-size:0.78rem;outline:none;width:240px">
       <span id="stratFilterCount" style="font-size:0.72rem;color:#666"></span>
-      <span style="margin-left:auto">click column headers to sort</span>
+      <div style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">
+        <span style="font-size:0.72rem;color:#666">click column headers to sort</span>
+        <div style="display:inline-flex;align-items:center;gap:0;border:1px solid #a78bfa;border-radius:6px;overflow:hidden">
+          <span style="font-size:0.72rem;color:#888;padding:0 8px;white-space:nowrap">Top</span>
+          <input id="refinedTopN" type="number" min="1" max="100" value="20"
+                 style="width:44px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;
+                        padding:5px 0;outline:none;text-align:center">
+          <button onclick="addTopNToRefined()"
+                  style="background:transparent;border:none;border-left:1px solid #a78bfa;
+                         color:#c4b5fd;padding:5px 10px;font-size:0.78rem;cursor:pointer;
+                         font-family:inherit;white-space:nowrap">
+            → Alpaca Refined
+          </button>
+        </div>
+      </div>
     </div>
     <div class="tbl-wrap">
       <table id="stratTable">
@@ -715,6 +729,27 @@
 
   function filterStratTable()  { renderStratTable(_lastStratMap); }
   function filterTickerTable() { renderTickerTable(_lastTickerMap); }
+
+  async function addTopNToRefined() {
+    const n = parseInt(document.getElementById('refinedTopN')?.value) || 20;
+    const all = Object.entries(_lastStratMap)
+      .sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    const profitable = all.filter(([, s]) => (s.total_pnl || 0) > 0);
+    const top = profitable.slice(0, n).map(([name]) => name);
+    if (!top.length) { alert('No profitable strategies found in the current view.'); return; }
+    if (!confirm(`Add Alpaca Refined broker node to these ${top.length} strategies?\n\n${top.slice(0,10).join('\n')}${top.length > 10 ? `\n…and ${top.length - 10} more` : ''}`)) return;
+    const res  = await fetch('/api/routing/rules/add_broker_node', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategies: top, broker: 'alpaca-paper-2' }),
+    });
+    const data = await res.json();
+    const msg = [
+      data.updated?.length  ? `✓ Added to ${data.updated.length} pipeline${data.updated.length > 1 ? 's' : ''}` : '',
+      data.skipped?.length  ? `Already had it: ${data.skipped.length}` : '',
+      data.not_found?.length ? `No routing rule found for: ${data.not_found.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+    alert(msg || 'Done.');
+  }
 
   function renderStratTable(map) {
     _lastStratMap = map;

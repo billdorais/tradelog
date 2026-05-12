@@ -3332,6 +3332,49 @@ def api_blocked_signals():
         return jsonify([])
 
 
+@app.route("/api/routing/rules/add_broker_node", methods=["POST"])
+def add_broker_node_to_strategies():
+    """Add a broker node to routing rules whose strategy node matches names in the request list."""
+    data       = request.get_json(silent=True) or {}
+    strategies = data.get("strategies", [])   # list of strategy name strings
+    broker_val = data.get("broker", "alpaca-paper-2")
+    if not strategies:
+        return jsonify({"error": "strategies list required"}), 400
+
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+
+    # Build lookup: strategy_node_value → (rule_id, nodes)
+    rule_map = {}
+    for row in rows:
+        rule_id   = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        for n in nodes:
+            if n.get("type") == "strategy":
+                rule_map[(n.get("value") or "").upper()] = (rule_id, nodes)
+
+    updated = []; skipped = []; not_found = []
+    for strat in strategies:
+        entry = rule_map.get(strat.upper())
+        if not entry:
+            not_found.append(strat)
+            continue
+        rule_id, nodes = entry
+        if any(n.get("type") == "broker" and n.get("value") == broker_val for n in nodes):
+            skipped.append(strat)
+            continue
+        nodes.append({"type": "broker", "value": broker_val})
+        cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rule_id))
+        updated.append(strat)
+
+    conn.commit(); conn.close()
+    log.info("add_broker_node %s: updated=%d skipped=%d not_found=%d",
+             broker_val, len(updated), len(skipped), len(not_found))
+    return jsonify({"updated": updated, "skipped": skipped, "not_found": not_found})
+
+
 @app.route("/api/routing/rules/bulk_add_exit_params", methods=["POST"])
 def bulk_add_exit_params():
     """Add a default exit_params node to every routing rule that doesn't already have one."""
