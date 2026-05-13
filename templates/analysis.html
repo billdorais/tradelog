@@ -172,7 +172,11 @@
         </button>
         <button id="srcAlpaca" onclick="switchSource('alpaca')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
-          Alpaca
+          Alpaca P&L
+        </button>
+        <button id="srcAlpaca2" onclick="switchSource('alpaca2')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+          Refined P&L
         </button>
       </div>
     </div>
@@ -433,11 +437,15 @@
   // ── Source toggle ──────────────────────────────────────────────────────────
   function switchSource(src) {
     activeSource = src;
-    document.getElementById('srcSignals').style.background = src === 'signals' ? '#1a1d2e' : 'transparent';
-    document.getElementById('srcSignals').style.color      = src === 'signals' ? '#e0e0e0' : '#666';
-    document.getElementById('srcAlpaca').style.background  = src === 'alpaca'  ? '#1a1d2e' : 'transparent';
-    document.getElementById('srcAlpaca').style.color       = src === 'alpaca'  ? '#e0e0e0' : '#666';
-    if (src !== 'alpaca') document.getElementById('reconPanel').style.display = 'none';
+    const tabs = { signals: 'srcSignals', alpaca: 'srcAlpaca', alpaca2: 'srcAlpaca2' };
+    Object.entries(tabs).forEach(([key, id]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const active = src === key;
+      el.style.background = active ? (key === 'alpaca2' ? '#1a1030' : '#1a1d2e') : 'transparent';
+      el.style.color      = active ? (key === 'alpaca2' ? '#c4b5fd' : '#e0e0e0') : '#666';
+    });
+    if (src !== 'alpaca' && src !== 'alpaca2') document.getElementById('reconPanel').style.display = 'none';
     load();
   }
 
@@ -479,11 +487,14 @@
   async function load() {
     const fromDate = document.getElementById('analysisFrom').value;
     const toDate   = document.getElementById('analysisTo').value;
-    let endpoint = activeSource === 'alpaca' ? '/api/alpaca/analysis' : '/api/analysis';
+    const isAlpaca  = activeSource === 'alpaca';
+    const isAlpaca2 = activeSource === 'alpaca2';
+    let endpoint = (isAlpaca || isAlpaca2) ? '/api/alpaca/analysis' : '/api/analysis';
     const params = new URLSearchParams();
     if (fromDate) params.set('from_date', fromDate);
     if (toDate)   params.set('to_date',   toDate);
-    if (activeSource === 'alpaca') {
+    if (isAlpaca2) params.set('account', '2');
+    if (isAlpaca) {
       try {
         const excl = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]');
         excl.forEach(e => params.append('exclude', e));
@@ -495,8 +506,8 @@
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
-    const srcLabel = activeSource === 'alpaca' ? 'Alpaca fills' : 'signal trades';
-    const exclNote = (activeSource === 'alpaca') ? (() => {
+    const srcLabel = isAlpaca2 ? 'Alpaca Refined fills' : isAlpaca ? 'Alpaca fills' : 'signal trades';
+    const exclNote = isAlpaca ? (() => {
       try {
         const n = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]').length;
         return n ? ` · ${n} trade${n>1?'s':''} excluded` : '';
@@ -509,7 +520,7 @@
     renderTickerTable(data.per_ticker  || {});
     renderDaily(data.daily   || []);
     renderWeekly(data.weekly || []);
-    if (activeSource === 'alpaca') loadReconciliation();
+    if (isAlpaca) loadReconciliation();
   }
 
   // ── Overall stats ──────────────────────────────────────────────────────────
@@ -518,7 +529,7 @@
     const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
     const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
     const orphanPnl = s.orphan_pnl;
-    const orphanCard = (activeSource === 'alpaca' && orphanPnl != null && orphanPnl !== 0)
+    const orphanCard = ((isAlpaca || isAlpaca2) && orphanPnl != null && orphanPnl !== 0)
       ? card(`Orphan P&L (${s.orphan_count || 0})`,
              fmt(orphanPnl),
              orphanPnl >= 0 ? 'pos' : 'neg',

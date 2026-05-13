@@ -334,8 +334,11 @@ if _IB_ENABLED and os.environ.get("IB_HOST_LIVE"):
 
 alpaca_broker = None
 _alpaca_fills_cache    = {"data": [], "ts": 0.0}
-_alpaca_fills_lock     = threading.Lock()   # prevents concurrent duplicate fetches
+_alpaca_fills_lock     = threading.Lock()
 _alpaca_analysis_cache = {}   # key → {"data": ..., "ts": float}
+_alpaca2_fills_cache   = {"data": [], "ts": 0.0}
+_alpaca2_fills_lock    = threading.Lock()
+_alpaca2_analysis_cache = {}
 ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
 ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
 _broker_status_cache = {"data": None, "ts": 0.0}
@@ -359,6 +362,19 @@ def _get_cached_fills():
         fills = alpaca_broker.get_fills()
         _alpaca_fills_cache = {"data": fills, "ts": time.time()}
     return _alpaca_fills_cache["data"]
+def _get_cached_fills_2():
+    """Return Alpaca Refined (account 2) fills, cached separately from account 1."""
+    global _alpaca2_fills_cache
+    now = time.time()
+    if now - _alpaca2_fills_cache["ts"] < ALPACA_CACHE_TTL:
+        return _alpaca2_fills_cache["data"]
+    with _alpaca2_fills_lock:
+        if time.time() - _alpaca2_fills_cache["ts"] < ALPACA_CACHE_TTL:
+            return _alpaca2_fills_cache["data"]
+        fills = alpaca_broker2.get_fills() if alpaca_broker2 else []
+        _alpaca2_fills_cache = {"data": fills, "ts": time.time()}
+    return _alpaca2_fills_cache["data"]
+
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
@@ -5827,26 +5843,32 @@ def _classify_orphan(pair):
 @app.route("/api/alpaca/analysis")
 def api_alpaca_analysis():
     """Same analysis as /api/analysis but using Alpaca fills.
-    Strategies are resolved by matching each fill to the closest signal
-    in the trades DB by ticker + direction + time."""
+    Pass ?account=2 to use the Alpaca Refined (second) account."""
     try:
         from datetime import datetime as _dt
 
-        if alpaca_broker is None:
-            return jsonify({"error": "Alpaca not configured"}), 400
+        account = request.args.get("account", "1")
+        use_acct2 = (account == "2")
+
+        if use_acct2:
+            if alpaca_broker2 is None:
+                return jsonify({"error": "Alpaca account 2 not configured — set ALPACA_KEY2 + ALPACA_SECRET2"}), 400
+        else:
+            if alpaca_broker is None:
+                return jsonify({"error": "Alpaca not configured"}), 400
 
         from_date    = request.args.get("from_date",    "")
         to_date      = request.args.get("to_date",      "")
         signals_only = request.args.get("signals_only", "0")
         exclude      = request.args.get("exclude",      "")
 
-        # Check analysis-level cache (keyed on all query params)
-        _cache_key = f"{from_date}|{to_date}|{signals_only}|{exclude}"
-        _cached    = _alpaca_analysis_cache.get(_cache_key)
+        _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}"
+        _acache     = _alpaca2_analysis_cache if use_acct2 else _alpaca_analysis_cache
+        _cached     = _acache.get(_cache_key)
         if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
             return jsonify(_cached["data"])
 
-        fills = _get_cached_fills()
+        fills = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
         if not fills:
             return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
 
@@ -6314,7 +6336,7 @@ def api_alpaca_analysis():
             "closed":       closed,
             "orphans":      orphans,
         }
-        _alpaca_analysis_cache[_cache_key] = {"data": result, "ts": time.time()}
+        _acache[_cache_key] = {"data": result, "ts": time.time()}
         return jsonify(result)
     except Exception as e:
         log.exception("Alpaca analysis error")
