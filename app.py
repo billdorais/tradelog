@@ -3519,81 +3519,203 @@ _refined_last_run    = None   # UTC timestamp of last scheduled/manual refresh
 _refined_last_result = {}    # {updated, removed, not_found, top_strategies}
 
 
+def _build_signal_lookup_for_alpaca(trades_db=None):
+    """Build {(ticker, 'BOT'|'SLD'): [(unix_ts, strategy, sentiment), ...]} from the
+    TradingView signals stored in the trades table. Used by both the Refined snapshot
+    and /api/alpaca/analysis so fill→strategy attribution stays consistent.
+
+    Pass `trades_db` to reuse an already-loaded query result and avoid a duplicate
+    DB hit."""
+    from datetime import datetime as _dt
+    if trades_db is None:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT ticker, action, sentiment, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
+        rows = cur.fetchall()
+        trades_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
+        conn.close()
+
+    lookup = {}
+    for t in trades_db:
+        ticker    = (t.get("ticker") or "").strip().upper()
+        action    = _canonical_action(t.get("action"))
+        sentiment = (t.get("sentiment") or "").strip().lower()
+        received  = t.get("received_at") or ""
+        strategy  = (t.get("strategy") or "").strip()
+        if not strategy:
+            continue
+        side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
+        if not side or not ticker or not received:
+            continue
+        try:
+            ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        lookup.setdefault((ticker, side), []).append((ts, strategy, sentiment))
+    return lookup
+
+
+def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_id=""):
+    """Return (strategy, sentiment) for the TV signal closest in time to this fill,
+    within a ±5-minute window. Falls back to parsing strategy from the
+    client_order_id (kairos-{strategy}-{ts}) when no TV signal matches."""
+    from datetime import datetime as _dt
+    try:
+        fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        fill_ts = None
+    candidates = signal_lookup.get((symbol.upper(), side), [])
+    if candidates and fill_ts is not None:
+        best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+        if abs(best[0] - fill_ts) <= 300:
+            return best[1], best[2]
+    if order_id and order_id.startswith("kairos-"):
+        parts = order_id.split("-", 2)
+        if len(parts) == 3 and parts[1]:
+            return parts[1], ""
+    return "Unknown", ""
+
+
+def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None):
+    """Date-filter, dedupe, sort, then run global LIFO pairing with sentiment-aware
+    intent. Identical pairing semantics to /api/alpaca/analysis. Returns:
+      {
+        "deduped":      [...],   # filtered + deduped + sorted fills (for daily pairing)
+        "closed":       [...],   # all paired round-trips
+        "closed_clean": [...],   # round-trips minus orphans
+        "orphans":      [...],   # orphan round-trips (with orphan_reason)
+        "signal_lookup": dict,
+      }"""
+    from datetime import datetime as _dt
+
+    if from_date or to_date:
+        def _fill_date(f):
+            t = f.get("time") or ""
+            return t[:10] if t else ""
+        fills = [f for f in fills if
+                 (not from_date or _fill_date(f) >= from_date) and
+                 (not to_date   or _fill_date(f) <= to_date)]
+
+    seen = set()
+    deduped = []
+    for f in fills:
+        key = f"{f['symbol']}|{f['side']}|{f['time']}|{f['shares']}"
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+
+    def _parse_ts(f):
+        try:
+            return _dt.fromisoformat((f["time"] or "").replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return 0
+    deduped.sort(key=_parse_ts)
+
+    if signal_lookup is None:
+        signal_lookup = _build_signal_lookup_for_alpaca()
+
+    open_longs  = {}
+    open_shorts = {}
+    closed = []
+    for f in deduped:
+        sym      = (f.get("symbol") or "").upper()
+        side     = f.get("side", "")
+        price    = float(f.get("price") or 0)
+        qty      = float(f.get("shares") or 0)
+        fill_ts  = f.get("time", "")
+        date_str = fill_ts[:10] if fill_ts else ""
+        strat, sentiment = _resolve_signal_for_fill(signal_lookup, sym, side, fill_ts, f.get("order_id", ""))
+        if sentiment == "flat":
+            intent = "exit"
+        elif sentiment == "long":
+            intent = "enter_long"
+        elif sentiment == "short":
+            intent = "enter_short"
+        else:
+            intent = "legacy"
+        if side == "BOT":
+            if intent == "enter_long":
+                open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                continue
+            q = open_shorts.setdefault(sym, [])
+            while qty > 0 and q:
+                ep, eq, et, es = q.pop(-1)
+                m = min(qty, eq)
+                closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
+                               "ticker": sym, "date": date_str, "side": "SHORT",
+                               "entry_price": ep, "exit_price": price, "qty": m,
+                               "entry_time": et, "exit_time": fill_ts})
+                qty -= m
+                if eq > m:
+                    q.append((ep, eq - m, et, es))
+            if qty > 0 and intent == "legacy":
+                open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
+        elif side == "SLD":
+            if intent == "enter_short":
+                open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+                continue
+            q = open_longs.setdefault(sym, [])
+            while qty > 0 and q:
+                ep, eq, et, es = q.pop(-1)
+                m = min(qty, eq)
+                closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
+                               "ticker": sym, "date": date_str, "side": "LONG",
+                               "entry_price": ep, "exit_price": price, "qty": m,
+                               "entry_time": et, "exit_time": fill_ts})
+                qty -= m
+                if eq > m:
+                    q.append((ep, eq - m, et, es))
+            if qty > 0 and intent == "legacy":
+                open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+
+    orphans, closed_clean = [], []
+    for c in closed:
+        is_orph, reason = _classify_orphan(c)
+        if is_orph:
+            orphans.append({**c, "orphan_reason": reason})
+        else:
+            closed_clean.append(c)
+
+    return {"deduped": deduped, "closed": closed, "closed_clean": closed_clean,
+            "orphans": orphans, "signal_lookup": signal_lookup}
+
+
 def _compute_strategy_stats(days=30, from_date=None):
-    """Return per-strategy stats from Alpaca fills using LIFO pairing.
+    """Per-strategy stats from Alpaca account-1 fills, using the same signal-resolution
+    + LIFO pairing as /api/alpaca/analysis so the Refined snapshot agrees with the
+    leaderboard view.
 
     Returns {strategy_name: {trades, wins, losses, win_rate, gross_win,
     gross_loss, total_pnl, profit_factor}}. profit_factor is None when there
     are no losing trades.
 
-    If from_date is provided (YYYY-MM-DD), it acts as a fixed anchor — the window
+    If from_date (YYYY-MM-DD) is provided it acts as a fixed anchor — the window
     grows over time and rankings become more stable as data accumulates.
     Otherwise falls back to a rolling `days`-day window."""
     import datetime as _dt
-    if from_date:
-        try:
-            cutoff_ts = _dt.datetime.fromisoformat(from_date).replace(
-                tzinfo=_dt.timezone.utc
-            ).timestamp()
-        except Exception:
-            cutoff_ts = (
-                _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
-            ).timestamp()
-    else:
-        cutoff_ts = (
+
+    if not from_date:
+        from_date = (
             _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
-        ).timestamp()
+        ).strftime("%Y-%m-%d")
 
     try:
         fills = _get_cached_fills()
     except Exception:
         return {}
 
-    recent = []
-    for f in fills:
-        try:
-            ts = _dt.datetime.fromisoformat(
-                (f.get("time") or "").replace("Z", "+00:00")
-            ).timestamp()
-            if ts >= cutoff_ts:
-                recent.append((ts, f))
-        except Exception:
-            pass
-    recent.sort(key=lambda x: x[0])
+    paired = _pair_alpaca_fills_lifo(fills, from_date=from_date)
+    closed_clean = paired["closed_clean"]
 
-    open_longs   = {}   # sym → [(price, qty, strategy)]
-    strat_trades = {}   # strategy → list of per-round-trip PnL values
-
-    for _, f in recent:
-        sym    = (f.get("symbol") or "").upper()
-        side   = f.get("side", "")
-        price  = float(f.get("price") or 0)
-        qty    = float(f.get("shares") or 0)
-        oid    = f.get("order_id", "")
-
-        strat = "Unknown"
-        if oid.startswith("kairos-") and not oid.startswith("kairos-trail-"):
-            parts = oid.split("-", 2)
-            if len(parts) == 3 and parts[1]:
-                strat = parts[1]
-
-        if side == "BOT":
-            open_longs.setdefault(sym, []).append((price, qty, strat))
-        elif side == "SLD":
-            q = open_longs.get(sym, [])
-            while qty > 0 and q:
-                ep, eq, es = q.pop(-1)   # LIFO — most recent long
-                m = min(qty, eq)
-                trade_pnl = round((price - ep) * m, 2)
-                strat_trades.setdefault(es, []).append(trade_pnl)
-                qty -= m
-                if eq > m:
-                    q.append((ep, eq - m, es))
+    strat_map = {}
+    for c in closed_clean:
+        strat_map.setdefault(c["strategy"], []).append(c["pnl"])
 
     stats_map = {}
-    for strat, pnls in strat_trades.items():
+    for strat, pnls in strat_map.items():
+        # Match the analysis endpoint's _stats() exactly: zero-PnL trades count as losses.
         wins       = [p for p in pnls if p > 0]
-        losses     = [p for p in pnls if p < 0]
+        losses     = [p for p in pnls if p <= 0]
         gross_win  = round(sum(wins), 2)
         gross_loss = round(abs(sum(losses)), 2)
         total_pnl  = round(gross_win - gross_loss, 2)
@@ -6166,20 +6288,10 @@ def api_alpaca_analysis():
         if not fills:
             return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
 
-        # Filter by date range if requested. Pairing happens *within* the range —
-        # this matches a flat-at-EOD trading style and keeps any prior-day pairing
-        # imperfections (partial fills, manual closes) from leaking into today's view.
-        if from_date or to_date:
-            def _fill_date(f):
-                t = f.get("time") or ""
-                return t[:10] if t else ""
-            fills = [f for f in fills if
-                     (not from_date or _fill_date(f) >= from_date) and
-                     (not to_date   or _fill_date(f) <= to_date)]
-
         signals_only = (signals_only == "1")
 
-        # Build signal lookup: (ticker, side) → sorted list of (unix_ts, strategy)
+        # Load the TV signals table once — used to build the (ticker, side) → signal
+        # lookup the pairing helper needs, and reused later by the signals_only branch.
         conn = get_db()
         cur  = conn.cursor()
         cur.execute("SELECT ticker, action, sentiment, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
@@ -6187,127 +6299,15 @@ def api_alpaca_analysis():
         trades_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
         conn.close()
 
-        signal_lookup = {}  # (ticker, 'BOT'|'SLD') → [(ts, strategy, sentiment)]
-        for t in trades_db:
-            ticker    = (t.get("ticker") or "").strip().upper()
-            action    = _canonical_action(t.get("action"))
-            sentiment = (t.get("sentiment") or "").strip().lower()
-            received  = t.get("received_at") or ""
-            strategy  = (t.get("strategy") or "").strip()
-            if not strategy:
-                continue
-            side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
-            if not side or not ticker or not received:
-                continue
-            try:
-                ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                continue
-            signal_lookup.setdefault((ticker, side), []).append((ts, strategy, sentiment))
+        signal_lookup = _build_signal_lookup_for_alpaca(trades_db)
 
-        def _resolve_signal(symbol, side, fill_time_str, order_id=""):
-            """Return (strategy, sentiment) for the TV signal closest to this fill.
-            Falls back to parsing strategy from client_order_id (kairos-{strategy}-{ts})
-            when no TV signal match exists — this covers the case where the TV DB was reset."""
-            try:
-                fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                fill_ts = None
-            candidates = signal_lookup.get((symbol.upper(), side), [])
-            if candidates and fill_ts is not None:
-                best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
-                if abs(best[0] - fill_ts) <= 300:
-                    return best[1], best[2]
-            # Fall back to client_order_id embedded at order submission time
-            if order_id and order_id.startswith("kairos-"):
-                parts = order_id.split("-", 2)  # ["kairos", strategy, ts]
-                if len(parts) == 3 and parts[1]:
-                    return parts[1], ""
-            return "Unknown", ""
-
-
-        # Deduplicate fills
-        seen = set()
-        deduped = []
-        for f in fills:
-            key = f"{f['symbol']}|{f['side']}|{f['time']}|{f['shares']}"
-            if key not in seen:
-                seen.add(key)
-                deduped.append(f)
-
-        # Sort by time
-        def _parse_ts(f):
-            try:
-                return _dt.fromisoformat((f["time"] or "").replace("Z", "+00:00")).timestamp()
-            except Exception:
-                return 0
-        deduped.sort(key=_parse_ts)
-
-        # LIFO pairing — matches each sell to the most recent preceding buy for that
-        # symbol.  This correctly pairs intraday round-trips from algo signals even
-        # when older open positions exist in the queue (FIFO would assign the sell to
-        # the oldest buy, inflating or deflating P&L vs what the signal actually did).
-        # Partial-fill loop: if a sell exceeds the top long we close it fully and
-        # keep consuming longs until the sell is exhausted; any residual opens a
-        # short. Without this, oversized fills silently drop shares and stale
-        # longs get mispaired with unrelated later sells.
-        open_longs  = {}
-        open_shorts = {}
-        closed = []
-        for f in deduped:
-            sym      = (f.get("symbol") or "").upper()
-            side     = f.get("side", "")
-            price    = float(f.get("price") or 0)
-            qty      = float(f.get("shares") or 0)
-            fill_ts  = f.get("time", "")
-            date_str = fill_ts[:10] if fill_ts else ""
-            strat, sentiment = _resolve_signal(sym, side, fill_ts, f.get("order_id", ""))
-            # Map TV sentiment to intent. "flat" = exit (consume inventory only),
-            # "long"/"short" = entry (add inventory only). Missing/unknown falls
-            # back to the legacy heuristic (try-close-else-open) so fills without
-            # a matching TV signal still pair.
-            if sentiment == "flat":
-                intent = "exit"
-            elif sentiment == "long":
-                intent = "enter_long"
-            elif sentiment == "short":
-                intent = "enter_short"
-            else:
-                intent = "legacy"
-            if side == "BOT":
-                if intent == "enter_long":
-                    open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
-                    continue
-                q = open_shorts.setdefault(sym, [])
-                while qty > 0 and q:
-                    ep, eq, et, es = q.pop(-1)  # LIFO: most recent short
-                    m = min(qty, eq)
-                    closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
-                                   "ticker": sym, "date": date_str, "side": "SHORT",
-                                   "entry_price": ep, "exit_price": price, "qty": m,
-                                   "entry_time": et, "exit_time": fill_ts})
-                    qty -= m
-                    if eq > m:
-                        q.append((ep, eq - m, et, es))   # remainder stays on top (LIFO)
-                if qty > 0 and intent == "legacy":
-                    open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
-            elif side == "SLD":
-                if intent == "enter_short":
-                    open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
-                    continue
-                q = open_longs.setdefault(sym, [])
-                while qty > 0 and q:
-                    ep, eq, et, es = q.pop(-1)  # LIFO: most recent long
-                    m = min(qty, eq)
-                    closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
-                                   "ticker": sym, "date": date_str, "side": "LONG",
-                                   "entry_price": ep, "exit_price": price, "qty": m,
-                                   "entry_time": et, "exit_time": fill_ts})
-                    qty -= m
-                    if eq > m:
-                        q.append((ep, eq - m, et, es))
-                if qty > 0 and intent == "legacy":
-                    open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+        # Date filter, dedupe, sort, LIFO pair + orphan-classify globally.
+        # Pairing happens *within* the date range — flat-at-EOD style, avoids leaking
+        # prior-day pairing imperfections (partial fills, manual closes) into today's view.
+        paired       = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date, signal_lookup=signal_lookup)
+        deduped      = paired["deduped"]
+        closed       = paired["closed_clean"]
+        orphans      = paired["orphans"]
 
         # Per-day FIFO pairing — used only for the daily/weekly breakdown so each
         # bar shows intraday round-trips only (consistent with the dashboard chart).
@@ -6328,7 +6328,7 @@ def api_alpaca_analysis():
                 price   = float(f.get("price") or 0)
                 qty     = float(f.get("shares") or 0)
                 fill_ts = f.get("time", "")
-                strat, sentiment = _resolve_signal(sym, side, fill_ts, f.get("order_id", ""))
+                strat, sentiment = _resolve_signal_for_fill(signal_lookup, sym, side, fill_ts, f.get("order_id", ""))
                 if sentiment == "flat":
                     intent = "exit"
                 elif sentiment == "long":
@@ -6394,41 +6394,26 @@ def api_alpaca_analysis():
                 "consec_winning_days": _consecutive_winning_days(tlist),
             }
 
-        # Apply frontend exclusions (localStorage keys: "exit_time|ticker")
+        # Apply frontend exclusions (localStorage keys: "exit_time|ticker") to the
+        # already-orphan-split global pairs from the helper, and to the per-day pairs.
         exclude_param = request.args.get("exclude", "").strip()
         if exclude_param:
             excluded_keys = set(exclude_param.split(","))
-            closed = [
-                c for c in closed
-                if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
-            ]
-            daily_closed = [
-                c for c in daily_closed
-                if f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
-            ]
+            def _kept(c):
+                return f"{c['exit_time']}|{c['ticker']}" not in excluded_keys
+            closed       = [c for c in closed       if _kept(c)]
+            orphans      = [c for c in orphans      if _kept(c)]
+            daily_closed = [c for c in daily_closed if _kept(c)]
 
-        # Separate orphan pairs (phantom round-trips from stale inventory,
-        # direction-mismatched fills, or overnight holds on intraday strategies).
-        # Orphans are returned to the UI but excluded from leaderboard stats.
-        orphans, closed_clean = [], []
-        for c in closed:
-            is_orph, reason = _classify_orphan(c)
-            if is_orph:
-                c = {**c, "orphan_reason": reason}
-                orphans.append(c)
-            else:
-                closed_clean.append(c)
+        # Classify per-day orphans (global orphans were already separated by the helper).
         daily_orphans, daily_clean = [], []
         for c in daily_closed:
             is_orph, reason = _classify_orphan(c)
             if is_orph:
-                c = {**c, "orphan_reason": reason}
-                daily_orphans.append(c)
+                daily_orphans.append({**c, "orphan_reason": reason})
             else:
                 daily_clean.append(c)
-        # Swap so downstream aggregates use clean pairs; keep originals accessible
-        # via orphans / daily_orphans for the modal's Orphans tab.
-        closed, daily_closed = closed_clean, daily_clean
+        daily_closed = daily_clean
 
         # per_strategy and per_ticker use the global LIFO pairs so overnight
         # positions (bought one day, sold the next) are captured correctly.
