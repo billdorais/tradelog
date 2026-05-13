@@ -660,14 +660,23 @@ class AlpacaBroker:
             return []
 
     def get_fills(self, days=90):
-        """Return filled orders for the last `days` days (default 90).
-        Paginating 2 years of history was causing 60s+ cold-start delays."""
+        """Return filled and partially-filled orders for the last `days` days.
+
+        Returns one row per order with the order's actual filled_qty / filled_avg_price.
+        Orders that are status=canceled/replaced/partially_filled but have filled_qty>0
+        are included — those represent real fills that the activities page shows but
+        that the previous "status == filled only" filter was silently dropping (e.g.
+        a trailing stop that partially filled, then was canceled by a follow-up exit).
+
+        Paginating 2 years of history was causing 60s+ cold-start delays so we cap
+        the lookback at `days`."""
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         self._ensure_client()
         try:
             result   = []
             seen_ids = set()
+            dropped_no_fill = 0
             after_ts  = datetime.now(timezone.utc) - timedelta(days=days)
             until_ts  = None
             while True:
@@ -684,12 +693,19 @@ class AlpacaBroker:
                     if oid in seen_ids:
                         continue
                     seen_ids.add(oid)
-                    status_str = o.status.value if hasattr(o.status, 'value') else str(o.status)
                     side_raw   = o.side.value if hasattr(o.side, 'value') else str(o.side)
                     sub = getattr(o, 'submitted_at', None) or getattr(o, 'created_at', None)
                     if sub and (oldest_sub is None or sub < oldest_sub):
                         oldest_sub = sub
-                    if status_str != "filled":
+                    # Accept any order that actually moved shares, regardless of terminal
+                    # status. Canceled / replaced / partially_filled with filled_qty>0
+                    # are real executions that the activities page reports.
+                    try:
+                        filled_qty = float(o.filled_qty or 0)
+                    except (TypeError, ValueError):
+                        filled_qty = 0.0
+                    if filled_qty <= 0:
+                        dropped_no_fill += 1
                         continue
                     filled_at = o.filled_at.strftime("%Y-%m-%dT%H:%M:%SZ") if o.filled_at else ""
                     result.append({
@@ -698,7 +714,7 @@ class AlpacaBroker:
                         "symbol":   o.symbol,
                         "sec_type": "STK",
                         "side":     "BOT" if side_raw == "buy" else "SLD",
-                        "shares":   float(o.filled_qty or 0),
+                        "shares":   filled_qty,
                         "price":    float(o.filled_avg_price or 0),
                         "order_id": str(o.client_order_id or o.id),
                         "account":  "",
@@ -708,7 +724,8 @@ class AlpacaBroker:
                 if len(orders) < 500 or oldest_sub is None:
                     break
                 until_ts = oldest_sub
-            log.info("Alpaca get_fills: returned %d filled orders total", len(result))
+            log.info("Alpaca get_fills: returned %d orders with fills (skipped %d with no fills)",
+                     len(result), dropped_no_fill)
             return result
         except Exception as e:
             log.error("Alpaca get_fills failed: %s", e)
