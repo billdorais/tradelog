@@ -375,6 +375,20 @@ def _get_cached_fills_2():
         _alpaca2_fills_cache = {"data": fills, "ts": time.time()}
     return _alpaca2_fills_cache["data"]
 
+# TODO(multi-account): currently hard-coded to 2 Alpaca accounts (primary + Refined).
+# To support N accounts (ALPACA_KEY3, KEY4, ...) without manual edits each time:
+#   1. Replace alpaca_broker / alpaca_broker2 globals with alpaca_brokers = {"1": ..., "2": ...}
+#      populated by scanning ALPACA_KEY, ALPACA_KEY<N> env vars.
+#   2. Centralise the broker-target lookup: routes/webhook.py:_resolve_alpaca_broker should
+#      key off the trailing digit in target names (alpaca-paper-3, alpaca-live-3, ...).
+#   3. Update every iteration site to loop the registry instead of naming each broker:
+#        - _check_position_stops (risk monitor)
+#        - _check_exit_params_recovery (partial-fill watchdog)
+#        - /api/alpaca/account, /api/alpaca/analysis endpoints (?account=N)
+#        - fills cache (_alpaca_fills_cache, _alpaca2_fills_cache → keyed dict)
+#   4. UI dropdowns instead of fixed Paper All / Paper Refined tabs (templates/index.html,
+#      analysis.html, routing.html).
+# Bounded ~half-day refactor; defer until a 3rd account is actually needed.
 if os.environ.get("ALPACA_KEY"):
     from brokers.alpaca_broker import AlpacaBroker
     alpaca_broker = AlpacaBroker()
