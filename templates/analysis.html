@@ -529,7 +529,7 @@
     const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
     const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
     const orphanPnl = s.orphan_pnl;
-    const orphanCard = ((isAlpaca || isAlpaca2) && orphanPnl != null && orphanPnl !== 0)
+    const orphanCard = ((activeSource === 'alpaca' || activeSource === 'alpaca2') && orphanPnl != null && orphanPnl !== 0)
       ? card(`Orphan P&L (${s.orphan_count || 0})`,
              fmt(orphanPnl),
              orphanPnl >= 0 ? 'pos' : 'neg',
