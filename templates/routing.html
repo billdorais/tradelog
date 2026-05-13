@@ -245,7 +245,7 @@
         <div class="risk-label" style="margin-bottom:8px">Open Positions</div>
         <table class="risk-positions-table">
           <thead><tr>
-            <th>Symbol</th><th>Broker</th><th>Qty</th>
+            <th>Symbol</th><th>Broker</th><th>Strategy</th><th>Qty</th>
             <th>Unrealized P&amp;L</th><th style="width:90px">vs Limit</th>
           </tr></thead>
           <tbody id="riskPositionsTbody"></tbody>
@@ -595,9 +595,13 @@
         barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#7FE098';
       }
       const tr = document.createElement('tr');
+      const stratCell = p.strategy
+        ? `<span style="color:#aaa;font-family:monospace;font-size:0.72rem">${escHtml(p.strategy)}</span>`
+        : '<span style="color:#444;font-size:0.72rem">—</span>';
       tr.innerHTML = `
         <td style="font-weight:600;color:#ccc">${p.symbol}</td>
         <td style="color:#666;font-size:0.75rem">${p.broker}</td>
+        <td>${stratCell}</td>
         <td style="color:#aaa">${p.qty}</td>
         <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
         <td>${limitVal && limitVal < 0

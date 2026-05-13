@@ -1540,13 +1540,47 @@ def alpaca_positions():
         return jsonify({"positions": [], "_debug": {"error": str(e)}})
 
 
+def _resolve_position_strategy(symbol, broker):
+    """Best-effort lookup of which strategy owns an open position.
+    Walks recent fills (most recent first) for the matching account and returns
+    the strategy parsed from the first kairos-{strategy}-{ts} client_order_id
+    that matches this symbol. Trailing/hard stop orders are skipped so we get
+    the entry that opened the position, not the protective stop on top of it."""
+    if not symbol:
+        return ""
+    sym_u = symbol.upper()
+    try:
+        if broker == "alpaca2":
+            fills = _alpaca2_fills_cache["data"]
+        elif broker == "alpaca":
+            fills = _alpaca_fills_cache["data"]
+        else:
+            return ""  # IB doesn't tag client_order_id with strategy
+        for f in sorted(fills, key=lambda x: x.get("time", ""), reverse=True):
+            if (f.get("symbol") or "").upper() != sym_u:
+                continue
+            oid = f.get("order_id", "") or ""
+            if not oid.startswith("kairos-"):
+                continue
+            if oid.startswith("kairos-trail-") or oid.startswith("kairos-hard-"):
+                continue
+            parts = oid.split("-", 2)  # ["kairos", strategy, ts]
+            if len(parts) == 3 and parts[1]:
+                return parts[1]
+    except Exception:
+        pass
+    return ""
+
+
 @app.route("/api/risk/status")
 def risk_status():
     pnl = _compute_daily_pnl()
     with _risk_lock:
         halted     = _risk_halted
         blocked    = dict(_blocked_strategies)
-        positions  = list(_latest_positions)
+        positions  = [dict(p) for p in _latest_positions]  # copy for mutation
+    for p in positions:
+        p["strategy"] = _resolve_position_strategy(p.get("symbol", ""), p.get("broker", ""))
     return jsonify({
         "halted":               halted,
         "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,
