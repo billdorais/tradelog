@@ -3332,6 +3332,173 @@ def api_blocked_signals():
         return jsonify([])
 
 
+_refined_last_run    = None   # UTC timestamp of last scheduled/manual refresh
+_refined_last_result = {}    # {updated, removed, not_found, top_strategies}
+
+
+def _compute_strategy_pnl(days=30):
+    """Return {strategy_name: total_pnl} from Alpaca fills using LIFO pairing."""
+    import datetime as _dt
+    cutoff_ts = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+    ).timestamp()
+
+    try:
+        fills = _get_cached_fills()
+    except Exception:
+        return {}
+
+    recent = []
+    for f in fills:
+        try:
+            ts = _dt.datetime.fromisoformat(
+                (f.get("time") or "").replace("Z", "+00:00")
+            ).timestamp()
+            if ts >= cutoff_ts:
+                recent.append((ts, f))
+        except Exception:
+            pass
+    recent.sort(key=lambda x: x[0])
+
+    open_longs  = {}   # sym → [(price, qty, strategy)]
+    pnl_map     = {}
+
+    for _, f in recent:
+        sym    = (f.get("symbol") or "").upper()
+        side   = f.get("side", "")
+        price  = float(f.get("price") or 0)
+        qty    = float(f.get("shares") or 0)
+        oid    = f.get("order_id", "")
+
+        strat = "Unknown"
+        if oid.startswith("kairos-") and not oid.startswith("kairos-trail-"):
+            parts = oid.split("-", 2)
+            if len(parts) == 3 and parts[1]:
+                strat = parts[1]
+
+        if side == "BOT":
+            open_longs.setdefault(sym, []).append((price, qty, strat))
+        elif side == "SLD":
+            q = open_longs.get(sym, [])
+            while qty > 0 and q:
+                ep, eq, es = q.pop(-1)   # LIFO — most recent long
+                m = min(qty, eq)
+                pnl_map[es] = pnl_map.get(es, 0) + round((price - ep) * m, 2)
+                qty -= m
+                if eq > m:
+                    q.append((ep, eq - m, es))
+
+    return pnl_map
+
+
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30):
+    """Core logic: remove broker_val from all rules, re-add to top N by P&L."""
+    global _refined_last_run, _refined_last_result
+
+    pnl_map = _compute_strategy_pnl(days=days)
+    top = [
+        name for name, pnl
+        in sorted(pnl_map.items(), key=lambda x: x[1], reverse=True)
+        if pnl > 0
+    ][:n]
+
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+
+    rule_map = {}
+    for row in rows:
+        rid       = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        for n_node in nodes:
+            if n_node.get("type") == "strategy":
+                rule_map[(n_node.get("value") or "").upper()] = (rid, nodes)
+
+    removed = updated = 0
+    not_found = []
+
+    # Step 1 — strip broker_val from every rule
+    for row in rows:
+        rid       = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        new_nodes = [nd for nd in nodes if not (nd.get("type") == "broker" and nd.get("value") == broker_val)]
+        if len(new_nodes) != len(nodes):
+            cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(new_nodes), rid))
+            # Update rule_map in place
+            for nd in new_nodes:
+                if nd.get("type") == "strategy":
+                    rule_map[(nd.get("value") or "").upper()] = (rid, new_nodes)
+            removed += 1
+
+    # Step 2 — add broker_val to top N
+    for strat in top:
+        entry = rule_map.get(strat.upper())
+        if not entry:
+            not_found.append(strat)
+            continue
+        rid, nodes = entry
+        nodes.append({"type": "broker", "value": broker_val})
+        cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
+        updated += 1
+
+    conn.commit(); conn.close()
+
+    import datetime as _dt
+    _refined_last_run = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    _refined_last_result = {
+        "run_at": _refined_last_run,
+        "top_strategies": top,
+        "updated": updated,
+        "removed_from": removed,
+        "not_found": not_found,
+    }
+    log.info("Refined refresh: top=%d updated=%d removed=%d not_found=%d",
+             len(top), updated, removed, len(not_found))
+    return _refined_last_result
+
+
+def _refined_scheduler_loop():
+    """Daily background thread: refresh Alpaca Refined at 4:15 PM ET on weekdays."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    _et = ZoneInfo("America/New_York")
+    _ran_today = None
+    while True:
+        time.sleep(60)
+        if alpaca_broker is None:
+            continue
+        now = _dt.datetime.now(_et)
+        today = now.date()
+        if now.weekday() >= 5:          # skip weekends
+            continue
+        if now.hour == 16 and now.minute == 15 and _ran_today != today:
+            _ran_today = today
+            try:
+                _do_refresh_refined()
+                log.info("Scheduled Refined refresh complete for %s", today)
+            except Exception as _re:
+                log.warning("Scheduled Refined refresh failed: %s", _re)
+
+
+threading.Thread(target=_refined_scheduler_loop, daemon=True).start()
+
+
+@app.route("/api/routing/rules/refresh_refined", methods=["GET"])
+def get_refined_status():
+    return jsonify(_refined_last_result if _refined_last_run else {"run_at": None})
+
+
+@app.route("/api/routing/rules/refresh_refined", methods=["POST"])
+def refresh_refined():
+    data = request.get_json(silent=True) or {}
+    n    = int(data.get("n", 20))
+    days = int(data.get("days", 30))
+    result = _do_refresh_refined(n=n, days=days)
+    return jsonify(result)
+
+
 @app.route("/api/routing/rules/add_broker_node", methods=["POST"])
 def add_broker_node_to_strategies():
     """Add a broker node to routing rules whose strategy node matches names in the request list."""

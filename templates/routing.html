@@ -275,6 +275,28 @@
     </div>
   </div>
 
+  <div id="refinedStatusPanel" style="background:#13101f;border:1px solid #3d2d6e;border-radius:8px;padding:12px 18px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div>
+      <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:#7c6fa0;margin-bottom:2px">Alpaca Refined — Daily Refresh</div>
+      <div id="refinedLastRun" style="font-size:0.82rem;color:#c4b5fd">Loading…</div>
+    </div>
+    <div id="refinedTopList" style="font-size:0.72rem;color:#666;flex:1"></div>
+    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #a78bfa;border-radius:6px;overflow:hidden;margin-left:auto">
+      <span style="font-size:0.72rem;color:#888;padding:0 8px">Top</span>
+      <input id="refinedN" type="number" min="1" max="100" value="20"
+             style="width:44px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:5px 0;outline:none;text-align:center">
+      <span style="font-size:0.72rem;color:#888;padding:0 6px">last</span>
+      <input id="refinedDays" type="number" min="1" max="365" value="30"
+             style="width:44px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:5px 0;outline:none;text-align:center">
+      <span style="font-size:0.72rem;color:#888;padding:0 6px">days</span>
+      <button onclick="runRefinedRefresh()"
+              style="background:transparent;border:none;border-left:1px solid #a78bfa;color:#c4b5fd;
+                     padding:5px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap">
+        Refresh Now
+      </button>
+    </div>
+  </div>
+
   <div id="blockedPanel" style="display:none;background:#1a0e0e;border:1px solid #5a1a1a;border-radius:8px;padding:14px 18px;margin-bottom:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:#e74c3c">
@@ -601,6 +623,46 @@
     setInterval(loadRisk, 5000);  // refresh P&L + status every 5s
     fetchPrices();                // async — re-renders when prices arrive
     loadBlockedSignals();         // async — shows unmatched TV alerts
+    loadRefinedStatus();          // async — shows last refresh time
+  }
+
+  async function loadRefinedStatus() {
+    try {
+      const res  = await fetch('/api/routing/rules/refresh_refined');
+      const data = await res.json();
+      const el   = document.getElementById('refinedLastRun');
+      const topEl = document.getElementById('refinedTopList');
+      if (!el) return;
+      if (!data.run_at) {
+        el.textContent = 'Never run — refreshes automatically at 4:15 PM ET on trading days';
+        if (topEl) topEl.textContent = '';
+      } else {
+        el.textContent = `Last refresh: ${data.run_at} · ${data.updated} strategies updated`;
+        if (topEl && data.top_strategies?.length) {
+          topEl.textContent = 'Current top: ' + data.top_strategies.slice(0, 5).join(', ')
+            + (data.top_strategies.length > 5 ? ` +${data.top_strategies.length - 5} more` : '');
+        }
+      }
+    } catch(e) { console.warn('loadRefinedStatus failed:', e); }
+  }
+
+  async function runRefinedRefresh() {
+    const n    = parseInt(document.getElementById('refinedN')?.value)    || 20;
+    const days = parseInt(document.getElementById('refinedDays')?.value) || 30;
+    const btn  = event.target;
+    btn.disabled = true; btn.textContent = 'Running…';
+    try {
+      const res  = await fetch('/api/routing/rules/refresh_refined', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ n, days }),
+      });
+      const data = await res.json();
+      await load();
+      const msg = `Updated ${data.updated} pipelines with top ${n} strategies (last ${days} days).`
+        + (data.not_found?.length ? `\nNo rule found for: ${data.not_found.join(', ')}` : '');
+      alert(msg);
+    } catch(e) { alert('Refresh failed: ' + e.message); }
+    finally { btn.disabled = false; btn.textContent = 'Refresh Now'; }
   }
 
   async function loadBlockedSignals() {
