@@ -3784,11 +3784,15 @@ def refresh_refined():
     data = request.get_json(silent=True) or {}
     n         = int(data.get("n", 20))
     days      = int(data.get("days", 30))
-    from_date = (data.get("from_date") or "").strip() or None
-    # Persist the anchor so the daily scheduler picks it up on subsequent runs.
-    # Empty string clears it (back to rolling-window behaviour).
     if "from_date" in data:
+        # Caller is explicitly setting (or clearing) the anchor — persist it
+        # so the daily scheduler picks it up on subsequent runs.
+        from_date = (data.get("from_date") or "").strip() or None
         _save_setting("REFINED_FROM_DATE", from_date or "")
+    else:
+        # No anchor in payload — fall back to the saved anchor so manual
+        # refreshes match scheduler behaviour. Empty saved value → rolling.
+        from_date = (_load_setting("REFINED_FROM_DATE") or "").strip() or None
     result = _do_refresh_refined(n=n, days=days, from_date=from_date)
     return jsonify(result)
 
