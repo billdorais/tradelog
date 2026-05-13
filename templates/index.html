@@ -1189,6 +1189,28 @@
       // Pass displayCurve so scatter and daily charts also respect exclusions.
       renderStats(stats, lineColor, displayCurve);
 
+      // Override Net P&L with the broker's authoritative account daily P&L when
+      // the date filter is set to today only. This matches the Signal Router and
+      // Alpaca's portfolio view exactly (equity-based, includes realized + unrealized
+      // + open positions), unlike the JS FIFO pairing above which only sums closed
+      // pairs and can miss orphans / partial fills. Works for both accounts.
+      try {
+        const _today = new Date().toISOString().slice(0, 10);
+        if (fromDate === _today && (!toDate || toDate === _today)) {
+          const _acctUrl = account === '2' ? '/api/alpaca/account?account=2' : '/api/alpaca/account';
+          const _acct    = await fetch(_acctUrl).then(r => r.json()).catch(() => ({}));
+          if (_acct && _acct.daily_pnl != null) {
+            const _el = document.getElementById('perfTotalPnl');
+            if (_el) {
+              _el.textContent = fmt(_acct.daily_pnl, '$');
+              _el.className   = 'pc-value ' + (_acct.daily_pnl >= 0 ? 'positive' : 'negative');
+            }
+            const _cntEl = document.getElementById('perfClosedCount');
+            if (_cntEl) _cntEl.textContent = "today's account P&L";
+          }
+        }
+      } catch (_e) { /* leave JS-paired number in place if fetch fails */ }
+
       // Daily bar: sum per-trade pnl from equity curve by day
       drawNetDailyChart(displayCurve.length ? displayCurve : closedTrades);
       drawDailyChart(displayCurve, true);
