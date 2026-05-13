@@ -118,10 +118,13 @@
     <p>
       Kairos Automata is an automated trade execution, logging, and analysis platform built by Bill Dorais.
       TradingView alerts are received as webhooks and routed through a configurable Signal Router pipeline
-      before being forwarded to a supported broker — Alpaca, Interactive Brokers, or Coinbase — for execution.
-      The dashboard separates <strong>Alpaca Fills</strong> and <strong>TV Signals</strong> into dedicated tabs,
-      shows cumulative P&amp;L with a multi-select strategy visibility picker (Top 10/15/20, eye-toggle per strategy),
-      and syncs the equity chart to whichever feed tab is active.
+      before being forwarded to a supported broker — Alpaca (with an optional second "Refined" account),
+      Interactive Brokers, or Coinbase — for execution.
+      The dashboard equity chart has two tabs: <strong>Paper All</strong> (every fill from the primary Alpaca paper
+      account) and <strong>Paper Refined</strong> (fills from the secondary Alpaca account that only runs the
+      current top-performing strategies). Each tab includes a multi-select strategy visibility picker
+      (Top 10/15/20, eye-toggle per strategy), and the trade feed below the chart syncs to whichever
+      tab is active.
     </p>
     <p>
       Beyond live trading, the platform includes a full backtesting and optimisation suite.
@@ -156,6 +159,12 @@
         <td><code style="font-size:0.82rem;color:#aaa">ALPACA_KEY</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_SECRET</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_PAPER</code></td>
       </tr>
       <tr>
+        <td>Alpaca Refined<br><span style="color:#888;font-size:0.78rem">(2nd account)</span></td>
+        <td>Stocks, Crypto (fractional)</td>
+        <td>Paper · Live</td>
+        <td><code style="font-size:0.82rem;color:#aaa">ALPACA_KEY2</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_SECRET2</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_PAPER2</code> — optional 2nd Alpaca account used as a "refined" target that only receives top-N strategies, refreshed daily.</td>
+      </tr>
+      <tr>
         <td>Coinbase</td>
         <td>Crypto</td>
         <td>Live</td>
@@ -174,13 +183,15 @@
       &nbsp;&nbsp;│&nbsp; 3. Applies pipeline node settings (instrument, quantity, mode, broker…)<br>
       &nbsp;&nbsp;│&nbsp; 4. Enforces Trading Hours node — drops if outside session window<br>
       &nbsp;&nbsp;│&nbsp; 5. Duplicate signal filter — drops if same strategy+ticker+action fired within cooldown<br>
-      &nbsp;&nbsp;│&nbsp; 6. Logs signal to PostgreSQL<br>
-      &nbsp;&nbsp;│&nbsp; 7. Daily max loss check — blocks &amp; records if account P&amp;L hit MAX_DAILY_LOSS<br>
-      &nbsp;&nbsp;│&nbsp; 8. Strategy block check — blocks if strategy was position-stopped earlier today<br>
+      &nbsp;&nbsp;│&nbsp; 6. Whitelist enforcement — blocks &amp; logs the signal if NO enabled rule matches (old TV alerts surface in the Routing UI for fixing)<br>
+      &nbsp;&nbsp;│&nbsp; 7. Logs signal to PostgreSQL<br>
+      &nbsp;&nbsp;│&nbsp; 8. Daily max loss check — blocks &amp; records if account P&amp;L hit MAX_DAILY_LOSS<br>
+      &nbsp;&nbsp;│&nbsp; 9. Strategy block check — blocks if strategy was position-stopped earlier today<br>
       &nbsp;&nbsp;▼<br>
       Broker selection (from Broker node or "broker" field in payload)<br>
       &nbsp;&nbsp;├─ IB Paper/Live → ib_broker.py → IB Gateway → Interactive Brokers servers<br>
       &nbsp;&nbsp;├─ Alpaca → alpaca_broker.py → Alpaca API (stocks + crypto with fractional support)<br>
+      &nbsp;&nbsp;├─ Alpaca Refined (account 2, paper/live) → alpaca_broker.py with 2nd client → separate Alpaca account<br>
       &nbsp;&nbsp;└─ Coinbase → coinbase_broker.py → Coinbase Advanced Trade API<br>
       &nbsp;&nbsp;▼<br>
       Order Executed → Fill synced → Dashboard shows paired TV + broker rows
@@ -251,17 +262,36 @@
       <tr><td>Options Config</td><td>For options signals — sets target premium (mid-price), expiry type (weekly/monthly), and side (auto/call/put).</td></tr>
       <tr><td>Quantity</td><td>Overrides the order size in shares, dollar amount, or % of account. Fractional quantities supported for crypto.</td></tr>
       <tr><td>Mode</td><td>Routes to the IB paper account or IB live account. Does not affect Alpaca/Coinbase routing.</td></tr>
-      <tr><td>Broker</td><td>Selects the execution broker: <strong style="color:#517356">IB</strong>, <strong style="color:#88BF8B">Alpaca</strong>, or <strong style="color:#70a8f5">Coinbase</strong>. Overrides the "broker" field in the TradingView payload.</td></tr>
+      <tr><td>Broker</td><td>Selects the execution broker: <strong style="color:#517356">IB</strong>, <strong style="color:#88BF8B">Alpaca</strong>, <strong style="color:#c4b5fd">Alpaca Refined</strong> (account 2, paper or live), or <strong style="color:#70a8f5">Coinbase</strong>. Overrides the "broker" field in the TradingView payload.</td></tr>
       <tr><td>Ticker Override</td><td>Forces a specific ticker regardless of what TradingView sends.</td></tr>
       <tr><td>Trading Hours</td><td>Drops signals arriving outside a configured session window (e.g. 09:30–16:00 ET). No trade is logged.</td></tr>
+      <tr><td>Exit Params</td><td>Attaches a broker-side stop-loss (and optional trailing stop) to every entry order. The Routing UI shows the stop value as a $ amount and as a % of the current stock price (colour-coded — red &lt;0.15%, yellow &lt;0.30%, green ≥0.30%). A "stop to all" bulk button on the Routing page adds the same stop to every pipeline that doesn't already have one. TradingView exit signals remain active — whichever fires first (TV exit or broker stop) closes the position.</td></tr>
     </table>
 
-    <h2>Dashboard — Trade Feed</h2>
+    <h2>Alpaca Refined — Daily Top-N Refresh</h2>
     <p>
-      The trade feed has two tabs: <strong>Alpaca Fills</strong> (default) shows clean Alpaca execution rows
-      with paired P&amp;L; <strong>TV Signals</strong> shows TradingView signals paired into entry/exit trades
-      with computed P&amp;L. Switching chart tabs (Alpaca P&amp;L / Signals P&amp;L) also switches the feed tab.
-      The equity chart supports click-to-exclude individual trades on both tabs.
+      The Signal Router has a daily auto-refresh that points the <strong>Alpaca Refined</strong> broker
+      (account 2) at the top-performing strategies by realised P&amp;L. A background scheduler runs at
+      <strong>4:15 PM ET</strong> on weekdays: it computes per-strategy P&amp;L over the last <em>N</em> days
+      (default 30) from Alpaca fills, strips the <code style="font-size:0.82rem;color:#aaa">alpaca-paper-2</code>
+      broker node from every routing rule, then re-attaches it to the top <em>N</em> profitable strategies
+      (default 20). The result is that the Refined account always runs the latest top-N without manual
+      intervention.
+    </p>
+    <p>
+      The refresh can also be triggered manually from the purple <em>Alpaca Refined — Daily Refresh</em>
+      panel at the top of the Signal Router page, with editable Top-N and lookback-days inputs. The Analysis
+      page has a matching <em>Top N → Alpaca Refined</em> button on the strategy leaderboard.
+    </p>
+
+    <h2>Dashboard — Equity Chart &amp; Trade Feed</h2>
+    <p>
+      The equity chart has two tabs: <strong>Paper All</strong> (default — green, every fill from the
+      primary Alpaca paper account) and <strong>Paper Refined</strong> (purple, fills from the secondary
+      Alpaca account). Both tabs share a From/To date filter (persisted via
+      <code style="font-size:0.82rem;color:#aaa">localStorage</code>) and support click-to-exclude on
+      individual trades. The TV-Signals and IB-P&amp;L tabs are still wired up internally but hidden
+      from the UI by default — the dashboard is now Alpaca-fills first.
     </p>
 
     <h2>Railway Services</h2>
@@ -363,6 +393,9 @@
       <tr><td>ALPACA_KEY</td><td>—</td><td>Alpaca API key. Setting this enables the Alpaca broker.</td></tr>
       <tr><td>ALPACA_SECRET</td><td>—</td><td>Alpaca API secret.</td></tr>
       <tr><td>ALPACA_PAPER</td><td>true</td><td>Set to <code style="font-size:0.82rem;color:#aaa">false</code> to switch Alpaca to live trading.</td></tr>
+      <tr><td>ALPACA_KEY2</td><td>—</td><td>API key for the second Alpaca account. Setting this enables the Alpaca Refined broker target and starts a daily 4:15 PM ET top-N refresh scheduler.</td></tr>
+      <tr><td>ALPACA_SECRET2</td><td>—</td><td>API secret for the second Alpaca account.</td></tr>
+      <tr><td>ALPACA_PAPER2</td><td>true</td><td>Set to <code style="font-size:0.82rem;color:#aaa">false</code> to switch the second Alpaca account to live trading.</td></tr>
       <tr><td>COINBASE_KEY</td><td>—</td><td>Coinbase Advanced Trade API key. Setting this enables the Coinbase broker.</td></tr>
       <tr><td>COINBASE_SECRET</td><td>—</td><td>Coinbase API secret.</td></tr>
       <tr><td>MAX_DAILY_LOSS</td><td>0 (off)</td><td>Negative dollar value. Halts all trading and liquidates all positions when today's P&amp;L reaches this threshold. Configurable live from the Signal Router risk panel.</td></tr>
@@ -398,6 +431,60 @@
     <h2>Recent Updates</h2>
     <table>
       <tr><th>Area</th><th>What changed</th></tr>
+      <tr>
+        <td>Alpaca Refined — 2nd Paper Account</td>
+        <td>
+          Added a second Alpaca broker target (<code style="font-size:0.82rem;color:#aaa">alpaca-paper-2</code>
+          / <code style="font-size:0.82rem;color:#aaa">alpaca-live-2</code>) used as a "Refined" account
+          that only runs the current top-performing strategies. Enabled with
+          <code style="font-size:0.82rem;color:#aaa">ALPACA_KEY2</code> / <code style="font-size:0.82rem;color:#aaa">ALPACA_SECRET2</code>.
+          A background scheduler refreshes the top-N at 4:15 PM ET on trading days, and a purple
+          panel on the Routing page exposes a manual <em>Refresh Now</em> button with editable
+          Top-N and lookback-days inputs. The Analysis page has a matching
+          <em>Top N → Alpaca Refined</em> button next to the strategy leaderboard.
+        </td>
+      </tr>
+      <tr>
+        <td>Dashboard &amp; Analysis — Tab Rename</td>
+        <td>
+          The dashboard equity-chart tabs are now <strong>Paper All</strong> (green) and
+          <strong>Paper Refined</strong> (purple). The Signals and IB tabs are still wired up
+          but hidden by default. The Analysis page Source toggle uses the same
+          <strong>Paper All</strong> / <strong>Paper Refined</strong> labels, and the previously
+          visible <em>Signals</em> source is hidden.
+        </td>
+      </tr>
+      <tr>
+        <td>Webhook — Whitelist Enforcement</td>
+        <td>
+          If any routing rules are enabled but none match an incoming signal, the webhook now
+          <strong>blocks</strong> the trade instead of falling through to the default broker.
+          Blocked signals are logged to the trades table with status <code style="font-size:0.82rem;color:#aaa">blocked</code>
+          and surface in a red panel at the top of the Signal Router page so stale TradingView
+          alerts (template placeholders, wrong strategy IDs) can be identified and fixed at the
+          source. Endpoint: <code style="font-size:0.82rem;color:#aaa">GET /api/webhook/blocked</code>.
+        </td>
+      </tr>
+      <tr>
+        <td>Routing — Exit Params Node</td>
+        <td>
+          The <strong>Exit Params</strong> pipeline node attaches a broker-side stop-loss (and optional
+          trailing stop) to every entry order. The Routing UI shows the stop value as a $ amount and
+          as a colour-coded % of the current stock price. A new "$ stop to all" bulk button (with an
+          editable dollar amount, default $0.50) adds the same stop to every pipeline that doesn't
+          already have one. TradingView exit signals are no longer dropped when an exit_params node
+          is present — whichever fires first (TV exit or broker stop) closes the position.
+        </td>
+      </tr>
+      <tr>
+        <td>Alpaca — Trailing Stop Pairing</td>
+        <td>
+          Broker-side trailing-stop orders are now tagged with a
+          <code style="font-size:0.82rem;color:#aaa">kairos-trail-{strategy}-...</code>
+          <code style="font-size:0.82rem;color:#aaa">client_order_id</code> so fills from trailing
+          stops can be paired back to their strategy in the Analysis leaderboard.
+        </td>
+      </tr>
       <tr>
         <td>Naming Convention</td>
         <td>
