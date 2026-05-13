@@ -64,7 +64,7 @@ MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
 _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
-_auto_closed_symbols  = set()   # symbols already sent a position-stop close today
+_auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed today; keyed per-account so same ticker on alpaca + alpaca2 trips independently
 _position_peaks       = {}      # {SYMBOL: peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _risk_lock            = threading.Lock()
@@ -662,6 +662,15 @@ def _check_position_stops():
         except Exception as _e:
             log.debug("Position stop: Alpaca get_positions failed: %s", _e)
 
+    if alpaca_broker2:
+        try:
+            alpaca_broker2._invalidate_pos_cache()
+            for p in alpaca_broker2.get_positions():
+                p["broker"] = "alpaca2"
+                all_positions.append(p)
+        except Exception as _e:
+            log.debug("Position stop: Alpaca account 2 get_positions failed: %s", _e)
+
     if _ib_task_queue is not None and ib_broker:
         try:
             for p in _submit_ib_task(ib_broker.get_positions, _timeout=15):
@@ -683,9 +692,10 @@ def _check_position_stops():
 
     # Clear _auto_closed_symbols + peak tracker for any symbol no longer open.
     # This allows the monitor to protect new entries in the same symbol later in the session.
-    open_symbols = {p["symbol"].upper() for p in all_positions}
+    open_keys    = {(p["broker"], p["symbol"].upper()) for p in all_positions}
+    open_symbols = {sym for _, sym in open_keys}
     with _risk_lock:
-        stale = {s for s in _auto_closed_symbols if s.upper() not in open_symbols}
+        stale = {k for k in _auto_closed_symbols if k not in open_keys}
         _auto_closed_symbols.difference_update(stale)
         stale_peaks = [s for s in _position_peaks if s not in open_symbols]
         for s in stale_peaks:
@@ -723,7 +733,7 @@ def _check_position_stops():
             continue
 
         with _risk_lock:
-            if symbol in _auto_closed_symbols:
+            if (broker, sym_u) in _auto_closed_symbols:
                 continue
             # Don't add to _auto_closed_symbols yet — only add after a successful close
             # so that a failed close is retried on the next poll rather than silently dropped.
@@ -739,6 +749,11 @@ def _check_position_stops():
                 close_ok = res.get("success", False)
                 if not close_ok:
                     log.error("Position stop close failed for %s: %s", symbol, res.get("error"))
+            elif broker == "alpaca2":
+                res = alpaca_broker2.close_position(symbol)
+                close_ok = res.get("success", False)
+                if not close_ok:
+                    log.error("Position stop close failed for %s (acct2): %s", symbol, res.get("error"))
             elif broker == "ib" and _ib_task_queue is not None:
                 _submit_ib_task(ib_broker.close_position, symbol, pos.get("qty", 0), _timeout=30)
                 close_ok = True
@@ -751,14 +766,97 @@ def _check_position_stops():
         if close_ok:
             log.info("Position stop: %s close order submitted on %s", symbol, broker)
             with _risk_lock:
-                _auto_closed_symbols.add(symbol)
+                _auto_closed_symbols.add((broker, sym_u))
         else:
             # Close failed — leave symbol out of _auto_closed_symbols so it retries next poll
             log.warning("Position stop: close order for %s failed — will retry next poll", symbol)
 
 
+def _check_exit_params_recovery():
+    """If an exit_params trailing/hard stop triggered but only partially filled
+    (e.g. fast-moving market, thin book at the trigger price), the remainder
+    is stranded long/short with no covering exit order. Detect that and flatten."""
+    import datetime as _dt
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+    except Exception:
+        return  # SDK unavailable
+
+    accounts = []
+    if alpaca_broker:  accounts.append(("alpaca",  alpaca_broker))
+    if alpaca_broker2: accounts.append(("alpaca2", alpaca_broker2))
+
+    for broker_tag, broker_inst in accounts:
+        try:
+            broker_inst._invalidate_pos_cache()
+            positions = [p for p in broker_inst.get_positions()
+                         if abs(float(p.get("qty") or 0)) > 0]
+        except Exception as _e:
+            log.debug("Exit recovery: get_positions failed on %s: %s", broker_tag, _e)
+            continue
+        if not positions:
+            continue
+
+        open_symbols = [p["symbol"].upper() for p in positions]
+        try:
+            broker_inst._ensure_client()
+            req = GetOrdersRequest(
+                status = QueryOrderStatus.CLOSED,
+                after  = _dt.datetime.utcnow() - _dt.timedelta(hours=24),
+                limit  = 200,
+                symbols= open_symbols,
+            )
+            orders = broker_inst._trading.get_orders(filter=req)
+        except Exception as _e:
+            log.debug("Exit recovery: get_orders failed on %s: %s", broker_tag, _e)
+            continue
+
+        # Map symbol → True if any kairos-trail/hard order partially filled in last 24h
+        partial = {}
+        for o in orders:
+            coid = str(getattr(o, "client_order_id", "") or "")
+            if not (coid.startswith("kairos-trail-") or coid.startswith("kairos-hard-")):
+                continue
+            try:
+                req_qty = float(getattr(o, "qty", 0) or 0)
+                filled  = float(getattr(o, "filled_qty", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if filled > 0 and filled < req_qty:
+                partial[o.symbol.upper()] = True
+
+        for pos in positions:
+            sym  = pos["symbol"].upper()
+            if not partial.get(sym):
+                continue
+            with _risk_lock:
+                if (broker_tag, sym) in _auto_closed_symbols:
+                    continue
+            log.error("EXIT-PARAMS RECOVERY: %s on %s — stop fired with partial fill, "
+                      "flattening remainder (%s shares)",
+                      sym, broker_tag, pos.get("qty"))
+            try:
+                res = broker_inst.close_position(sym)
+                if res.get("success"):
+                    with _risk_lock:
+                        _auto_closed_symbols.add((broker_tag, sym))
+                    log.info("Exit recovery: %s flatten order submitted on %s", sym, broker_tag)
+                else:
+                    log.error("Exit recovery: close failed for %s on %s: %s",
+                              sym, broker_tag, res.get("error"))
+            except Exception as _e:
+                log.error("Exit recovery: close_position raised for %s on %s: %s",
+                          sym, broker_tag, _e)
+
+
+_exit_recovery_tick = 0
+
+
 def _position_monitor_loop():
-    """Background thread: poll positions every 3s, fire fixed-loss or trailing-giveback stops."""
+    """Background thread: poll positions every 3s, fire fixed-loss or trailing-giveback stops.
+    Every ~15s, also run the exit-params partial-fill recovery watchdog."""
+    global _exit_recovery_tick
     time.sleep(25)  # stagger from risk monitor
     while True:
         if MAX_POSITION_LOSS < 0 or MAX_TRAILING_GIVEBACK > 0:
@@ -766,6 +864,13 @@ def _position_monitor_loop():
                 _check_position_stops()
             except Exception as _e:
                 log.warning("Position monitor error: %s", _e)
+        _exit_recovery_tick += 1
+        if _exit_recovery_tick >= 5:  # every 5 ticks * 3s = 15s
+            _exit_recovery_tick = 0
+            try:
+                _check_exit_params_recovery()
+            except Exception as _e:
+                log.warning("Exit-params recovery error: %s", _e)
         time.sleep(3)
 
 
@@ -1518,9 +1623,11 @@ def risk_unblock_strategy(strategy_name):
         abort(401)
     with _risk_lock:
         removed = _blocked_strategies.pop(strategy_name, None)
-        _auto_closed_symbols.discard(
-            removed["symbol"] if removed else ""
-        )
+        if removed and removed.get("symbol"):
+            sym_u = removed["symbol"].upper()
+            _auto_closed_symbols.difference_update(
+                {k for k in _auto_closed_symbols if k[1] == sym_u}
+            )
     if removed:
         log.info("Strategy '%s' unblocked manually", strategy_name)
         return jsonify({"unblocked": strategy_name})
