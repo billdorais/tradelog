@@ -282,6 +282,8 @@
                                color: #7FE098; border-bottom-color: #7FE098; }
     .pnl-tab.active-signals { border-color: #7FE098; background: rgba(139,217,150,0.12);
                                color: #7FE098; border-bottom-color: #7FE098; }
+    .pnl-tab.active-refined { border-color: #a78bfa; background: rgba(167,139,250,0.12);
+                               color: #c4b5fd; border-bottom-color: #a78bfa; }
     .pnl-tab.active-ib      { border-color: #7FE098; background: rgba(136,191,139,0.12);
                                color: #7FE098; border-bottom-color: #7FE098; }
 
@@ -609,9 +611,10 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px;align-items:center">
-        <button id="tabAlpaca"  class="pnl-tab active-alpaca"  onclick="switchTab('alpaca')">Alpaca P&amp;L</button>
-        <button id="tabSignals" class="pnl-tab"                onclick="switchTab('signals')">Signals P&amp;L</button>
-        <button id="tabIB"      class="pnl-tab"                onclick="switchTab('ib')">IB P&amp;L</button>
+        <button id="tabAlpaca"   class="pnl-tab active-alpaca"  onclick="switchTab('alpaca')">Alpaca P&amp;L</button>
+        <button id="tabSignals"  class="pnl-tab"                onclick="switchTab('signals')">Signals P&amp;L</button>
+        <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')">IB P&amp;L</button>
+        <button id="tabRefined"  class="pnl-tab"                onclick="switchTab('refined')">Refined P&amp;L</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
                  border-top-color:#7FE098;border-radius:50%;
@@ -810,9 +813,10 @@
         activeTab = tab;
 
         // Tab button highlighting
-        document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'  ? ' active-alpaca'  : '');
-        document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals' ? ' active-signals' : '');
-        document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'      ? ' active-ib'      : '');
+        document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'   ? ' active-alpaca'   : '');
+        document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals'  ? ' active-signals'  : '');
+        document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'       ? ' active-ib'       : '');
+        document.getElementById('tabRefined').className = 'pnl-tab' + (tab === 'refined'  ? ' active-refined'  : '');
 
         const spinner = document.getElementById('chartLoadingSpinner');
         const label   = document.getElementById('equityChartLabel');
@@ -822,9 +826,25 @@
         // Update label and show spinner immediately (before any async work)
         if (spinner) spinner.style.display = 'inline-block';
         if (filter)  filter.style.display  = tab === 'signals' ? '' : 'none';
-        if (note)    note.style.display    = tab === 'alpaca'  ? 'flex' : 'none';
+        if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined') ? 'flex' : 'none';
 
-        if (tab === 'signals') {
+        if (tab === 'refined') {
+          if (label) label.textContent = 'Cumulative realized P&L from Alpaca Refined fills';
+          if (note)  note.textContent  = 'Cumulative realized P&L from Alpaca Refined fills.';
+          const fromEl = document.getElementById('equityFromDate');
+          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
+          const toEl = document.getElementById('equityToDate');
+          if (toEl) toEl.style.display = '';
+          await new Promise(r => requestAnimationFrame(r));
+          renderAlpacaStats(
+            document.getElementById('equityFromDate')?.value || '',
+            document.getElementById('equityToDate')?.value   || '',
+            '2'
+          );
+          feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('alpaca');
+          renderTable(allTrades, selectedStrategy);
+        } else if (tab === 'signals') {
           if (label) label.textContent = 'Cumulative P&L from TV signals';
           await new Promise(r => requestAnimationFrame(r));
           try { await applyEquityFilter(); } catch(e) { console.error('applyEquityFilter:', e); }
@@ -1094,13 +1114,12 @@
     }
     // ───────────────────────────────────────────────────────────────────────
 
-    async function renderAlpacaStats(fromDate, toDate) {
-      // Use the backend FIFO pairing (Python, handles partial fills correctly)
-      // which mirrors exactly how the Signals P&L tab works.
+    async function renderAlpacaStats(fromDate, toDate, account) {
       let url = '/api/alpaca/analysis';
       const params = new URLSearchParams();
       if (fromDate)    params.set('from_date',    fromDate);
       if (toDate)      params.set('to_date',       toDate);
+      if (account)     params.set('account',       account);
       if (_signalsOnly) params.set('signals_only', '1');
       const exclArr = [..._loadExclusions()];
       if (exclArr.length) params.set('exclude', exclArr.join(','));
@@ -2452,7 +2471,7 @@
     async function applyEquityFilter() {
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
-      if (activeTab === 'alpaca') { renderAlpacaStats(fromDate, toDate); return; }
+      if (activeTab === 'alpaca' || activeTab === 'refined') { renderAlpacaStats(fromDate, toDate, activeTab === 'refined' ? '2' : null); return; }
       try {
         if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
           const res = await fetch(buildStatsUrl('', fromDate, toDate));
