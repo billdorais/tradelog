@@ -213,13 +213,15 @@
               <th style="width:40px">#</th>
               <th>Strategy</th>
               <th style="text-align:right">Score</th>
+              <th style="text-align:right" title="Shares to trade on Refined (band $ target ÷ last price)">Shares</th>
+              <th style="text-align:right" title="Last price used when sizing this strategy">Price</th>
               <th style="text-align:right">Trades</th>
               <th style="text-align:right">Win %</th>
               <th style="text-align:right">PF</th>
               <th style="text-align:right">Total P&amp;L</th>
             </tr>
           </thead>
-          <tbody id="refinedSnapRows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+          <tbody id="refinedSnapRows"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -596,7 +598,7 @@
       if (!d.run_at) {
         meta.textContent = 'never run · daily scheduler fires at 4:15 PM ET on weekdays';
         status.style.display = 'none';
-        rows.innerHTML = '<tr><td colspan="7" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="9" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
         return;
       }
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
@@ -620,17 +622,26 @@
       status.style.display = '';
       const scored = d.top_scored || [];
       if (!scored.length) {
-        rows.innerHTML = '<tr><td colspan="7" class="empty">No profitable strategies in the current window.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="9" class="empty">No profitable strategies in the current window.</td></tr>';
         return;
       }
       rows.innerHTML = scored.map((r, i) => {
         const pnlCls = (r.total_pnl || 0) >= 0 ? 'pos' : 'neg';
         const wrCls  = (r.win_rate  || 0) >= 50  ? 'pos' : 'neg';
         const scorePct = Math.round((r.score || 0) * 100);
+        // Shares = band $ target ÷ last price. "—" if we couldn't fetch a price.
+        const shares = (r.shares != null)
+          ? `<span title="$${r.target_dollars || 0} target ÷ $${(r.last_price || 0).toFixed(2)}">${r.shares}</span>`
+          : `<span style="color:#666" title="No price — falls back to rule's default quantity">—</span>`;
+        const price  = (r.last_price != null)
+          ? `$${Number(r.last_price).toFixed(2)}`
+          : '<span style="color:#666">—</span>';
         return `<tr>
           <td style="color:#666">${i + 1}</td>
           <td class="name"><span style="color:#c4b5fd;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
+          <td style="text-align:right;color:#c4b5fd">${shares}</td>
+          <td style="text-align:right;color:#888">${price}</td>
           <td style="text-align:right">${r.trades}</td>
           <td style="text-align:right" class="${wrCls}">${r.win_rate}%</td>
           <td style="text-align:right">${pfBadge(r.profit_factor)}</td>
@@ -639,7 +650,7 @@
       }).join('');
     } catch (e) {
       meta.textContent = 'error loading snapshot';
-      rows.innerHTML = '<tr><td colspan="7" class="empty" style="color:#e74c3c">Error.</td></tr>';
+      rows.innerHTML = '<tr><td colspan="9" class="empty" style="color:#e74c3c">Error.</td></tr>';
     }
   }
 

@@ -859,11 +859,22 @@
       }
     }
 
+    // qty_override badge — set by the daily Refined refresh on Refined broker nodes
+    // so this broker uses a different size than the rule's default quantity node.
+    let qtyBadge = '';
+    if (node.type === 'broker' && node.qty_override != null) {
+      qtyBadge = `<div style="font-size:0.6rem;color:#c4b5fd;margin-top:2px"
+                       title="Per-broker size override set by Refined refresh — overrides this rule's Quantity node for this broker only">
+                    ↪ ${node.qty_override} sh
+                  </div>`;
+    }
+
     return `
       <div class="node ${cls}" onclick="openNodeEditor(${ruleId}, ${idx})">
         <div class="node-label">${label}</div>
         <div class="node-value">${escHtml(value)}</div>
         ${pctBadge}
+        ${qtyBadge}
         <div class="node-delete" onclick="deleteNode(event, ${ruleId}, ${idx})">&#10005;</div>
       </div>`;
   }
@@ -1348,6 +1359,12 @@
       case 'broker':
       case 'ticker':
         node.value = document.getElementById('f_value').value.trim();
+        // Preserve qty_override (set by the Refined refresh) when manually editing a
+        // broker node — otherwise clicking through the editor wipes the override.
+        if (type === 'broker' && activeNodeIdx !== -1) {
+          const existing = rules.find(r => r.id === activePipelineId)?.nodes?.[activeNodeIdx];
+          if (existing && existing.qty_override != null) node.qty_override = existing.qty_override;
+        }
         break;
       case 'quantity':
         node.amount = parseFloat(document.getElementById('f_amount').value) || 1;

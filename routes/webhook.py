@@ -135,9 +135,16 @@ def webhook():
                 ntype = n.get("type")
                 if ntype == "broker":
                     # Support combined values (ib-paper, ib-live, alpaca-paper, alpaca-live)
-                    # as well as legacy bare values (ib, alpaca, coinbase)
-                    raw_bv = (n.get("value") or "ib-paper").lower()
-                    broker_targets.append(raw_bv)
+                    # as well as legacy bare values (ib, alpaca, coinbase).
+                    # Optional qty_override is set per-broker by the Refined refresh,
+                    # so the same routing rule can size Paper and Refined differently.
+                    raw_bv      = (n.get("value") or "ib-paper").lower()
+                    qty_ovr_raw = n.get("qty_override")
+                    try:
+                        qty_ovr = int(qty_ovr_raw) if qty_ovr_raw not in (None, "") else None
+                    except (TypeError, ValueError):
+                        qty_ovr = None
+                    broker_targets.append((raw_bv, qty_ovr))
                     # Combined values also set use_live_broker for IB
                     if raw_bv == "ib-live":
                         use_live_broker = True
@@ -196,7 +203,7 @@ def webhook():
                     # Always in DOLLARS — not affected by exit_params mode.
                     ep_hard_stop     = n.get("hard_stop")
             if broker_targets:
-                broker_name = ",".join(broker_targets)
+                broker_name = ",".join(t[0] for t in broker_targets)
             app.log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
                          strategy_name, broker_name, use_live_broker, quantity, sec_type)
             matched_rule_id = rule_id
@@ -249,7 +256,7 @@ def webhook():
 
     # If no broker nodes fired from pipeline, fall back to the single broker_name from request body
     if not broker_targets and broker_name:
-        broker_targets = [broker_name]
+        broker_targets = [(broker_name, None)]
 
     # Enforce trading hours if a trading_hours node was found in the matched pipeline
     if th_start and th_end:
@@ -344,12 +351,14 @@ def webhook():
 
     # All broker targets are now async — Alpaca/Coinbase fire in a background
     # thread so the webhook returns immediately and TradingView never times out.
-    coinbase_targets = [t for t in broker_targets if _broker_family(t) == "coinbase"]
-    alpaca_targets   = [t for t in broker_targets if _broker_family(t) == "alpaca"]
-    ib_targets       = [t for t in broker_targets if _broker_family(t) == "ib"]
+    # broker_targets is a list of (broker_name, qty_override_or_None) tuples.
+    coinbase_targets = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "coinbase"]
+    alpaca_targets   = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "alpaca"]
+    ib_targets       = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "ib"]
 
     # --- Coinbase (sync-only; typically sub-second) ---
-    for target in coinbase_targets:
+    for target, qty_override in coinbase_targets:
+        _qty = qty_override if qty_override is not None else quantity
         if app.coinbase_broker is None:
             exec_status = "error"
             exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
@@ -362,18 +371,18 @@ def webhook():
                 result = app.coinbase_broker.place_order(
                     ticker   = ticker,
                     action   = order_action,
-                    quantity = quantity,
+                    quantity = _qty,
                     price    = data.get("price") if data.get("order_type") == "LMT" else None,
                     sec_type = sec_type,
                     currency = currency,
                 )
                 exec_status = "ok" if result.get("success") else "error"
                 exec_detail = json.dumps(result)
-                app.log.info("Coinbase order %s %s %s: %s", order_action, quantity, ticker, result)
+                app.log.info("Coinbase order %s %s %s: %s", order_action, _qty, ticker, result)
             except Exception as e:
                 exec_status = "error"
                 exec_detail = str(e)
-                app.log.error("Coinbase order failed for %s %s %s: %s", order_action, quantity, ticker, e)
+                app.log.error("Coinbase order failed for %s %s %s: %s", order_action, _qty, ticker, e)
 
     # Commit any sync (Coinbase) results before launching async threads
     if conn and exec_status is not None:
@@ -381,7 +390,7 @@ def webhook():
         conn.commit()
 
     # --- Alpaca (async — order placement can take 1–3 s; we return 200 first) ---
-    for target in alpaca_targets:
+    for target, qty_override in alpaca_targets:
         _broker_inst = _resolve_alpaca_broker(target)
         if _broker_inst is None:
             if conn:
@@ -405,7 +414,8 @@ def webhook():
             _ticker      = ticker
             _action      = order_action
             _raw_action  = raw_action
-            _qty         = quantity
+            # Per-broker qty_override (set by the Refined refresh) wins over the rule's default.
+            _qty         = qty_override if qty_override is not None else quantity
             _price       = data.get("price") if data.get("order_type") == "LMT" else None
             _sec_type    = sec_type
             _currency    = currency
@@ -571,11 +581,13 @@ def webhook():
 
             threading.Thread(target=_place_alpaca_async, daemon=True).start()
 
-    for target in ib_targets:
+    for target, qty_override in ib_targets:
         _live = (target == "ib-live") or (use_live_broker and target != "ib-paper")
         active_broker  = app.ib_broker_live if (_live and app.ib_broker_live) else app.ib_broker
         submit_task    = app._submit_ib_live_task if (_live and app.ib_broker_live) else app._submit_ib_task
         mode_label     = "live" if (_live and app.ib_broker_live) else "paper"
+        # Per-broker qty_override (set by the Refined refresh) wins over the rule's default.
+        ib_qty         = qty_override if qty_override is not None else quantity
 
         if active_broker is None:
             if conn:
@@ -596,7 +608,7 @@ def webhook():
                 conn.close()
                 conn = None
 
-            def _place_async():
+            def _place_async(_qty=ib_qty):
                 _exec_status = _exec_detail = None
                 try:
                     if sec_type.upper() == "OPT":
@@ -624,7 +636,7 @@ def webhook():
                             )
                         result = submit_task(
                             active_broker.place_order,
-                            ticker, order_action, quantity, None,
+                            ticker, order_action, _qty, None,
                             _timeout = 20,
                             sec_type = "OPT",
                             currency = currency,
@@ -642,7 +654,7 @@ def webhook():
                             active_broker.place_order,
                             ticker   = ticker,
                             action   = order_action,
-                            quantity = quantity,
+                            quantity = _qty,
                             price    = data.get("price") if data.get("order_type") == "LMT" else None,
                             sec_type = sec_type,
                             currency = currency,
@@ -651,7 +663,7 @@ def webhook():
                         _exec_status = "ok" if result.get("success") else "error"
                         _exec_detail = json.dumps({**result, "mode": mode_label})
                         app.log.info("IB %s order %s %s %s: %s",
-                                     mode_label, order_action, quantity, ticker, result)
+                                     mode_label, order_action, _qty, ticker, result)
                 except Exception as e:
                     _exec_status = "error"
                     _exec_detail = str(e)

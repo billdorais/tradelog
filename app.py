@@ -3777,6 +3777,84 @@ def _composite_score(stats, max_pnl):
     )
 
 
+# Refined sizing: per-strategy dollar target by composite-score band.
+# Score is 0..1 from _composite_score; bands are score-percent thresholds.
+# First matching band wins (highest score-floor first).
+_REFINED_SIZE_BANDS = [
+    (80, 10_000),   # score ≥ 0.80 → $10k per trade
+    (65,  5_000),   # score ≥ 0.65 → $5k
+    (50,  2_500),   # score ≥ 0.50 → $2.5k
+    ( 0,  1_000),   # else         → $1k floor
+]
+
+
+def _band_target_dollars(score):
+    """Return the dollar target for the band that contains this composite score."""
+    score_pct = (score or 0) * 100
+    for floor_pct, target in _REFINED_SIZE_BANDS:
+        if score_pct >= floor_pct:
+            return target
+    return 0
+
+
+def _strategy_to_ticker(strategy_name):
+    """Pull the ticker from a strategy name. Naming convention is
+    {TICKER}_{REST}, e.g. SPY_CAM_BREAKOUT_R4S4_V02_5MIN → SPY."""
+    if not strategy_name:
+        return ""
+    return strategy_name.split("_", 1)[0].upper()
+
+
+_REFINED_PRICE_CACHE = {}   # {ticker: (price, fetched_at_ts)} — refreshed at each /refresh_refined run
+_REFINED_PRICE_TTL   = 60 * 60 * 6   # 6h — covers a trading day after the 4:15 PM ET refresh
+
+
+def _fetch_alpaca_last_prices(tickers):
+    """Return {ticker: last_trade_price} for the given tickers via the Alpaca data API.
+    Cached per-ticker for _REFINED_PRICE_TTL so within-refresh duplicates don't re-hit."""
+    import os
+    import time as _time
+    tickers = [t for t in {t.upper() for t in tickers if t} if t]
+    if not tickers:
+        return {}
+
+    now = _time.time()
+    fresh, stale = {}, []
+    for t in tickers:
+        cached = _REFINED_PRICE_CACHE.get(t)
+        if cached and (now - cached[1]) < _REFINED_PRICE_TTL:
+            fresh[t] = cached[0]
+        else:
+            stale.append(t)
+
+    if stale:
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestTradeRequest
+            key    = os.environ.get("ALPACA_KEY",    "")
+            secret = os.environ.get("ALPACA_SECRET", "")
+            client = StockHistoricalDataClient(api_key=key or None, secret_key=secret or None)
+            req    = StockLatestTradeRequest(symbol_or_symbols=stale)
+            trades = client.get_stock_latest_trade(req) or {}
+            for sym, trade in trades.items():
+                price = float(getattr(trade, "price", 0) or 0)
+                if price > 0:
+                    fresh[sym] = price
+                    _REFINED_PRICE_CACHE[sym] = (price, now)
+        except Exception as _e:
+            log.warning("Alpaca last-price fetch failed for %s: %s", stale, _e)
+    return fresh
+
+
+def _compute_refined_qty(score, last_price):
+    """Shares to trade for a strategy with this composite score and ticker price.
+    Returns None if we can't size (no price). Floors at 1 share when a target applies."""
+    target = _band_target_dollars(score)
+    if not target or not last_price or last_price <= 0:
+        return None
+    return max(1, round(target / last_price))
+
+
 def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
@@ -3799,6 +3877,18 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
     )
     top_scored = scored[:n]
     top        = [name for name, _, _ in top_scored]
+
+    # Per-strategy share sizing: dollar target by band ÷ last price.
+    # Stored on the broker node as qty_override so Paper sizing is untouched.
+    tickers     = {_strategy_to_ticker(name) for name, _, _ in top_scored}
+    last_prices = _fetch_alpaca_last_prices(tickers)
+    qty_by_strat = {}    # strategy → (shares, target_dollars, price)
+    for name, stats, score in top_scored:
+        ticker = _strategy_to_ticker(name)
+        price  = last_prices.get(ticker)
+        target = _band_target_dollars(score)
+        shares = _compute_refined_qty(score, price)
+        qty_by_strat[name] = (shares, target, price)
 
     conn = get_db(); cur = conn.cursor(); p = placeholder()
     cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
@@ -3830,14 +3920,18 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
                     rule_map[(nd.get("value") or "").upper()] = (rid, new_nodes)
             removed += 1
 
-    # Step 2 — add broker_val to top N
+    # Step 2 — add broker_val to top N, with per-strategy qty_override when we have a price
     for strat in top:
         entry = rule_map.get(strat.upper())
         if not entry:
             not_found.append(strat)
             continue
         rid, nodes = entry
-        nodes.append({"type": "broker", "value": broker_val})
+        broker_node = {"type": "broker", "value": broker_val}
+        shares = qty_by_strat.get(strat, (None, 0, None))[0]
+        if shares is not None:
+            broker_node["qty_override"] = shares
+        nodes.append(broker_node)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
 
@@ -3856,10 +3950,14 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
                 "win_rate":      stats.get("win_rate"),
                 "profit_factor": stats.get("profit_factor"),
                 "total_pnl":     stats.get("total_pnl"),
+                "shares":        qty_by_strat.get(name, (None, 0, None))[0],
+                "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
+                "last_price":    qty_by_strat.get(name, (None, 0, None))[2],
             }
             for name, stats, score in top_scored
         ],
         "weights": _REFINED_SCORE_WEIGHTS,
+        "size_bands": _REFINED_SIZE_BANDS,
         "updated": updated,
         "removed_from": removed,
         "not_found": not_found,
