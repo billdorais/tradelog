@@ -1913,8 +1913,10 @@
       document.getElementById('wlLossSeg').style.width = (avgLoss / total * 100) + '%';
 
       // Only draw the equity chart from FIFO data on non-Alpaca tabs;
-      // the Alpaca tab draws its own chart from portfolio history before calling renderStats.
-      if (activeTab !== 'alpaca') {
+      // both Alpaca tabs (Paper All and Paper Refined) draw their own chart with
+      // ticker/pnl tooltips in renderAlpacaStats before calling renderStats.
+      // Overdrawing here would replace it with [entry #? → exit #?] placeholders.
+      if (activeTab !== 'alpaca' && activeTab !== 'refined') {
         const _curve   = stats.equity_curve || [];
         const labels   = _curve.map(p => fmtET(p.time) || p.time);
         const values   = _curve.map(p => p.value);
