@@ -485,6 +485,30 @@
     document.getElementById('analysisTo').value   = t;
   }
 
+  // Set of strategy names (upper-case) that have an enabled routing rule.
+  // Populated each time load() runs so renderStratTable can star "live" strategies.
+  // Map value: 'refined' if rule routes to alpaca-paper-2, otherwise 'paper'.
+  let _liveStrategies = new Map();
+
+  async function _refreshLiveStrategies() {
+    try {
+      const res   = await fetch('/api/routing/rules');
+      const rules = await res.json();
+      const map   = new Map();
+      for (const r of rules || []) {
+        if (!r.enabled) continue;
+        const nodes = r.nodes || [];
+        const stratNode = nodes.find(n => n.type === 'strategy');
+        if (!stratNode || !stratNode.value) continue;
+        const isRefined = nodes.some(n =>
+          n.type === 'broker' && (n.value === 'alpaca-paper-2' || n.value === 'alpaca-live-2')
+        );
+        map.set(String(stratNode.value).toUpperCase(), isRefined ? 'refined' : 'paper');
+      }
+      _liveStrategies = map;
+    } catch(e) { console.warn('refreshLiveStrategies failed:', e); }
+  }
+
   // ── Load data ──────────────────────────────────────────────────────────────
   async function load() {
     const fromDate = document.getElementById('analysisFrom').value;
@@ -504,7 +528,8 @@
     }
     if (params.toString()) endpoint += '?' + params.toString();
     document.getElementById('dataAge').textContent = 'Loading…';
-    const res  = await fetch(endpoint);
+    // Refresh routing-rule -> live-strategy map in parallel with the analysis fetch.
+    const [res] = await Promise.all([fetch(endpoint), _refreshLiveStrategies()]);
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
@@ -786,9 +811,15 @@
       const winCls     = winStreak === 0 ? '' : winStreak <= 2 ? 'style="color:#7FE098"' : 'style="color:#7FE098;font-weight:600"';
       const winLabel   = winStreak === 0 ? '<span style="color:#444">—</span>'
         : `<span ${winCls}>${winStreak}d</span>`;
+      const liveTag = _liveStrategies.get(name.toUpperCase());
+      const star = liveTag === 'refined'
+        ? `<span title="Live in Signal Router — routed to Alpaca Refined" style="color:#c4b5fd;margin-right:6px">★</span>`
+        : liveTag === 'paper'
+          ? `<span title="Live in Signal Router (Paper only)" style="color:#7FE098;margin-right:6px">★</span>`
+          : '';
       return `
       <tr class="drill" data-kind="strategy" data-key="${esc(name)}" title="Click to see round-trip pairs">
-        <td class="name">${esc(name)}</td>
+        <td class="name">${star}${esc(name)}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
         <td>${pfBadge(s.profit_factor)}</td>
