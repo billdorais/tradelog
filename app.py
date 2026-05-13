@@ -5991,14 +5991,28 @@ def api_alpaca_analysis():
         if not fills:
             return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
 
-        # Filter by date range if requested
-        if from_date or to_date:
+        # Filter by date range if requested. The pairing window is extended backwards
+        # 14 days so cross-day round-trips (entry yesterday, exit today) still get
+        # paired when the user filters to a narrow range. After pairing, we post-
+        # filter the closed pairs by exit_time so only trades that *closed* within
+        # the user's range appear in the leaderboard/totals.
+        PAIRING_LOOKBACK_DAYS = 14
+        user_from_date = from_date
+        user_to_date   = to_date
+        pair_from_date = from_date
+        if from_date:
+            try:
+                from datetime import timedelta as _td
+                pair_from_date = (_dt.fromisoformat(from_date).date() - _td(days=PAIRING_LOOKBACK_DAYS)).isoformat()
+            except Exception:
+                pair_from_date = from_date
+        if pair_from_date or to_date:
             def _fill_date(f):
                 t = f.get("time") or ""
                 return t[:10] if t else ""
             fills = [f for f in fills if
-                     (not from_date or _fill_date(f) >= from_date) and
-                     (not to_date   or _fill_date(f) <= to_date)]
+                     (not pair_from_date or _fill_date(f) >= pair_from_date) and
+                     (not to_date        or _fill_date(f) <= to_date)]
 
         signals_only = (signals_only == "1")
 
@@ -6216,6 +6230,20 @@ def api_alpaca_analysis():
                 "consec_losing_days":  _consecutive_losing_days(tlist),
                 "consec_winning_days": _consecutive_winning_days(tlist),
             }
+
+        # Post-filter paired round-trips by exit_time against the user's range.
+        # The pairing window was widened (see PAIRING_LOOKBACK_DAYS above) so cross-day
+        # trades pair correctly; here we drop pairs whose close fell outside the range.
+        if user_from_date or user_to_date:
+            def _exit_date(c):
+                t = c.get("exit_time") or ""
+                return t[:10] if t else ""
+            closed = [c for c in closed
+                      if (not user_from_date or _exit_date(c) >= user_from_date)
+                      and (not user_to_date  or _exit_date(c) <= user_to_date)]
+            daily_closed = [c for c in daily_closed
+                            if (not user_from_date or _exit_date(c) >= user_from_date)
+                            and (not user_to_date  or _exit_date(c) <= user_to_date)]
 
         # Apply frontend exclusions (localStorage keys: "exit_time|ticker")
         exclude_param = request.args.get("exclude", "").strip()
