@@ -445,7 +445,9 @@
       el.style.background = active ? (key === 'alpaca2' ? '#1a1030' : '#1a1d2e') : 'transparent';
       el.style.color      = active ? (key === 'alpaca2' ? '#c4b5fd' : '#e0e0e0') : '#666';
     });
-    if (src !== 'alpaca' && src !== 'alpaca2') document.getElementById('reconPanel').style.display = 'none';
+    // Always hide the reconciliation panel on tab switch — loadReconciliation()
+    // will re-show it with the correct account's numbers if applicable.
+    document.getElementById('reconPanel').style.display = 'none';
     load();
   }
 
@@ -520,7 +522,7 @@
     renderTickerTable(data.per_ticker  || {});
     renderDaily(data.daily   || []);
     renderWeekly(data.weekly || []);
-    if (isAlpaca) loadReconciliation();
+    if (isAlpaca || isAlpaca2) loadReconciliation(isAlpaca2 ? '2' : '');
   }
 
   // ── Overall stats ──────────────────────────────────────────────────────────
@@ -575,10 +577,11 @@
   }
 
   // ── Alpaca reconciliation ─────────────────────────────────────────────────
-  async function loadReconciliation() {
+  async function loadReconciliation(account) {
     const panel = document.getElementById('reconPanel');
+    const url   = account === '2' ? '/api/alpaca/account?account=2' : '/api/alpaca/account';
     try {
-      const res  = await fetch('/api/alpaca/account');
+      const res  = await fetch(url);
       const acct = await res.json();
       if (acct.error) { panel.style.display = 'none'; return; }
 

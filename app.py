@@ -1310,13 +1310,16 @@ def broker_status():
 
 @app.route("/api/alpaca/account")
 def api_alpaca_account():
-    """Buying power, equity, and open positions — polled by the dashboard."""
-    if alpaca_broker is None:
-        return jsonify({"error": "Alpaca not configured"}), 400
+    """Buying power, equity, and open positions — polled by the dashboard.
+    Pass ?account=2 to query the Alpaca Refined (second) account."""
+    use_acct2 = request.args.get("account") == "2"
+    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    if broker is None:
+        return jsonify({"error": "Alpaca account 2 not configured" if use_acct2 else "Alpaca not configured"}), 400
     try:
-        alpaca_broker._ensure_client()
-        acct      = alpaca_broker._trading.get_account()
-        positions = alpaca_broker._get_positions_cached()
+        broker._ensure_client()
+        acct      = broker._trading.get_account()
+        positions = broker._get_positions_cached()
         pos_list     = []
         total_mv     = 0.0
         total_upnl   = 0.0
@@ -1337,7 +1340,16 @@ def api_alpaca_account():
         pos_list.sort(key=lambda x: abs(x["market_value"]), reverse=True)
         bp       = float(acct.buying_power)
         equity   = float(acct.equity)
-        daily_pnl = _compute_daily_pnl()
+        # Account 1 uses the cached _compute_daily_pnl() which also feeds the risk monitor.
+        # Account 2 calls daily_pnl() directly — no cache, called only when the analysis page loads.
+        if use_acct2:
+            try:
+                daily_pnl = round(broker.daily_pnl(), 2)
+            except Exception as _e:
+                log.debug("api_alpaca_account: acct2 daily_pnl failed: %s", _e)
+                daily_pnl = None
+        else:
+            daily_pnl = _compute_daily_pnl()
         return jsonify({
             "buying_power":     round(bp, 2),
             "equity":           round(equity, 2),
