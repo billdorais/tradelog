@@ -1129,8 +1129,16 @@
       const equityCurve = data.equity_curve || [];
       const overall     = data.overall      || {};
 
-      // Fill count stats from raw fills
-      let execs = allAlpacaExecs;
+      // Fill count stats from raw fills. allAlpacaExecs is loaded once at page
+      // load from account 1; on the Refined tab we need account 2's fills for
+      // the chart's JS pairing, otherwise the chart misses everything that
+      // happened on the second account.
+      let execs;
+      if (account === '2') {
+        execs = await fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []);
+      } else {
+        execs = allAlpacaExecs;
+      }
       if (fromDate || toDate) {
         execs = execs.filter(e => {
           const d = e.time && e.time.slice(0, 10);

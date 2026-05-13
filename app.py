@@ -5377,15 +5377,22 @@ def alpaca_portfolio_history():
 
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
-    """Return filled Alpaca orders with resolved strategy names, cached."""
-    if alpaca_broker is None:
+    """Return filled Alpaca orders with resolved strategy names, cached.
+    Pass ?account=2 to query the Alpaca Refined (second) account."""
+    use_acct2 = request.args.get("account") == "2"
+    broker    = alpaca_broker2 if use_acct2 else alpaca_broker
+    if broker is None:
         return jsonify([])
     # Check if we already have strategy-annotated data in the fills cache
     now = time.time()
-    if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL and _alpaca_fills_cache["data"]:
-        return jsonify(_alpaca_fills_cache["data"])
+    if use_acct2:
+        if now - _alpaca2_fills_cache["ts"] < ALPACA_CACHE_TTL and _alpaca2_fills_cache["data"]:
+            return jsonify(_alpaca2_fills_cache["data"])
+    else:
+        if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL and _alpaca_fills_cache["data"]:
+            return jsonify(_alpaca_fills_cache["data"])
     try:
-        fills = _get_cached_fills()
+        fills = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
         # Resolve strategy for each fill by matching time+ticker against signals DB
         try:
             from datetime import datetime as _dt
@@ -5430,8 +5437,13 @@ def alpaca_trades():
                         f["strategy"] = best[1]
         except Exception as _e:
             log.debug("alpaca_trades strategy resolution error: %s", _e)
-        # Write annotated data back into the cache (keeps ts from _get_cached_fills)
-        _alpaca_fills_cache["data"] = fills
+        # Write annotated data back into the cache (keeps ts from _get_cached_fills).
+        # Reference the module-level cache directly so we hit whatever dict the
+        # _get_cached_fills_*() call most recently bound.
+        if use_acct2:
+            _alpaca2_fills_cache["data"] = fills
+        else:
+            _alpaca_fills_cache["data"] = fills
         return jsonify(fills)
     except Exception as e:
         log.error("alpaca_trades error: %s", e)
