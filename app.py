@@ -3471,12 +3471,26 @@ _refined_last_run    = None   # UTC timestamp of last scheduled/manual refresh
 _refined_last_result = {}    # {updated, removed, not_found, top_strategies}
 
 
-def _compute_strategy_pnl(days=30):
-    """Return {strategy_name: total_pnl} from Alpaca fills using LIFO pairing."""
+def _compute_strategy_pnl(days=30, from_date=None):
+    """Return {strategy_name: total_pnl} from Alpaca fills using LIFO pairing.
+
+    If from_date is provided (YYYY-MM-DD), it acts as a fixed anchor — the window
+    grows over time and rankings become more stable as data accumulates.
+    Otherwise falls back to a rolling `days`-day window."""
     import datetime as _dt
-    cutoff_ts = (
-        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
-    ).timestamp()
+    if from_date:
+        try:
+            cutoff_ts = _dt.datetime.fromisoformat(from_date).replace(
+                tzinfo=_dt.timezone.utc
+            ).timestamp()
+        except Exception:
+            cutoff_ts = (
+                _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+            ).timestamp()
+    else:
+        cutoff_ts = (
+            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+        ).timestamp()
 
     try:
         fills = _get_cached_fills()
@@ -3526,11 +3540,14 @@ def _compute_strategy_pnl(days=30):
     return pnl_map
 
 
-def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30):
-    """Core logic: remove broker_val from all rules, re-add to top N by P&L."""
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=None):
+    """Core logic: remove broker_val from all rules, re-add to top N by P&L.
+
+    from_date (YYYY-MM-DD) anchors the ranking window; falls back to a rolling
+    `days`-day window when not provided."""
     global _refined_last_run, _refined_last_result
 
-    pnl_map = _compute_strategy_pnl(days=days)
+    pnl_map = _compute_strategy_pnl(days=days, from_date=from_date)
     top = [
         name for name, pnl
         in sorted(pnl_map.items(), key=lambda x: x[1], reverse=True)
@@ -3588,9 +3605,11 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30):
         "updated": updated,
         "removed_from": removed,
         "not_found": not_found,
+        "from_date": from_date or None,
+        "days": days if not from_date else None,
     }
-    log.info("Refined refresh: top=%d updated=%d removed=%d not_found=%d",
-             len(top), updated, removed, len(not_found))
+    log.info("Refined refresh: top=%d updated=%d removed=%d not_found=%d anchor=%s",
+             len(top), updated, removed, len(not_found), from_date or f"last {days}d")
     return _refined_last_result
 
 
@@ -3611,8 +3630,9 @@ def _refined_scheduler_loop():
         if now.hour == 16 and now.minute == 15 and _ran_today != today:
             _ran_today = today
             try:
-                _do_refresh_refined()
-                log.info("Scheduled Refined refresh complete for %s", today)
+                _anchor = _load_setting("REFINED_FROM_DATE")
+                _do_refresh_refined(from_date=_anchor or None)
+                log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
 
@@ -3622,15 +3642,23 @@ threading.Thread(target=_refined_scheduler_loop, daemon=True).start()
 
 @app.route("/api/routing/rules/refresh_refined", methods=["GET"])
 def get_refined_status():
-    return jsonify(_refined_last_result if _refined_last_run else {"run_at": None})
+    anchor = _load_setting("REFINED_FROM_DATE") or ""
+    if _refined_last_run:
+        return jsonify({**_refined_last_result, "anchor_from_date": anchor})
+    return jsonify({"run_at": None, "anchor_from_date": anchor})
 
 
 @app.route("/api/routing/rules/refresh_refined", methods=["POST"])
 def refresh_refined():
     data = request.get_json(silent=True) or {}
-    n    = int(data.get("n", 20))
-    days = int(data.get("days", 30))
-    result = _do_refresh_refined(n=n, days=days)
+    n         = int(data.get("n", 20))
+    days      = int(data.get("days", 30))
+    from_date = (data.get("from_date") or "").strip() or None
+    # Persist the anchor so the daily scheduler picks it up on subsequent runs.
+    # Empty string clears it (back to rolling-window behaviour).
+    if "from_date" in data:
+        _save_setting("REFINED_FROM_DATE", from_date or "")
+    result = _do_refresh_refined(n=n, days=days, from_date=from_date)
     return jsonify(result)
 
 
