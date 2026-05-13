@@ -3641,7 +3641,11 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             while qty > 0 and q:
                 ep, eq, et, es = q.pop(-1)
                 m = min(qty, eq)
-                closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
+                # Round-trip uses entry's strategy. If the entry didn't resolve to
+                # any known strategy, fall back to the closing fill's strategy so a
+                # known exit doesn't get filed under "Unknown".
+                pair_strat = es if (es and es != "Unknown") else strat
+                closed.append({"pnl": round((ep - price) * m, 2), "strategy": pair_strat,
                                "ticker": sym, "date": date_str, "side": "SHORT",
                                "entry_price": ep, "exit_price": price, "qty": m,
                                "entry_time": et, "exit_time": fill_ts})
@@ -3658,7 +3662,8 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             while qty > 0 and q:
                 ep, eq, et, es = q.pop(-1)
                 m = min(qty, eq)
-                closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
+                pair_strat = es if (es and es != "Unknown") else strat
+                closed.append({"pnl": round((price - ep) * m, 2), "strategy": pair_strat,
                                "ticker": sym, "date": date_str, "side": "LONG",
                                "entry_price": ep, "exit_price": price, "qty": m,
                                "entry_time": et, "exit_time": fill_ts})
@@ -6345,7 +6350,8 @@ def api_alpaca_analysis():
                     while qty > 0 and q:
                         ep, eq, et, es = q.pop(0)  # FIFO: oldest short
                         m = min(qty, eq)
-                        daily_closed.append({"pnl": round((ep - price) * m, 2), "strategy": es,
+                        pair_strat = es if (es and es != "Unknown") else strat
+                        daily_closed.append({"pnl": round((ep - price) * m, 2), "strategy": pair_strat,
                                              "entry_strategy": es, "exit_strategy": strat,
                                              "ticker": sym, "date": date_str, "side": "SHORT",
                                              "entry_price": ep, "exit_price": price, "qty": m,
@@ -6363,7 +6369,8 @@ def api_alpaca_analysis():
                     while qty > 0 and q:
                         ep, eq, et, es = q.pop(0)
                         m = min(qty, eq)
-                        daily_closed.append({"pnl": round((price - ep) * m, 2), "strategy": es,
+                        pair_strat = es if (es and es != "Unknown") else strat
+                        daily_closed.append({"pnl": round((price - ep) * m, 2), "strategy": pair_strat,
                                              "entry_strategy": es, "exit_strategy": strat,
                                              "ticker": sym, "date": date_str, "side": "LONG",
                                              "entry_price": ep, "exit_price": price, "qty": m,
