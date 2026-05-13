@@ -3519,8 +3519,12 @@ _refined_last_run    = None   # UTC timestamp of last scheduled/manual refresh
 _refined_last_result = {}    # {updated, removed, not_found, top_strategies}
 
 
-def _compute_strategy_pnl(days=30, from_date=None):
-    """Return {strategy_name: total_pnl} from Alpaca fills using LIFO pairing.
+def _compute_strategy_stats(days=30, from_date=None):
+    """Return per-strategy stats from Alpaca fills using LIFO pairing.
+
+    Returns {strategy_name: {trades, wins, losses, win_rate, gross_win,
+    gross_loss, total_pnl, profit_factor}}. profit_factor is None when there
+    are no losing trades.
 
     If from_date is provided (YYYY-MM-DD), it acts as a fixed anchor — the window
     grows over time and rankings become more stable as data accumulates.
@@ -3557,8 +3561,8 @@ def _compute_strategy_pnl(days=30, from_date=None):
             pass
     recent.sort(key=lambda x: x[0])
 
-    open_longs  = {}   # sym → [(price, qty, strategy)]
-    pnl_map     = {}
+    open_longs   = {}   # sym → [(price, qty, strategy)]
+    strat_trades = {}   # strategy → list of per-round-trip PnL values
 
     for _, f in recent:
         sym    = (f.get("symbol") or "").upper()
@@ -3580,27 +3584,94 @@ def _compute_strategy_pnl(days=30, from_date=None):
             while qty > 0 and q:
                 ep, eq, es = q.pop(-1)   # LIFO — most recent long
                 m = min(qty, eq)
-                pnl_map[es] = pnl_map.get(es, 0) + round((price - ep) * m, 2)
+                trade_pnl = round((price - ep) * m, 2)
+                strat_trades.setdefault(es, []).append(trade_pnl)
                 qty -= m
                 if eq > m:
                     q.append((ep, eq - m, es))
 
-    return pnl_map
+    stats_map = {}
+    for strat, pnls in strat_trades.items():
+        wins       = [p for p in pnls if p > 0]
+        losses     = [p for p in pnls if p < 0]
+        gross_win  = round(sum(wins), 2)
+        gross_loss = round(abs(sum(losses)), 2)
+        total_pnl  = round(gross_win - gross_loss, 2)
+        stats_map[strat] = {
+            "trades":        len(pnls),
+            "wins":          len(wins),
+            "losses":        len(losses),
+            "win_rate":      round(len(wins) / len(pnls) * 100, 1) if pnls else 0.0,
+            "gross_win":     gross_win,
+            "gross_loss":    gross_loss,
+            "total_pnl":     total_pnl,
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+        }
+    return stats_map
+
+
+# Composite-score weights for ranking strategies into Alpaca Refined.
+# Keep these in sync with the client-side mirror in templates/analysis.html
+# (addTopNToRefined) so manual and scheduled refreshes pick the same top N.
+_REFINED_SCORE_WEIGHTS = {
+    "profit_factor": 0.30,
+    "win_rate":      0.20,
+    "trades":        0.20,
+    "total_pnl":     0.30,
+}
+# Saturation points — beyond these, additional gains stop contributing to score.
+_REFINED_PF_SATURATION     = 2.0   # PF >= 2.0 is "great", no extra credit beyond
+_REFINED_TRADES_SATURATION = 10    # 10+ trades counts as a full sample
+
+
+def _composite_score(stats, max_pnl):
+    """Composite ranking score in [0, 1]. Higher = better.
+
+    Each metric is normalized to [0, 1] and combined with _REFINED_SCORE_WEIGHTS:
+      - profit_factor: pf / 2.0, capped at 1.0; None (no losses) → 1.0
+      - win_rate:      win_rate / 100
+      - trades:        trades / 10, capped at 1.0
+      - total_pnl:     pnl / max_pnl in the candidate cohort (negative → 0)
+    """
+    pf = stats.get("profit_factor")
+    pf_norm     = 1.0 if pf is None else max(min(pf / _REFINED_PF_SATURATION, 1.0), 0.0)
+    win_norm    = max(min((stats.get("win_rate") or 0) / 100.0, 1.0), 0.0)
+    trades_norm = min((stats.get("trades") or 0) / _REFINED_TRADES_SATURATION, 1.0)
+    pnl         = stats.get("total_pnl") or 0
+    pnl_norm    = (pnl / max_pnl) if (pnl > 0 and max_pnl > 0) else 0.0
+
+    w = _REFINED_SCORE_WEIGHTS
+    return round(
+        w["profit_factor"] * pf_norm +
+        w["win_rate"]      * win_norm +
+        w["trades"]        * trades_norm +
+        w["total_pnl"]     * pnl_norm,
+        4,
+    )
 
 
 def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=None):
-    """Core logic: remove broker_val from all rules, re-add to top N by P&L.
+    """Core logic: remove broker_val from all rules, re-add to top N by composite score.
+
+    Ranking uses a weighted score over (profit_factor, win_rate, trades, total_pnl);
+    see _composite_score. Net-negative strategies are filtered out before scoring.
 
     from_date (YYYY-MM-DD) anchors the ranking window; falls back to a rolling
     `days`-day window when not provided."""
     global _refined_last_run, _refined_last_result
 
-    pnl_map = _compute_strategy_pnl(days=days, from_date=from_date)
-    top = [
-        name for name, pnl
-        in sorted(pnl_map.items(), key=lambda x: x[1], reverse=True)
-        if pnl > 0
-    ][:n]
+    stats_map  = _compute_strategy_stats(days=days, from_date=from_date)
+    candidates = {k: v for k, v in stats_map.items() if (v.get("total_pnl") or 0) > 0}
+    max_pnl    = max((v["total_pnl"] for v in candidates.values()), default=0)
+
+    scored = sorted(
+        ((name, stats, _composite_score(stats, max_pnl))
+         for name, stats in candidates.items()),
+        key=lambda x: x[2],
+        reverse=True,
+    )
+    top_scored = scored[:n]
+    top        = [name for name, _, _ in top_scored]
 
     conn = get_db(); cur = conn.cursor(); p = placeholder()
     cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
@@ -3650,6 +3721,18 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
     _refined_last_result = {
         "run_at": _refined_last_run,
         "top_strategies": top,
+        "top_scored": [
+            {
+                "name":          name,
+                "score":         score,
+                "trades":        stats.get("trades"),
+                "win_rate":      stats.get("win_rate"),
+                "profit_factor": stats.get("profit_factor"),
+                "total_pnl":     stats.get("total_pnl"),
+            }
+            for name, stats, score in top_scored
+        ],
+        "weights": _REFINED_SCORE_WEIGHTS,
         "updated": updated,
         "removed_from": removed,
         "not_found": not_found,

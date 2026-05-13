@@ -192,6 +192,38 @@
     <div style="font-size:0.72rem;color:#555;margin-top:8px" id="reconPositions"></div>
   </div>
 
+  <!-- Refined Snapshot: result of the most recent /refresh_refined run -->
+  <div id="refinedSnapPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#c4b5fd">Refined Snapshot</span>
+      <span id="refinedSnapMeta" style="font-size:0.75rem;color:#666">loading…</span>
+      <button id="refinedSnapToggle" onclick="toggleRefinedSnap()"
+              style="margin-left:auto;background:transparent;border:1px solid #2a2d3e;color:#888;
+                     padding:4px 10px;border-radius:6px;font-size:0.72rem;cursor:pointer">Hide</button>
+      <button onclick="refreshRefinedNow()"
+              style="background:transparent;border:1px solid #a78bfa;color:#c4b5fd;
+                     padding:4px 12px;border-radius:6px;font-size:0.72rem;cursor:pointer">↻ Refresh Now</button>
+    </div>
+    <div id="refinedSnapBody">
+      <div class="tbl-wrap">
+        <table style="width:100%">
+          <thead>
+            <tr>
+              <th style="width:40px">#</th>
+              <th>Strategy</th>
+              <th style="text-align:right">Score</th>
+              <th style="text-align:right">Trades</th>
+              <th style="text-align:right">Win %</th>
+              <th style="text-align:right">PF</th>
+              <th style="text-align:right">Total P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody id="refinedSnapRows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <!-- Strategy leaderboard -->
   <div class="section">
     <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -548,6 +580,78 @@
     renderDaily(data.daily   || []);
     renderWeekly(data.weekly || []);
     if (isAlpaca || isAlpaca2) loadReconciliation(isAlpaca2 ? '2' : '');
+    _loadRefinedSnapshot();
+  }
+
+  // ── Refined Snapshot ───────────────────────────────────────────────────────
+  // Shows the result of the last /refresh_refined run (daily scheduler or manual).
+  async function _loadRefinedSnapshot() {
+    const meta = document.getElementById('refinedSnapMeta');
+    const rows = document.getElementById('refinedSnapRows');
+    try {
+      const res = await fetch('/api/routing/rules/refresh_refined');
+      const d   = await res.json();
+      if (!d.run_at) {
+        meta.textContent = 'never run · daily scheduler fires at 4:15 PM ET on weekdays';
+        rows.innerHTML = '<tr><td colspan="7" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
+        return;
+      }
+      const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
+      const cnt = (d.top_strategies || []).length;
+      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel} · last run ${d.run_at}`;
+      const scored = d.top_scored || [];
+      if (!scored.length) {
+        rows.innerHTML = '<tr><td colspan="7" class="empty">No profitable strategies in the current window.</td></tr>';
+        return;
+      }
+      rows.innerHTML = scored.map((r, i) => {
+        const pnlCls = (r.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+        const wrCls  = (r.win_rate  || 0) >= 50  ? 'pos' : 'neg';
+        const scorePct = Math.round((r.score || 0) * 100);
+        return `<tr>
+          <td style="color:#666">${i + 1}</td>
+          <td class="name"><span style="color:#c4b5fd;margin-right:6px">★</span>${esc(r.name)}</td>
+          <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
+          <td style="text-align:right">${r.trades}</td>
+          <td style="text-align:right" class="${wrCls}">${r.win_rate}%</td>
+          <td style="text-align:right">${pfBadge(r.profit_factor)}</td>
+          <td style="text-align:right" class="${pnlCls}">${fmt(r.total_pnl)}</td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      meta.textContent = 'error loading snapshot';
+      rows.innerHTML = '<tr><td colspan="7" class="empty" style="color:#e74c3c">Error.</td></tr>';
+    }
+  }
+
+  function toggleRefinedSnap() {
+    const body = document.getElementById('refinedSnapBody');
+    const btn  = document.getElementById('refinedSnapToggle');
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    btn.textContent    = hidden ? 'Hide' : 'Show';
+  }
+
+  async function refreshRefinedNow() {
+    if (!confirm('Run the Refined refresh now?\n\nThis will REMOVE the Refined broker from every routing rule, then re-add it to the top-N strategies by composite score.')) return;
+    const meta = document.getElementById('refinedSnapMeta');
+    const rows = document.getElementById('refinedSnapRows');
+    meta.textContent = 'refreshing…';
+    rows.innerHTML   = '<tr><td colspan="7" class="empty">Refreshing…</td></tr>';
+    try {
+      const res = await fetch('/api/routing/rules/refresh_refined', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      await _loadRefinedSnapshot();
+      await _refreshLiveStrategies();
+      if (_lastStratMap && Object.keys(_lastStratMap).length) renderStratTable(_lastStratMap);
+    } catch (e) {
+      meta.textContent = 'refresh failed: ' + (e.message || e);
+      rows.innerHTML   = '<tr><td colspan="7" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
+    }
   }
 
   // ── Overall stats ──────────────────────────────────────────────────────────
@@ -769,12 +873,28 @@
   function filterStratTable()  { renderStratTable(_lastStratMap); }
   function filterTickerTable() { renderTickerTable(_lastTickerMap); }
 
+  // Composite ranking score — must stay in sync with _composite_score in app.py.
+  // Weights: PF 30% + Win 20% + Trades 20% + P&L 30%.
+  // Saturation: PF at 2.0, trades at 10. P&L normalized relative to cohort max.
+  function _refinedScore(s, maxPnl) {
+    const pf       = s.profit_factor;
+    const pfNorm   = (pf == null) ? 1.0 : Math.max(Math.min(pf / 2.0, 1.0), 0);
+    const winNorm  = Math.max(Math.min((s.win_rate  || 0) / 100, 1.0), 0);
+    const trNorm   = Math.min((s.trades || 0) / 10, 1.0);
+    const pnl      = s.total_pnl || 0;
+    const pnlNorm  = (pnl > 0 && maxPnl > 0) ? pnl / maxPnl : 0;
+    return 0.30 * pfNorm + 0.20 * winNorm + 0.20 * trNorm + 0.30 * pnlNorm;
+  }
+
   async function addTopNToRefined() {
     const n = parseInt(document.getElementById('refinedTopN')?.value) || 20;
-    const all = Object.entries(_lastStratMap)
-      .sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
-    const profitable = all.filter(([, s]) => (s.total_pnl || 0) > 0);
-    const top = profitable.slice(0, n).map(([name]) => name);
+    const profitable = Object.entries(_lastStratMap)
+      .filter(([, s]) => (s.total_pnl || 0) > 0);
+    const maxPnl = profitable.reduce((m, [, s]) => Math.max(m, s.total_pnl || 0), 0);
+    const ranked = profitable
+      .map(([name, s]) => [name, s, _refinedScore(s, maxPnl)])
+      .sort((a, b) => b[2] - a[2]);
+    const top = ranked.slice(0, n).map(([name]) => name);
     if (!top.length) { alert('No profitable strategies found in the current view.'); return; }
     if (!confirm(`Add Alpaca Refined broker node to these ${top.length} strategies?\n\n${top.slice(0,10).join('\n')}${top.length > 10 ? `\n…and ${top.length - 10} more` : ''}`)) return;
     const res  = await fetch('/api/routing/rules/add_broker_node', {
