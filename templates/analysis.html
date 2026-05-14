@@ -257,19 +257,20 @@
         <thead>
           <tr>
             <th onclick="sortTable('stratTable',0)">Strategy</th>
-            <th onclick="sortTable('stratTable',1)">Trades</th>
-            <th onclick="sortTable('stratTable',2)">Win %</th>
-            <th onclick="sortTable('stratTable',3)">Profit Factor</th>
-            <th onclick="sortTable('stratTable',4)">Total P&amp;L</th>
-            <th onclick="sortTable('stratTable',5)">Avg Win</th>
-            <th onclick="sortTable('stratTable',6)">Avg Loss</th>
-            <th onclick="sortTable('stratTable',7)">Largest Win</th>
-            <th onclick="sortTable('stratTable',8)">Largest Loss</th>
-            <th onclick="sortTable('stratTable',9)"  title="Consecutive losing trading days (most recent)">Loss Streak</th>
-            <th onclick="sortTable('stratTable',10)" title="Consecutive winning trading days (most recent)">Win Streak</th>
+            <th onclick="sortTable('stratTable',1)"  title="Composite ranking score (PF 30% · Win 20% · Trades 20% · P&L 30%) — same as the Refined snapshot">Score</th>
+            <th onclick="sortTable('stratTable',2)">Trades</th>
+            <th onclick="sortTable('stratTable',3)">Win %</th>
+            <th onclick="sortTable('stratTable',4)">Profit Factor</th>
+            <th onclick="sortTable('stratTable',5)">Total P&amp;L</th>
+            <th onclick="sortTable('stratTable',6)">Avg Win</th>
+            <th onclick="sortTable('stratTable',7)">Avg Loss</th>
+            <th onclick="sortTable('stratTable',8)">Largest Win</th>
+            <th onclick="sortTable('stratTable',9)">Largest Loss</th>
+            <th onclick="sortTable('stratTable',10)" title="Consecutive losing trading days (most recent)">Loss Streak</th>
+            <th onclick="sortTable('stratTable',11)" title="Consecutive winning trading days (most recent)">Win Streak</th>
           </tr>
         </thead>
-        <tbody id="stratBody"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
+        <tbody id="stratBody"><tr><td colspan="12" class="empty">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -943,15 +944,20 @@
   function renderStratTable(map) {
     _lastStratMap = map;
     const body = document.getElementById('stratBody');
-    const all  = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    // maxPnl is computed across PROFITABLE strategies only so each row's score here
+    // matches its score in the Refined snapshot (same normalization).
+    const maxPnl = Object.values(map).reduce(
+      (m, s) => (s.total_pnl || 0) > 0 ? Math.max(m, s.total_pnl) : m, 0);
+    const all = Object.entries(map).sort((a, b) =>
+      _refinedScore(b[1], maxPnl) - _refinedScore(a[1], maxPnl));
     const q    = (document.getElementById('stratFilter')?.value || '').trim().toLowerCase();
     const rows = q ? all.filter(([name]) => name.toLowerCase().includes(q)) : all;
     const countEl = document.getElementById('stratFilterCount');
     if (countEl) countEl.textContent = q
       ? `${rows.length} of ${all.length} match`
       : (all.length ? `${all.length} strategies` : '');
-    if (!all.length) { body.innerHTML = '<tr><td colspan="10" class="empty">No closed trades yet.</td></tr>'; return; }
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="10" class="empty">No strategies match "${esc(q)}".</td></tr>`; return; }
+    if (!all.length) { body.innerHTML = '<tr><td colspan="12" class="empty">No closed trades yet.</td></tr>'; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="12" class="empty">No strategies match "${esc(q)}".</td></tr>`; return; }
     body.innerHTML = rows.map(([name, s]) => {
       const loseStreak = s.consec_losing_days || 0;
       const loseCls    = loseStreak === 0 ? '' : loseStreak <= 2 ? 'style="color:#F2E7AC"' : 'style="color:#e74c3c;font-weight:600"';
@@ -967,9 +973,11 @@
         : liveTag === 'paper'
           ? `<span title="Live in Signal Router (Paper only)" style="color:#F2E7AC;margin-right:6px">★</span>`
           : '';
+      const scorePct = Math.round(_refinedScore(s, maxPnl) * 100);
       return `
       <tr class="drill" data-kind="strategy" data-key="${esc(name)}" title="Click to see round-trip pairs">
         <td class="name">${star}${esc(name)}</td>
+        <td style="color:#c4b5fd;font-weight:600">${scorePct}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
         <td>${pfBadge(s.profit_factor)}</td>
