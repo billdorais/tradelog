@@ -604,7 +604,8 @@
       }
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
       const cnt = (d.top_strategies || []).length;
-      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel} · last run ${d.run_at}`;
+      const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
+      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}`;
 
       // Status line: ✓ updated · removed · ⚠ not matched (with names if any).
       const updated   = d.updated || 0;

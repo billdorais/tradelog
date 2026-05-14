@@ -3790,6 +3790,12 @@ _REFINED_SIZE_BANDS = [
     ( 0,  2_000),   # else         → $2k floor
 ]
 
+# Minimum closed round-trips a strategy needs before being eligible for Refined.
+# Filters out 1–2-trade flukes that would otherwise score highly on PF/Win.
+# Start lenient while the system is young; raise to 5 (then 10) as the cohort
+# accumulates samples.
+_REFINED_MIN_TRADES = 3
+
 
 def _band_target_dollars(score):
     """Return the dollar target for the band that contains this composite score."""
@@ -3869,7 +3875,13 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
     global _refined_last_run, _refined_last_result
 
     stats_map  = _compute_strategy_stats(days=days, from_date=from_date)
-    candidates = {k: v for k, v in stats_map.items() if (v.get("total_pnl") or 0) > 0}
+    # Eligibility: net-positive AND at least _REFINED_MIN_TRADES round-trips.
+    # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
+    # 100% win) out of the top-N — they need more sample evidence first.
+    candidates = {
+        k: v for k, v in stats_map.items()
+        if (v.get("total_pnl") or 0) > 0 and (v.get("trades") or 0) >= _REFINED_MIN_TRADES
+    }
     max_pnl    = max((v["total_pnl"] for v in candidates.values()), default=0)
 
     scored = sorted(
@@ -3961,6 +3973,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
         ],
         "weights": _REFINED_SCORE_WEIGHTS,
         "size_bands": _REFINED_SIZE_BANDS,
+        "min_trades": _REFINED_MIN_TRADES,
         "updated": updated,
         "removed_from": removed,
         "not_found": not_found,
