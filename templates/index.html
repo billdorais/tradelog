@@ -3015,9 +3015,32 @@
     setInterval(loadAccount,  30000);
     setInterval(refreshLivePnl, 10000);
 
+    // Sets of tickers used to star Open Positions chips.
+    // _refinedTickers — has at least one strategy in the Refined top-N snapshot (purple ★)
+    // _routedTickers  — has any enabled routing rule but isn't in Refined (yellow ★)
+    let _refinedTickers = new Set();
+    let _routedTickers  = new Set();
+
     async function loadAccount() {
       try {
-        const d = await fetch('/api/alpaca/account').then(r => r.json());
+        const [d, snap, rules] = await Promise.all([
+          fetch('/api/alpaca/account').then(r => r.json()),
+          fetch('/api/routing/rules/refresh_refined').then(r => r.json()).catch(() => null),
+          fetch('/api/routing/rules').then(r => r.json()).catch(() => null),
+        ]);
+        if (snap && Array.isArray(snap.top_strategies)) {
+          _refinedTickers = new Set(snap.top_strategies.map(s => (s || '').split('_', 1)[0].toUpperCase()));
+        }
+        if (Array.isArray(rules)) {
+          const routed = new Set();
+          for (const r of rules) {
+            if (!r.enabled) continue;
+            const stratNode = (r.nodes || []).find(n => n.type === 'strategy');
+            const value     = stratNode && stratNode.value;
+            if (value) routed.add(String(value).split('_', 1)[0].toUpperCase());
+          }
+          _routedTickers = routed;
+        }
         if (d.error) return;
         document.getElementById('accountSection').style.display = '';
 
@@ -3053,10 +3076,19 @@
         document.getElementById('acctPositionCount').textContent = count;
         document.getElementById('acctPositionCount').style.color = count > 0 ? '#F2E7AC' : '#e0e0e0';
         // Color tickers by unrealized P&L: green winning, red losing, neutral flat.
+        // Star prefix: purple ★ if ticker has a strategy in the Refined top-N,
+        // yellow ★ if it has any routing rule but isn't in Refined, none otherwise.
         const tickers = (d.positions || []).map(p => {
-          const upnl  = p.unrealized_pnl || 0;
-          const color = upnl > 0 ? '#7FE098' : upnl < 0 ? '#ef5350' : '#888';
-          return `<span style="color:${color}" title="${p.side} · unrealized ${upnl>=0?'+':'-'}$${Math.abs(upnl).toFixed(2)}">${p.symbol}</span> $${Math.abs(p.market_value).toLocaleString('en-US',{maximumFractionDigits:0})}`;
+          const upnl   = p.unrealized_pnl || 0;
+          const color  = upnl > 0 ? '#7FE098' : upnl < 0 ? '#ef5350' : '#888';
+          const sym    = (p.symbol || '').toUpperCase();
+          let star = '';
+          if (_refinedTickers.has(sym)) {
+            star = `<span style="color:#c4b5fd;margin-right:4px" title="Has a strategy in the Refined top-N">★</span>`;
+          } else if (_routedTickers.has(sym)) {
+            star = `<span style="color:#F2E7AC;margin-right:4px" title="Has a Signal Router rule (Paper only)">★</span>`;
+          }
+          return `${star}<span style="color:${color}" title="${p.side} · unrealized ${upnl>=0?'+':'-'}$${Math.abs(upnl).toFixed(2)}">${p.symbol}</span> $${Math.abs(p.market_value).toLocaleString('en-US',{maximumFractionDigits:0})}`;
         }).join(' &nbsp;·&nbsp; ');
         document.getElementById('acctPositionTickers').innerHTML = tickers || '<span style="color:#333">No open positions</span>';
       } catch(e) { /* Alpaca not configured or unreachable */ }
