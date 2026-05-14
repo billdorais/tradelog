@@ -2960,6 +2960,10 @@ def api_journal_generate():
 
     data    = request.get_json(silent=True) or {}
     week    = data.get("week", "").strip()   # "YYYY-WXX"
+    # Default to Alpaca Refined (account 2) — that's the production cohort the
+    # weekly journal is meant to reflect. Pass account="1" to use Paper All.
+    account = str(data.get("account", "2")).strip() or "2"
+    use_acct2 = (account == "2")
 
     # Default to current ISO week
     if not week:
@@ -2982,9 +2986,10 @@ def api_journal_generate():
     # ── Trade stats for the week (same LIFO logic as /api/alpaca/analysis) ──
     trade_stats = {}
     try:
-        if alpaca_broker is not None:
+        active_broker = alpaca_broker2 if use_acct2 else alpaca_broker
+        if active_broker is not None:
             from datetime import datetime as _dt2
-            fills = _get_cached_fills()
+            fills = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
             week_fills = [f for f in fills if from_date <= (f.get("time") or "")[:10] <= to_date]
 
             # Build signal lookup (ticker, side) → [(ts, strategy, sentiment)]
@@ -3187,6 +3192,34 @@ def api_journal_generate():
     conn.commit()
     conn.close()
 
+    # ── Prior week's journal for progress comparison ────────────────────────
+    # Look up the entry for the ISO week immediately before this one so the AI
+    # can frame this week as progress / regression against the last entry.
+    prior_summary = ""
+    prior_stats   = {}
+    try:
+        prev_week_start = week_start - _dtmod.timedelta(days=7)
+        # Use ISO week to match the storage format set by <input type="week">.
+        _piso           = prev_week_start.isocalendar()
+        prev_week_key   = f"{_piso[0]}-W{_piso[1]:02d}"
+        _pconn = get_db()
+        _pcur  = _pconn.cursor()
+        _pcur.execute(
+            f"SELECT ai_summary, trade_stats FROM journal_entries WHERE week={placeholder()}",
+            (prev_week_key,),
+        )
+        _prow = _pcur.fetchone()
+        _pconn.close()
+        if _prow:
+            prior_summary = (_prow[0] if not DATABASE_URL else _prow["ai_summary"]) or ""
+            _prior_raw    = (_prow[1] if not DATABASE_URL else _prow["trade_stats"]) or "{}"
+            try:
+                prior_stats = json.loads(_prior_raw) if isinstance(_prior_raw, str) else (_prior_raw or {})
+            except Exception:
+                prior_stats = {}
+    except Exception as _pe:
+        log.debug("Journal prior-week lookup failed: %s", _pe)
+
     # Build AI prompt
     ts   = trade_stats
     md   = market_data
@@ -3203,9 +3236,10 @@ def api_journal_generate():
     spy_ret  = spy.get("weekly_return", 0) or 0
     qqq_ret  = qqq.get("weekly_return", 0) or 0
 
+    account_label = "Alpaca Refined (paper)" if use_acct2 else "Alpaca Paper All"
     prompt = (
         f"You are a trading coach reviewing a systematic trader's weekly performance journal.\n\n"
-        f"Week: {week} ({from_date} to {to_date})\n\n"
+        f"Week: {week} ({from_date} to {to_date}) · Account: {account_label}\n\n"
         f"MARKET CONTEXT:\n"
         f"  SPY: {spy_ret:+.2f}% (open ${spy.get('open','?')} → close ${spy.get('close','?')})\n"
         f"  QQQ: {qqq_ret:+.2f}%\n"
@@ -3238,8 +3272,28 @@ def api_journal_generate():
             tk_str = f" | {ticker} stock {tk_ret:+.2f}%" if isinstance(tk_ret, (int, float)) else ""
             prompt += f"  {strat}: {sv['trades']} trades · ${sv['pnl']:+.2f}{tk_str}\n"
 
+    # Prior-week reference block — gives the AI material to assess week-over-week progression.
+    if prior_summary or prior_stats:
+        prev_pnl   = prior_stats.get("total_pnl", 0)
+        prev_wr    = prior_stats.get("win_rate", 0)
+        prev_tr    = prior_stats.get("trades", 0)
+        prev_pf    = prior_stats.get("profit_factor")
+        prev_best  = prior_stats.get("best_strategy")
+        prev_worst = prior_stats.get("worst_strategy")
+        prompt += (
+            f"\nPRIOR WEEK ({prev_week_key}) FOR COMPARISON:\n"
+            f"  {prev_tr} trades · WR {prev_wr}% · P&L ${prev_pnl:+.2f} · PF {prev_pf or '—'}\n"
+            f"  Best: {prev_best or '—'} · Worst: {prev_worst or '—'}\n"
+        )
+        if prior_summary.strip():
+            # Trim to keep token usage bounded; the AI mainly needs themes, not full text.
+            _trimmed = prior_summary.strip()
+            if len(_trimmed) > 1500:
+                _trimmed = _trimmed[:1500] + "…"
+            prompt += f"  Last week's journal:\n    {_trimmed}\n"
+
     prompt += (
-        f"\nWrite a weekly trading journal entry with these FOUR sections. Use the exact headers shown:\n\n"
+        f"\nWrite a weekly trading journal entry with these FIVE sections. Use the exact headers shown:\n\n"
         f"**Market Regime & Setup Availability**\n"
         f"Was the regime favorable for Camarilla breakout/reversal strategies on 5-min bars? "
         f"Reference VIX level and SPY/QQQ direction specifically.\n\n"
@@ -3252,6 +3306,15 @@ def api_journal_generate():
         f"Combined P&L was ${bot5_pnl:+.2f}. For each bottom strategy, state whether the loss was due to "
         f"the stock moving against you (market regime) or whether the stock was actually up but the strategy "
         f"still lost (a structural miss). This distinction matters for deciding whether to pause the strategy.\n\n"
+        f"**Progress vs Last Week**\n"
+        + (
+            "Compare this week's numbers (trades, win rate, P&L, PF) to last week's. Did the prior 'Next Week Watchlist' "
+            "items play out — strategies you flagged to pause or watch, did they actually improve or stay weak? "
+            "Call out one thing that's clearly trending better and one that's clearly trending worse.\n\n"
+            if (prior_summary or prior_stats) else
+            "No prior-week entry exists yet for direct comparison. Note this as the baseline week and state two metrics "
+            "you'll watch next week to gauge progress.\n\n"
+        ) +
         f"**Next Week Watchlist**\n"
         f"One or two specific things to monitor. Which of the bottom 5 should be paused vs given another week?\n\n"
         f"Be direct and specific. No fluff. Keep each section to 2-3 sentences. Write in second person."
