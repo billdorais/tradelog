@@ -638,7 +638,7 @@
         const price  = (r.last_price != null)
           ? `$${Number(r.last_price).toFixed(2)}`
           : '<span style="color:#666">—</span>';
-        return `<tr>
+        return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" title="Click to see round-trip pairs">
           <td style="color:#666">${i + 1}</td>
           <td class="name"><span style="color:#c4b5fd;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
@@ -888,7 +888,7 @@
 
   // Delegated click handlers for leaderboard drill-down — bound once to a
   // stable parent so they survive tbody re-renders.
-  for (const id of ['stratBody', 'tickerBody']) {
+  for (const id of ['stratBody', 'tickerBody', 'refinedSnapRows']) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.addEventListener('click', e => {
