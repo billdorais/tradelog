@@ -447,13 +447,21 @@ def _eod_close_scheduler():
                 and triggered_date != today):
             triggered_date = today
             log.info("EOD scheduler: closing all positions at %02d:%02d ET", now.hour, now.minute)
-            # Alpaca
+            # Alpaca account 1 (Paper All)
             if alpaca_broker is not None:
                 try:
                     result = alpaca_broker.close_all_positions()
                     log.info("EOD close Alpaca: %s", result)
                 except Exception as e:
                     log.error("EOD close Alpaca failed: %s", e)
+            # Alpaca account 2 (Refined) — separate close call since each account
+            # holds its own positions. Missing this leaves Refined shorts open overnight.
+            if alpaca_broker2 is not None:
+                try:
+                    result = alpaca_broker2.close_all_positions()
+                    log.info("EOD close Alpaca Refined: %s", result)
+                except Exception as e:
+                    log.error("EOD close Alpaca Refined failed: %s", e)
             # Coinbase
             if coinbase_broker is not None:
                 try:
@@ -629,6 +637,7 @@ def _risk_monitor_loop():
                         )
                         for _broker, _label in [
                             (alpaca_broker,   "Alpaca"),
+                            (alpaca_broker2,  "Alpaca Refined"),
                             (coinbase_broker, "Coinbase"),
                         ]:
                             if _broker:
