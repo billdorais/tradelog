@@ -611,10 +611,10 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px;align-items:center">
-        <button id="tabAlpaca"   class="pnl-tab active-alpaca"  onclick="switchTab('alpaca')">Paper All</button>
+        <button id="tabAlpaca"   class="pnl-tab"                onclick="switchTab('alpaca')">Paper All</button>
         <button id="tabSignals"  class="pnl-tab"                onclick="switchTab('signals')" style="display:none">Signals P&amp;L</button>
         <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')"      style="display:none">IB P&amp;L</button>
-        <button id="tabRefined"  class="pnl-tab"                onclick="switchTab('refined')">Paper Refined</button>
+        <button id="tabRefined"  class="pnl-tab active-refined" onclick="switchTab('refined')">Paper Refined</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
                  border-top-color:#7FE098;border-radius:50%;
@@ -806,7 +806,7 @@
     let feedTab        = 'alpaca';
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
-    let activeTab = 'alpaca';
+    let activeTab = 'refined';
 
     async function switchTab(tab) {
       try {
