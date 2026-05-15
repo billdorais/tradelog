@@ -353,10 +353,17 @@
           <div class="entry-week">${esc(weekDateRange(e.week))}${md.regime ? ` <span style="font-size:0.7rem;font-weight:400;opacity:0.75;margin-left:8px">${esc(md.regime)}</span>` : ''}</div>
           <div class="entry-date">Week ${esc(e.week)} &nbsp;·&nbsp; Generated ${esc((e.generated_at || '').slice(0,10))}</div>
         </div>
-        <button onclick="regenerate('${esc(e.week)}')"
-          style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer">
-          ↺ Regenerate
-        </button>
+        <div style="display:flex;gap:6px">
+          <button onclick="regenerate('${esc(e.week)}')"
+            style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer">
+            ↺ Regenerate
+          </button>
+          <button onclick="deleteEntry('${esc(e.week)}')"
+            style="background:transparent;border:1px solid #3a1a1a;color:#666;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer"
+            onmouseover="this.style.color='#e74c3c';this.style.borderColor='#e74c3c'"
+            onmouseout="this.style.color='#666';this.style.borderColor='#3a1a1a'"
+            title="Delete this entry">🗑</button>
+        </div>
       </div>
 
       <div class="stat-row">
@@ -396,6 +403,12 @@
     document.getElementById('weekPicker').value =
       week.replace('-W', '-W').replace(/-W(\d)$/, '-W0$1');
     generate();
+  }
+
+  async function deleteEntry(week) {
+    if (!confirm(`Delete the journal entry for ${week}? This cannot be undone.`)) return;
+    await fetch(`/api/journal/entries/${encodeURIComponent(week)}`, { method: 'DELETE' });
+    loadEntries();
   }
 
   async function saveNotes(week) {

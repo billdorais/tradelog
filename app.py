@@ -2952,6 +2952,15 @@ def api_journal_notes():
     return jsonify({"ok": True})
 
 
+@app.route("/api/journal/entries/<week>", methods=["DELETE"])
+def api_journal_delete(week):
+    p = placeholder()
+    conn = get_db(); cur = conn.cursor()
+    cur.execute(f"DELETE FROM journal_entries WHERE week={p}", (week,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/journal/generate", methods=["POST"])
 def api_journal_generate():
     """Generate a weekly journal entry. Streams the AI summary via SSE."""
