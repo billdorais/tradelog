@@ -49,6 +49,19 @@
     .mkt-pill .ret.neg { color: #e74c3c; }
     .regime-badge { border: 1px solid; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; display: inline-flex; align-items: center; gap: 5px; }
 
+    /* Week tags */
+    .tag-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 24px 0; }
+    .tag-grade { display: inline-flex; align-items: center; justify-content: center;
+                 width: 28px; height: 28px; border-radius: 50%; font-size: 0.85rem;
+                 font-weight: 800; flex-shrink: 0; }
+    .tag-grade-A { background: rgba(127,224,152,0.15); border: 2px solid #7FE098; color: #7FE098; }
+    .tag-grade-B { background: rgba(180,220,120,0.15); border: 2px solid #b4dc78; color: #b4dc78; }
+    .tag-grade-C { background: rgba(242,231,172,0.15); border: 2px solid #F2E7AC; color: #F2E7AC; }
+    .tag-grade-D { background: rgba(231,76,60,0.15);   border: 2px solid #e74c3c; color: #e74c3c; }
+    .tag-label { background: rgba(112,168,245,0.08); border: 1px solid rgba(112,168,245,0.25);
+                 color: #70a8f5; border-radius: 20px; padding: 3px 10px;
+                 font-size: 0.72rem; white-space: nowrap; }
+
     /* Strategy table */
     .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; max-height: 320px; overflow-y: auto; }
     .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 10px; }
@@ -277,7 +290,17 @@
       ? `<div class="ai-text">${esc(e.ai_summary)}</div>`
       : `<div class="ai-placeholder">No AI summary — click Regenerate to generate one.</div>`;
 
+    const tags     = e.tags || {};
+    const grade    = tags.grade || '';
+    const labels   = tags.labels || [];
+    const tagRow   = (grade || labels.length) ? `
+      <div class="tag-row">
+        ${grade ? `<span class="tag-grade tag-grade-${grade}" title="Week grade">${grade}</span>` : ''}
+        ${labels.map(l => `<span class="tag-label">${esc(l)}</span>`).join('')}
+      </div>` : '';
+
     return `<div class="entry">
+      ${tagRow}
       <div class="entry-head" style="display:flex;justify-content:space-between;align-items:flex-start">
         <div>
           <div class="entry-week">${esc(weekDateRange(e.week))}${md.regime ? ` <span style="font-size:0.7rem;font-weight:400;opacity:0.75;margin-left:8px">${esc(md.regime)}</span>` : ''}</div>

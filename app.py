@@ -1069,6 +1069,13 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # Add tags column to journal_entries if not present
+    try:
+        cur.execute("ALTER TABLE journal_entries ADD COLUMN tags TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Migration: update trading_hours end time from 16:00 → 15:55 in all pipelines
     try:
         p = placeholder()
@@ -2919,7 +2926,7 @@ def api_journal_entries():
     entries = []
     for r in rows:
         e = dict(zip(cols, r)) if DATABASE_URL else dict(r)
-        for f in ("trade_stats", "market_data"):
+        for f in ("trade_stats", "market_data", "tags"):
             try:
                 e[f] = json.loads(e[f]) if e[f] else {}
             except Exception:
@@ -3317,7 +3324,11 @@ def api_journal_generate():
         ) +
         f"**Next Week Watchlist**\n"
         f"One or two specific things to monitor. Which of the bottom 5 should be paused vs given another week?\n\n"
-        f"Be direct and specific. No fluff. Keep each section to 2-3 sentences. Write in second person."
+        f"Be direct and specific. No fluff. Keep each section to 2-3 sentences. Write in second person.\n\n"
+        f"After your four sections add one line in exactly this format:\n"
+        f"TAGS: tag1, tag2, tag3\n"
+        f"Choose 3-5 short tags (1-3 words each) describing the week. Examples: trending, choppy, low-volume, "
+        f"high-vix, good-breakouts, poor-reversals, news-driven, earnings-week, gap-heavy, tight-range, strong-follow-through."
     )
 
     def _stream():
@@ -3336,12 +3347,39 @@ def api_journal_generate():
             yield f"data: {json.dumps({'error': str(_ae)})}\n\n"
             return
         yield f"data: {json.dumps({'done': True})}\n\n"
-        # Persist the completed summary
+        # Extract TAGS line, strip from displayed summary, compute grade
+        import re as _re
+        _tag_match = _re.search(r'\nTAGS:\s*(.+)$', summary, _re.IGNORECASE | _re.MULTILINE)
+        _labels = []
+        _clean_summary = summary
+        if _tag_match:
+            _labels = [t.strip().lower() for t in _tag_match.group(1).split(',') if t.strip()]
+            _clean_summary = summary[:_tag_match.start()].rstrip()
+
+        # Compute letter grade from trade stats
+        try:
+            _ts = json.loads(trade_stats) if isinstance(trade_stats, str) else trade_stats
+            _pnl = float((_ts or {}).get('total_pnl') or 0)
+            _wr  = float((_ts or {}).get('win_rate')  or 0)
+            _pf  = float((_ts or {}).get('profit_factor') or 0)
+            if   _pnl > 0 and _wr >= 60 and _pf >= 1.5: _grade = 'A'
+            elif _pnl > 0 and (_wr >= 50 or _pf >= 1.0): _grade = 'B'
+            elif _pnl > -100: _grade = 'C'
+            else:              _grade = 'D'
+        except Exception:
+            _grade = 'C'
+
+        _tags_json = json.dumps({"grade": _grade, "labels": _labels})
+
+        # Persist the completed summary + tags
         try:
             _p = placeholder()
             _c = get_db()
             _cur = _c.cursor()
-            _cur.execute(f"UPDATE journal_entries SET ai_summary={_p} WHERE week={_p}", (summary, week))
+            _cur.execute(
+                f"UPDATE journal_entries SET ai_summary={_p}, tags={_p} WHERE week={_p}",
+                (_clean_summary, _tags_json, week)
+            )
             _c.commit()
             _c.close()
         except Exception as _pe:
