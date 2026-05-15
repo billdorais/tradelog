@@ -3115,6 +3115,32 @@ def api_journal_generate():
                 by_strat[s]["pnl"]    = round(by_strat[s]["pnl"] + t["pnl"], 2)
                 by_strat[s]["trades"] += 1
             top = sorted(by_strat.items(), key=lambda x: x[1]["pnl"], reverse=True)
+
+            # Day-of-week and time-of-day breakdowns (exit time, ET)
+            from zoneinfo import ZoneInfo as _ZI
+            _et = _ZI("America/New_York")
+            by_day  = {}
+            by_hour = {}
+            _days   = ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+            for t in all_j:
+                try:
+                    dt_et = _dt2.fromisoformat(
+                        (t.get("exit_time") or "").replace("Z", "+00:00")
+                    ).astimezone(_et)
+                    day = dt_et.strftime("%A")
+                    by_day.setdefault(day, {"pnl": 0.0, "trades": 0, "wins": 0})
+                    by_day[day]["pnl"]    = round(by_day[day]["pnl"] + t["pnl"], 2)
+                    by_day[day]["trades"] += 1
+                    if t["pnl"] > 0: by_day[day]["wins"] += 1
+                    h, m   = dt_et.hour, 0 if dt_et.minute < 30 else 30
+                    bucket = f"{h:02d}:{m:02d}"
+                    by_hour.setdefault(bucket, {"pnl": 0.0, "trades": 0, "wins": 0})
+                    by_hour[bucket]["pnl"]    = round(by_hour[bucket]["pnl"] + t["pnl"], 2)
+                    by_hour[bucket]["trades"] += 1
+                    if t["pnl"] > 0: by_hour[bucket]["wins"] += 1
+                except Exception:
+                    pass
+
             trade_stats = {
                 "trades":        len(all_j),
                 "wins":          len(wins),
@@ -3128,6 +3154,8 @@ def api_journal_generate():
                 "worst_pnl":     top[-1][1]["pnl"] if len(top) > 1 else 0,
                 "per_strategy":  {k: v for k, v in top},
                 "tickers":       sorted(set(t["ticker"] for t in all_j)),
+                "by_day":        {d: by_day[d] for d in _days if d in by_day},
+                "by_hour":       dict(sorted(by_hour.items())),
             }
     except Exception as _te:
         log.warning("Journal trade stats error: %s", _te)

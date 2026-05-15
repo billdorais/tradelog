@@ -62,6 +62,17 @@
                  color: #70a8f5; border-radius: 20px; padding: 3px 10px;
                  font-size: 0.72rem; white-space: nowrap; }
 
+    /* Day / Time charts */
+    .perf-section { padding: 14px 24px; border-bottom: 1px solid #1e2130; display: flex; gap: 32px; flex-wrap: wrap; }
+    .perf-block { flex: 1; min-width: 200px; }
+    .perf-title { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 10px; }
+    .perf-bars { display: flex; align-items: flex-end; gap: 6px; height: 56px; }
+    .perf-bar-wrap { display: flex; flex-direction: column; align-items: center; flex: 1; gap: 4px; }
+    .perf-bar { width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; transition: opacity 0.2s; }
+    .perf-bar:hover { opacity: 0.8; }
+    .perf-label { font-size: 0.6rem; color: #555; white-space: nowrap; }
+    .perf-pnl   { font-size: 0.6rem; white-space: nowrap; }
+
     /* Strategy table */
     .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; max-height: 320px; overflow-y: auto; }
     .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 10px; }
@@ -290,6 +301,42 @@
       ? `<div class="ai-text">${esc(e.ai_summary)}</div>`
       : `<div class="ai-placeholder">No AI summary — click Regenerate to generate one.</div>`;
 
+    function perfBars(map, labels, shortLabel) {
+      const vals   = labels.map(l => (map[l] || {}).pnl || 0);
+      const trades = labels.map(l => (map[l] || {}).trades || 0);
+      const wins   = labels.map(l => (map[l] || {}).wins || 0);
+      const maxAbs = Math.max(...vals.map(Math.abs), 0.01);
+      return labels.map((l, i) => {
+        const v  = vals[i];
+        const h  = Math.max(Math.round(Math.abs(v) / maxAbs * 52), v !== 0 ? 4 : 0);
+        const cl = v > 0 ? '#7FE098' : v < 0 ? '#e74c3c' : '#2a2d3e';
+        const lb = shortLabel ? l.slice(0, 3) : l.replace(':00','').replace(':30','h30');
+        const tip= `${l}: ${v >= 0 ? '+' : ''}$${v.toFixed(2)} · ${trades[i]} trade${trades[i]===1?'':'s'}`;
+        const pnlTxt = v === 0 ? '' : `<div class="perf-pnl" style="color:${cl}">${v>0?'+':''}$${Math.abs(v) >= 100 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(0)}</div>`;
+        return `<div class="perf-bar-wrap" title="${tip}">
+          ${pnlTxt}
+          <div class="perf-bar" style="height:${h}px;background:${cl}"></div>
+          <div class="perf-label">${lb}</div>
+        </div>`;
+      }).join('');
+    }
+
+    const byDay   = ts.by_day  || {};
+    const byHour  = ts.by_hour || {};
+    const dayKeys  = ["Monday","Tuesday","Wednesday","Thursday","Friday"];
+    const hourKeys = Object.keys(byHour).sort();
+    const perfSection = (dayKeys.some(d => byDay[d]) || hourKeys.length) ? `
+      <div class="perf-section">
+        <div class="perf-block">
+          <div class="perf-title">Best Day</div>
+          <div class="perf-bars">${perfBars(byDay, dayKeys, true)}</div>
+        </div>
+        ${hourKeys.length ? `<div class="perf-block">
+          <div class="perf-title">Best Time of Day (ET)</div>
+          <div class="perf-bars">${perfBars(byHour, hourKeys, false)}</div>
+        </div>` : ''}
+      </div>` : '';
+
     const tags     = e.tags || {};
     const grade    = tags.grade || '';
     const labels   = tags.labels || [];
@@ -324,6 +371,8 @@
         ${tickerPills}
         ${regime}
       </div>
+
+      ${perfSection}
 
       ${stratRows ? `<div class="strat-section"><div class="section-label">Strategy Breakdown</div>${stratRows}</div>` : ''}
 
