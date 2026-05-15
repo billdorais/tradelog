@@ -3856,10 +3856,10 @@ def _composite_score(stats, max_pnl):
 # band-A fires = $100k, within the $108k DTBP. Strategies are intraday so no
 # overnight 2× exposure. Reduce if concurrency creeps above 5 fires/day.
 _REFINED_SIZE_BANDS = [
-    (80, 20_000),   # score ≥ 0.80 → $20k per trade
-    (65, 10_000),   # score ≥ 0.65 → $10k
-    (50,  5_000),   # score ≥ 0.50 → $5k
-    ( 0,  2_000),   # else         → $2k floor
+    (80, 25_000),   # score ≥ 0.80 → $25k per trade
+    (65, 12_000),   # score ≥ 0.65 → $12k
+    (50,  6_000),   # score ≥ 0.50 → $6k
+    ( 0,  2_500),   # else         → $2.5k floor
 ]
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
