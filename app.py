@@ -3337,7 +3337,7 @@ def api_journal_generate():
         try:
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=900,
+                max_tokens=1100,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -3349,7 +3349,7 @@ def api_journal_generate():
         yield f"data: {json.dumps({'done': True})}\n\n"
         # Extract TAGS line, strip from displayed summary, compute grade
         import re as _re
-        _tag_match = _re.search(r'\nTAGS:\s*(.+)$', summary, _re.IGNORECASE | _re.MULTILINE)
+        _tag_match = _re.search(r'TAGS:\s*(.+?)(?:\n|$)', summary, _re.IGNORECASE)
         _labels = []
         _clean_summary = summary
         if _tag_match:
