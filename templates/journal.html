@@ -280,7 +280,7 @@
     return `<div class="entry">
       <div class="entry-head" style="display:flex;justify-content:space-between;align-items:flex-start">
         <div>
-          <div class="entry-week">${esc(weekDateRange(e.week))}</div>
+          <div class="entry-week">${esc(weekDateRange(e.week))}${md.regime ? ` <span style="font-size:0.7rem;font-weight:400;opacity:0.75;margin-left:8px">${esc(md.regime)}</span>` : ''}</div>
           <div class="entry-date">Week ${esc(e.week)} &nbsp;·&nbsp; Generated ${esc((e.generated_at || '').slice(0,10))}</div>
         </div>
         <button onclick="regenerate('${esc(e.week)}')"
