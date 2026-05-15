@@ -3424,7 +3424,7 @@ def _progress_alert_specs(ticker, timeframes=None, version=None):
 def _progress_default_nodes(name):
     return [
         {"type": "strategy",      "value": name},
-        {"type": "quantity",      "amount": 100, "unit": "shares"},
+        {"type": "quantity",      "amount": 10, "unit": "shares"},
         {"type": "instrument",    "value": "STK"},
         {"type": "broker",        "value": "alpaca-paper"},
         {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
@@ -4108,6 +4108,36 @@ def refresh_refined():
         from_date = (_load_setting("REFINED_FROM_DATE") or "").strip() or None
     result = _do_refresh_refined(n=n, days=days, from_date=from_date)
     return jsonify(result)
+
+
+@app.route("/api/routing/rules/bulk_update_quantity", methods=["POST"])
+def bulk_update_quantity():
+    """Update the quantity node on all routing rules from old_amount to new_amount."""
+    data       = request.get_json(silent=True) or {}
+    new_amount = int(data.get("new_amount", 10))
+    old_amount = data.get("old_amount")   # None = update regardless of current value
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    updated = skipped = 0
+    for row in rows:
+        rid       = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        changed = False
+        for n in nodes:
+            if n.get("type") == "quantity" and n.get("unit") in ("shares", None):
+                if old_amount is None or n.get("amount") == old_amount:
+                    n["amount"] = new_amount
+                    changed = True
+        if changed:
+            cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
+            updated += 1
+        else:
+            skipped += 1
+    conn.commit(); conn.close()
+    log.info("bulk_update_quantity: %d→%d shares, updated=%d skipped=%d", old_amount or 0, new_amount, updated, skipped)
+    return jsonify({"updated": updated, "skipped": skipped, "new_amount": new_amount})
 
 
 @app.route("/api/routing/rules/add_broker_node", methods=["POST"])
