@@ -3513,7 +3513,7 @@ def _progress_alert_specs(ticker, timeframes=None, version=None):
                     "pine_inputs": {
                         "strategy_id": name,
                         "broker":      "alpaca-paper",
-                        "qty":         100,
+                        "qty":         10,
                     },
                     "alert_message": "{{strategy.order.alert_message}}",
                 })
@@ -3576,7 +3576,7 @@ def progress_add_ticker():
             "pine_inputs": {
                 "strategy_id": rule_name,
                 "broker":      "alpaca-paper",
-                "qty":         100,
+                "qty":         10,
             },
             "alert_message": "{{strategy.order.alert_message}}",
         }]
