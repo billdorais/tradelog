@@ -1900,6 +1900,30 @@ def api_market_prices():
         return jsonify({})
 
 
+@app.route("/api/broker/asset/<symbol>")
+def broker_asset(symbol):
+    """Return Alpaca asset info for a symbol — tradable, marginable, fractionable, etc."""
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca not configured"}), 400
+    try:
+        alpaca_broker._ensure_client()
+        asset = alpaca_broker._trading.get_asset(symbol.upper())
+        return jsonify({
+            "symbol":       asset.symbol,
+            "name":         getattr(asset, "name", None),
+            "tradable":     asset.tradable,
+            "marginable":   getattr(asset, "marginable", None),
+            "fractionable": getattr(asset, "fractionable", None),
+            "shortable":    getattr(asset, "shortable", None),
+            "easy_to_borrow": getattr(asset, "easy_to_borrow", None),
+            "asset_class":  str(asset.asset_class) if hasattr(asset, "asset_class") else None,
+            "exchange":     str(asset.exchange) if hasattr(asset, "exchange") else None,
+            "status":       str(asset.status) if hasattr(asset, "status") else None,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/broker/close-all", methods=["POST"])
 def broker_close_all():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
