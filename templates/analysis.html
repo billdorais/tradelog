@@ -257,7 +257,7 @@
         <thead>
           <tr>
             <th onclick="sortTable('stratTable',0)">Strategy</th>
-            <th onclick="sortTable('stratTable',1)"  title="Composite ranking score (PF 30% · Win 20% · Trades 20% · P&L 30%) — same as the Refined snapshot">Score</th>
+            <th onclick="sortTable('stratTable',1)"  title="Composite ranking score (Sharpe 35% · PF 30% · Win 20% · Trades 15%) — same as the Refined snapshot">Score</th>
             <th onclick="sortTable('stratTable',2)">Trades</th>
             <th onclick="sortTable('stratTable',3)">Win %</th>
             <th onclick="sortTable('stratTable',4)" title="Trade-level Sharpe: mean P&L / std P&L — measures consistency of returns">Sharpe</th>
@@ -910,13 +910,13 @@
   // Weights: PF 30% + Win 20% + Trades 20% + P&L 30%.
   // Saturation: PF at 2.0, trades at 10. P&L normalized relative to cohort max.
   function _refinedScore(s, maxPnl) {
-    const pf       = s.profit_factor;
-    const pfNorm   = (pf == null) ? 1.0 : Math.max(Math.min(pf / 2.0, 1.0), 0);
-    const winNorm  = Math.max(Math.min((s.win_rate  || 0) / 100, 1.0), 0);
-    const trNorm   = Math.min((s.trades || 0) / 10, 1.0);
-    const pnl      = s.total_pnl || 0;
-    const pnlNorm  = (pnl > 0 && maxPnl > 0) ? pnl / maxPnl : 0;
-    return 0.30 * pfNorm + 0.20 * winNorm + 0.20 * trNorm + 0.30 * pnlNorm;
+    const sh     = s.sharpe;
+    const shNorm = (sh == null || sh < 0) ? 0 : Math.min(sh / 2.0, 1.0);
+    const pf     = s.profit_factor;
+    const pfNorm = (pf == null) ? 1.0 : Math.max(Math.min(pf / 2.5, 1.0), 0);
+    const winNorm = Math.max(Math.min((s.win_rate || 0) / 100, 1.0), 0);
+    const trNorm  = Math.min((s.trades || 0) / 10, 1.0);
+    return 0.35 * shNorm + 0.30 * pfNorm + 0.20 * winNorm + 0.15 * trNorm;
   }
 
   async function addTopNToRefined() {
@@ -1007,7 +1007,7 @@
   function renderTickerTable(map) {
     _lastTickerMap = map;
     const body = document.getElementById('tickerBody');
-    const all  = Object.entries(map).sort((a, b) => (b[1].total_pnl || 0) - (a[1].total_pnl || 0));
+    const all  = Object.entries(map).sort((a, b) => (b[1].sharpe ?? -999) - (a[1].sharpe ?? -999));
     const q    = (document.getElementById('tickerFilter')?.value || '').trim().toLowerCase();
     const rows = q ? all.filter(([ticker]) => ticker.toLowerCase().includes(q)) : all;
     const countEl = document.getElementById('tickerFilterCount');

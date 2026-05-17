@@ -3915,38 +3915,39 @@ def _compute_strategy_stats(days=45, from_date=None):
 # Keep these in sync with the client-side mirror in templates/analysis.html
 # (addTopNToRefined) so manual and scheduled refreshes pick the same top N.
 _REFINED_SCORE_WEIGHTS = {
-    "profit_factor": 0.30,
-    "win_rate":      0.20,
-    "trades":        0.20,
-    "total_pnl":     0.30,
+    "sharpe":        0.35,   # primary — risk-adjusted consistency of returns
+    "profit_factor": 0.30,   # trade quality — $ won per $ lost
+    "win_rate":      0.20,   # hit rate
+    "trades":        0.15,   # sample-size confidence
 }
 # Saturation points — beyond these, additional gains stop contributing to score.
-_REFINED_PF_SATURATION     = 2.0   # PF >= 2.0 is "great", no extra credit beyond
+_REFINED_SHARPE_SATURATION = 2.0   # Sharpe ≥ 2.0 is "great", no extra credit beyond
+_REFINED_PF_SATURATION     = 2.5   # PF >= 2.5 is "great"
 _REFINED_TRADES_SATURATION = 10    # 10+ trades counts as a full sample
 
 
 def _composite_score(stats, max_pnl):
     """Composite ranking score in [0, 1]. Higher = better.
 
-    Each metric is normalized to [0, 1] and combined with _REFINED_SCORE_WEIGHTS:
-      - profit_factor: pf / 2.0, capped at 1.0; None (no losses) → 1.0
+    Weights: Sharpe 35% · PF 30% · Win rate 20% · Trades 15%
+      - sharpe:        sharpe / 2.0, capped at 1.0; negative → 0; None → 0
+      - profit_factor: pf / 2.5, capped at 1.0; None (no losses) → 1.0
       - win_rate:      win_rate / 100
       - trades:        trades / 10, capped at 1.0
-      - total_pnl:     pnl / max_pnl in the candidate cohort (negative → 0)
     """
+    sh = stats.get("sharpe")
+    sh_norm     = 0.0 if sh is None else max(min(sh / _REFINED_SHARPE_SATURATION, 1.0), 0.0)
     pf = stats.get("profit_factor")
     pf_norm     = 1.0 if pf is None else max(min(pf / _REFINED_PF_SATURATION, 1.0), 0.0)
     win_norm    = max(min((stats.get("win_rate") or 0) / 100.0, 1.0), 0.0)
     trades_norm = min((stats.get("trades") or 0) / _REFINED_TRADES_SATURATION, 1.0)
-    pnl         = stats.get("total_pnl") or 0
-    pnl_norm    = (pnl / max_pnl) if (pnl > 0 and max_pnl > 0) else 0.0
 
     w = _REFINED_SCORE_WEIGHTS
     return round(
+        w["sharpe"]        * sh_norm +
         w["profit_factor"] * pf_norm +
         w["win_rate"]      * win_norm +
-        w["trades"]        * trades_norm +
-        w["total_pnl"]     * pnl_norm,
+        w["trades"]        * trades_norm,
         4,
     )
 
