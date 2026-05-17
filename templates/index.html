@@ -458,8 +458,9 @@
     <!-- Row 2: status pills + action buttons -->
     <div class="header-row2">
       <span id="brokerPills"></span>
-      <button id="ibReconnectBtn"   style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#888;border:1px solid #2a2d3e" onclick="reconnectIB()">Reconnect IB</button>
-      <button id="ibDisconnectBtn" style="display:none;padding:5px 10px;font-size:0.75rem;background:transparent;color:#f59e0b;border:1px solid rgba(245,158,11,0.4)" onclick="disconnectIB()">Disconnect IB</button>
+      <span id="refinedPill" style="display:none;padding:4px 10px;border-radius:20px;font-size:0.78rem;font-weight:600;background:rgba(167,139,250,0.12);border:1px solid #a78bfa;color:#c4b5fd;margin-right:4px">
+        <span style="width:7px;height:7px;border-radius:50%;background:#a78bfa;display:inline-block;margin-right:5px"></span>Alpaca · Refined
+      </span>
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()" style="background:#517356;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem">Refresh</button>
       <button id="eodToggleBtn" onclick="toggleEODClose()" style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">EOD Close: ...</button>
@@ -467,43 +468,6 @@
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
     </div>
   </header>
-
-  <!-- Signal stats -->
-  <div class="section-label">Signals</div>
-  <div class="stats">
-    <div class="stat-card">
-      <div class="label">Total Signals</div>
-      <div class="value" id="statTotal">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Buy Signals</div>
-      <div class="value" style="color:#517356" id="statBuys">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Sell Signals</div>
-      <div class="value" style="color:#ef5350" id="statSells">—</div>
-    </div>
-    <div class="stat-card" title="TV signals with sentiment=long (intent to enter long)">
-      <div class="label">Long Signals</div>
-      <div class="value" style="color:#7FE098" id="statLongs">—</div>
-    </div>
-    <div class="stat-card" title="TV signals with sentiment=short (intent to enter short)">
-      <div class="label">Short Signals</div>
-      <div class="value" style="color:#ef5350" id="statShorts">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Tickers</div>
-      <div class="value" id="statTickers">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Executed</div>
-      <div class="value" id="statExecuted">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Errors</div>
-      <div class="value" style="color:#ef5350" id="statErrors">—</div>
-    </div>
-  </div>
 
   <!-- Performance stats -->
   <div class="section-label" style="margin-top:8px">Performance (closed trades)</div>
@@ -575,6 +539,19 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- Signal stats -->
+  <div class="section-label" style="margin-top:8px">Signals</div>
+  <div class="stats">
+    <div class="stat-card"><div class="label">Total Signals</div><div class="value" id="statTotal">—</div></div>
+    <div class="stat-card"><div class="label">Buy Signals</div><div class="value" style="color:#517356" id="statBuys">—</div></div>
+    <div class="stat-card"><div class="label">Sell Signals</div><div class="value" style="color:#ef5350" id="statSells">—</div></div>
+    <div class="stat-card" title="TV signals with sentiment=long"><div class="label">Long Signals</div><div class="value" style="color:#7FE098" id="statLongs">—</div></div>
+    <div class="stat-card" title="TV signals with sentiment=short"><div class="label">Short Signals</div><div class="value" style="color:#ef5350" id="statShorts">—</div></div>
+    <div class="stat-card"><div class="label">Tickers</div><div class="value" id="statTickers">—</div></div>
+    <div class="stat-card"><div class="label">Executed</div><div class="value" id="statExecuted">—</div></div>
+    <div class="stat-card"><div class="label">Errors</div><div class="value" style="color:#ef5350" id="statErrors">—</div></div>
   </div>
 
   <!-- Account / Buying Power -->
@@ -2602,9 +2579,7 @@
 
         // Broker pills — render one per configured broker
         const brokerDefs = [
-          { key: 'IB',       label: 'IB',       color: '#7FE098', acctFn: b => 'Paper' },
-          { key: 'IB_LIVE',  label: 'IB Live',  color: '#7FE098', acctFn: b => (b.accounts||[]).join(', ') },
-          { key: 'Alpaca',   label: 'Alpaca',   color: '#7FE098', acctFn: b => b.paper ? 'Paper' : 'Live' },
+          { key: 'Alpaca',   label: 'Alpaca · Paper', color: '#7FE098', acctFn: b => '' },
           { key: 'Coinbase', label: 'Coinbase', color: '#70a8f5', acctFn: b => (b.accounts||[b.account||'']).join(', ').slice(0,12) },
         ];
         let pillsHtml = '';
@@ -2622,11 +2597,8 @@
           }
         }
         document.getElementById('brokerPills').innerHTML = pillsHtml;
-        const ib = brokers.IB || {};
-        const ibConfigured = 'IB' in brokers;
-        const ibConnected  = ib.connected === true;
-        document.getElementById('ibReconnectBtn').style.display   = (ibConfigured && !ibConnected) ? '' : 'none';
-        document.getElementById('ibDisconnectBtn').style.display  = ibConnected ? '' : 'none';
+        const refinedPill = document.getElementById('refinedPill');
+        if (refinedPill) refinedPill.style.display = (brokers.Alpaca?.connected) ? '' : 'none';
         allTrades = trades;
 
 
