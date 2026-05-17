@@ -751,12 +751,12 @@
     };
 
     document.getElementById('overallStats').innerHTML = `
+      ${card('Total P&L',       fmt(s.total_pnl),                      pnlCls)}
       ${card('Total Trades',    s.trades    || 0,                       '')}
       ${card('Win Rate',        (s.win_rate || 0) + '%',               (s.win_rate||0) >= 50 ? 'pos' : 'neg')}
       ${_dirCard('Long Win Rate',  longS,  'Win rate on LONG trades only')}
       ${_dirCard('Short Win Rate', shortS, 'Win rate on SHORT trades only')}
       ${card('Profit Factor',   pf != null ? pf : '—',                 pfCls)}
-      ${card('Total P&L',       fmt(s.total_pnl),                      pnlCls)}
       ${orphanCard}
       ${card('Avg Win',         fmt(s.avg_win),                        'pos')}
       ${card('Avg Loss',        fmt(s.avg_loss),                       'neg')}
