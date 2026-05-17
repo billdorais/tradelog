@@ -3141,13 +3141,20 @@ def api_journal_generate():
             wins   = [t for t in all_j if t["pnl"] > 0]
             losses = [t for t in all_j if t["pnl"] <= 0]
             gw, gl = sum(t["pnl"] for t in wins), abs(sum(t["pnl"] for t in losses))
-            by_strat = {}
+            by_strat  = {}
+            by_ticker = {}
             for t in j_clean:
                 s = t["strategy"]
                 by_strat.setdefault(s, {"pnl": 0, "trades": 0})
                 by_strat[s]["pnl"]    = round(by_strat[s]["pnl"] + t["pnl"], 2)
                 by_strat[s]["trades"] += 1
+                tk = t["ticker"]
+                by_ticker.setdefault(tk, {"pnl": 0, "trades": 0, "wins": 0})
+                by_ticker[tk]["pnl"]    = round(by_ticker[tk]["pnl"] + t["pnl"], 2)
+                by_ticker[tk]["trades"] += 1
+                if t["pnl"] > 0: by_ticker[tk]["wins"] += 1
             top = sorted(by_strat.items(), key=lambda x: x[1]["pnl"], reverse=True)
+            top_tickers = sorted(by_ticker.items(), key=lambda x: x[1]["pnl"], reverse=True)
 
             # Day-of-week and time-of-day breakdowns (exit time, ET)
             from zoneinfo import ZoneInfo as _ZI
@@ -3187,6 +3194,7 @@ def api_journal_generate():
                 "worst_pnl":     top[-1][1]["pnl"] if len(top) > 1 else 0,
                 "per_strategy":  {k: v for k, v in top},
                 "tickers":       sorted(set(t["ticker"] for t in all_j)),
+                "per_ticker":    {k: v for k, v in top_tickers},
                 "by_day":        {d: by_day[d] for d in _days if d in by_day},
                 "by_hour":       dict(sorted(by_hour.items())),
             }

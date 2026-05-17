@@ -381,6 +381,27 @@
 
       ${perfSection}
 
+      ${(() => {
+        const tkMap = ts.per_ticker || {};
+        const tkRows = Object.entries(tkMap)
+          .sort((a, b) => b[1].pnl - a[1].pnl)
+          .map(([tk, v]) => {
+            const pc  = v.pnl >= 0 ? '#7FE098' : '#e74c3c';
+            const wr  = v.trades ? Math.round(v.wins / v.trades * 100) : 0;
+            const mkt = md[tk];
+            const mktStr = mkt && typeof mkt.weekly_return === 'number'
+              ? ` <span style="color:#555;font-size:0.72rem">(stock ${mkt.weekly_return >= 0 ? '+' : ''}${mkt.weekly_return}%)</span>` : '';
+            return `<div class="strat-row">
+              <span class="strat-name">${esc(tk)}${mktStr}</span>
+              <span>
+                <span class="strat-meta">${v.trades} trade${v.trades===1?'':'s'} · ${wr}% win</span>
+                <span style="color:${pc};font-weight:600;margin-left:10px">${fmt(v.pnl)}</span>
+              </span>
+            </div>`;
+          }).join('');
+        return tkRows ? `<div class="strat-section"><div class="section-label">Ticker Breakdown</div>${tkRows}</div>` : '';
+      })()}
+
       ${stratRows ? `<div class="strat-section"><div class="section-label">Strategy Breakdown</div>${stratRows}</div>` : ''}
 
       <div class="ai-section">
