@@ -3885,10 +3885,14 @@ def _compute_strategy_stats(days=45, from_date=None):
 
     strat_map = {}
     for c in closed_clean:
-        strat_map.setdefault(c["strategy"], []).append(c["pnl"])
+        strat_map.setdefault(c["strategy"], []).append(
+            (c["pnl"], float(c.get("qty") or 1))
+        )
 
     stats_map = {}
-    for strat, pnls in strat_map.items():
+    for strat, trade_pairs in strat_map.items():
+        pnls          = [p for p, _ in trade_pairs]
+        pnl_per_share = [p / max(q, 0.01) for p, q in trade_pairs]
         # Match the analysis endpoint's _stats() exactly: zero-PnL trades count as losses.
         wins       = [p for p in pnls if p > 0]
         losses     = [p for p in pnls if p <= 0]
@@ -3904,7 +3908,7 @@ def _compute_strategy_stats(days=45, from_date=None):
             "gross_loss":    gross_loss,
             "total_pnl":     total_pnl,
             "profit_factor":  round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
-            "sharpe":         _sharpe_from_pnls(pnls),
+            "sharpe":         _sharpe_from_pnls(pnl_per_share),
             "consec_losses":  sum(1 for _ in __import__('itertools').takewhile(
                 lambda p: p <= 0, reversed(pnls))),
         }
@@ -6494,7 +6498,7 @@ def _build_analysis_stats():
             "largest_loss":         round(min(losses), 2) if losses else 0,
             "consec_losing_days":   _consecutive_losing_days(trade_list),
             "consec_winning_days":  _consecutive_winning_days(trade_list),
-            "sharpe":               _sharpe_from_pnls([t["pnl"] for t in trade_list]),
+            "sharpe":               _sharpe_from_pnls([t["pnl"] / max(float(t.get("qty") or 1), 0.01) for t in trade_list]),
             "consec_losses":        _consec_losses_from_trades(trade_list),
         }
 
@@ -6758,7 +6762,7 @@ def api_alpaca_analysis():
                 "largest_loss":       round(min(losses), 2) if losses else 0,
                 "consec_losing_days":  _consecutive_losing_days(tlist),
                 "consec_winning_days": _consecutive_winning_days(tlist),
-                "sharpe":              _sharpe_from_pnls([t["pnl"] for t in tlist]),
+                "sharpe":              _sharpe_from_pnls([t["pnl"] / max(float(t.get("qty") or 1), 0.01) for t in tlist]),
                 "consec_losses":       _consec_losses_from_trades(tlist),
             }
 
