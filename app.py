@@ -3856,7 +3856,7 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             "orphans": orphans, "signal_lookup": signal_lookup}
 
 
-def _compute_strategy_stats(days=30, from_date=None):
+def _compute_strategy_stats(days=45, from_date=None):
     """Per-strategy stats from Alpaca account-1 fills, using the same signal-resolution
     + LIFO pairing as /api/alpaca/analysis so the Refined snapshot agrees with the
     leaderboard view.
@@ -4035,7 +4035,7 @@ def _compute_refined_qty(score, last_price):
     return max(1, round(target / last_price))
 
 
-def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=None):
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
     Ranking uses a weighted score over (profit_factor, win_rate, trades, total_pnl);
@@ -4173,8 +4173,7 @@ def _refined_scheduler_loop():
         if now.hour == 16 and now.minute == 15 and _ran_today != today:
             _ran_today = today
             try:
-                _anchor = _load_setting("REFINED_FROM_DATE")
-                _do_refresh_refined(from_date=_anchor or None)
+                _do_refresh_refined(days=45)  # rolling 45-day window, no fixed anchor
                 log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
