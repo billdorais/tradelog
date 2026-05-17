@@ -3903,7 +3903,10 @@ def _compute_strategy_stats(days=45, from_date=None):
             "gross_win":     gross_win,
             "gross_loss":    gross_loss,
             "total_pnl":     total_pnl,
-            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+            "profit_factor":  round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+            "sharpe":         _sharpe_from_pnls(pnls),
+            "consec_losses":  sum(1 for _ in __import__('itertools').takewhile(
+                lambda p: p <= 0, reversed(pnls))),
         }
     return stats_map
 
@@ -3960,6 +3963,11 @@ _REFINED_SIZE_BANDS = [
     (50,  6_000),   # score ≥ 0.50 → $6k
     ( 0,  2_500),   # else         → $2.5k floor
 ]
+
+# Consecutive live losing trades that trigger auto-demotion from Refined.
+# Strategy stays in catch-all but is excluded from the top-N selection until
+# it records a winning trade and the consecutive count resets.
+_REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
 # Filters out 1–2-trade flukes that would otherwise score highly on PF/Win.
@@ -4049,9 +4057,17 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     # Eligibility: net-positive AND at least _REFINED_MIN_TRADES round-trips.
     # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
     # 100% win) out of the top-N — they need more sample evidence first.
+    demoted = [k for k, v in stats_map.items()
+               if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
+    if demoted:
+        log.info("Refined: demoting %d strategies with %d+ consecutive losses: %s",
+                 len(demoted), _REFINED_CONSEC_LOSS_GATE, demoted)
+
     candidates = {
         k: v for k, v in stats_map.items()
-        if (v.get("total_pnl") or 0) > 0 and (v.get("trades") or 0) >= _REFINED_MIN_TRADES
+        if (v.get("total_pnl") or 0) > 0
+        and (v.get("trades") or 0) >= _REFINED_MIN_TRADES
+        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
     }
     max_pnl    = max((v["total_pnl"] for v in candidates.values()), default=0)
 
@@ -4136,6 +4152,8 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
                 "win_rate":      stats.get("win_rate"),
                 "profit_factor": stats.get("profit_factor"),
                 "total_pnl":     stats.get("total_pnl"),
+                "sharpe":        stats.get("sharpe"),
+                "consec_losses": stats.get("consec_losses", 0),
                 "shares":        qty_by_strat.get(name, (None, 0, None))[0],
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
                 "last_price":    qty_by_strat.get(name, (None, 0, None))[2],
@@ -4145,6 +4163,8 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
         "weights": _REFINED_SCORE_WEIGHTS,
         "size_bands": _REFINED_SIZE_BANDS,
         "min_trades": _REFINED_MIN_TRADES,
+        "consec_loss_gate": _REFINED_CONSEC_LOSS_GATE,
+        "demoted": demoted,
         "updated": updated,
         "removed_from": removed,
         "not_found": not_found,
@@ -6296,6 +6316,28 @@ def analysis_page():
     return render_template("analysis.html")
 
 
+def _sharpe_from_pnls(pnls):
+    """Trade-level Sharpe: mean(pnl) / sample_std(pnl). Returns None if < 2 trades."""
+    import math as _math
+    n = len(pnls)
+    if n < 2: return None
+    mean = sum(pnls) / n
+    std  = _math.sqrt(sum((p - mean) ** 2 for p in pnls) / (n - 1))
+    return round(mean / std, 2) if std > 0 else None
+
+
+def _consec_losses_from_trades(trade_list):
+    """Count consecutive losing individual trades from most recent backward."""
+    sorted_pnls = [t["pnl"] for t in sorted(trade_list, key=lambda t: t.get("exit_time", ""))]
+    count = 0
+    for p in reversed(sorted_pnls):
+        if p <= 0:
+            count += 1
+        else:
+            break
+    return count
+
+
 def _consecutive_losing_days(trade_list):
     """Count how many of the most recent consecutive trading days had negative P&L."""
     if not trade_list:
@@ -6451,6 +6493,8 @@ def _build_analysis_stats():
             "largest_loss":         round(min(losses), 2) if losses else 0,
             "consec_losing_days":   _consecutive_losing_days(trade_list),
             "consec_winning_days":  _consecutive_winning_days(trade_list),
+            "sharpe":               _sharpe_from_pnls([t["pnl"] for t in trade_list]),
+            "consec_losses":        _consec_losses_from_trades(trade_list),
         }
 
     # Separate orphan pairs (phantom round-trips from stale/mispaired signals
@@ -6713,6 +6757,8 @@ def api_alpaca_analysis():
                 "largest_loss":       round(min(losses), 2) if losses else 0,
                 "consec_losing_days":  _consecutive_losing_days(tlist),
                 "consec_winning_days": _consecutive_winning_days(tlist),
+                "sharpe":              _sharpe_from_pnls([t["pnl"] for t in tlist]),
+                "consec_losses":       _consec_losses_from_trades(tlist),
             }
 
         # Apply frontend exclusions (localStorage keys: "exit_time|ticker") to the

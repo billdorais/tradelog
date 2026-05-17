@@ -260,14 +260,15 @@
             <th onclick="sortTable('stratTable',1)"  title="Composite ranking score (PF 30% · Win 20% · Trades 20% · P&L 30%) — same as the Refined snapshot">Score</th>
             <th onclick="sortTable('stratTable',2)">Trades</th>
             <th onclick="sortTable('stratTable',3)">Win %</th>
-            <th onclick="sortTable('stratTable',4)">Profit Factor</th>
-            <th onclick="sortTable('stratTable',5)">Total P&amp;L</th>
-            <th onclick="sortTable('stratTable',6)">Avg Win</th>
-            <th onclick="sortTable('stratTable',7)">Avg Loss</th>
-            <th onclick="sortTable('stratTable',8)">Largest Win</th>
-            <th onclick="sortTable('stratTable',9)">Largest Loss</th>
-            <th onclick="sortTable('stratTable',10)" title="Consecutive losing trading days (most recent)">Loss Streak</th>
-            <th onclick="sortTable('stratTable',11)" title="Consecutive winning trading days (most recent)">Win Streak</th>
+            <th onclick="sortTable('stratTable',4)" title="Trade-level Sharpe: mean P&L / std P&L — measures consistency of returns">Sharpe</th>
+            <th onclick="sortTable('stratTable',5)">Profit Factor</th>
+            <th onclick="sortTable('stratTable',6)">Total P&amp;L</th>
+            <th onclick="sortTable('stratTable',7)">Avg Win</th>
+            <th onclick="sortTable('stratTable',8)">Avg Loss</th>
+            <th onclick="sortTable('stratTable',9)">Largest Win</th>
+            <th onclick="sortTable('stratTable',10)">Largest Loss</th>
+            <th onclick="sortTable('stratTable',11)" title="Consecutive losing trading days (most recent)">Loss Streak</th>
+            <th onclick="sortTable('stratTable',12)" title="Consecutive winning trading days (most recent)">Win Streak</th>
           </tr>
         </thead>
         <tbody id="stratBody"><tr><td colspan="12" class="empty">Loading…</td></tr></tbody>
@@ -960,6 +961,14 @@
     if (!all.length) { body.innerHTML = '<tr><td colspan="12" class="empty">No closed trades yet.</td></tr>'; return; }
     if (!rows.length) { body.innerHTML = `<tr><td colspan="12" class="empty">No strategies match "${esc(q)}".</td></tr>`; return; }
     body.innerHTML = rows.map(([name, s]) => {
+      const sh = s.sharpe;
+      const sharpeBadge = sh == null
+        ? '<span style="color:#444">—</span>'
+        : (() => {
+            const cls = sh >= 1.0 ? 'pf-good' : sh >= 0.5 ? 'pf-ok' : sh >= 0 ? '' : 'pf-bad';
+            const col = sh >= 1.0 ? '#7FE098' : sh >= 0.5 ? '#F2E7AC' : sh >= 0 ? '#888' : '#e74c3c';
+            return `<span class="pf ${cls}" style="color:${col}">${sh.toFixed(2)}</span>`;
+          })();
       const loseStreak = s.consec_losing_days || 0;
       const loseCls    = loseStreak === 0 ? '' : loseStreak <= 2 ? 'style="color:#F2E7AC"' : 'style="color:#e74c3c;font-weight:600"';
       const loseLabel  = loseStreak === 0 ? '<span style="color:#444">—</span>'
@@ -981,6 +990,7 @@
         <td style="color:#c4b5fd;font-weight:600">${scorePct}</td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
+        <td>${sharpeBadge}</td>
         <td>${pfBadge(s.profit_factor)}</td>
         ${pnlCell(s.total_pnl)}
         <td class="pos">+$${s.avg_win.toFixed(2)}</td>
