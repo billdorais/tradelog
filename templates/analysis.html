@@ -155,14 +155,12 @@
           style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
                  padding:5px 8px;font-size:0.8rem;cursor:pointer;outline:none"
           onchange="saveDates();load()">
-        <button onclick="setToday()"
-          title="Show today only"
-          style="background:rgba(136,191,139,0.1);border:1px solid #2a2d3e;color:#7FE098;border-radius:6px;
-                 padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Today</button>
-        <button onclick="clearDates()"
-          title="Show all history"
-          style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;
-                 padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
+        <button onclick="setToday()"        title="Today"      style="background:rgba(136,191,139,0.1);border:1px solid #2a2d3e;color:#7FE098;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Today</button>
+        <button onclick="setThisWeek()"    title="This week"  style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Week</button>
+        <button onclick="setLastWeek()"    title="Last week"  style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Week</button>
+        <button onclick="setThisMonth()"   title="This month" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Month</button>
+        <button onclick="setLastMonth()"   title="Last month" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Month</button>
+        <button onclick="clearDates()"     title="Show all"   style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
       </div>
       <!-- Source toggle -->
       <div style="display:flex;gap:4px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px;padding:3px">
@@ -507,12 +505,48 @@
     load();
   }
 
+  function _isoDate(d) { return d.toISOString().slice(0, 10); }
+
   function setToday() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = _isoDate(new Date());
     document.getElementById('analysisFrom').value = today;
     document.getElementById('analysisTo').value   = today;
-    saveDates();
-    load();
+    saveDates(); load();
+  }
+
+  function setThisWeek() {
+    const now = new Date();
+    const mon = new Date(now); mon.setDate(now.getDate() - (now.getDay() || 7) + 1);
+    document.getElementById('analysisFrom').value = _isoDate(mon);
+    document.getElementById('analysisTo').value   = _isoDate(now);
+    saveDates(); load();
+  }
+
+  function setLastWeek() {
+    const now = new Date();
+    const thisMon = new Date(now); thisMon.setDate(now.getDate() - (now.getDay() || 7) + 1);
+    const lastFri = new Date(thisMon); lastFri.setDate(thisMon.getDate() - 3);
+    const lastMon = new Date(thisMon); lastMon.setDate(thisMon.getDate() - 7);
+    document.getElementById('analysisFrom').value = _isoDate(lastMon);
+    document.getElementById('analysisTo').value   = _isoDate(lastFri);
+    saveDates(); load();
+  }
+
+  function setThisMonth() {
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    document.getElementById('analysisFrom').value = _isoDate(first);
+    document.getElementById('analysisTo').value   = _isoDate(now);
+    saveDates(); load();
+  }
+
+  function setLastMonth() {
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const last  = new Date(now.getFullYear(), now.getMonth(), 0);
+    document.getElementById('analysisFrom').value = _isoDate(first);
+    document.getElementById('analysisTo').value   = _isoDate(last);
+    saveDates(); load();
   }
 
   function restoreDates() {
