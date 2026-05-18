@@ -1116,6 +1116,18 @@ def init_db():
     """)
     conn.commit()
 
+    # Refined snapshot history — one row per (run_at, strategy_name).
+    # Used to compute the added/removed breakdown and per-strategy tenure
+    # (consecutive runs a strategy has been in the top-N).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS refined_history (
+            run_at        TEXT NOT NULL,
+            strategy_name TEXT NOT NULL,
+            PRIMARY KEY (run_at, strategy_name)
+        )
+    """)
+    conn.commit()
+
     # User-saved backtesting strategies (converted from Pine Script)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_strategies (
@@ -4154,9 +4166,63 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
 
     import datetime as _dt
     _refined_last_run = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # Refined history: persist this run's top, derive added/removed/tenure vs prior runs.
+    # Tenure = number of consecutive runs (newest-first) the strategy has appeared in,
+    # including this one. Frontend displays it as "Nd" since runs are daily.
+    added_strategies   = []
+    removed_strategies = []
+    tenure_runs        = {}   # strategy_name -> consecutive runs (incl this one)
+    try:
+        hconn = get_db(); hcur = hconn.cursor(); hp = placeholder()
+        hcur.execute("SELECT run_at, strategy_name FROM refined_history ORDER BY run_at DESC")
+        hist_rows = hcur.fetchall()
+        runs = []   # [(run_at, set_of_strategies)] newest-first, pre-write snapshot
+        cur_at = None; cur_set = None
+        for r in hist_rows:
+            rt = r[0] if DATABASE_URL else r["run_at"]
+            nm = r[1] if DATABASE_URL else r["strategy_name"]
+            if rt != cur_at:
+                if cur_set is not None: runs.append((cur_at, cur_set))
+                cur_at = rt; cur_set = set()
+            cur_set.add(nm)
+        if cur_set is not None: runs.append((cur_at, cur_set))
+
+        prev_top = runs[0][1] if runs else set()
+        new_top  = set(top)
+        added_strategies   = sorted(new_top - prev_top)
+        removed_strategies = sorted(prev_top - new_top)
+
+        for name in top:
+            if DATABASE_URL:
+                hcur.execute(
+                    f"INSERT INTO refined_history (run_at, strategy_name) VALUES ({hp}, {hp}) "
+                    "ON CONFLICT DO NOTHING",
+                    (_refined_last_run, name),
+                )
+            else:
+                hcur.execute(
+                    f"INSERT OR IGNORE INTO refined_history (run_at, strategy_name) VALUES ({hp}, {hp})",
+                    (_refined_last_run, name),
+                )
+        hconn.commit()
+
+        for s in new_top:
+            count = 1                          # this run counts as one
+            for run_at, names in runs:         # walk prior runs newest-first
+                if s in names: count += 1
+                else:          break
+            tenure_runs[s] = count
+        hconn.close()
+    except Exception as _he:
+        log.warning("Refined history tracking failed: %s", _he)
+
     _refined_last_result = {
         "run_at": _refined_last_run,
         "top_strategies": top,
+        "added_strategies":   added_strategies,
+        "removed_strategies": removed_strategies,
+        "tenure_runs":        tenure_runs,
         "top_scored": [
             {
                 "name":          name,

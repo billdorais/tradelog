@@ -51,6 +51,12 @@
     .pf-ok   { background: rgba(242,231,172,0.15); color: #F2E7AC; }
     .pf-bad  { background: rgba(231,76,60,0.15);  color: #e74c3c; }
 
+    /* Strategy leaderboard: tighter padding so Win Streak column fits without horizontal scroll. */
+    #stratTable th, #stratTable td { padding: 7px 7px; font-size: 0.78rem; }
+    #stratTable th                 { font-size: 0.66rem; }
+    #stratTable td.name            { font-size: 0.74rem; }
+    #stratTable .pf                { padding: 1px 5px; font-size: 0.74rem; }
+
     /* ── Tabs ── */
     .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
     .tab { padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 0.82rem; color: #666; border: 1px solid transparent; transition: all 0.15s; }
@@ -210,6 +216,7 @@
             <tr>
               <th style="width:40px">#</th>
               <th>Strategy</th>
+              <th style="text-align:right" title="Consecutive daily runs this strategy has been in the top-N (incl. today)">Tenure</th>
               <th style="text-align:right">Score</th>
               <th style="text-align:right" title="Shares to trade on Refined (band $ target ÷ last price)">Shares</th>
               <th style="text-align:right" title="Last price used when sizing this strategy">Price</th>
@@ -219,7 +226,7 @@
               <th style="text-align:right">Total P&amp;L</th>
             </tr>
           </thead>
-          <tbody id="refinedSnapRows"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
+          <tbody id="refinedSnapRows"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -634,7 +641,7 @@
       if (!d.run_at) {
         meta.textContent = 'never run · daily scheduler fires at 4:15 PM ET on weekdays';
         status.style.display = 'none';
-        rows.innerHTML = '<tr><td colspan="9" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="10" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
         return;
       }
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
@@ -646,10 +653,22 @@
       const updated   = d.updated || 0;
       const removed   = d.removed_from || 0;
       const notFound  = d.not_found || [];
+      const addedS    = d.added_strategies   || [];
+      const removedS  = d.removed_strategies || [];
       const bits = [
         `<span style="color:#7FE098">✓ added to ${updated} rule${updated === 1 ? '' : 's'}</span>`,
         `<span>stripped from ${removed} prior</span>`,
       ];
+      if (addedS.length) {
+        bits.push(
+          `<span style="color:#7FE098" title="Strategies new to the top-N this run (not present in the previous run)">🆕 ${addedS.length} new: <span style="font-family:monospace">${addedS.map(esc).join(', ')}</span></span>`
+        );
+      }
+      if (removedS.length) {
+        bits.push(
+          `<span style="color:#e74c3c" title="Strategies that were in the top-N last run but dropped out this run">⬇ ${removedS.length} dropped: <span style="font-family:monospace">${removedS.map(esc).join(', ')}</span></span>`
+        );
+      }
       if (notFound.length) {
         bits.push(
           `<span style="color:#F2E7AC" title="These strategies were picked as top-N but have no matching enabled routing rule — their Alpaca order-ID name doesn't match any routing rule's strategy value. They will still show as un-routed (green/no star) in the leaderboard.">⚠ ${notFound.length} not matched: <span style="font-family:monospace">${notFound.map(esc).join(', ')}</span></span>`
@@ -659,9 +678,10 @@
       status.style.display = '';
       const scored = d.top_scored || [];
       if (!scored.length) {
-        rows.innerHTML = '<tr><td colspan="9" class="empty">No profitable strategies in the current window.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="10" class="empty">No profitable strategies in the current window.</td></tr>';
         return;
       }
+      const tenureMap = d.tenure_runs || {};
       rows.innerHTML = scored.map((r, i) => {
         const pnlCls = (r.total_pnl || 0) >= 0 ? 'pos' : 'neg';
         const wrCls  = (r.win_rate  || 0) >= 50  ? 'pos' : 'neg';
@@ -673,9 +693,15 @@
         const price  = (r.last_price != null)
           ? `$${Number(r.last_price).toFixed(2)}`
           : '<span style="color:#666">—</span>';
+        // Tenure: 1 run = NEW (first time in top-N), N>1 = consecutive daily runs.
+        const tn = tenureMap[r.name] || 1;
+        const tenureCell = tn === 1
+          ? `<span style="color:#7FE098;font-weight:600" title="Newly added in this run">NEW</span>`
+          : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
         return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" title="Click to see round-trip pairs">
           <td style="color:#666">${i + 1}</td>
           <td class="name"><span style="color:#c4b5fd;margin-right:6px">★</span>${esc(r.name)}</td>
+          <td style="text-align:right">${tenureCell}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
           <td style="text-align:right;color:#c4b5fd">${shares}</td>
           <td style="text-align:right;color:#888">${price}</td>
@@ -687,7 +713,7 @@
       }).join('');
     } catch (e) {
       meta.textContent = 'error loading snapshot';
-      rows.innerHTML = '<tr><td colspan="9" class="empty" style="color:#e74c3c">Error.</td></tr>';
+      rows.innerHTML = '<tr><td colspan="10" class="empty" style="color:#e74c3c">Error.</td></tr>';
     }
   }
 
@@ -704,7 +730,7 @@
     const meta = document.getElementById('refinedSnapMeta');
     const rows = document.getElementById('refinedSnapRows');
     meta.textContent = 'refreshing…';
-    rows.innerHTML   = '<tr><td colspan="7" class="empty">Refreshing…</td></tr>';
+    rows.innerHTML   = '<tr><td colspan="10" class="empty">Refreshing…</td></tr>';
     try {
       const res = await fetch('/api/routing/rules/refresh_refined', {
         method: 'POST',
@@ -717,7 +743,7 @@
       if (_lastStratMap && Object.keys(_lastStratMap).length) renderStratTable(_lastStratMap);
     } catch (e) {
       meta.textContent = 'refresh failed: ' + (e.message || e);
-      rows.innerHTML   = '<tr><td colspan="7" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
+      rows.innerHTML   = '<tr><td colspan="10" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
     }
   }
 
