@@ -721,8 +721,11 @@
     <span>Trade Feed</span>
     <div style="display:flex;gap:4px">
       <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
+        Paper All</button>
+      <button id="feedTabRefined" onclick="switchFeedTab('refined')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B">
-        Alpaca Fills</button>
+        Refined</button>
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Signals</button>
@@ -766,8 +769,15 @@
     let _lastEquityCurve       = [];
     let allTrades      = [];
     let allIBExecs     = [];
-    let allAlpacaExecs = [];
+    let allAlpacaExecs  = [];
+    let allAlpaca2Execs = [];      // Refined account (alpaca-paper-2) fills, fetched alongside the main set
     let allAlpacaPositions = [];   // authoritative open positions from Alpaca — used to reconcile feed pairing
+
+    // Pick the fills source that matches the current trade feed tab. Refined positions
+    // would require a /api/alpaca/positions?account=2 endpoint that doesn't exist yet,
+    // so on Refined we pass an empty positions list — orphan detection is account-1 only.
+    function _currentAlpacaExecs()     { return feedTab === 'refined' ? allAlpaca2Execs : allAlpacaExecs; }
+    function _currentAlpacaPositions() { return feedTab === 'refined' ? [] : allAlpacaPositions; }
     let selectedStrategy   = '';
     let selectedStrategies = new Set();  // empty = all visible
     let _allStrategyNames  = [];
@@ -776,7 +786,7 @@
     let _cachedToDate      = null;
     let _allGroups     = [];
     let _feedFilter    = { tv: false, alpaca: true };  // Alpaca default
-    let feedTab        = 'alpaca';
+    let feedTab        = 'refined';  // matches activeTab default so chart + feed start in sync
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
     let activeTab = 'refined';
@@ -814,8 +824,8 @@
             document.getElementById('equityToDate')?.value   || '',
             '2'
           );
-          feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('alpaca');
+          feedTab = 'refined'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('refined');
           renderTable(allTrades, selectedStrategy);
         } else if (tab === 'signals') {
           if (label) label.textContent = 'Cumulative P&L from TV signals';
@@ -1779,7 +1789,7 @@
       const ibPairs     = pairIBExecs(allIBExecs);
       // Pass full `trades` (not filtered) for intent resolution — pairAlpacaExecs
       // needs the complete TV sentiment lookup to classify entries vs exits correctly.
-      const alpacaPairs = reconcileAlpacaPairs(pairAlpacaExecs(allAlpacaExecs, trades), allAlpacaPositions);
+      const alpacaPairs = reconcileAlpacaPairs(pairAlpacaExecs(_currentAlpacaExecs(), trades), _currentAlpacaPositions());
       let groups        = buildGroups(tvPairs, ibPairs, alpacaPairs);
       // TV-paired groups already passed the strategy filter via `filtered`. Alpaca-only
       // groups (tv: null) leak through because pairing iterates *all* alpaca pairs by
@@ -2365,28 +2375,27 @@
 
     function _syncFeedTabButtons(tab) {
       const inactive = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
-      document.getElementById('feedTabAlpaca').style.cssText = tab === 'alpaca'
-        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B'
-        : inactive;
-      document.getElementById('feedTabTV').style.cssText = tab === 'tv'
-        ? 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.2);color:#88BF8B'
-        : inactive;
+      const active   = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B';
+      document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? active : inactive;
+      document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? active : inactive;
+      document.getElementById('feedTabTV').style.cssText      = tab === 'tv'      ? active : inactive;
     }
 
     function switchFeedTab(tab) {
       feedTab            = tab;
       _feedFilter.tv     = (tab === 'tv');
-      _feedFilter.alpaca = (tab === 'alpaca');
+      _feedFilter.alpaca = (tab !== 'tv');   // 'alpaca' and 'refined' both render Alpaca rows
       _syncFeedTabButtons(tab);
 
       if (tab === 'tv') renderTVFeed();
       else renderTable(allTrades, selectedStrategy);
 
       // Sync chart tab — update buttons + trigger chart directly (no switchTab call to avoid loop)
-      const chartTab = tab === 'tv' ? 'signals' : 'alpaca';
+      const chartTab = tab === 'tv' ? 'signals' : (tab === 'refined' ? 'refined' : 'alpaca');
       if (activeTab !== chartTab) {
         activeTab = chartTab;
         document.getElementById('tabAlpaca').className  = 'pnl-tab' + (chartTab === 'alpaca'  ? ' active-alpaca'  : '');
+        document.getElementById('tabRefined').className = 'pnl-tab' + (chartTab === 'refined' ? ' active-refined' : '');
         document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
         document.getElementById('tabIB').className      = 'pnl-tab';
         const spinner = document.getElementById('chartLoadingSpinner');
@@ -2399,13 +2408,18 @@
           applyEquityFilter().catch(e => console.error('chart sync:', e))
             .finally(() => spinner.style.display = 'none');
         } else {
+          const isRefined = chartTab === 'refined';
+          const labelText = isRefined
+            ? 'Cumulative realized P&L from Alpaca Refined fills'
+            : 'Cumulative realized P&L from Alpaca fills';
           document.getElementById('ibEquityNote').style.display = 'flex';
-          document.getElementById('ibEquityNote').textContent   = 'Cumulative realized P&L from Alpaca fills.';
-          document.getElementById('equityChartLabel').textContent = 'Cumulative realized P&L from Alpaca fills';
+          document.getElementById('ibEquityNote').textContent   = labelText + '.';
+          document.getElementById('equityChartLabel').textContent = labelText;
           spinner.style.display = 'inline-block';
           renderAlpacaStats(
             document.getElementById('equityFromDate').value,
-            document.getElementById('equityToDate').value
+            document.getElementById('equityToDate').value,
+            isRefined ? '2' : null
           );
           spinner.style.display = 'none';
         }
@@ -2559,20 +2573,22 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpacaPosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpacaPosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
           fetch('/api/ib/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
         const stats   = await statsRes.json();
         const brokers = await brokerRes.json();
-        allIBExecs     = ibExecsRes;
-        allAlpacaExecs = alpacaExecsRes;
+        allIBExecs      = ibExecsRes;
+        allAlpacaExecs  = alpacaExecsRes;
+        allAlpaca2Execs = Array.isArray(alpaca2ExecsRes) ? alpaca2ExecsRes : [];
         allAlpacaPositions = Array.isArray(alpacaPosRes) ? alpacaPosRes : (alpacaPosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
@@ -3112,7 +3128,7 @@
       // attribution matches what is displayed (TV-signal strategy takes
       // priority over the fill's server-resolved strategy field).
       const allAlpacaPairs = reconcileAlpacaPairs(
-        pairAlpacaExecs(allAlpacaExecs, allTrades), allAlpacaPositions
+        pairAlpacaExecs(_currentAlpacaExecs(), allTrades), _currentAlpacaPositions()
       );
       const allGroups = buildGroups(pairSignals(allTrades), [], allAlpacaPairs);
       const stratGroups = allGroups.filter(g => {
