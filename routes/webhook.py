@@ -11,7 +11,10 @@ background threads.
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import queue as _queue
 import threading
 import time
 from datetime import datetime, timezone
@@ -38,6 +41,124 @@ def _resolve_alpaca_broker(target: str):
     if target in ("alpaca-paper-2", "alpaca-live-2"):
         return _app.alpaca_broker2
     return _app.alpaca_broker
+
+
+def _alpaca_broker_name(target: str) -> str:
+    """Stable identifier for an Alpaca broker instance — shared across paper/live
+    suffixes that resolve to the same broker, so a 'lock for MU on alpaca' is
+    the same lock regardless of whether the signal came in as alpaca-paper or
+    alpaca-live."""
+    return "alpaca2" if target in ("alpaca-paper-2", "alpaca-live-2") else "alpaca"
+
+
+# Per-(broker, ticker) FIFO queue so entry + exit signals for the same symbol
+# can't race inside a single gunicorn worker. The worker thread drains the
+# queue serially; entry → submit → cancel-on-exit logic now always sees a
+# consistent state.
+#
+# Cross-process: the queue alone doesn't cover the case where MU SHORT lands
+# on gunicorn worker 1 and MU EXIT_SHORT on worker 2. For that we wrap each
+# task in a Postgres pg_advisory_lock keyed by (broker_name, ticker) — see
+# _pg_advisory_lock below. On SQLite (local dev) the advisory lock is a no-op
+# since gunicorn is typically a single worker there.
+_ALPACA_WORKER_IDLE_TIMEOUT = 300  # seconds before an idle worker exits
+_alpaca_queue_lock     = threading.Lock()
+_alpaca_ticker_queues  = {}   # (broker_name, TICKER) -> queue.Queue
+_alpaca_ticker_workers = {}   # (broker_name, TICKER) -> threading.Thread
+
+
+@contextlib.contextmanager
+def _pg_advisory_lock(key_str: str):
+    """Serialize order placement across gunicorn workers using a Postgres
+    session-level advisory lock. The lock is held on a dedicated connection
+    that's closed when the context exits — if the worker process dies mid-task,
+    Postgres releases the lock automatically.
+
+    No-op on SQLite (local single-worker dev). On psycopg import failure or
+    connection error we log and yield anyway — never block order placement
+    on a lock-infrastructure problem."""
+    import app as _app
+    if not _app.DATABASE_URL:
+        yield
+        return
+    digest = hashlib.blake2b(key_str.encode("utf-8"), digest_size=8).digest()
+    key64  = int.from_bytes(digest, "big", signed=True)
+    conn   = None
+    locked = False
+    try:
+        import psycopg
+        conn = psycopg.connect(_app.DATABASE_URL)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (key64,))
+        locked = True
+    except Exception as e:
+        _app.log.warning(
+            "Postgres advisory lock acquire failed for %s: %s — proceeding without cross-process lock",
+            key_str, e,
+        )
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+            conn = None
+    try:
+        yield
+    finally:
+        if conn is not None:
+            try:
+                if locked:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s)", (key64,))
+            except Exception as e:
+                _app.log.warning("Postgres advisory unlock failed for %s: %s", key_str, e)
+            try: conn.close()
+            except Exception: pass
+
+
+def _alpaca_worker_loop(queue_key):
+    import app as _app
+    broker_name, ticker_upper = queue_key
+    lock_key = f"alpaca:{broker_name}:{ticker_upper}"
+    while True:
+        with _alpaca_queue_lock:
+            q = _alpaca_ticker_queues.get(queue_key)
+            if q is None:
+                return
+        try:
+            task = q.get(timeout=_ALPACA_WORKER_IDLE_TIMEOUT)
+        except _queue.Empty:
+            with _alpaca_queue_lock:
+                if q.empty():
+                    _alpaca_ticker_queues.pop(queue_key, None)
+                    _alpaca_ticker_workers.pop(queue_key, None)
+                    return
+            continue
+        try:
+            with _pg_advisory_lock(lock_key):
+                task()
+        except Exception as e:
+            _app.log.error("Alpaca worker task failed for %s: %s", queue_key, e, exc_info=True)
+
+
+def _enqueue_alpaca_task(broker_name, ticker, task_fn):
+    """Serialize Alpaca order placement for the same (broker, ticker).
+    Within a gunicorn worker, two webhooks for MU can no longer interleave —
+    the second one waits for the first to finish, so the entry's submitted
+    order is visible to the exit's get_orders() check. Across workers, the
+    worker thread additionally takes a Postgres advisory lock before running
+    the task — see _alpaca_worker_loop."""
+    key = (broker_name, (ticker or "").upper())
+    with _alpaca_queue_lock:
+        q = _alpaca_ticker_queues.get(key)
+        if q is None:
+            q = _queue.Queue()
+            _alpaca_ticker_queues[key] = q
+        w = _alpaca_ticker_workers.get(key)
+        if w is None or not w.is_alive():
+            w = threading.Thread(target=_alpaca_worker_loop, args=(key,), daemon=True)
+            _alpaca_ticker_workers[key] = w
+            w.start()
+        q.put(task_fn)
 
 
 @webhook_bp.route("/webhook", methods=["POST"])
@@ -579,7 +700,7 @@ def webhook():
                     except Exception as e:
                         app.log.error("Failed to update exec status for trade %s: %s", trade_id, e)
 
-            threading.Thread(target=_place_alpaca_async, daemon=True).start()
+            _enqueue_alpaca_task(_alpaca_broker_name(target), _ticker, _place_alpaca_async)
 
     for target, qty_override in ib_targets:
         _live = (target == "ib-live") or (use_live_broker and target != "ib-paper")
