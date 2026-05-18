@@ -1801,6 +1801,12 @@
           return s === strategyFilter;
         });
       }
+      // Drop groups that would produce no row under the current feed filter. Without
+      // this, a Refined tab with few fills sees 100+ TV-only groups inflate the
+      // "Load N more" counter while rendering 0 rows.
+      groups = groups.filter(g =>
+        (_feedFilter.tv && g.tv) || (_feedFilter.alpaca && g.alpaca)
+      );
       const body     = document.getElementById('tradeBody');
 
       _allGroups   = groups;
