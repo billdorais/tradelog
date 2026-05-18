@@ -166,7 +166,15 @@ class AlpacaBroker:
                 log.warning("Alpaca open-order check for %s SELL-exit failed: %s — continuing", ticker, _oe)
 
             # Use close_position for reliability — Alpaca determines exact qty/direction.
+            # Check position exists FIRST: if the user manually flattened the position
+            # in Kairos, TV's natural EXIT_LONG would otherwise fall through to a
+            # directional SELL below and open a NEW short. Mirrors the EXIT_SHORT path.
             try:
+                positions = self._get_positions_cached()
+                pos = next((p for p in positions if p.symbol.upper() == ticker.upper()), None)
+                if pos is None:
+                    log.warning("EXIT_LONG close_position %s: no position found — skipping", ticker)
+                    return {"success": False, "error": f"No {ticker} position to close"}
                 order = self._trading.close_position(ticker.upper())
                 self._invalidate_pos_cache()
                 log.info("Alpaca close_position (EXIT_LONG) %s → id=%s status=%s",
@@ -180,8 +188,8 @@ class AlpacaBroker:
                     "paper":    self._paper,
                 }
             except Exception as e:
-                log.error("Alpaca close_position (EXIT_LONG) failed for %s: %s — falling back to SELL order", ticker, e)
-                # Fall through to regular SELL order
+                log.error("Alpaca close_position (EXIT_LONG) failed for %s: %s", ticker, e)
+                return {"success": False, "error": str(e)}
 
         # For non-exit stock SELL: cancel any pending BUY orders (entry race guard).
         if not is_crypto and side == OrderSide.SELL and not is_exit:
@@ -286,8 +294,8 @@ class AlpacaBroker:
                     "paper":    self._paper,
                 }
             except Exception as e:
-                log.error("Alpaca close_position (EXIT_SHORT) failed for %s: %s — falling back to BUY order", ticker, e)
-                # Fall through to regular BUY order if close_position fails
+                log.error("Alpaca close_position (EXIT_SHORT) failed for %s: %s", ticker, e)
+                return {"success": False, "error": str(e)}
 
         # For crypto SELL: close the position via Alpaca's close_position API
         # (Alpaca doesn't support shorting crypto — this closes whatever is held)
