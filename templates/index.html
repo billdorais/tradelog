@@ -3022,23 +3022,32 @@
 
     async function loadAccount() {
       try {
-        const [d, snap, rules] = await Promise.all([
+        const [d, rules] = await Promise.all([
           fetch('/api/alpaca/account').then(r => r.json()),
-          fetch('/api/routing/rules/refresh_refined').then(r => r.json()).catch(() => null),
           fetch('/api/routing/rules').then(r => r.json()).catch(() => null),
         ]);
-        if (snap && Array.isArray(snap.top_strategies)) {
-          _refinedTickers = new Set(snap.top_strategies.map(s => (s || '').split('_', 1)[0].toUpperCase()));
-        }
+        // Refined and routed are both derived from routing_rules (persisted in DB).
+        // The refresh_refined snapshot is an in-memory per-worker cache and is
+        // unreliable under --workers 2 — a rule is "refined" iff it has a broker
+        // node with value alpaca-paper-2 or alpaca-live-2, which refresh_refined
+        // writes to the DB.
         if (Array.isArray(rules)) {
-          const routed = new Set();
+          const routed  = new Set();
+          const refined = new Set();
           for (const r of rules) {
             if (!r.enabled) continue;
             const stratNode = (r.nodes || []).find(n => n.type === 'strategy');
             const value     = stratNode && stratNode.value;
-            if (value) routed.add(String(value).split('_', 1)[0].toUpperCase());
+            if (!value) continue;
+            const ticker = String(value).split('_', 1)[0].toUpperCase();
+            routed.add(ticker);
+            const hasRefinedBroker = (r.nodes || []).some(n =>
+              n.type === 'broker' && (n.value === 'alpaca-paper-2' || n.value === 'alpaca-live-2')
+            );
+            if (hasRefinedBroker) refined.add(ticker);
           }
-          _routedTickers = routed;
+          _routedTickers  = routed;
+          _refinedTickers = refined;
         }
         if (d.error) return;
         document.getElementById('accountSection').style.display = '';
