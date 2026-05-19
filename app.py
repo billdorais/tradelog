@@ -3912,8 +3912,11 @@ def _compute_strategy_stats(days=45, from_date=None):
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date)
     closed_clean = paired["closed_clean"]
 
+    excluded = _load_excluded_strategies()
     strat_map = {}
     for c in closed_clean:
+        if c["strategy"] in excluded:
+            continue
         strat_map.setdefault(c["strategy"], []).append(
             (c["pnl"], float(c.get("qty") or 1))
         )
@@ -4292,6 +4295,44 @@ def _refined_scheduler_loop():
 
 
 threading.Thread(target=_refined_scheduler_loop, daemon=True).start()
+
+
+def _load_excluded_strategies():
+    raw = _load_setting("EXCLUDED_STRATEGIES", "[]")
+    try:
+        return set(json.loads(raw))
+    except Exception:
+        return set()
+
+def _save_excluded_strategies(excl_set):
+    _save_setting("EXCLUDED_STRATEGIES", json.dumps(sorted(excl_set)))
+
+
+@app.route("/api/strategies/excluded", methods=["GET"])
+def get_excluded_strategies():
+    return jsonify(sorted(_load_excluded_strategies()))
+
+
+@app.route("/api/strategies/excluded", methods=["POST"])
+def add_excluded_strategy():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    excl = _load_excluded_strategies()
+    excl.add(name)
+    _save_excluded_strategies(excl)
+    log.info("Strategy excluded from leaderboard: %s", name)
+    return jsonify({"excluded": sorted(excl)})
+
+
+@app.route("/api/strategies/excluded/<path:name>", methods=["DELETE"])
+def remove_excluded_strategy(name):
+    excl = _load_excluded_strategies()
+    excl.discard(name)
+    _save_excluded_strategies(excl)
+    log.info("Strategy restored to leaderboard: %s", name)
+    return jsonify({"excluded": sorted(excl)})
 
 
 @app.route("/api/routing/rules/refresh_refined", methods=["GET"])
