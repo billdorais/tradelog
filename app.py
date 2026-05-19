@@ -3414,8 +3414,11 @@ def api_journal_generate():
         f"Be direct and specific. No fluff. Keep each section to 2-3 sentences. Write in second person.\n\n"
         f"After your four sections add one line in exactly this format:\n"
         f"TAGS: tag1, tag2, tag3\n"
-        f"Choose 3-5 short tags (1-3 words each) describing the week. Examples: trending, choppy, low-volume, "
-        f"high-vix, good-breakouts, poor-reversals, news-driven, earnings-week, gap-heavy, tight-range, strong-follow-through."
+        f"Choose exactly 2-3 tags from this fixed vocabulary only — do not invent new tags:\n"
+        f"  Character (pick exactly 1): trending, choppy, ranging\n"
+        f"  Volatility (pick exactly 1): high-vol, low-vol\n"
+        f"  Context (pick 0 or 1 only if clearly applicable): fed-week, opex, earnings-heavy\n"
+        f"Example: TAGS: trending, high-vol, fed-week"
     )
 
     def _stream():

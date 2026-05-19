@@ -58,13 +58,19 @@
     .tag-grade-B { background: rgba(180,220,120,0.15); border: 2px solid #b4dc78; color: #b4dc78; }
     .tag-grade-C { background: rgba(242,231,172,0.15); border: 2px solid #F2E7AC; color: #F2E7AC; }
     .tag-grade-D { background: rgba(231,76,60,0.15);   border: 2px solid #e74c3c; color: #e74c3c; }
+    /* character tags: blue */
     .tag-label { background: rgba(112,168,245,0.08); border: 1px solid rgba(112,168,245,0.25);
                  color: #70a8f5; border-radius: 20px; padding: 3px 10px;
                  font-size: 0.72rem; white-space: nowrap; }
+    /* volatility tags: amber */
+    .tag-label.tag-vol { background: rgba(230,162,60,0.10); border-color: rgba(230,162,60,0.30); color: #e6a23c; }
+    /* context tags: grey-green */
+    .tag-label.tag-ctx { background: rgba(100,180,140,0.08); border-color: rgba(100,180,140,0.25); color: #64b48c; }
 
     /* Day / Time charts */
     .perf-section { padding: 14px 24px; border-bottom: 1px solid #1e2130; display: flex; gap: 32px; flex-wrap: wrap; }
-    .perf-block { flex: 1; min-width: 200px; }
+    .perf-block { flex: 1; min-width: 200px; cursor: pointer; border-radius: 8px; padding: 8px; margin: -8px; transition: background 0.15s; }
+    .perf-block:hover { background: rgba(255,255,255,0.03); }
     .perf-title { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 10px; }
     .perf-bars { display: flex; align-items: flex-end; gap: 6px; height: 56px; }
     .perf-bar-wrap { display: flex; flex-direction: column; align-items: center; flex: 1; gap: 4px; }
@@ -72,6 +78,20 @@
     .perf-bar:hover { opacity: 0.8; }
     .perf-label { font-size: 0.6rem; color: #555; white-space: nowrap; }
     .perf-pnl   { font-size: 0.6rem; white-space: nowrap; }
+
+    /* Chart modal */
+    .chart-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.72); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+    .chart-modal-backdrop.hidden { display: none; }
+    .chart-modal { background: #13161f; border: 1px solid #2a2d3e; border-radius: 14px; padding: 28px 32px; min-width: min(700px, 92vw); max-width: 92vw; position: relative; }
+    .chart-modal-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #555; margin-bottom: 20px; }
+    .chart-modal-bars { display: flex; align-items: flex-end; gap: 10px; height: 160px; }
+    .chart-modal-bar-wrap { display: flex; flex-direction: column; align-items: center; flex: 1; gap: 6px; }
+    .chart-modal-bar { width: 100%; border-radius: 4px 4px 0 0; min-height: 3px; }
+    .chart-modal-label { font-size: 0.72rem; color: #666; white-space: nowrap; }
+    .chart-modal-pnl { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+    .chart-modal-trades { font-size: 0.65rem; color: #555; }
+    .chart-modal-close { position: absolute; top: 14px; right: 18px; background: transparent; border: none; color: #555; font-size: 1.2rem; cursor: pointer; line-height: 1; }
+    .chart-modal-close:hover { color: #aaa; }
 
     /* Strategy table */
     .strat-section { padding: 16px 24px; border-bottom: 1px solid #1e2130; max-height: 320px; overflow-y: auto; }
@@ -325,14 +345,16 @@
     const byHour  = ts.by_hour || {};
     const dayKeys  = ["Monday","Tuesday","Wednesday","Thursday","Friday"];
     const hourKeys = Object.keys(byHour).sort();
+    const dayDataAttr   = encodeURIComponent(JSON.stringify({map: byDay,  labels: dayKeys,  title: 'Best Day',           shortLabel: true}));
+    const hourDataAttr  = encodeURIComponent(JSON.stringify({map: byHour, labels: hourKeys, title: 'Best Time of Day (ET)', shortLabel: false}));
     const perfSection = (dayKeys.some(d => byDay[d]) || hourKeys.length) ? `
       <div class="perf-section">
-        <div class="perf-block">
-          <div class="perf-title">Best Day</div>
+        <div class="perf-block" title="Click to enlarge" onclick="_openChartFromAttr(this)" data-chart="${dayDataAttr}">
+          <div class="perf-title">Best Day ⤢</div>
           <div class="perf-bars">${perfBars(byDay, dayKeys, true)}</div>
         </div>
-        ${hourKeys.length ? `<div class="perf-block">
-          <div class="perf-title">Best Time of Day (ET)</div>
+        ${hourKeys.length ? `<div class="perf-block" title="Click to enlarge" onclick="_openChartFromAttr(this)" data-chart="${hourDataAttr}">
+          <div class="perf-title">Best Time of Day (ET) ⤢</div>
           <div class="perf-bars">${perfBars(byHour, hourKeys, false)}</div>
         </div>` : ''}
       </div>` : '';
@@ -343,7 +365,12 @@
     const tagRow   = (grade || labels.length) ? `
       <div class="tag-row">
         ${grade ? `<span class="tag-grade tag-grade-${grade}" title="Week grade">${grade}</span>` : ''}
-        ${labels.map(l => `<span class="tag-label">${esc(l)}</span>`).join('')}
+        ${labels.map(l => {
+          const _VOL = new Set(['high-vol','low-vol']);
+          const _CTX = new Set(['fed-week','opex','earnings-heavy']);
+          const cls  = _VOL.has(l) ? 'tag-label tag-vol' : _CTX.has(l) ? 'tag-label tag-ctx' : 'tag-label';
+          return `<span class="${cls}" title="${_VOL.has(l)?'Volatility':_CTX.has(l)?'Context':'Character'}">${esc(l)}</span>`;
+        }).join('')}
       </div>` : '';
 
     return `<div class="entry">
@@ -454,6 +481,55 @@
   });
 
   loadEntries();
+
+  // ── Chart expand modal ──────────────────────────────────────────────────
+  function _openChartFromAttr(el) {
+    const d = JSON.parse(decodeURIComponent(el.dataset.chart));
+    openChartModal(d.map, d.labels, d.title, d.shortLabel);
+  }
+
+  function openChartModal(map, labels, title, shortLabel) {
+    const vals   = labels.map(l => (map[l] || {}).pnl    || 0);
+    const trades = labels.map(l => (map[l] || {}).trades  || 0);
+    const maxAbs = Math.max(...vals.map(Math.abs), 0.01);
+
+    const bars = labels.map((l, i) => {
+      const v  = vals[i];
+      const h  = Math.max(Math.round(Math.abs(v) / maxAbs * 148), v !== 0 ? 6 : 0);
+      const cl = v > 0 ? '#7FE098' : v < 0 ? '#e74c3c' : '#2a2d3e';
+      const lb = shortLabel ? l.slice(0, 3) : l.replace(':00','').replace(':30','h30');
+      const pnlTxt = v === 0 ? '<div class="chart-modal-pnl" style="color:#2a2d3e">—</div>'
+        : `<div class="chart-modal-pnl" style="color:${cl}">${v > 0 ? '+' : ''}$${Math.abs(v) >= 100 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(0)}</div>`;
+      const trTxt = trades[i] ? `<div class="chart-modal-trades">${trades[i]}t</div>` : '';
+      return `<div class="chart-modal-bar-wrap">
+        ${pnlTxt}
+        ${trTxt}
+        <div class="chart-modal-bar" style="height:${h}px;background:${cl}"></div>
+        <div class="chart-modal-label">${lb}</div>
+      </div>`;
+    }).join('');
+
+    document.getElementById('chartModalTitle').textContent = title;
+    document.getElementById('chartModalBars').innerHTML = bars;
+    document.getElementById('chartModalBackdrop').classList.remove('hidden');
+  }
+
+  document.getElementById('chartModalBackdrop').addEventListener('click', function(e) {
+    if (e.target === this) this.classList.add('hidden');
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') document.getElementById('chartModalBackdrop').classList.add('hidden');
+  });
 </script>
+
+<!-- Chart expand modal -->
+<div id="chartModalBackdrop" class="chart-modal-backdrop hidden">
+  <div class="chart-modal">
+    <button class="chart-modal-close" onclick="document.getElementById('chartModalBackdrop').classList.add('hidden')">✕</button>
+    <div id="chartModalTitle" class="chart-modal-title"></div>
+    <div id="chartModalBars" class="chart-modal-bars"></div>
+  </div>
+</div>
+
 </body>
 </html>
