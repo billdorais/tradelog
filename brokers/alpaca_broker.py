@@ -45,6 +45,52 @@ class AlpacaBroker:
         self._pos_cache    = None
         self._pos_cache_ts = 0.0
 
+    def _close_position_with_retry(self, ticker, max_retries=3, poll_secs=3):
+        """Submit close_position, then poll for residual and re-submit if non-zero.
+
+        Handles partial fills on thin-volume names — a single market DAY order
+        may only execute against the visible liquidity, with the rest of the
+        order canceled at session end, leaving an orphaned residual position
+        even though Alpaca returned a successful order_id.
+
+        Returns the most-recently-submitted order object. Safe inside the
+        per-ticker FIFO worker since the blocking sleeps don't conflict with
+        new signals for the same ticker (they wait behind us in the queue)."""
+        sym = ticker.upper()
+        last_order = self._trading.close_position(sym)
+        self._invalidate_pos_cache()
+        for attempt in range(1, max_retries + 1):
+            time.sleep(poll_secs)
+            try:
+                positions = self._trading.get_all_positions()
+                self._pos_cache    = positions
+                self._pos_cache_ts = time.time()
+            except Exception as _pe:
+                log.warning("Position recheck failed for %s during close-retry: %s", sym, _pe)
+                break
+            residual = next(
+                (p for p in positions
+                 if p.symbol.upper() == sym and abs(float(p.qty or 0)) > 0),
+                None,
+            )
+            if not residual:
+                if attempt > 1:
+                    log.info("Close-retry: %s fully flat after %d attempt(s)", sym, attempt)
+                return last_order
+            log.warning(
+                "Partial fill detected for %s — %s shares remaining after attempt %d/%d, re-submitting close",
+                sym, abs(float(residual.qty)), attempt, max_retries,
+            )
+            try:
+                last_order = self._trading.close_position(sym)
+                self._invalidate_pos_cache()
+            except Exception as _ce:
+                # If Alpaca rejects with "no position" between our check and the close,
+                # that's the desired state — treat as success.
+                log.info("Close-retry %d for %s ended early: %s", attempt, sym, _ce)
+                return last_order
+        return last_order
+
     def _ensure_client(self):
         if self._trading is not None:
             return
@@ -175,8 +221,7 @@ class AlpacaBroker:
                 if pos is None:
                     log.warning("EXIT_LONG close_position %s: no position found — skipping", ticker)
                     return {"success": False, "error": f"No {ticker} position to close"}
-                order = self._trading.close_position(ticker.upper())
-                self._invalidate_pos_cache()
+                order = self._close_position_with_retry(ticker)
                 log.info("Alpaca close_position (EXIT_LONG) %s → id=%s status=%s",
                          ticker, order.id, order.status)
                 return {
@@ -281,8 +326,7 @@ class AlpacaBroker:
                 if pos is None:
                     log.warning("EXIT_SHORT close_position %s: no position found — skipping", ticker)
                     return {"success": False, "error": f"No {ticker} position to close"}
-                order = self._trading.close_position(ticker.upper())
-                self._invalidate_pos_cache()
+                order = self._close_position_with_retry(ticker)
                 log.info("Alpaca close_position (EXIT_SHORT) %s → id=%s status=%s",
                          ticker, order.id, order.status)
                 return {
