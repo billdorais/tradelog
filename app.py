@@ -4261,6 +4261,10 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     }
     log.info("Refined refresh: top=%d updated=%d removed=%d not_found=%d anchor=%s",
              len(top), updated, removed, len(not_found), from_date or f"last {days}d")
+    try:
+        _save_setting("REFINED_LAST_RESULT", json.dumps(_refined_last_result))
+    except Exception as _pe:
+        log.warning("Failed to persist refined snapshot: %s", _pe)
     return _refined_last_result
 
 
@@ -7414,6 +7418,22 @@ def _restore_risk_settings():
             pass
 
 _restore_risk_settings()
+
+# Reload persisted refined snapshot so the routing page shows the last
+# run immediately after a deploy or server restart.
+def _restore_refined_snapshot():
+    global _refined_last_run, _refined_last_result
+    stored = _load_setting("REFINED_LAST_RESULT")
+    if stored:
+        try:
+            data = json.loads(stored)
+            _refined_last_run    = data.get("run_at")
+            _refined_last_result = data
+            log.info("Restored refined snapshot from DB (run_at=%s)", _refined_last_run)
+        except Exception as _e:
+            log.warning("Failed to restore refined snapshot: %s", _e)
+
+_restore_refined_snapshot()
 
 if __name__ == "__main__":
     app.run(debug=True)
