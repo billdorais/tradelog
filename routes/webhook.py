@@ -61,6 +61,25 @@ def _alpaca_broker_name(target: str) -> str:
 # task in a Postgres pg_advisory_lock keyed by (broker_name, ticker) — see
 # _pg_advisory_lock below. On SQLite (local dev) the advisory lock is a no-op
 # since gunicorn is typically a single worker there.
+# Per-ticker handler lock — serializes Flask webhook handlers for the same ticker
+# so the enqueue-order matches arrival-order. Without this, two webhooks 1 second
+# apart (LONG then EXIT_LONG) can have their pre-enqueue routing-rule DB lookups
+# overlap across 8 Flask threads, and whichever finishes first enqueues first.
+# Result: EXIT runs against a not-yet-submitted entry, sees no position, no-ops.
+_handler_locks_meta = threading.Lock()
+_handler_locks      = {}   # TICKER -> threading.Lock
+
+
+def _get_handler_lock(ticker):
+    sym = (ticker or "").upper()
+    with _handler_locks_meta:
+        lk = _handler_locks.get(sym)
+        if lk is None:
+            lk = threading.Lock()
+            _handler_locks[sym] = lk
+        return lk
+
+
 _ALPACA_WORKER_IDLE_TIMEOUT = 300  # seconds before an idle worker exits
 _alpaca_queue_lock     = threading.Lock()
 _alpaca_ticker_queues  = {}   # (broker_name, TICKER) -> queue.Queue
@@ -178,6 +197,22 @@ def webhook():
 
     # Normalise ticker — Pine Script sends "symbol", some strategies send "ticker"
     ticker = (data.get("ticker") or data.get("symbol") or "").strip().upper() or None
+
+    # Serialize same-ticker webhook processing for the rest of the handler so
+    # the broker-task enqueue order matches HTTP arrival order. See _handler_locks
+    # comment above for the race this prevents.
+    _handler_lock = _get_handler_lock(ticker) if ticker else None
+    if _handler_lock is not None:
+        _handler_lock.acquire()
+    try:
+        return _webhook_locked(data, received_at, broker_name, ticker)
+    finally:
+        if _handler_lock is not None:
+            _handler_lock.release()
+
+
+def _webhook_locked(data, received_at, broker_name, ticker):
+    import app
 
     # Normalise action — map direction/exit variants to BUY/SELL
     raw_action = (data.get("action") or "").strip().upper()
