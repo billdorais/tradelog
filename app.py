@@ -538,7 +538,13 @@ def _compute_daily_pnl():
     # Prefer live Alpaca account P&L when broker is available
     if alpaca_broker is not None:
         try:
-            result = round(alpaca_broker.daily_pnl(), 2)
+            total = alpaca_broker.daily_pnl()
+            if alpaca_broker2 is not None:
+                try:
+                    total += alpaca_broker2.daily_pnl()
+                except Exception as _e2:
+                    log.debug("_compute_daily_pnl acct2 error: %s", _e2)
+            result = round(total, 2)
             _daily_pnl_cache["value"] = result
             _daily_pnl_cache["ts"]    = now_ts
             return result
