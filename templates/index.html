@@ -3036,11 +3036,32 @@
     setInterval(loadAccount,  30000);
     setInterval(refreshLivePnl, 10000);
 
-    // Sets of tickers used to star Open Positions chips.
-    // _refinedTickers — has at least one strategy in the Refined top-N snapshot (purple ★)
-    // _routedTickers  — has any enabled routing rule but isn't in Refined (yellow ★)
-    let _refinedTickers = new Set();
-    let _routedTickers  = new Set();
+    // Sets used to star Open Positions chips. Both ticker- and strategy-level so
+    // the chip can use exact strategy attribution when we have it (purple only if
+    // THIS position's source strategy is refined), falling back to ticker-level
+    // when fills can't be matched to a strategy.
+    let _refinedTickers    = new Set();   // ticker has any refined strategy
+    let _routedTickers     = new Set();   // ticker has any routing rule
+    let _refinedStrategies = new Set();   // upper-case strategy names with alpaca-paper-2/-live-2 broker
+    let _routedStrategies  = new Set();   // upper-case strategy names with any enabled rule
+
+    // Find the source strategy for an open position by looking at the most recent
+    // matching entry fill in allAlpacaExecs (annotated server-side by signal
+    // correlation within 5 min). Returns null if no attribution available.
+    function _strategyForPosition(p) {
+      if (!p || !Array.isArray(allAlpacaExecs)) return null;
+      const sym     = (p.symbol || '').toUpperCase();
+      const qty     = parseFloat(p.qty || 0);
+      const entrySide = qty > 0 ? 'BOT' : 'SLD';
+      let best = null;
+      for (const e of allAlpacaExecs) {
+        if ((e.symbol || '').toUpperCase() !== sym) continue;
+        if (e.side !== entrySide) continue;
+        if (!e.strategy) continue;
+        if (!best || (e.time || '') > (best.time || '')) best = e;
+      }
+      return best ? best.strategy : null;
+    }
 
     async function loadAccount() {
       try {
@@ -3054,22 +3075,31 @@
         // node with value alpaca-paper-2 or alpaca-live-2, which refresh_refined
         // writes to the DB.
         if (Array.isArray(rules)) {
-          const routed  = new Set();
-          const refined = new Set();
+          const routedT  = new Set();
+          const refinedT = new Set();
+          const routedS  = new Set();
+          const refinedS = new Set();
           for (const r of rules) {
             if (!r.enabled) continue;
             const stratNode = (r.nodes || []).find(n => n.type === 'strategy');
             const value     = stratNode && stratNode.value;
             if (!value) continue;
-            const ticker = String(value).split('_', 1)[0].toUpperCase();
-            routed.add(ticker);
+            const stratUpper = String(value).toUpperCase();
+            const ticker = stratUpper.split('_', 1)[0];
+            routedT.add(ticker);
+            routedS.add(stratUpper);
             const hasRefinedBroker = (r.nodes || []).some(n =>
               n.type === 'broker' && (n.value === 'alpaca-paper-2' || n.value === 'alpaca-live-2')
             );
-            if (hasRefinedBroker) refined.add(ticker);
+            if (hasRefinedBroker) {
+              refinedT.add(ticker);
+              refinedS.add(stratUpper);
+            }
           }
-          _routedTickers  = routed;
-          _refinedTickers = refined;
+          _routedTickers     = routedT;
+          _refinedTickers    = refinedT;
+          _routedStrategies  = routedS;
+          _refinedStrategies = refinedS;
         }
         if (d.error) return;
         document.getElementById('accountSection').style.display = '';
@@ -3106,17 +3136,24 @@
         document.getElementById('acctPositionCount').textContent = count;
         document.getElementById('acctPositionCount').style.color = count > 0 ? '#F2E7AC' : '#e0e0e0';
         // Color tickers by unrealized P&L: green winning, red losing, neutral flat.
-        // Star prefix: purple ★ if ticker has a strategy in the Refined top-N,
-        // yellow ★ if it has any routing rule but isn't in Refined, none otherwise.
+        // Star prefix: prefer per-strategy attribution from the position's most
+        // recent entry fill (purple if THAT strategy is refined). If no strategy
+        // attribution is available, fall back to ticker-level matching.
         const tickers = (d.positions || []).map(p => {
           const upnl   = p.unrealized_pnl || 0;
           const color  = upnl > 0 ? '#7FE098' : upnl < 0 ? '#ef5350' : '#888';
           const sym    = (p.symbol || '').toUpperCase();
+          const strat  = _strategyForPosition(p);
+          const stratU = strat ? strat.toUpperCase() : null;
           let star = '';
-          if (_refinedTickers.has(sym)) {
-            star = `<span style="color:#c4b5fd;margin-right:4px" title="Has a strategy in the Refined top-N">★</span>`;
-          } else if (_routedTickers.has(sym)) {
-            star = `<span style="color:#F2E7AC;margin-right:4px" title="Has a Signal Router rule (Paper only)">★</span>`;
+          if (stratU && _refinedStrategies.has(stratU)) {
+            star = `<span style="color:#c4b5fd;margin-right:4px" title="${strat} is in the Refined top-N">★</span>`;
+          } else if (stratU && _routedStrategies.has(stratU)) {
+            star = `<span style="color:#F2E7AC;margin-right:4px" title="${strat} has a routing rule but isn't Refined">★</span>`;
+          } else if (!stratU && _refinedTickers.has(sym)) {
+            star = `<span style="color:#c4b5fd;margin-right:4px" title="Ticker has a refined strategy (source strategy unknown)">★</span>`;
+          } else if (!stratU && _routedTickers.has(sym)) {
+            star = `<span style="color:#F2E7AC;margin-right:4px" title="Ticker has a routing rule (source strategy unknown)">★</span>`;
           }
           return `${star}<span style="color:${color}" title="${p.side} · unrealized ${upnl>=0?'+':'-'}$${Math.abs(upnl).toFixed(2)}">${p.symbol}</span> $${Math.abs(p.market_value).toLocaleString('en-US',{maximumFractionDigits:0})}`;
         }).join(' &nbsp;·&nbsp; ');
