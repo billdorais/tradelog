@@ -287,6 +287,11 @@
     .pnl-tab.active-ib      { border-color: #7FE098; background: rgba(136,191,139,0.12);
                                color: #7FE098; border-bottom-color: #7FE098; }
 
+    /* Equity-chart date preset buttons */
+    .eq-date-btn        { background: transparent; color: #888; font-family: inherit; }
+    .eq-date-btn:hover  { color: #ccc; }
+    .eq-date-btn-active { background: rgba(136,191,139,0.1); color: #7FE098; }
+
     /* Table */
     .section-label {
       max-width: 1200px;
@@ -627,11 +632,11 @@
         <input type="text" id="equityToDate" placeholder="To date"
           title="Show P&L up to this date" readonly
           style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:5px 10px;font-size:0.8rem;cursor:pointer;width:110px">
-        <button onclick="setEquityToday()"      title="Today"      style="background:rgba(136,191,139,0.1);border:1px solid #2a2d3e;color:#7FE098;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Today</button>
-        <button onclick="setEquityThisWeek()"  title="This week"  style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Week</button>
-        <button onclick="setEquityLastWeek()"  title="Last week"  style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Week</button>
-        <button onclick="setEquityThisMonth()" title="This month" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Month</button>
-        <button onclick="setEquityLastMonth()" title="Last month" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Month</button>
+        <button id="eqDateToday"     onclick="setEquityToday()"      title="Today"      class="eq-date-btn eq-date-btn-active" style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Today</button>
+        <button id="eqDateThisWeek"  onclick="setEquityThisWeek()"  title="This week"  class="eq-date-btn"                    style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Week</button>
+        <button id="eqDateLastWeek"  onclick="setEquityLastWeek()"  title="Last week"  class="eq-date-btn"                    style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Week</button>
+        <button id="eqDateThisMonth" onclick="setEquityThisMonth()" title="This month" class="eq-date-btn"                    style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Month</button>
+        <button id="eqDateLastMonth" onclick="setEquityLastMonth()" title="Last month" class="eq-date-btn"                    style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Month</button>
         <button onclick="clearEquityDates()"   title="Show all"   style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
       </div>
     </div>
@@ -2934,15 +2939,26 @@
       applyEquityFilter();
     }
 
+    function _syncEquityDateButtons(activeId) {
+      ['eqDateToday','eqDateThisWeek','eqDateLastWeek','eqDateThisMonth','eqDateLastMonth']
+        .forEach(id => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.classList.toggle('eq-date-btn-active', id === activeId);
+        });
+    }
+
     function setEquityToday() {
       const t = _equityIso(new Date());
       _setEquityRange(t, t);
+      _syncEquityDateButtons('eqDateToday');
     }
 
     function setEquityThisWeek() {
       const now = new Date();
       const mon = new Date(now); mon.setDate(now.getDate() - (now.getDay() || 7) + 1);
       _setEquityRange(_equityIso(mon), _equityIso(now));
+      _syncEquityDateButtons('eqDateThisWeek');
     }
 
     function setEquityLastWeek() {
@@ -2951,11 +2967,13 @@
       const lastMon = new Date(thisMon); lastMon.setDate(thisMon.getDate() - 7);
       const lastFri = new Date(thisMon); lastFri.setDate(thisMon.getDate() - 3);
       _setEquityRange(_equityIso(lastMon), _equityIso(lastFri));
+      _syncEquityDateButtons('eqDateLastWeek');
     }
 
     function setEquityThisMonth() {
       const now = new Date();
       _setEquityRange(_equityIso(new Date(now.getFullYear(), now.getMonth(), 1)), _equityIso(now));
+      _syncEquityDateButtons('eqDateThisMonth');
     }
 
     function setEquityLastMonth() {
@@ -2963,6 +2981,7 @@
       const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const last  = new Date(now.getFullYear(), now.getMonth(), 0);
       _setEquityRange(_equityIso(first), _equityIso(last));
+      _syncEquityDateButtons('eqDateLastMonth');
     }
 
     function clearEquityDates() {
@@ -2972,6 +2991,7 @@
       if (fpTo)   fpTo.clear();
       _saveDashboardDates();
       applyEquityFilter();
+      _syncEquityDateButtons(null);
     }
 
     function _saveDashboardDates() {
@@ -2984,7 +3004,12 @@
     const _fpCfg = {
       dateFormat: 'Y-m-d',
       disableMobile: true,
-      onChange: () => { _saveDashboardDates(); applyEquityFilter(); },
+      onChange: () => {
+        _saveDashboardDates();
+        applyEquityFilter();
+        // Manual date pick — no preset is "active" any more.
+        _syncEquityDateButtons(null);
+      },
     };
     flatpickr('#equityFromDate', _fpCfg);
     flatpickr('#equityToDate',   _fpCfg);
