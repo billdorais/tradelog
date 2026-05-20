@@ -3555,7 +3555,7 @@ def _progress_default_nodes(name):
         {"type": "instrument",    "value": "STK"},
         {"type": "broker",        "value": "alpaca-paper"},
         {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
-        {"type": "exit_params",   "stop_loss": 0.50, "trail_trigger": None, "trail_offset": None, "mode": "dollars"},
+        {"type": "exit_params",   "stop_loss": None, "trail_trigger": None, "trail_offset": 0.15, "mode": "percent"},
     ]
 
 
@@ -4388,6 +4388,56 @@ def bulk_update_quantity():
     conn.commit(); conn.close()
     log.info("bulk_update_quantity: %d→%d shares, updated=%d skipped=%d", old_amount or 0, new_amount, updated, skipped)
     return jsonify({"updated": updated, "skipped": skipped, "new_amount": new_amount})
+
+
+@app.route("/api/routing/rules/bulk_update_exit_params", methods=["POST"])
+def bulk_update_exit_params():
+    """Bulk-set exit_params node mode + trail_offset on every routing rule.
+
+    Defaults to mode=percent, trail_offset=0.15 (i.e. 0.15% trail). Leaves
+    stop_loss / hard_stop / trail_trigger untouched on each rule so any
+    rule-specific dollar values stay intact — only the trail-offset is
+    re-keyed to the new unit.
+
+    If a rule has no exit_params node, one is appended."""
+    data         = request.get_json(silent=True) or {}
+    mode         = (data.get("mode") or "percent").lower()
+    trail_offset = data.get("trail_offset")
+    if trail_offset is None:
+        trail_offset = 0.15
+    try:
+        trail_offset = float(trail_offset)
+    except (TypeError, ValueError):
+        return jsonify({"error": "trail_offset must be a number"}), 400
+    if mode not in ("percent", "dollars"):
+        return jsonify({"error": "mode must be 'percent' or 'dollars'"}), 400
+
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    updated = added_node = 0
+    for row in rows:
+        rid       = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        ep = next((n for n in nodes if n.get("type") == "exit_params"), None)
+        if ep is None:
+            ep = {"type": "exit_params"}
+            nodes.append(ep)
+            added_node += 1
+        ep["mode"]         = mode
+        ep["trail_offset"] = trail_offset
+        cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
+        updated += 1
+    conn.commit(); conn.close()
+    log.info("bulk_update_exit_params: %d rules updated (mode=%s trail_offset=%s, added_node=%d)",
+             updated, mode, trail_offset, added_node)
+    return jsonify({
+        "updated":      updated,
+        "added_node":   added_node,
+        "mode":         mode,
+        "trail_offset": trail_offset,
+    })
 
 
 @app.route("/api/routing/rules/add_broker_node", methods=["POST"])

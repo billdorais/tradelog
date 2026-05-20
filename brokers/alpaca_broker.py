@@ -189,8 +189,39 @@ class AlpacaBroker:
                 from alpaca.trading.enums import QueryOrderStatus
                 open_req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
                 open_orders = self._trading.get_orders(filter=open_req)
-                # Also cancel any pending SELL orders (our hard stop / trailing stop for the long)
-                # so they don't fire after close_position takes the position to zero.
+                # Pending BUY entries — if present, TV's exit raced an unfilled entry;
+                # the cancel-and-reconcile branch below handles that case explicitly.
+                pending_buys = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
+                ]
+                # NEW: If a broker-side trailing stop is already in place and the position
+                # is open, defer to it — it executes natively at Alpaca with no webhook
+                # latency, so it fills at a tighter price than close_position market would.
+                # Skip this when there's a pending BUY (entry race — handled below).
+                if not pending_buys:
+                    pending_trails = [
+                        o for o in (open_orders or [])
+                        if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
+                        and (o.type.value if hasattr(o.type, 'value') else str(o.type)).lower() == "trailing_stop"
+                    ]
+                    if pending_trails:
+                        positions = self._get_positions_cached()
+                        if any(p.symbol.upper() == ticker.upper() and float(p.qty or 0) > 0
+                               for p in positions):
+                            log.info("EXIT_LONG %s: broker trail %s is active — ignoring TV exit signal "
+                                     "(trail will fire natively at Alpaca for a tighter fill)",
+                                     ticker, pending_trails[0].id)
+                            return {
+                                "success":       True,
+                                "skipped":       True,
+                                "reason":        "broker_trail_active",
+                                "trail_order_id": str(pending_trails[0].id),
+                                "symbol":        ticker,
+                            }
+                # No active trail (or entry race) — cancel any pending SELL stops
+                # (hard stops, expired trails, etc.) so they don't fire after
+                # close_position takes the position to zero.
                 pending_sells = [
                     o for o in (open_orders or [])
                     if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
@@ -201,10 +232,6 @@ class AlpacaBroker:
                         log.info("Alpaca EXIT_LONG %s: cancelled pending SELL stop %s before close", ticker, o.id)
                     except Exception as _ce:
                         log.warning("Alpaca cancel pending SELL %s failed: %s", o.id, _ce)
-                pending_buys = [
-                    o for o in (open_orders or [])
-                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
-                ]
                 if pending_buys:
                     cancelled_ids = []
                     for o in pending_buys:
@@ -314,8 +341,35 @@ class AlpacaBroker:
                 from alpaca.trading.enums import QueryOrderStatus
                 open_req   = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker.upper()])
                 open_orders = self._trading.get_orders(filter=open_req)
-                # Also cancel any pending BUY orders (our hard stop / trailing stop for the short)
-                # so they don't fire after close_position takes the position to zero.
+                # Pending SELL entries — entry race case (see EXIT_LONG mirror above)
+                pending_sells = [
+                    o for o in (open_orders or [])
+                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
+                ]
+                # NEW: defer to a live broker-side trailing stop when one exists.
+                # The trail closes the short natively at Alpaca with no webhook latency.
+                if not pending_sells:
+                    pending_trails = [
+                        o for o in (open_orders or [])
+                        if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
+                        and (o.type.value if hasattr(o.type, 'value') else str(o.type)).lower() == "trailing_stop"
+                    ]
+                    if pending_trails:
+                        positions = self._get_positions_cached()
+                        if any(p.symbol.upper() == ticker.upper() and float(p.qty or 0) < 0
+                               for p in positions):
+                            log.info("EXIT_SHORT %s: broker trail %s is active — ignoring TV exit signal "
+                                     "(trail will fire natively at Alpaca for a tighter fill)",
+                                     ticker, pending_trails[0].id)
+                            return {
+                                "success":       True,
+                                "skipped":       True,
+                                "reason":        "broker_trail_active",
+                                "trail_order_id": str(pending_trails[0].id),
+                                "symbol":        ticker,
+                            }
+                # No active trail (or entry race) — cancel pending BUY stops
+                # (hard stops, expired trails, etc.) so they don't fire after close.
                 pending_buys_to_cancel = [
                     o for o in (open_orders or [])
                     if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "buy"
@@ -326,10 +380,6 @@ class AlpacaBroker:
                         log.info("Alpaca EXIT_SHORT %s: cancelled pending BUY stop %s before close", ticker, o.id)
                     except Exception as _ce:
                         log.warning("Alpaca cancel pending BUY %s failed: %s", o.id, _ce)
-                pending_sells = [
-                    o for o in (open_orders or [])
-                    if (o.side.value if hasattr(o.side, 'value') else str(o.side)) == "sell"
-                ]
                 if pending_sells:
                     for o in pending_sells:
                         try:
@@ -508,7 +558,13 @@ class AlpacaBroker:
             # Attach a HARD broker-side stop loss for the per-position-stop limit.
             # Sits at Alpaca — fires in milliseconds when triggered, vs the soft
             # Kairos polling stop which slips on fast-moving stocks.
-            if not is_exit and hard_stop_dollars and float(hard_stop_dollars) > 0 and not is_crypto and _entry_filled:
+            # Skip when a trailing stop is already attached: Alpaca only allows one
+            # opposing-side stop on a position ("held_for_orders" claims all the qty),
+            # so the hard stop would fail with "insufficient qty available". The trail
+            # is the tighter exit anyway and Kairos' polling stop covers the rest.
+            if (not is_exit and hard_stop_dollars and float(hard_stop_dollars) > 0
+                    and not is_crypto and _entry_filled
+                    and not result.get("trail_order_id")):
                 log.info("Hard stop attempt: %s %s qty=%s dollars=%s ref_price=%s price=%s",
                          action, ticker, qty, hard_stop_dollars, ref_price, price)
                 try:
