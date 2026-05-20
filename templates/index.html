@@ -607,7 +607,7 @@
         Cumulative P&amp;L from closed trades
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <div style="position:relative">
+        <div id="stratPickerWrap" style="position:relative">
           <button class="strat-picker-btn" id="stratPickerBtn" onclick="toggleStratPicker(event)">
             <span id="stratPickerLabel">All Strategies</span>
             <span style="color:#666;font-size:0.7rem">▼</span>
@@ -810,6 +810,10 @@
         const label   = document.getElementById('equityChartLabel');
         const filter  = document.getElementById('stratPickerWrap');
         const note    = document.getElementById('ibEquityNote');
+        // Close the strategy picker panel on any tab switch — otherwise an open
+        // panel would persist its display:block when the user returns to Signals.
+        const _stratPanel = document.getElementById('stratPickerPanel');
+        if (_stratPanel) _stratPanel.style.display = 'none';
 
         // Update label and show spinner immediately (before any async work)
         if (spinner) spinner.style.display = 'inline-block';
