@@ -983,7 +983,30 @@
     function toggleStratPicker(e) {
       e.stopPropagation();
       const panel = document.getElementById('stratPickerPanel');
-      panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+      if (!panel) return;
+      if (panel.style.display === 'block') {
+        panel.style.display = 'none';
+        return;
+      }
+      // Reset to default right:0 anchor before measuring so successive opens
+      // start from a known position regardless of prior clamping.
+      panel.style.right = '0';
+      panel.style.left  = '';
+      panel.style.display = 'block';
+      // Clamp panel within the viewport so a narrow window or wrapped chart
+      // header never pushes it off the visible page. 8px safety margin.
+      const margin   = 8;
+      const rect     = panel.getBoundingClientRect();
+      const viewport = document.documentElement.clientWidth;
+      const overflowLeft  = margin - rect.left;
+      const overflowRight = rect.right - (viewport - margin);
+      if (overflowLeft > 0) {
+        const cur = parseFloat(getComputedStyle(panel).right) || 0;
+        panel.style.right = `${cur - overflowLeft}px`;
+      } else if (overflowRight > 0) {
+        const cur = parseFloat(getComputedStyle(panel).right) || 0;
+        panel.style.right = `${cur + overflowRight}px`;
+      }
     }
     document.addEventListener('click', () => {
       const p = document.getElementById('stratPickerPanel');
