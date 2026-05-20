@@ -105,7 +105,12 @@
     .ai-section { padding: 20px 24px; border-bottom: 1px solid #1e2130; }
     .ai-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
     .ai-badge { background: linear-gradient(135deg, rgba(108,63,199,0.2), rgba(136,191,139,0.2)); border: 1px solid rgba(136,191,139,0.3); color: #88BF8B; border-radius: 4px; padding: 2px 8px; font-size: 0.68rem; }
-    .ai-text { font-size: 0.875rem; line-height: 1.75; color: #c0c0c0; white-space: pre-wrap; }
+    .ai-text { font-size: 0.875rem; line-height: 1.75; color: #c0c0c0; }
+    .ai-text p { margin: 0 0 10px; }
+    .ai-text p:last-child { margin-bottom: 0; }
+    .ai-text h4 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #7FE098; margin: 16px 0 8px; font-weight: 600; }
+    .ai-text h4:first-child { margin-top: 0; }
+    .ai-text strong { color: #e0e0e0; font-weight: 600; }
     .ai-placeholder { color: #444; font-style: italic; font-size: 0.85rem; }
 
     /* Notes */
@@ -157,6 +162,26 @@
 
 <script>
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function renderMd(text) {
+    if (!text) return '';
+    // Escape HTML first, then apply markdown transforms
+    let s = esc(text);
+    // Section headers: **Header Text** on its own line → <h4>
+    s = s.replace(/^\*\*(.+?)\*\*\s*$/gm, '<h4>$1</h4>');
+    // Inline bold: **text** → <strong>text</strong>
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Split into paragraphs on blank lines, preserving single newlines within
+    const paras = s.split(/\n{2,}/);
+    return paras.map(p => {
+      p = p.trim();
+      if (!p) return '';
+      // Already an h4 block — don't wrap in <p>
+      if (p.startsWith('<h4>')) return p;
+      // Replace single newlines with <br> within a paragraph
+      return '<p>' + p.replace(/\n/g, '<br>') + '</p>';
+    }).filter(Boolean).join('');
+  }
   function fmt(v) {
     if (v == null) return '—';
     const n = parseFloat(v);
@@ -224,7 +249,7 @@
       let   buf    = '';
       let   text   = '';
       const liveEl = document.getElementById('live-text');
-      if (liveEl) liveEl.textContent = '';
+      if (liveEl) liveEl.innerHTML = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -235,7 +260,7 @@
           try {
             const msg = JSON.parse(line.slice(6));
             if (msg.error) { if (liveEl) liveEl.textContent = 'Error: ' + msg.error; break; }
-            if (msg.text)  { text += msg.text; if (liveEl) liveEl.textContent = text; }
+            if (msg.text)  { text += msg.text; if (liveEl) liveEl.innerHTML = renderMd(text); }
             if (msg.done)  { buf = ''; }
           } catch {}
         }
@@ -318,7 +343,7 @@
     }).join('');
 
     const aiContent = e.ai_summary
-      ? `<div class="ai-text">${esc(e.ai_summary)}</div>`
+      ? `<div class="ai-text">${renderMd(e.ai_summary)}</div>`
       : `<div class="ai-placeholder">No AI summary — click Regenerate to generate one.</div>`;
 
     function perfBars(map, labels, shortLabel) {
