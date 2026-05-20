@@ -2933,8 +2933,13 @@
     function _setEquityRange(from, to) {
       const fpFrom = document.getElementById('equityFromDate')._flatpickr;
       const fpTo   = document.getElementById('equityToDate')._flatpickr;
-      if (fpFrom) fpFrom.setDate(from, true);
-      if (fpTo)   fpTo.setDate(to, true);
+      // Pass false so flatpickr does NOT fire onChange — onChange clears the active
+      // preset highlight (intended only for manual date picks). We invoke
+      // _saveDashboardDates + applyEquityFilter explicitly below, so onChange
+      // would just duplicate work and wipe out the preset highlight set by the
+      // caller (setEquityToday / setEquityThisMonth / etc.).
+      if (fpFrom) fpFrom.setDate(from, false);
+      if (fpTo)   fpTo.setDate(to, false);
       _saveDashboardDates();
       applyEquityFilter();
     }
