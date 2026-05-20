@@ -45,6 +45,32 @@ class AlpacaBroker:
         self._pos_cache    = None
         self._pos_cache_ts = 0.0
 
+    def _wait_for_order_filled(self, order_id, max_wait_secs=5):
+        """Poll an order until it reaches 'filled' (return True) or a terminal
+        non-fill state (return False). Used to gate broker-side stop/trail order
+        submission so we don't hit Alpaca's wash-trade rule:
+            "potential wash trade detected ... opposite side market/stop order exists"
+        which fires when the entry BUY is still PENDING_NEW.
+
+        Returns False on timeout (5s default) so callers can degrade gracefully —
+        the entry order itself remains submitted, just without the broker-side
+        stop. Kairos' polling stop will still cover the position."""
+        deadline = time.time() + max_wait_secs
+        while time.time() < deadline:
+            try:
+                o = self._trading.get_order_by_id(order_id)
+                status = (o.status.value if hasattr(o.status, 'value') else str(o.status)).lower()
+                # 'filled' = fully done; safe to attach SELL stop without wash-trade reject.
+                if status == 'filled':
+                    return True
+                # Terminal non-fill — entry won't materialize, no stop needed.
+                if status in ('canceled', 'expired', 'rejected', 'done_for_day'):
+                    return False
+            except Exception as _ge:
+                log.debug("get_order_by_id polling failed for %s: %s", order_id, _ge)
+            time.sleep(0.25)
+        return False
+
     def _close_position_with_retry(self, ticker, max_retries=3, poll_secs=3):
         """Submit close_position, then poll for residual and re-submit if non-zero.
 
@@ -426,10 +452,26 @@ class AlpacaBroker:
                 "side":     action,
                 "paper":    self._paper,
             }
+            # Gate stop-order submission on the entry actually filling. Alpaca rejects
+            # opposite-side stops while the parent BUY/SELL is PENDING_NEW with a
+            # wash-trade error: "potential wash trade detected. use complex orders".
+            # Wait up to 5s; if entry hasn't filled, skip the stops and rely on the
+            # Kairos polling stop. Only wait when stops are actually configured.
+            _exit_trail   = trail_offset or stop_loss
+            _has_stops    = bool(_exit_trail) or bool(hard_stop_dollars and float(hard_stop_dollars) > 0)
+            _entry_filled = False
+            if not is_exit and not is_crypto and _has_stops:
+                _entry_filled = self._wait_for_order_filled(str(order.id), max_wait_secs=5)
+                if not _entry_filled:
+                    log.warning(
+                        "Entry %s %s %s not filled within 5s — skipping broker-side stops "
+                        "(falls back to Kairos polling stop). order_id=%s",
+                        action, qty, ticker, order.id,
+                    )
+                    result["stops_skipped"] = "entry_not_filled_in_time"
             # Attach broker-side trailing stop for stock entries when exit_params node is configured.
             # trail_offset takes priority; falls back to stop_loss as the trailing distance.
-            _exit_trail = trail_offset or stop_loss
-            if not is_exit and _exit_trail and not is_crypto:
+            if not is_exit and _exit_trail and not is_crypto and _entry_filled:
                 try:
                     from alpaca.trading.requests import TrailingStopOrderRequest
                     _trail_side = OrderSide.SELL if action.upper() == "BUY" else OrderSide.BUY
@@ -466,7 +508,7 @@ class AlpacaBroker:
             # Attach a HARD broker-side stop loss for the per-position-stop limit.
             # Sits at Alpaca — fires in milliseconds when triggered, vs the soft
             # Kairos polling stop which slips on fast-moving stocks.
-            if not is_exit and hard_stop_dollars and float(hard_stop_dollars) > 0 and not is_crypto:
+            if not is_exit and hard_stop_dollars and float(hard_stop_dollars) > 0 and not is_crypto and _entry_filled:
                 log.info("Hard stop attempt: %s %s qty=%s dollars=%s ref_price=%s price=%s",
                          action, ticker, qty, hard_stop_dollars, ref_price, price)
                 try:
