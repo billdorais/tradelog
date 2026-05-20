@@ -1042,27 +1042,22 @@
 
     async function selectTopN(n, e) {
       if (e) e.stopPropagation();
-      const fromDate = document.getElementById('equityFromDate').value;
-      const toDate   = document.getElementById('equityToDate').value;
       const pnlByStrat = {};
 
       if (activeTab === 'alpaca') {
-        // Rank by actual Alpaca fill P&L — same source as the chart
+        // Rank by full-history P&L (no date filter) so Top N always returns N
+        // strategies regardless of what date range is currently shown on the chart.
+        const acct = activeTab === 'refined' ? '2' : '';
         const params = new URLSearchParams();
-        if (fromDate) params.set('from_date', fromDate);
-        if (toDate)   params.set('to_date',   toDate);
+        if (acct) params.set('account', acct);
         const data = await fetch('/api/alpaca/analysis?' + params).then(r => r.json()).catch(() => ({}));
         for (const [strat, s] of Object.entries(data.per_strategy || {})) {
           if (s.total_pnl != null) pnlByStrat[strat] = s.total_pnl;
         }
       } else {
-        // TV signals mode
-        if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
-          _cachedFullStats = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json());
-          _cachedFromDate  = fromDate;
-          _cachedToDate    = toDate;
-        }
-        for (const p of (_cachedFullStats.equity_curve || [])) {
+        // TV signals mode — also use full history for ranking
+        const data = await fetch(buildStatsUrl('', '', '')).then(r => r.json()).catch(() => ({}));
+        for (const p of (data.equity_curve || [])) {
           if (p.strategy && p.pnl != null)
             pnlByStrat[p.strategy] = (pnlByStrat[p.strategy] || 0) + p.pnl;
         }
