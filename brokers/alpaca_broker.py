@@ -193,12 +193,20 @@ class AlpacaBroker:
                             log.warning("Alpaca cancel order %s failed: %s", o.id, _ce)
                     self._invalidate_pos_cache()
                     # After cancelling the pending entry, check whether an existing
-                    # position still needs to be closed (entry+exit same bar race).
-                    positions = self._get_positions_cached()
-                    has_position = any(
-                        p.symbol.upper() == ticker.upper() and float(p.qty or 0) > 0
-                        for p in positions
-                    )
+                    # position still needs to be closed. Poll a few times because
+                    # Alpaca's positions endpoint can lag a partial fill by 1-2s —
+                    # a single immediate check often shows 0 even when the cancel
+                    # raced with a partial fill that will appear shortly.
+                    has_position = False
+                    for _i in range(3):
+                        positions = self._trading.get_all_positions()
+                        self._pos_cache    = positions
+                        self._pos_cache_ts = time.time()
+                        if any(p.symbol.upper() == ticker.upper() and float(p.qty or 0) > 0
+                               for p in positions):
+                            has_position = True
+                            break
+                        time.sleep(1)
                     if not has_position:
                         return {
                             "success":             False,
@@ -207,7 +215,7 @@ class AlpacaBroker:
                             "cancelled_order_ids": cancelled_ids,
                             "error":               f"Pending BUY for {ticker} cancelled — no open position to close.",
                         }
-                    log.info("EXIT_LONG %s: pending BUY cancelled but existing position found — closing", ticker)
+                    log.info("EXIT_LONG %s: pending BUY cancelled but partial-fill position detected — closing", ticker)
             except Exception as _oe:
                 log.warning("Alpaca open-order check for %s SELL-exit failed: %s — continuing", ticker, _oe)
 
@@ -308,12 +316,28 @@ class AlpacaBroker:
                         except Exception as _ce:
                             log.warning("Alpaca cancel order %s failed: %s", o.id, _ce)
                     self._invalidate_pos_cache()
-                    return {
-                        "success":      False,
-                        "skipped":      True,
-                        "cancelled_sell": True,
-                        "error":        f"Pending SELL for {ticker} cancelled — exit arrived before fill.",
-                    }
+                    # Poll positions — Alpaca's positions endpoint can lag a partial
+                    # fill by 1-2s. If the cancel raced with a partial fill we'd see 0
+                    # immediately but a short position shortly. Don't return skipped
+                    # until we've waited long enough to be sure nothing's incoming.
+                    has_position = False
+                    for _i in range(3):
+                        positions = self._trading.get_all_positions()
+                        self._pos_cache    = positions
+                        self._pos_cache_ts = time.time()
+                        if any(p.symbol.upper() == ticker.upper() and float(p.qty or 0) != 0
+                               for p in positions):
+                            has_position = True
+                            break
+                        time.sleep(1)
+                    if not has_position:
+                        return {
+                            "success":      False,
+                            "skipped":      True,
+                            "cancelled_sell": True,
+                            "error":        f"Pending SELL for {ticker} cancelled — exit arrived before fill.",
+                        }
+                    log.info("EXIT_SHORT %s: pending SELL cancelled but partial-fill position detected — closing", ticker)
             except Exception as _oe:
                 log.warning("Alpaca open-order check for %s BUY-exit failed: %s — continuing", ticker, _oe)
 
