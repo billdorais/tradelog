@@ -4099,12 +4099,58 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
         log.info("Refined: demoting %d strategies with %d+ consecutive losses: %s",
                  len(demoted), _REFINED_CONSEC_LOSS_GATE, demoted)
 
+    # Build the set of strategy patterns from ENABLED routing rules. A strategy
+    # only qualifies for refinement if at least one enabled rule's strategy node
+    # matches its name (same prefix/suffix wildcard rules as the webhook router).
+    # Disabling a pipeline → strategy drops out of scoring even when historical
+    # fills exist. Failure to load = defensive skip (treat all as eligible).
+    _enabled_patterns = []
+    _patterns_loaded  = False
+    try:
+        _rconn = get_db(); _rcur = _rconn.cursor()
+        _rcur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        for row in _rcur.fetchall():
+            nodes_raw = row[0] if DATABASE_URL else row["nodes"]
+            _nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+            for nd in _nodes:
+                if nd.get("type") == "strategy":
+                    val = (nd.get("value") or "").strip().upper()
+                    if val:
+                        _enabled_patterns.append(val)
+        _rconn.close()
+        _patterns_loaded = True
+    except Exception as _re:
+        log.warning("Refined: failed to load enabled rule strategies, skipping rule filter: %s", _re)
+
+    def _strategy_has_enabled_rule(strat_name):
+        if not _patterns_loaded:
+            return True
+        s = strat_name.upper()
+        for pattern in _enabled_patterns:
+            if pattern == s:
+                return True
+            if pattern.endswith("*") and s.startswith(pattern[:-1]):
+                return True
+            if pattern.startswith("*") and s.endswith(pattern[1:]):
+                return True
+        return False
+
     candidates = {
         k: v for k, v in stats_map.items()
         if (v.get("total_pnl") or 0) > 0
         and (v.get("trades") or 0) >= _REFINED_MIN_TRADES
         and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and _strategy_has_enabled_rule(k)
     }
+    if _patterns_loaded:
+        _filtered_out = [k for k in stats_map
+                         if (stats_map[k].get("total_pnl") or 0) > 0
+                         and (stats_map[k].get("trades") or 0) >= _REFINED_MIN_TRADES
+                         and (stats_map[k].get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+                         and not _strategy_has_enabled_rule(k)]
+        if _filtered_out:
+            log.info("Refined: %d strategies filtered out by routing-rule gate: %s",
+                     len(_filtered_out), _filtered_out)
     max_pnl    = max((v["total_pnl"] for v in candidates.values()), default=0)
 
     scored = sorted(
