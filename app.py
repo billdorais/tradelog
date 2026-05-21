@@ -4446,15 +4446,17 @@ def bulk_update_exit_params():
     re-keyed to the new unit.
 
     If a rule has no exit_params node, one is appended."""
-    data         = request.get_json(silent=True) or {}
-    mode         = (data.get("mode") or "percent").lower()
-    trail_offset = data.get("trail_offset")
-    if trail_offset is None:
+    data          = request.get_json(silent=True) or {}
+    mode          = (data.get("mode") or "percent").lower()
+    trail_offset  = data.get("trail_offset")
+    trail_trigger = data.get("trail_trigger")  # optional — only updated when provided
+    if trail_offset is None and trail_trigger is None:
         trail_offset = 0.15
     try:
-        trail_offset = float(trail_offset)
+        if trail_offset  is not None: trail_offset  = float(trail_offset)
+        if trail_trigger is not None: trail_trigger = float(trail_trigger)
     except (TypeError, ValueError):
-        return jsonify({"error": "trail_offset must be a number"}), 400
+        return jsonify({"error": "trail values must be numbers"}), 400
     if mode not in ("percent", "dollars"):
         return jsonify({"error": "mode must be 'percent' or 'dollars'"}), 400
 
@@ -4471,13 +4473,14 @@ def bulk_update_exit_params():
             ep = {"type": "exit_params"}
             nodes.append(ep)
             added_node += 1
-        ep["mode"]         = mode
-        ep["trail_offset"] = trail_offset
+        ep["mode"] = mode
+        if trail_offset  is not None: ep["trail_offset"]  = trail_offset
+        if trail_trigger is not None: ep["trail_trigger"] = trail_trigger
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()
-    log.info("bulk_update_exit_params: %d rules updated (mode=%s trail_offset=%s, added_node=%d)",
-             updated, mode, trail_offset, added_node)
+    log.info("bulk_update_exit_params: %d rules updated (mode=%s trail_offset=%s trail_trigger=%s added_node=%d)",
+             updated, mode, trail_offset, trail_trigger, added_node)
     return jsonify({
         "updated":      updated,
         "added_node":   added_node,

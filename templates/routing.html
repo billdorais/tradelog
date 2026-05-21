@@ -286,6 +286,19 @@
         trail % to all
       </button>
     </div>
+    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c86428;border-radius:6px;overflow:hidden">
+      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">%</span>
+      <input id="bulkTriggerInput" type="number" min="0.01" step="0.01" value="0.20"
+             style="width:60px;background:transparent;border:none;color:#F2C07A;font-size:0.78rem;
+                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
+             title="Trail trigger: price must move this % in your favour before the trailing stop activates">
+      <button onclick="bulkSetTrailTrigger()"
+              style="background:transparent;border:none;border-left:1px solid #c86428;color:#F2C07A;
+                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Set trail_trigger to this % on every pipeline. Trail activates only after price moves this far in your favour.">
+        trigger % to all
+      </button>
+    </div>
   </div>
 
   <div id="refinedStatusPanel" style="background:#13101f;border:1px solid #3d2d6e;border-radius:8px;padding:12px 18px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -1011,6 +1024,19 @@
     const data = await res.json();
     await load();
     alert(`Done — updated ${data.updated} pipeline${data.updated !== 1 ? 's' : ''} to ${pct}% trail (added Exit Params to ${data.added_node} that had none).`);
+  }
+
+  async function bulkSetTrailTrigger() {
+    const pct = parseFloat(document.getElementById('bulkTriggerInput')?.value) || 0.20;
+    if (!confirm(`Set trail_trigger to ${pct}% on EVERY routing rule?\n\nThe trail will only activate after price moves ${pct}% in your favour. Until then the hard stop covers you.\n\ntrail_offset stays untouched.`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'percent', trail_trigger: pct }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — updated ${data.updated} pipeline${data.updated !== 1 ? 's' : ''} to ${pct}% trail trigger (added Exit Params to ${data.added_node} that had none).`);
   }
 
   async function deletePipeline(id) {
