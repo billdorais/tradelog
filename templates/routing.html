@@ -1001,16 +1001,15 @@
 
   async function bulkAddExitParams() {
     const stopVal = parseFloat(document.getElementById('bulkStopInput')?.value) || 0.50;
-    const n = rules.filter(r => !r.nodes.some(n => n.type === 'exit_params')).length;
-    if (n === 0) { alert('All pipelines already have an Exit Params node.'); return; }
-    if (!confirm(`Add a $${stopVal.toFixed(2)}/share stop loss node to ${n} pipeline${n > 1 ? 's' : ''} that don't have one?\n\nYou can edit individual nodes afterwards.`)) return;
-    const res  = await fetch('/api/routing/rules/bulk_add_exit_params', {
+    if (!confirm(`Set stop_loss to $${stopVal.toFixed(2)}/share on ALL ${rules.length} pipelines?\n\nPipelines without an Exit Params node will get one added. Existing nodes will have their stop_loss updated.`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stop_loss: stopVal }),
+      body: JSON.stringify({ mode: 'dollars', stop_loss: stopVal }),
     });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
     const data = await res.json();
     await load();
-    alert(`Done — added exit params to ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}, skipped ${data.skipped} that already had one.`);
+    alert(`Done — updated stop_loss to $${stopVal.toFixed(2)} on ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkConvertTrailToPercent() {
