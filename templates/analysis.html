@@ -340,7 +340,7 @@
 
   <!-- Daily / Weekly summaries -->
   <div class="section">
-    <div class="section-title">Performance Summary</div>
+    <div class="section-title">Performance Summary <span style="font-size:0.7rem;font-weight:400;color:#c4b5fd;margin-left:8px">Refined account</span></div>
     <div class="tabs">
       <div class="tab active" onclick="showTab('daily')">Daily</div>
       <div class="tab"       onclick="showTab('weekly')">Weekly</div>
@@ -610,7 +610,16 @@
     if (params.toString()) endpoint += '?' + params.toString();
     document.getElementById('dataAge').textContent = 'Loading…';
     // Refresh routing-rule -> live-strategy map in parallel with the analysis fetch.
-    const [res] = await Promise.all([fetch(endpoint), _refreshLiveStrategies()]);
+    // Always fetch Refined (account 2) for the Performance Summary regardless of active tab.
+    const refinedPerfParams = new URLSearchParams({account: '2'});
+    if (fromDate) refinedPerfParams.set('from_date', fromDate);
+    if (toDate)   refinedPerfParams.set('to_date',   toDate);
+    const refinedPerfEndpoint = '/api/alpaca/analysis?' + refinedPerfParams.toString();
+    const [res, refinedPerfRes] = await Promise.all([
+      fetch(endpoint),
+      isAlpaca2 ? Promise.resolve(null) : fetch(refinedPerfEndpoint),
+      _refreshLiveStrategies(),
+    ]);
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
@@ -626,8 +635,10 @@
     renderOverall(data.overall || {});
     renderStratTable(data.per_strategy || {});
     renderTickerTable(data.per_ticker  || {});
-    renderDaily(data.daily   || []);
-    renderWeekly(data.weekly || []);
+    // Performance Summary always shows Refined account so you can track the curated portfolio
+    const perfData = isAlpaca2 ? data : (refinedPerfRes ? await refinedPerfRes.json().catch(() => ({})) : {});
+    renderDaily(perfData.daily   || []);
+    renderWeekly(perfData.weekly || []);
     if (isAlpaca || isAlpaca2) loadReconciliation(isAlpaca2 ? '2' : '');
     _loadRefinedSnapshot();
   }
