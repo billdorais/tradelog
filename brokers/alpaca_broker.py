@@ -574,8 +574,8 @@ class AlpacaBroker:
             # wash-trade error: "potential wash trade detected. use complex orders".
             # Wait up to 5s; if entry hasn't filled, skip the stops and rely on the
             # Kairos polling stop. Only wait when stops are actually configured.
-            _exit_trail   = trail_offset or stop_loss
-            _has_stops    = bool(_exit_trail) or bool(trail_trigger) or bool(hard_stop_dollars and float(hard_stop_dollars) > 0)
+            _exit_trail   = trail_offset  # stop_loss alone → hard stop, not trailing stop
+            _has_stops    = bool(_exit_trail) or bool(stop_loss) or bool(trail_trigger) or bool(hard_stop_dollars and float(hard_stop_dollars) > 0)
             _entry_filled = False
             if not is_exit and not is_crypto and _has_stops:
                 _entry_filled = self._wait_for_order_filled(str(order.id), max_wait_secs=5)
@@ -664,6 +664,37 @@ class AlpacaBroker:
                     result["trail_mode"]     = trail_mode
                 except Exception as _te:
                     log.warning("Trailing stop failed for %s: %s — entry order still placed", ticker, _te)
+            # stop_loss without trail_offset — submit a fixed hard stop so TV EXIT
+            # signals remain the primary exit. Trail would block TV exits; hard stop won't.
+            if (not is_exit and stop_loss and not trail_offset and not trail_trigger
+                    and not is_crypto and _entry_filled and not _trail_activated
+                    and not result.get("trail_order_id")):
+                try:
+                    from alpaca.trading.requests import StopOrderRequest
+                    _ref = float(ref_price or 0) or (float(price) if price else 0.0)
+                    if _ref > 0:
+                        _sl = float(stop_loss)
+                        if trail_mode == "percent":
+                            _stop_px = round(_ref * (1 - _sl / 100), 2) if action.upper() == "BUY" \
+                                       else round(_ref * (1 + _sl / 100), 2)
+                        else:
+                            _stop_px = round(_ref - _sl, 2) if action.upper() == "BUY" \
+                                       else round(_ref + _sl, 2)
+                        _stop_side = OrderSide.SELL if action.upper() == "BUY" else OrderSide.BUY
+                        _sl_req = StopOrderRequest(
+                            symbol=ticker, qty=qty, side=_stop_side,
+                            time_in_force=TimeInForce.GTC, stop_price=_stop_px,
+                        )
+                        _sl_order = self._trading.submit_order(_sl_req)
+                        result["hard_stop_order_id"] = str(_sl_order.id)
+                        result["hard_stop_price"]    = _stop_px
+                        log.info("Hard stop (safety net) submitted: %s %s @ %.2f — TV exits remain primary",
+                                 _stop_side.value, ticker, _stop_px)
+                    else:
+                        log.warning("Hard stop skipped for %s: no ref_price", ticker)
+                except Exception as _se:
+                    log.warning("Hard stop (safety net) failed for %s: %s", ticker, _se)
+
             # Attach a HARD broker-side stop loss for the per-position-stop limit.
             # Sits at Alpaca — fires in milliseconds when triggered, vs the soft
             # Kairos polling stop which slips on fast-moving stocks.

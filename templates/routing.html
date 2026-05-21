@@ -1001,15 +1001,15 @@
 
   async function bulkAddExitParams() {
     const stopVal = parseFloat(document.getElementById('bulkStopInput')?.value) || 0.50;
-    if (!confirm(`Set stop_loss to $${stopVal.toFixed(2)}/share on ALL ${rules.length} pipelines?\n\nPipelines without an Exit Params node will get one added. Existing nodes will have their stop_loss updated.`)) return;
+    if (!confirm(`Set $${stopVal.toFixed(2)}/share safety-net hard stop on ALL ${rules.length} pipelines?\n\nTV signals will handle exits as normal. The hard stop fires only if price crashes through before TV exits.\n\nTrail trigger and trail offset will be cleared.`)) return;
     const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'dollars', stop_loss: stopVal }),
+      body: JSON.stringify({ mode: 'dollars', stop_loss: stopVal, clear_trail: true }),
     });
     if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
     const data = await res.json();
     await load();
-    alert(`Done — updated stop_loss to $${stopVal.toFixed(2)} on ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}.`);
+    alert(`Done — set $${stopVal.toFixed(2)} safety-net stop on ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}. TV signals handle exits.`);
   }
 
   async function bulkConvertTrailToPercent() {

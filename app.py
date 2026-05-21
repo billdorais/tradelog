@@ -4451,6 +4451,7 @@ def bulk_update_exit_params():
     trail_offset  = data.get("trail_offset")
     trail_trigger = data.get("trail_trigger")
     stop_loss     = data.get("stop_loss")
+    clear_trail   = bool(data.get("clear_trail", False))
     if trail_offset is None and trail_trigger is None and stop_loss is None:
         trail_offset = 0.15
     try:
@@ -4479,6 +4480,9 @@ def bulk_update_exit_params():
         if trail_offset  is not None: ep["trail_offset"]  = trail_offset
         if trail_trigger is not None: ep["trail_trigger"] = trail_trigger
         if stop_loss     is not None: ep["stop_loss"]     = stop_loss
+        if clear_trail:
+            ep.pop("trail_offset",  None)
+            ep.pop("trail_trigger", None)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()
