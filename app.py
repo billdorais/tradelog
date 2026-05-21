@@ -4225,11 +4225,12 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     _refined_last_run = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Refined history: persist this run's top, derive added/removed/tenure vs prior runs.
-    # Tenure = number of consecutive runs (newest-first) the strategy has appeared in,
-    # including this one. Frontend displays it as "Nd" since runs are daily.
+    # Tenure = calendar days since the strategy was first inducted into the top-N.
+    # Using first-induction date rather than consecutive run count so manual refreshes
+    # (done to fix issues) don't artificially inflate or reset tenure.
     added_strategies   = []
     removed_strategies = []
-    tenure_runs        = {}   # strategy_name -> consecutive runs (incl this one)
+    tenure_runs        = {}   # strategy_name -> days since first induction
     try:
         hconn = get_db(); hcur = hconn.cursor(); hp = placeholder()
         hcur.execute("SELECT run_at, strategy_name FROM refined_history ORDER BY run_at DESC")
@@ -4264,12 +4265,27 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
                 )
         hconn.commit()
 
+        # Compute first-induction date for each strategy in this run's top.
+        # Walk ALL history runs (oldest-first) to find the earliest appearance.
+        first_seen = {}  # strategy_name -> earliest run_at string
+        for run_at, names in reversed(runs):  # reversed = oldest first
+            for s in names:
+                if s not in first_seen:
+                    first_seen[s] = run_at
+        # Also credit this run for newly added strategies
+        for s in added_strategies:
+            if s not in first_seen:
+                first_seen[s] = _refined_last_run
+
+        now_date = _dt.datetime.now(_dt.timezone.utc).date()
         for s in new_top:
-            count = 1                          # this run counts as one
-            for run_at, names in runs:         # walk prior runs newest-first
-                if s in names: count += 1
-                else:          break
-            tenure_runs[s] = count
+            first_str = first_seen.get(s, _refined_last_run)
+            try:
+                # run_at format: "YYYY-MM-DD HH:MM:SS UTC"
+                first_date = _dt.datetime.strptime(first_str[:10], "%Y-%m-%d").date()
+                tenure_runs[s] = max(1, (now_date - first_date).days + 1)
+            except Exception:
+                tenure_runs[s] = 1
         hconn.close()
     except Exception as _he:
         log.warning("Refined history tracking failed: %s", _he)
