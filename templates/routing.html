@@ -955,7 +955,7 @@
         const parts = [];
         if (node.hard_stop)     parts.push(`Hard $${node.hard_stop}`);
         if (node.stop_loss)     parts.push(`SL ${sym}${node.stop_loss}`);
-        if (node.trail_trigger) parts.push(`TT ${sym}${node.trail_trigger}`);
+        if (node.trail_trigger) parts.push(`Trigger ${sym}${node.trail_trigger}`);
         if (node.trail_offset)  parts.push(`Trail ${sym}${node.trail_offset}`);
         return parts.join(' · ') || '—';
       }
@@ -1337,8 +1337,8 @@
             <input id="f_ep_stop_loss" type="number" min="0" step="0.01" value="${v.stop_loss ?? ''}" placeholder="e.g. 0.25">
           </div>
           <div class="form-group">
-            <label>Trail Trigger <span class="ep-unit">${epUnit}</span> <span style="color:#555;font-weight:normal">— reference only</span></label>
-            <input id="f_ep_trail_trigger" type="number" min="0" step="0.01" value="${v.trail_trigger ?? ''}" placeholder="e.g. 0.15">
+            <label>Trail Trigger <span class="ep-unit">${epUnit}</span> <span style="color:#555;font-weight:normal">— price must move this far in your favour before trail activates; hard stop covers you until then</span></label>
+            <input id="f_ep_trail_trigger" type="number" min="0" step="0.01" value="${v.trail_trigger ?? ''}" placeholder="e.g. 0.20">
           </div>
           <div class="form-group">
             <label>Trail Offset <span class="ep-unit">${epUnit}</span></label>

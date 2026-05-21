@@ -149,7 +149,74 @@ class AlpacaBroker:
         acct = self._trading.get_account()
         return float(acct.equity) - float(acct.last_equity)
 
-    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False, stop_loss=None, trail_offset=None, trail_mode="dollars", hard_stop_dollars=None, ref_price=None):
+    def _activate_trail_on_trigger(self, ticker, qty, action, trail_trigger, trail_offset,
+                                    trail_mode, hard_stop_id, ref_price, strat_slug):
+        """Background thread: polls unrealized P&L and swaps the hard stop for a
+        trailing stop once the position moves trail_trigger in the trader's favour.
+        Mirrors TradingView's trail_points concept which delays trail activation."""
+        import time as _t
+        import threading as _th
+        is_long = action.upper() == "BUY"
+        _ref    = float(ref_price or 0)
+        _qty    = float(qty)
+        if trail_mode == "percent":
+            trigger_dollars = _ref * (float(trail_trigger) / 100) * _qty
+        else:
+            trigger_dollars = float(trail_trigger) * _qty
+        log.info("Trail activation thread started: %s trigger=$%.2f (%.4g%s, ref=$%.2f)",
+                 ticker, trigger_dollars, trail_trigger,
+                 "%" if trail_mode == "percent" else "$", _ref)
+        deadline = _t.time() + 6 * 3600  # cover full extended hours + buffer
+        while _t.time() < deadline:
+            _t.sleep(1.0)
+            try:
+                positions = self._trading.get_all_positions()
+                pos = next((p for p in positions
+                            if p.symbol.upper() == ticker.upper()), None)
+                if not pos:
+                    log.info("Trail activation: %s position closed before trigger", ticker)
+                    return
+                unrealized = float(pos.unrealized_pl or 0)
+                if unrealized >= trigger_dollars:
+                    log.info("Trail activation: %s unrealized=$%.2f >= trigger=$%.2f "
+                             "— cancelling hard stop, submitting trail",
+                             ticker, unrealized, trigger_dollars)
+                    try:
+                        self._trading.cancel_order_by_id(hard_stop_id)
+                        log.info("Trail activation: hard stop %s cancelled", hard_stop_id)
+                    except Exception as _ce:
+                        log.debug("Trail activation: cancel hard stop %s: %s", hard_stop_id, _ce)
+                    from alpaca.trading.requests import TrailingStopOrderRequest
+                    from alpaca.trading.enums import OrderSide, TimeInForce
+                    _trail_side = OrderSide.SELL if is_long else OrderSide.BUY
+                    _trail_val  = round(float(trail_offset), 4)
+                    _trail_oid  = f"kairos-trail-{strat_slug}-{int(_t.time())}"
+                    if trail_mode == "percent":
+                        _req = TrailingStopOrderRequest(
+                            symbol=ticker, qty=qty, side=_trail_side,
+                            time_in_force=TimeInForce.GTC,
+                            trail_percent=_trail_val, client_order_id=_trail_oid,
+                        )
+                        log.info("Trail activated: %s %s trail=%.2f%%",
+                                 _trail_side.value, ticker, _trail_val)
+                    else:
+                        _req = TrailingStopOrderRequest(
+                            symbol=ticker, qty=qty, side=_trail_side,
+                            time_in_force=TimeInForce.GTC,
+                            trail_price=_trail_val, client_order_id=_trail_oid,
+                        )
+                        log.info("Trail activated: %s %s trail=$%.2f",
+                                 _trail_side.value, ticker, _trail_val)
+                    try:
+                        self._trading.submit_order(_req)
+                    except Exception as _te:
+                        log.warning("Trail submit failed for %s after activation: %s", ticker, _te)
+                    return
+            except Exception as _pe:
+                log.debug("Trail activation poll error %s: %s", ticker, _pe)
+        log.info("Trail activation thread for %s timed out", ticker)
+
+    def place_order(self, ticker, action, quantity, price=None, sec_type="STK", currency="USD", strategy="", is_exit=False, stop_loss=None, trail_trigger=None, trail_offset=None, trail_mode="dollars", hard_stop_dollars=None, ref_price=None):
         """
         Place a market or limit order.
         action: BUY or SELL
@@ -508,7 +575,7 @@ class AlpacaBroker:
             # Wait up to 5s; if entry hasn't filled, skip the stops and rely on the
             # Kairos polling stop. Only wait when stops are actually configured.
             _exit_trail   = trail_offset or stop_loss
-            _has_stops    = bool(_exit_trail) or bool(hard_stop_dollars and float(hard_stop_dollars) > 0)
+            _has_stops    = bool(_exit_trail) or bool(trail_trigger) or bool(hard_stop_dollars and float(hard_stop_dollars) > 0)
             _entry_filled = False
             if not is_exit and not is_crypto and _has_stops:
                 _entry_filled = self._wait_for_order_filled(str(order.id), max_wait_secs=5)
@@ -519,9 +586,51 @@ class AlpacaBroker:
                         action, qty, ticker, order.id,
                     )
                     result["stops_skipped"] = "entry_not_filled_in_time"
-            # Attach broker-side trailing stop for stock entries when exit_params node is configured.
-            # trail_offset takes priority; falls back to stop_loss as the trailing distance.
-            if not is_exit and _exit_trail and not is_crypto and _entry_filled:
+
+            # Option A — delayed trail activation: submit hard stop immediately, then swap
+            # to a trailing stop once the position moves trail_trigger in our favour.
+            # Mirrors TradingView's trail_points parameter.
+            _trail_activated = False
+            if not is_exit and trail_trigger and trail_offset and not is_crypto and _entry_filled:
+                try:
+                    from alpaca.trading.requests import StopOrderRequest
+                    _ref = float(ref_price or 0) or (float(price) if price else 0.0)
+                    _sl  = float(stop_loss or trail_offset)  # fall back to trail_offset if no explicit SL
+                    if _ref > 0:
+                        if trail_mode == "percent":
+                            _stop_px = round(_ref * (1 - _sl / 100), 2) if action.upper() == "BUY" \
+                                       else round(_ref * (1 + _sl / 100), 2)
+                        else:
+                            _stop_px = round(_ref - _sl, 2) if action.upper() == "BUY" \
+                                       else round(_ref + _sl, 2)
+                        _stop_side = OrderSide.SELL if action.upper() == "BUY" else OrderSide.BUY
+                        _hs_req    = StopOrderRequest(
+                            symbol=ticker, qty=qty, side=_stop_side,
+                            time_in_force=TimeInForce.GTC, stop_price=_stop_px,
+                        )
+                        _hs_order = self._trading.submit_order(_hs_req)
+                        result["hard_stop_order_id"] = str(_hs_order.id)
+                        result["hard_stop_price"]    = _stop_px
+                        log.info("Hard stop submitted %s %s @ %.2f (trail activation pending at %s%s)",
+                                 _stop_side.value, ticker, _stop_px, trail_trigger,
+                                 "%" if trail_mode == "percent" else "$")
+                        import threading as _thr
+                        _thr.Thread(
+                            target=self._activate_trail_on_trigger,
+                            args=(ticker, qty, action, trail_trigger, trail_offset,
+                                  trail_mode, str(_hs_order.id), ref_price or price, _strat_slug),
+                            daemon=True,
+                        ).start()
+                        _trail_activated = True
+                    else:
+                        log.warning("Trail activation setup skipped for %s: no ref_price — "
+                                    "falling back to immediate trail", ticker)
+                except Exception as _ha:
+                    log.warning("Hard stop for trail activation failed for %s: %s — "
+                                "falling back to immediate trail", ticker, _ha)
+
+            # Immediate trail — used when no trail_trigger is configured or activation setup failed.
+            if not is_exit and _exit_trail and not is_crypto and _entry_filled and not _trail_activated:
                 try:
                     from alpaca.trading.requests import TrailingStopOrderRequest
                     _trail_side = OrderSide.SELL if action.upper() == "BUY" else OrderSide.BUY
