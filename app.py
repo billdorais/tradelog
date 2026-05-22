@@ -1664,7 +1664,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_TRAILING_GIVEBACK
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_TRAILING_GIVEBACK
     data = request.get_json(silent=True) or {}
     changed = []
     if "max_daily_loss" in data:
