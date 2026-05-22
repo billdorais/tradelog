@@ -220,6 +220,24 @@
 
     <div class="risk-section">
       <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+        <span>Max Loss Cap ($) <span style="color:#c4b5fd;font-weight:400;font-size:0.7rem">Refined only</span></span>
+        <span id="refinedDollarBadge" class="risk-status-badge disabled">
+          <span class="risk-dot grey" id="refinedDollarDot"></span>
+          <span id="refinedDollarText">Disabled</span>
+        </span>
+      </div>
+      <div class="risk-input-row">
+        <input class="risk-input" id="refinedDollarInput" type="number" step="5" placeholder="e.g. -60">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedDollarLimit()">Set</button>
+        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedDollarLimit()">Off</button>
+      </div>
+      <div class="risk-hint" id="refinedDollarHint">Refined only: fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
+    </div>
+
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
         <span>Per-Position Stop ($) <span style="color:#7FE098;font-weight:400;font-size:0.7rem">Paper All</span></span>
         <span id="paperPosStatusBadge" class="risk-status-badge disabled">
           <span class="risk-dot grey" id="paperPosStatusDot"></span>
@@ -478,6 +496,27 @@
         posHint.textContent = 'Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
       }
 
+      // Refined dollar cap badge
+      const refDollarInput = document.getElementById('refinedDollarInput');
+      if (document.activeElement !== refDollarInput && data.max_position_loss_refined !== null) {
+        refDollarInput.value = data.max_position_loss_refined || '';
+      }
+      const refBadge = document.getElementById('refinedDollarBadge');
+      const refDot   = document.getElementById('refinedDollarDot');
+      const refText  = document.getElementById('refinedDollarText');
+      const refHint  = document.getElementById('refinedDollarHint');
+      if (data.max_position_loss_refined !== null && data.max_position_loss_refined < 0) {
+        refBadge.className = 'risk-status-badge active';
+        refDot.className   = 'risk-dot green';
+        refText.textContent = 'Active';
+        refHint.textContent = `Refined only: closes any position whose unrealized loss reaches $${Math.abs(data.max_position_loss_refined).toFixed(0)} — fires alongside the % stop, whichever hits first.`;
+      } else {
+        refBadge.className = 'risk-status-badge disabled';
+        refDot.className   = 'risk-dot grey';
+        refText.textContent = 'Disabled';
+        refHint.textContent = 'Refined only: fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).';
+      }
+
       // Paper All position stop badge
       const paperBadge = document.getElementById('paperPosStatusBadge');
       const paperDot   = document.getElementById('paperPosStatusDot');
@@ -592,6 +631,23 @@
     document.getElementById('posLimitInput').value = '';
     try { await _postLimit({max_position_loss_pct: 0}); }
     catch(e) { console.error('clearPositionLimit failed:', e); }
+  }
+
+  async function saveRefinedDollarLimit() {
+    const input = document.getElementById('refinedDollarInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearRefinedDollarLimit(); return; }
+    const val = parseFloat(raw);
+    if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({max_position_loss_refined: val}); }
+    catch(e) { console.error('saveRefinedDollarLimit failed:', e); }
+  }
+
+  async function clearRefinedDollarLimit() {
+    document.getElementById('refinedDollarInput').value = '';
+    try { await _postLimit({max_position_loss_refined: 0}); }
+    catch(e) { console.error('clearRefinedDollarLimit failed:', e); }
   }
 
   async function savePaperPositionLimit() {
