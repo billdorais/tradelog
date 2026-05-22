@@ -1015,7 +1015,14 @@
     function _populateStratPicker() {
       const list = document.getElementById('stratPickerList');
       if (!list) return;
-      list.innerHTML = _allStrategyNames.map(s => {
+      // When a selection is active, show selected strategies first so they're easy to find
+      let names = _allStrategyNames;
+      if (selectedStrategies.size > 0) {
+        const selected = [...selectedStrategies].sort();
+        const rest = _allStrategyNames.filter(s => !selectedStrategies.has(s));
+        names = [...selected, ...rest];
+      }
+      list.innerHTML = names.map(s => {
         const visible = selectedStrategies.size === 0 || selectedStrategies.has(s);
         const esc = s.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
         return `<div class="strat-picker-row" onclick="toggleStratVis('${esc}', event)">
@@ -1074,25 +1081,26 @@
     async function selectTopN(n, e) {
       if (e) e.stopPropagation();
       const pnlByStrat = {};
-
       const fromDate = document.getElementById('equityFromDate')?.value || '';
       const toDate   = document.getElementById('equityToDate')?.value   || '';
 
-      if (activeTab === 'alpaca') {
-        // Rank by P&L within the current date range so Top N reflects the
-        // strategies that actually performed best in the visible window.
+      if (activeTab === 'alpaca' || activeTab === 'refined') {
+        // Rank by full-history Alpaca P&L so Top N always returns N strategies.
+        // Date range is applied to the chart separately via applyEquityFilter.
         const acct = activeTab === 'refined' ? '2' : '';
         const params = new URLSearchParams();
-        if (acct)     params.set('account',   acct);
-        if (fromDate) params.set('from_date', fromDate);
-        if (toDate)   params.set('to_date',   toDate);
+        if (acct) params.set('account', acct);
         const data = await fetch('/api/alpaca/analysis?' + params).then(r => r.json()).catch(() => ({}));
         for (const [strat, s] of Object.entries(data.per_strategy || {})) {
           if (s.total_pnl != null) pnlByStrat[strat] = s.total_pnl;
         }
+        // Ensure picker names include Alpaca strategy names (may differ from TV signals)
+        const alpacaNames = Object.keys(data.per_strategy || {});
+        const combined = [...new Set([..._allStrategyNames, ...alpacaNames])].sort();
+        if (combined.length > _allStrategyNames.length) _allStrategyNames = combined;
       } else {
-        // TV signals mode — rank within the current date range
-        const data = await fetch(buildStatsUrl(fromDate, toDate, '')).then(r => r.json()).catch(() => ({}));
+        // TV signals mode
+        const data = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json()).catch(() => ({}));
         for (const p of (data.equity_curve || [])) {
           if (p.strategy && p.pnl != null)
             pnlByStrat[p.strategy] = (pnlByStrat[p.strategy] || 0) + p.pnl;
