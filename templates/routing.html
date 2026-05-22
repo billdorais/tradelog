@@ -202,18 +202,18 @@
 
     <div class="risk-section">
       <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Per-Position Stop ($)</span>
+        <span>Per-Position Stop (%)</span>
         <span id="posStatusBadge" class="risk-status-badge disabled">
           <span class="risk-dot grey" id="posStatusDot"></span>
           <span id="posStatusText">Disabled</span>
         </span>
       </div>
       <div class="risk-input-row">
-        <input class="risk-input" id="posLimitInput" type="number" step="1" placeholder="e.g. -200">
+        <input class="risk-input" id="posLimitInput" type="number" step="0.1" placeholder="e.g. -0.5">
         <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
         <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()" title="Disable position stop">Off</button>
       </div>
-      <div class="risk-hint" id="posStatusHint">Close the position when unrealized loss hits this value. Strategy stays active.</div>
+      <div class="risk-hint" id="posStatusHint">Close when unrealized loss exceeds this % of position value (e.g. -0.5 = close at -0.5%). Scales with position size. Strategy stays active.</div>
     </div>
 
     <div class="risk-divider"></div>
@@ -423,8 +423,9 @@
         input.value = data.max_daily_loss;
       }
       const posInput = document.getElementById('posLimitInput');
-      if (document.activeElement !== posInput && data.max_position_loss !== null) {
-        posInput.value = data.max_position_loss;
+      if (document.activeElement !== posInput) {
+        const posVal = data.max_position_loss_pct ?? data.max_position_loss ?? null;
+        if (posVal !== null) posInput.value = posVal;
       }
       const trailInput = document.getElementById('trailLimitInput');
       if (document.activeElement !== trailInput && data.max_trailing_giveback !== null) {
@@ -440,12 +441,15 @@
         posBadge.className = 'risk-status-badge active';
         posDot.className   = 'risk-dot green';
         posText.textContent = 'Active';
-        posHint.textContent = 'Auto-closes any position whose unrealized loss reaches $' + Number(data.max_position_loss).toFixed(0) + '. Strategy stays active.';
+        const pctVal = data.max_position_loss_pct;
+        posHint.textContent = pctVal != null
+          ? 'Auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of its market value. Strategy stays active.'
+          : 'Auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
       } else {
         posBadge.className = 'risk-status-badge disabled';
         posDot.className   = 'risk-dot grey';
         posText.textContent = 'Disabled';
-        posHint.textContent = 'Close the position when unrealized loss hits this value. Strategy stays active.';
+        posHint.textContent = 'Close when unrealized loss exceeds this % of position value. Strategy stays active.';
       }
 
       // Trailing stop status badge
@@ -537,7 +541,7 @@
     const val = parseFloat(raw);
     if (isNaN(val)) { input.classList.add('invalid'); return; }
     input.classList.remove('invalid');
-    try { await _postLimit({max_position_loss: val}); }
+    try { await _postLimit({max_position_loss_pct: val, max_position_loss: 0}); }
     catch(e) { console.error('savePositionLimit failed:', e); }
   }
 

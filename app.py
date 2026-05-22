@@ -56,7 +56,8 @@ eod_close_enabled   = True
 #                       within this window. Set to 0 to disable.
 # ---------------------------------------------------------------------------
 MAX_DAILY_LOSS        = float(os.environ.get("MAX_DAILY_LOSS", "0"))
-MAX_POSITION_LOSS     = float(os.environ.get("MAX_POSITION_LOSS", "0"))
+MAX_POSITION_LOSS     = float(os.environ.get("MAX_POSITION_LOSS", "0"))      # legacy dollar-based (kept for compat)
+MAX_POSITION_LOSS_PCT = float(os.environ.get("MAX_POSITION_LOSS_PCT", "0"))  # percent of market value, e.g. -0.5
 MAX_TRAILING_GIVEBACK = float(os.environ.get("MAX_TRAILING_GIVEBACK", "0"))
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
 MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
@@ -749,7 +750,13 @@ def _check_position_stops():
 
         # Decide which (if any) stop to fire.
         triggered = None
-        if MAX_POSITION_LOSS < 0 and upnl <= MAX_POSITION_LOSS:
+        if MAX_POSITION_LOSS_PCT < 0:
+            mkt_val = abs(float(pos.get("market_value") or 0))
+            loss_pct = (upnl / mkt_val * 100) if mkt_val > 0 else 0.0
+            if loss_pct <= MAX_POSITION_LOSS_PCT:
+                triggered = ("fixed-loss-pct",
+                             f"unrealized {loss_pct:.2f}% (${upnl:.2f}) hit limit {MAX_POSITION_LOSS_PCT:.2f}%")
+        elif MAX_POSITION_LOSS < 0 and upnl <= MAX_POSITION_LOSS:
             triggered = ("fixed-loss",
                          f"unrealized P&L ${upnl:.2f} hit fixed limit ${MAX_POSITION_LOSS:.2f}")
         elif MAX_TRAILING_GIVEBACK > 0 \
@@ -888,7 +895,7 @@ def _position_monitor_loop():
     global _exit_recovery_tick
     time.sleep(25)  # stagger from risk monitor
     while True:
-        if MAX_POSITION_LOSS < 0 or MAX_TRAILING_GIVEBACK > 0:
+        if MAX_POSITION_LOSS < 0 or MAX_POSITION_LOSS_PCT < 0 or MAX_TRAILING_GIVEBACK > 0:
             try:
                 _check_position_stops()
             except Exception as _e:
@@ -1620,8 +1627,10 @@ def risk_status():
         "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,
         "current_pnl":          round(pnl, 2) if pnl is not None else None,
         "enabled":              MAX_DAILY_LOSS < 0,
-        "max_position_loss":    MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
-        "position_stop_enabled": MAX_POSITION_LOSS < 0,
+        "max_position_loss":     MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
+        "max_position_loss_pct": MAX_POSITION_LOSS_PCT if MAX_POSITION_LOSS_PCT != 0 else None,
+        "position_stop_enabled": MAX_POSITION_LOSS_PCT < 0 or MAX_POSITION_LOSS < 0,
+        "position_stop_mode":    "percent" if MAX_POSITION_LOSS_PCT < 0 else "dollars",
         "max_trailing_giveback":   MAX_TRAILING_GIVEBACK if MAX_TRAILING_GIVEBACK != 0 else None,
         "trailing_stop_enabled":   MAX_TRAILING_GIVEBACK > 0,
         "positions":            positions,
@@ -1676,6 +1685,15 @@ def risk_set_limit():
         _save_setting("MAX_POSITION_LOSS", f"{MAX_POSITION_LOSS:g}")
         log.info("MAX_POSITION_LOSS updated to %g", MAX_POSITION_LOSS)
         changed.append("max_position_loss")
+    if "max_position_loss_pct" in data:
+        try:
+            MAX_POSITION_LOSS_PCT = float(data["max_position_loss_pct"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_position_loss_pct must be a number"}), 400
+        _update_env_file("MAX_POSITION_LOSS_PCT", f"{MAX_POSITION_LOSS_PCT:g}")
+        _save_setting("MAX_POSITION_LOSS_PCT", f"{MAX_POSITION_LOSS_PCT:g}")
+        log.info("MAX_POSITION_LOSS_PCT updated to %g", MAX_POSITION_LOSS_PCT)
+        changed.append("max_position_loss_pct")
     if "max_trailing_giveback" in data:
         try:
             MAX_TRAILING_GIVEBACK = float(data["max_trailing_giveback"])
@@ -7556,7 +7574,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_TRAILING_GIVEBACK
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_TRAILING_GIVEBACK
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -7569,6 +7587,13 @@ def _restore_risk_settings():
         try:
             MAX_POSITION_LOSS = float(stored)
             log.info("Restored MAX_POSITION_LOSS=%g from DB", MAX_POSITION_LOSS)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("MAX_POSITION_LOSS_PCT")
+    if stored is not None:
+        try:
+            MAX_POSITION_LOSS_PCT = float(stored)
+            log.info("Restored MAX_POSITION_LOSS_PCT=%g from DB", MAX_POSITION_LOSS_PCT)
         except (TypeError, ValueError):
             pass
     stored = _load_setting("MAX_TRAILING_GIVEBACK")
