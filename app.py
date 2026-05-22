@@ -749,8 +749,9 @@ def _check_position_stops():
                 peak = max(prev, upnl)
 
         # Decide which (if any) stop to fire.
+        # PCT stop applies to Refined (alpaca2) only — Paper All uses dollar stop or TV exits.
         triggered = None
-        if MAX_POSITION_LOSS_PCT < 0:
+        if MAX_POSITION_LOSS_PCT < 0 and broker == "alpaca2":
             mkt_val = abs(float(pos.get("market_value") or 0))
             loss_pct = (upnl / mkt_val * 100) if mkt_val > 0 else 0.0
             if loss_pct <= MAX_POSITION_LOSS_PCT:

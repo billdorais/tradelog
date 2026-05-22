@@ -202,7 +202,7 @@
 
     <div class="risk-section">
       <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Per-Position Stop (%)</span>
+        <span>Per-Position Stop (%) <span style="color:#c4b5fd;font-weight:400;font-size:0.7rem">Refined only</span></span>
         <span id="posStatusBadge" class="risk-status-badge disabled">
           <span class="risk-dot grey" id="posStatusDot"></span>
           <span id="posStatusText">Disabled</span>
@@ -213,7 +213,7 @@
         <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
         <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()" title="Disable position stop">Off</button>
       </div>
-      <div class="risk-hint" id="posStatusHint">Close when unrealized loss exceeds this % of position value (e.g. -0.5 = close at -0.5%). Scales with position size. Strategy stays active.</div>
+      <div class="risk-hint" id="posStatusHint">Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Paper All uses TV exits + broker hard stop. Strategy stays active.</div>
     </div>
 
     <div class="risk-divider"></div>
@@ -443,7 +443,7 @@
         posText.textContent = 'Active';
         const pctVal = data.max_position_loss_pct;
         posHint.textContent = pctVal != null
-          ? 'Auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of its market value. Strategy stays active.'
+          ? 'Refined only: auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of market value. Paper All unaffected. Strategy stays active.'
           : 'Auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
       } else {
         posBadge.className = 'risk-status-badge disabled';
