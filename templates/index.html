@@ -784,7 +784,9 @@
     function _currentAlpacaExecs()     { return feedTab === 'refined' ? allAlpaca2Execs : allAlpacaExecs; }
     function _currentAlpacaPositions() { return feedTab === 'refined' ? [] : allAlpacaPositions; }
     let selectedStrategy   = '';
-    let selectedStrategies = new Set();  // empty = all visible
+    // Per-tab strategy selections so Paper All and Paper Refined filter independently
+    const _tabSelections = { alpaca: new Set(), refined: new Set(), signals: new Set() };
+    let selectedStrategies = _tabSelections['refined'];  // active set, points into _tabSelections
     let _allStrategyNames  = [];
     let _cachedFullStats   = null;
     let _cachedFromDate    = null;
@@ -799,6 +801,8 @@
     async function switchTab(tab) {
       try {
         activeTab = tab;
+        // Switch to the per-tab selection set so each tab filters independently
+        selectedStrategies = _tabSelections[tab] || (_tabSelections[tab] = new Set());
 
         // Tab button highlighting
         document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'   ? ' active-alpaca'   : '');
@@ -1064,6 +1068,7 @@
 
     async function selectAllStrats() {
       selectedStrategies = new Set();
+      _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
       _cachedFullStats = null;
@@ -1072,6 +1077,7 @@
 
     async function clearAllStrats() {
       selectedStrategies = new Set([_allStrategyNames[0]].filter(Boolean));
+      _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
       _cachedFullStats = null;
@@ -1112,6 +1118,7 @@
         .slice(0, n)
         .map(([s]) => s);
       selectedStrategies = new Set(top);
+      _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
       await applyEquityFilter();
@@ -2439,6 +2446,7 @@
       const chartTab = tab === 'tv' ? 'signals' : (tab === 'refined' ? 'refined' : 'alpaca');
       if (activeTab !== chartTab) {
         activeTab = chartTab;
+        selectedStrategies = _tabSelections[chartTab] || (_tabSelections[chartTab] = new Set());
         document.getElementById('tabAlpaca').className  = 'pnl-tab' + (chartTab === 'alpaca'  ? ' active-alpaca'  : '');
         document.getElementById('tabRefined').className = 'pnl-tab' + (chartTab === 'refined' ? ' active-refined' : '');
         document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
