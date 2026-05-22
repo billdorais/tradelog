@@ -4033,6 +4033,17 @@ _REFINED_SIZE_BANDS = [
     ( 0,  2_500),   # else         → $2.5k floor
 ]
 
+# Price-based share cap applied on top of dollar target.
+# Prevents cheap stocks (NFLX $89, HOOD $77) from getting outsized share counts
+# while leaving expensive stocks (SPY $743, QQQ $715) unaffected.
+# e.g. NFLX $89 + $25k target = 280sh → capped at 50.  SPY $743 = 33sh → no cap.
+_REFINED_MAX_SHARES_BY_PRICE = [
+    (300, None),   # price ≥ $300 → no cap
+    (150,   80),   # price ≥ $150 → max 80 shares
+    ( 75,   50),   # price ≥  $75 → max 50 shares
+    (  0,   30),   # price <  $75 → max 30 shares
+]
+
 # Consecutive live losing trades that trigger auto-demotion from Refined.
 # Strategy stays in catch-all but is excluded from the top-N selection until
 # it records a winning trade and the consecutive count resets.
@@ -4105,11 +4116,19 @@ def _fetch_alpaca_last_prices(tickers):
 
 def _compute_refined_qty(score, last_price):
     """Shares to trade for a strategy with this composite score and ticker price.
-    Returns None if we can't size (no price). Floors at 1 share when a target applies."""
+    Dollar target from band ÷ price, then capped by price tier so cheap stocks
+    don't get outsized share counts. Returns None if price unavailable."""
     target = _band_target_dollars(score)
     if not target or not last_price or last_price <= 0:
         return None
-    return max(1, round(target / last_price))
+    shares = max(1, round(target / last_price))
+    # Apply price-based max-shares cap
+    for price_floor, max_shares in _REFINED_MAX_SHARES_BY_PRICE:
+        if last_price >= price_floor:
+            if max_shares is not None:
+                shares = min(shares, max_shares)
+            break
+    return shares
 
 
 def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=None):
