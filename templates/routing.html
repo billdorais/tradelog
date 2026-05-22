@@ -299,6 +299,12 @@
         trigger % to all
       </button>
     </div>
+    <button onclick="bulkRemoveExitParams()"
+            style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Remove Exit Params node from every pipeline">
+      remove exit nodes
+    </button>
   </div>
 
   <div id="refinedStatusPanel" style="background:#13101f;border:1px solid #3d2d6e;border-radius:8px;padding:12px 18px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -1040,6 +1046,17 @@
     const data = await res.json();
     await load();
     alert(`Done — updated ${data.updated} pipeline${data.updated !== 1 ? 's' : ''} to ${pct}% trail trigger (added Exit Params to ${data.added_node} that had none).`);
+  }
+
+  async function bulkRemoveExitParams() {
+    const n = rules.filter(r => r.nodes.some(n => n.type === 'exit_params')).length;
+    if (n === 0) { alert('No pipelines have an Exit Params node.'); return; }
+    if (!confirm(`Remove Exit Params node from all ${n} pipeline${n !== 1 ? 's' : ''}?\n\nTV exits and the Kairos position stop will remain active.`)) return;
+    const res = await fetch('/api/routing/rules/bulk_remove_exit_params', { method: 'POST' });
+    if (!res.ok) { alert('Bulk remove failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — removed Exit Params from ${data.removed} pipeline${data.removed !== 1 ? 's' : ''}.`);
   }
 
   async function deletePipeline(id) {

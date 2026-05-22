@@ -4603,6 +4603,28 @@ def bulk_add_exit_params():
     return jsonify({"updated": updated, "skipped": skipped, "stop_loss": stop_loss})
 
 
+@app.route("/api/routing/rules/bulk_remove_exit_params", methods=["POST"])
+def bulk_remove_exit_params():
+    """Remove exit_params nodes from every routing rule."""
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    removed = skipped = 0
+    for row in rows:
+        rid       = row[0] if DATABASE_URL else row["id"]
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        new_nodes = [n for n in nodes if n.get("type") != "exit_params"]
+        if len(new_nodes) < len(nodes):
+            cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(new_nodes), rid))
+            removed += 1
+        else:
+            skipped += 1
+    conn.commit(); conn.close()
+    log.info("bulk_remove_exit_params: removed from %d rules, %d had none", removed, skipped)
+    return jsonify({"removed": removed, "skipped": skipped})
+
+
 @app.route("/api/progress/fix_strategy_mismatch", methods=["POST"])
 def progress_fix_strategy_mismatch():
     """One-shot cleanup: where a rule's name differs from its strategy node value, fix the node."""
