@@ -213,7 +213,25 @@
         <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
         <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()" title="Disable position stop">Off</button>
       </div>
-      <div class="risk-hint" id="posStatusHint">Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Paper All uses TV exits + broker hard stop. Strategy stays active.</div>
+      <div class="risk-hint" id="posStatusHint">Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.</div>
+    </div>
+
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+        <span>Per-Position Stop ($) <span style="color:#7FE098;font-weight:400;font-size:0.7rem">Paper All</span></span>
+        <span id="paperPosStatusBadge" class="risk-status-badge disabled">
+          <span class="risk-dot grey" id="paperPosStatusDot"></span>
+          <span id="paperPosStatusText">Disabled</span>
+        </span>
+      </div>
+      <div class="risk-input-row">
+        <input class="risk-input" id="paperPosLimitInput" type="number" step="1" placeholder="e.g. -15">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperPositionLimit()">Set</button>
+        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperPositionLimit()">Off</button>
+      </div>
+      <div class="risk-hint" id="paperPosStatusHint">Applies to Paper All account only. Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.</div>
     </div>
 
     <div class="risk-divider"></div>
@@ -430,8 +448,12 @@
       }
       const posInput = document.getElementById('posLimitInput');
       if (document.activeElement !== posInput) {
-        const posVal = data.max_position_loss_pct ?? data.max_position_loss ?? null;
+        const posVal = data.max_position_loss_pct ?? null;
         if (posVal !== null) posInput.value = posVal;
+      }
+      const paperPosInput = document.getElementById('paperPosLimitInput');
+      if (document.activeElement !== paperPosInput && data.max_position_loss !== null) {
+        paperPosInput.value = data.max_position_loss || '';
       }
       const trailInput = document.getElementById('trailLimitInput');
       if (document.activeElement !== trailInput && data.max_trailing_giveback !== null) {
@@ -448,14 +470,29 @@
         posDot.className   = 'risk-dot green';
         posText.textContent = 'Active';
         const pctVal = data.max_position_loss_pct;
-        posHint.textContent = pctVal != null
-          ? 'Refined only: auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of market value. Paper All unaffected. Strategy stays active.'
-          : 'Auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
+        posHint.textContent = 'Refined only: auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of market value. Strategy stays active.';
       } else {
         posBadge.className = 'risk-status-badge disabled';
         posDot.className   = 'risk-dot grey';
         posText.textContent = 'Disabled';
-        posHint.textContent = 'Close when unrealized loss exceeds this % of position value. Strategy stays active.';
+        posHint.textContent = 'Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
+      }
+
+      // Paper All position stop badge
+      const paperBadge = document.getElementById('paperPosStatusBadge');
+      const paperDot   = document.getElementById('paperPosStatusDot');
+      const paperText  = document.getElementById('paperPosStatusText');
+      const paperHint  = document.getElementById('paperPosStatusHint');
+      if (data.max_position_loss !== null && data.max_position_loss < 0) {
+        paperBadge.className = 'risk-status-badge active';
+        paperDot.className   = 'risk-dot green';
+        paperText.textContent = 'Active';
+        paperHint.textContent = 'Paper All: auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
+      } else {
+        paperBadge.className = 'risk-status-badge disabled';
+        paperDot.className   = 'risk-dot grey';
+        paperText.textContent = 'Disabled';
+        paperHint.textContent = 'Applies to Paper All account only. Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.';
       }
 
       // Trailing stop status badge
@@ -553,8 +590,25 @@
 
   async function clearPositionLimit() {
     document.getElementById('posLimitInput').value = '';
-    try { await _postLimit({max_position_loss: 0}); }
+    try { await _postLimit({max_position_loss_pct: 0}); }
     catch(e) { console.error('clearPositionLimit failed:', e); }
+  }
+
+  async function savePaperPositionLimit() {
+    const input = document.getElementById('paperPosLimitInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearPaperPositionLimit(); return; }
+    const val = parseFloat(raw);
+    if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({max_position_loss: val}); }
+    catch(e) { console.error('savePaperPositionLimit failed:', e); }
+  }
+
+  async function clearPaperPositionLimit() {
+    document.getElementById('paperPosLimitInput').value = '';
+    try { await _postLimit({max_position_loss: 0}); }
+    catch(e) { console.error('clearPaperPositionLimit failed:', e); }
   }
 
   async function saveTrailLimit() {

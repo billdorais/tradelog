@@ -757,7 +757,7 @@ def _check_position_stops():
             if loss_pct <= MAX_POSITION_LOSS_PCT:
                 triggered = ("fixed-loss-pct",
                              f"unrealized {loss_pct:.2f}% (${upnl:.2f}) hit limit {MAX_POSITION_LOSS_PCT:.2f}%")
-        elif MAX_POSITION_LOSS < 0 and upnl <= MAX_POSITION_LOSS:
+        elif MAX_POSITION_LOSS < 0 and broker == "alpaca" and upnl <= MAX_POSITION_LOSS:
             triggered = ("fixed-loss",
                          f"unrealized P&L ${upnl:.2f} hit fixed limit ${MAX_POSITION_LOSS:.2f}")
         elif MAX_TRAILING_GIVEBACK > 0 \
@@ -896,7 +896,7 @@ def _position_monitor_loop():
     global _exit_recovery_tick
     time.sleep(25)  # stagger from risk monitor
     while True:
-        if MAX_POSITION_LOSS < 0 or MAX_POSITION_LOSS_PCT < 0 or MAX_TRAILING_GIVEBACK > 0:
+        if MAX_POSITION_LOSS < 0 or MAX_POSITION_LOSS_PCT < 0 or MAX_TRAILING_GIVEBACK > 0:  # noqa
             try:
                 _check_position_stops()
             except Exception as _e:
