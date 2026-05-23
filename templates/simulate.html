@@ -182,14 +182,16 @@
             <th>Side</th>
             <th>Ticker</th>
             <th>Qty</th>
+            <th title="Trail % from Signal Router rule">Rule Trail</th>
             <th>Entry</th>
             <th>Actual Exit</th>
-            <th>Sim Exit</th>
+            <th title="Simulated exit using current Signal Router trail settings">Current Rules Exit</th>
+            <th title="Simulated exit using your new parameters">New Params Exit</th>
             <th>Reason</th>
-            <th>Hold</th>
             <th>Actual P&amp;L</th>
-            <th>Sim P&amp;L</th>
-            <th>Delta</th>
+            <th title="P&L with current rule trail settings and rule qty">Current P&amp;L</th>
+            <th title="P&L with your new parameters and rule qty">New P&amp;L</th>
+            <th title="New P&L minus Current P&L">Delta</th>
           </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -294,14 +296,14 @@
     const s = data.summary;
     document.getElementById('statusMsg').style.display = 'none';
 
-    // Summary cards
+    // Summary cards — current rules vs new params
     const deltaClass = s.total_delta > 0.01 ? 'pos' : s.total_delta < -0.01 ? 'neg' : 'neu';
-    const simClass   = s.sim_pnl    > 0     ? 'pos' : s.sim_pnl    < 0     ? 'neg' : '';
-    const actClass   = s.actual_pnl > 0     ? 'pos' : s.actual_pnl < 0     ? 'neg' : '';
+    const baseClass  = s.base_pnl > 0 ? 'pos' : s.base_pnl < 0 ? 'neg' : '';
+    const newClass   = s.new_pnl  > 0 ? 'pos' : s.new_pnl  < 0 ? 'neg' : '';
     document.getElementById('summaryCards').innerHTML = `
-      <div class="stat-card"><div class="stat-label">Actual P&L</div><div class="stat-value ${actClass}">${fmt(s.actual_pnl)}</div><div class="stat-sub">${s.trade_count} trade${s.trade_count===1?'':'s'}</div></div>
-      <div class="stat-card"><div class="stat-label">Sim P&L</div><div class="stat-value ${simClass}">${fmt(s.sim_pnl)}</div><div class="stat-sub">with new params</div></div>
-      <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">sim vs actual</div></div>
+      <div class="stat-card"><div class="stat-label">Current Rules P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub">rule trail + rule qty</div></div>
+      <div class="stat-card"><div class="stat-label">New Params P&L</div><div class="stat-value ${newClass}">${fmt(s.new_pnl)}</div><div class="stat-sub">your new settings</div></div>
+      <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">new vs current</div></div>
       <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
     `;
@@ -310,7 +312,7 @@
     // Results title
     const p = data.params;
     document.getElementById('resultsTitle').textContent =
-      `Trade-by-Trade  ·  trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
+      `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
 
     // Results table
     const reasonLabel = r => {
@@ -321,30 +323,36 @@
     };
 
     document.getElementById('resultsBody').innerHTML = data.trades.map(t => {
-      const simPnlCls = (t.sim_pnl ?? 0) >= 0 ? 'pos' : 'neg';
-      const actPnlCls = t.actual_pnl >= 0 ? 'pos' : 'neg';
-      const delta     = t.pnl_delta;
-      const deltaCls  = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
-      const deltaArrow= delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
-      const rowCls    = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
-      const sideCls   = t.side === 'LONG' ? 'long' : 'short';
+      const basePnlCls = (t.base_pnl ?? 0) >= 0 ? 'pos' : 'neg';
+      const newPnlCls  = (t.new_pnl  ?? 0) >= 0 ? 'pos' : 'neg';
+      const actPnlCls  = t.actual_pnl >= 0 ? 'pos' : 'neg';
+      const delta      = t.pnl_delta;
+      const deltaCls   = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
+      const deltaArrow = delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
+      const rowCls     = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
+      const sideCls    = t.side === 'LONG' ? 'long' : 'short';
+      const ruleTrail  = t.rule_trail_pct != null ? `${t.rule_trail_pct}%` : '—';
 
-      const simPx = t.sim_exit_price != null ? `$${Number(t.sim_exit_price).toFixed(2)}` : '—';
-      const actPx = `$${Number(t.actual_exit_price).toFixed(2)}`;
-      const holdStr = t.sim_exit_mins != null ? `${t.sim_exit_mins}m` : '—';
+      const basePx = t.base_exit_price != null ? `$${Number(t.base_exit_price).toFixed(2)}` : '—';
+      const newPx  = t.new_exit_price  != null ? `$${Number(t.new_exit_price).toFixed(2)}`  : '—';
+      const actPx  = `$${Number(t.actual_exit_price).toFixed(2)}`;
+      const holdStr = t.new_exit_mins != null ? `${t.new_exit_mins}m` : '—';
 
+      const baseHoldStr = t.base_exit_mins != null ? `${t.base_exit_mins}m` : '—';
       return `<tr class="${rowCls}">
         <td class="mono">${esc(t.date.slice(5))}</td>
         <td><span class="side-badge ${sideCls}">${t.side}</span></td>
         <td class="mono" style="color:#e0e0e0">${esc(t.ticker)}</td>
         <td>${t.qty}</td>
+        <td class="mono" style="color:#888">${ruleTrail}</td>
         <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
         <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
-        <td class="mono">${simPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.sim_exit_time)}</span></td>
-        <td>${reasonLabel(t.sim_exit_reason)}</td>
-        <td style="color:#666">${holdStr}</td>
+        <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
+        <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
+        <td>${reasonLabel(t.base_exit_reason)} ${t.new_exit_reason && t.new_exit_reason !== t.base_exit_reason ? reasonLabel(t.new_exit_reason) : ''}</td>
         <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
-        <td class="${simPnlCls}">${t.sim_pnl != null ? fmt(t.sim_pnl) : '—'}</td>
+        <td class="${basePnlCls}">${t.base_pnl != null ? fmt(t.base_pnl) : '—'}</td>
+        <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
         <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
       </tr>`;
     }).join('');

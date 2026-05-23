@@ -3888,6 +3888,9 @@ def simulate():
 @app.route("/api/simulate_stops", methods=["POST"])
 def api_simulate_stops():
     """Replay historical fills with simulated stop parameters.
+    Runs two simulations per trade:
+      - baseline: current Signal Router rule trail settings + rule qty
+      - new:      user-supplied parameters + rule qty
     Body: {from_date, to_date, account, trail_pct, trigger_pct, stop_loss_pct, max_hold_mins}
     """
     import concurrent.futures as _cf
@@ -3899,7 +3902,7 @@ def api_simulate_stops():
     use_acct2     = str(body.get("account", "2")) == "2"
     trail_pct     = float(body.get("trail_pct",      0.5))
     trigger_pct   = float(body.get("trigger_pct",    0.0))
-    stop_loss_pct = float(body.get("stop_loss_pct",  0.5))
+    stop_loss_pct = float(body.get("stop_loss_pct",  0.0))
     max_hold_mins = int(body.get("max_hold_mins",   60))
 
     broker = alpaca_broker2 if use_acct2 else alpaca_broker
@@ -3907,6 +3910,33 @@ def api_simulate_stops():
         return jsonify({"error": "Alpaca account not configured"}), 400
     if not from_date or not to_date:
         return jsonify({"error": "from_date and to_date are required"}), 400
+
+    # ── Load current Signal Router rule settings ─────────────────────────
+    # Maps strategy_name.upper() → {trail_pct, trigger_pct, qty}
+    rule_settings = {}
+    try:
+        _rc   = get_db()
+        _p    = placeholder()
+        _rows = _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall()
+        for _row in _rows:
+            _rname  = ((_row["name"]  if DATABASE_URL else _row[0]) or "").upper()
+            _rnodes = json.loads((_row["nodes"] if DATABASE_URL else _row[1]) or "[]")
+            _trail = _trigger = _qty = None
+            for _nd in _rnodes:
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                if _nd.get("type") == "quantity":
+                    _qty = float(_nd.get("amount") or 0) or None
+            if _trail is not None:
+                rule_settings[_rname] = {
+                    "trail_pct":   _trail,
+                    "trigger_pct": _trigger or 0.0,
+                    "qty":         _qty,
+                }
+        _rc.close()
+    except Exception as _re:
+        log.debug("Rule settings lookup: %s", _re)
 
     fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
     signal_lookup = _build_signal_lookup_for_alpaca()
@@ -3934,13 +3964,17 @@ def api_simulate_stops():
             except Exception:
                 day_bars[(tk, dt)] = []
 
+    def _pnl(exit_price, entry_px, qty, side):
+        return round((exit_price - entry_px) * qty, 2) if side == "LONG" \
+               else round((entry_px - exit_price) * qty, 2)
+
     results = []
     for t in trades:
         ticker     = (t.get("ticker") or "").upper()
         side       = (t.get("side")   or "").upper()
         entry_px   = float(t.get("entry_price") or 0)
         exit_px    = float(t.get("exit_price")  or 0)
-        qty        = float(t.get("qty")         or 1)
+        fill_qty   = float(t.get("qty")         or 1)
         actual_pnl = float(t.get("pnl")         or 0)
         entry_time = t.get("entry_time") or ""
         exit_time  = t.get("exit_time")  or ""
@@ -3955,53 +3989,68 @@ def api_simulate_stops():
         except Exception:
             continue
 
-        bars = day_bars.get((ticker, date), [])
+        # Use rule qty if found, else fill qty
+        rule   = rule_settings.get(strategy.upper(), {})
+        qty    = rule.get("qty") or fill_qty
+        r_trail   = rule.get("trail_pct",   trail_pct)
+        r_trigger = rule.get("trigger_pct", 0.0)
+
+        bars       = day_bars.get((ticker, date), [])
         trade_bars = [b for b in bars if b.timestamp >= entry_dt]
 
-        sim = _simulate_exit(trade_bars, entry_px, side,
-                             trail_pct, trigger_pct, stop_loss_pct,
-                             max_hold_mins, entry_dt)
+        # Baseline: current rule trail, no extra stop loss
+        base_sim = _simulate_exit(trade_bars, entry_px, side,
+                                  r_trail, r_trigger, 0.0,
+                                  max_hold_mins, entry_dt)
+        base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
 
-        if sim:
-            sim_pnl = round((sim["exit_price"] - entry_px) * qty, 2) if side == "LONG" \
-                      else round((entry_px - sim["exit_price"]) * qty, 2)
-            delta = round(sim_pnl - actual_pnl, 2)
-        else:
-            sim_pnl = delta = None
+        # New: user params
+        new_sim  = _simulate_exit(trade_bars, entry_px, side,
+                                  trail_pct, trigger_pct, stop_loss_pct,
+                                  max_hold_mins, entry_dt)
+        new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
+
+        delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
 
         results.append({
-            "date":              date,
-            "ticker":            ticker,
-            "side":              side,
-            "strategy":          strategy,
-            "qty":               qty,
-            "entry_price":       entry_px,
-            "entry_time":        entry_time,
-            "actual_exit_price": exit_px,
-            "actual_exit_time":  exit_time,
-            "actual_pnl":        actual_pnl,
-            "sim_exit_price":    sim["exit_price"] if sim else None,
-            "sim_exit_time":     sim["exit_time"]  if sim else None,
-            "sim_exit_reason":   sim["reason"]     if sim else None,
-            "sim_exit_mins":     sim["exit_mins"]  if sim else None,
-            "sim_pnl":           sim_pnl,
-            "pnl_delta":         delta,
+            "date":               date,
+            "ticker":             ticker,
+            "side":               side,
+            "strategy":           strategy,
+            "qty":                qty,
+            "rule_trail_pct":     r_trail,
+            "entry_price":        entry_px,
+            "entry_time":         entry_time,
+            "actual_exit_price":  exit_px,
+            "actual_exit_time":   exit_time,
+            "actual_pnl":         actual_pnl,
+            "base_exit_price":    base_sim["exit_price"] if base_sim else None,
+            "base_exit_time":     base_sim["exit_time"]  if base_sim else None,
+            "base_exit_reason":   base_sim["reason"]     if base_sim else None,
+            "base_exit_mins":     base_sim["exit_mins"]  if base_sim else None,
+            "base_pnl":           base_pnl,
+            "new_exit_price":     new_sim["exit_price"]  if new_sim else None,
+            "new_exit_time":      new_sim["exit_time"]   if new_sim else None,
+            "new_exit_reason":    new_sim["reason"]      if new_sim else None,
+            "new_exit_mins":      new_sim["exit_mins"]   if new_sim else None,
+            "new_pnl":            new_pnl,
+            "pnl_delta":          delta,
         })
 
     results.sort(key=lambda r: (r["date"], r["entry_time"]))
 
-    actual_total = round(sum(r["actual_pnl"] for r in results), 2)
-    sim_total    = round(sum(r["sim_pnl"] for r in results if r["sim_pnl"] is not None), 2)
-    improved     = sum(1 for r in results if (r["pnl_delta"] or 0) >  0.01)
-    worse        = sum(1 for r in results if (r["pnl_delta"] or 0) < -0.01)
+    base_total = round(sum(r["base_pnl"] for r in results if r["base_pnl"] is not None), 2)
+    new_total  = round(sum(r["new_pnl"]  for r in results if r["new_pnl"]  is not None), 2)
+    improved   = sum(1 for r in results if (r["pnl_delta"] or 0) >  0.01)
+    worse      = sum(1 for r in results if (r["pnl_delta"] or 0) < -0.01)
 
     return jsonify({
         "trades":  results,
         "summary": {
             "trade_count": len(results),
-            "actual_pnl":  actual_total,
-            "sim_pnl":     sim_total,
-            "total_delta": round(sim_total - actual_total, 2),
+            "base_pnl":    base_total,
+            "new_pnl":     new_total,
+            "total_delta": round(new_total - base_total, 2),
             "improved":    improved,
             "worse":       worse,
             "neutral":     len(results) - improved - worse,
