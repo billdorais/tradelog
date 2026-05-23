@@ -893,11 +893,13 @@
   }
 
   // Cached pairs for the active drill-down so tab switches don't refilter.
-  let _activePairs = { clean: [], orphans: [], key: '' };
+  let _activePairs    = { clean: [], orphans: [], key: '' };
+  let _postExitData   = {};     // keyed "TICKER|exit_time_iso"
+  let _postExitLoading = false;
 
-  function _renderPairRows(pairs, includeReason) {
+  function _renderPairRows(pairs, includeReason, includePostExit) {
+    const span = 8 + (includeReason ? 1 : 0) + (includePostExit ? 1 : 0);
     if (!pairs.length) {
-      const span = includeReason ? 9 : 8;
       return `<tr><td colspan="${span}" class="empty">None.</td></tr>`;
     }
     return pairs.map(p => {
@@ -906,6 +908,24 @@
       const reasonCell = includeReason
         ? `<td class="orphan-reason">${esc(p.orphan_reason || '')}</td>`
         : '';
+      let postExitCell = '';
+      if (includePostExit) {
+        const peKey = `${p.ticker}|${p.exit_time}`;
+        const pe    = _postExitData[peKey];
+        if (_postExitLoading && pe === undefined) {
+          postExitCell = `<td class="mono" style="color:#444">…</td>`;
+        } else if (!pe) {
+          postExitCell = `<td class="mono" style="color:#444">—</td>`;
+        } else {
+          const fav = pe.post_fav_pct;
+          const tip = `Price moved ${fav >= 0 ? '+' : ''}${fav.toFixed(2)}% in trade direction in 30min after exit`;
+          if (pe.premature) {
+            postExitCell = `<td class="mono" title="${tip}" style="color:#F2C76B;cursor:default">↗ +${fav.toFixed(2)}%</td>`;
+          } else {
+            postExitCell = `<td class="mono" title="${tip}" style="color:#555;cursor:default">✓ ${fav.toFixed(2)}%</td>`;
+          }
+        }
+      }
       return `<tr>
         <td><span class="side-badge ${sideCls}">${p.side}</span></td>
         <td class="mono">${esc(p.ticker)}</td>
@@ -916,6 +936,7 @@
         <td class="mono">${esc(fmtTime(p.exit_time))}</td>
         <td class="${pnlCls}">${fmt(p.pnl)}</td>
         ${reasonCell}
+        ${postExitCell}
       </tr>`;
     }).join('');
   }
@@ -924,17 +945,45 @@
     document.querySelectorAll('.pair-tab').forEach(el => {
       el.classList.toggle('active', el.dataset.tab === which);
     });
-    const rows   = which === 'orphans' ? _activePairs.orphans : _activePairs.clean;
-    const label  = which === 'orphans' ? 'orphan' : 'round-trip';
+    const isOrphan = which === 'orphans';
+    const rows     = isOrphan ? _activePairs.orphans : _activePairs.clean;
+    const label    = isOrphan ? 'orphan' : 'round-trip';
     const totalPnl = rows.reduce((s, p) => s + p.pnl, 0);
     document.getElementById('pairsSub').textContent =
       `${rows.length} ${label}${rows.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · newest first`;
     const head = document.getElementById('pairsHead');
-    head.innerHTML = which === 'orphans'
+    head.innerHTML = isOrphan
       ? `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th>Reason</th></tr>`
-      : `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th></tr>`;
+      : `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th style="white-space:nowrap" title="% price moved in trade direction in 30min after exit. ↗ amber = potential premature exit">After Exit</th></tr>`;
     document.getElementById('pairsBody').innerHTML =
-      _renderPairRows(rows, which === 'orphans');
+      _renderPairRows(rows, isOrphan, !isOrphan);
+  }
+
+  async function _fetchPostExitMoves(pairs) {
+    if (!pairs.length) return;
+    _postExitLoading = true;
+    const trades = pairs.map(p => ({
+      ticker:     p.ticker,
+      exit_time:  p.exit_time,
+      exit_price: p.exit_price,
+      side:       p.side,
+    }));
+    try {
+      const r = await fetch('/api/post_exit_moves', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ trades }),
+      });
+      if (r.ok) {
+        const data  = await r.json();
+        _postExitData = data.moves || {};
+      }
+    } catch {}
+    _postExitLoading = false;
+    // Re-render if round-trips tab is still the active one
+    if ((document.querySelector('.pair-tab.active') || {}).dataset?.tab === 'clean') {
+      switchPairTab('clean');
+    }
   }
 
   function openPairs(kind, key) {
@@ -943,13 +992,15 @@
     const matches = arr => arr.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
     const clean   = matches(closed).sort((a, b) => (b.entry_time || '').localeCompare(a.entry_time || ''));
     const orph    = matches(orphans).sort((a, b) => (b.entry_time || '').localeCompare(a.entry_time || ''));
-    _activePairs = { clean, orphans: orph, key };
+    _activePairs  = { clean, orphans: orph, key };
+    _postExitData = {};
     document.getElementById('pairsTitle').textContent = key;
     document.getElementById('pairsCleanCount').textContent  = ` (${clean.length})`;
     document.getElementById('pairsOrphanCount').textContent = ` (${orph.length})`;
     switchPairTab('clean');
     document.getElementById('pairsBackdrop').classList.add('open');
     document.getElementById('pairsModal').classList.add('open');
+    _fetchPostExitMoves(clean);
   }
 
   function closePairs() {

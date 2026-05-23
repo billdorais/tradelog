@@ -7324,6 +7324,38 @@ def _classify_orphan(pair):
     return False, ""
 
 
+def _fetch_post_exit_range(ticker: str, exit_time_str: str):
+    """Return (max_high, min_low) from 1-min Alpaca bars for 30 min after exit_time.
+    Returns (None, None) on any error or if alpaca_broker is not configured."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _pdt
+        if alpaca_broker is None:
+            return None, None
+        _client = StockHistoricalDataClient(
+            api_key    = alpaca_broker._key,
+            secret_key = alpaca_broker._secret,
+        )
+        _exit_dt = _pdt.datetime.fromisoformat(exit_time_str.replace("Z", "+00:00"))
+        _end_dt  = _exit_dt + _pdt.timedelta(minutes=30)
+        req = StockBarsRequest(
+            symbol_or_symbols = ticker.upper(),
+            timeframe         = TimeFrame(1, TimeFrameUnit.Minute),
+            start             = _exit_dt,
+            end               = _end_dt,
+        )
+        bars_df = _client.get_stock_bars(req)
+        bars    = list(bars_df[ticker.upper()])
+        if not bars:
+            return None, None
+        return max(float(b.high) for b in bars), min(float(b.low) for b in bars)
+    except Exception as _pe:
+        log.debug("post_exit_range %s: %s", ticker, _pe)
+        return None, None
+
+
 @app.route("/api/alpaca/analysis")
 def api_alpaca_analysis():
     """Same analysis as /api/analysis but using Alpaca fills.
@@ -7694,6 +7726,59 @@ def api_alpaca_analysis():
     except Exception as e:
         log.exception("Alpaca analysis error")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/post_exit_moves", methods=["POST"])
+def api_post_exit_moves():
+    """Return post-exit price action for a list of round-trip trades.
+    Body: {"trades": [{"ticker":..., "exit_time":..., "exit_price":..., "side":...}]}
+    Returns: {"moves": {"TICKER|exit_time": {"post_fav_pct":..., "post_adv_pct":..., "premature":...}}}
+    post_fav_pct = % price moved in the original trade's direction after exit (positive = continued = potential premature exit)
+    """
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca not configured"}), 400
+    body   = request.get_json(force=True) or {}
+    trades = body.get("trades") or []
+    if not trades:
+        return jsonify({"moves": {}})
+
+    import concurrent.futures as _cf
+
+    def _process(t):
+        ticker    = (t.get("ticker") or "").upper()
+        exit_time = t.get("exit_time") or ""
+        exit_px   = float(t.get("exit_price") or 0)
+        side      = (t.get("side") or "").upper()
+        if not ticker or not exit_time or exit_px == 0:
+            return None, None
+        key     = f"{ticker}|{exit_time}"
+        is_long = side in ("LONG", "BOT", "BUY")
+        max_high, min_low = _fetch_post_exit_range(ticker, exit_time)
+        if max_high is None or min_low is None:
+            return key, None
+        if is_long:
+            post_fav_pct = round((max_high - exit_px) / exit_px * 100, 3)
+            post_adv_pct = round((min_low  - exit_px) / exit_px * 100, 3)
+        else:
+            post_fav_pct = round((exit_px - min_low)  / exit_px * 100, 3)
+            post_adv_pct = round((exit_px - max_high) / exit_px * 100, 3)
+        return key, {
+            "post_fav_pct": post_fav_pct,
+            "post_adv_pct": post_adv_pct,
+            "premature":    post_fav_pct > 0.15,
+        }
+
+    result = {}
+    with _cf.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_process, t) for t in trades]
+        for f in _cf.as_completed(futures):
+            try:
+                key, val = f.result()
+                if key and val is not None:
+                    result[key] = val
+            except Exception:
+                pass
+    return jsonify({"moves": result})
 
 
 @app.route("/api/debug/reconcile")
