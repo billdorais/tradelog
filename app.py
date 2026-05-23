@@ -3571,17 +3571,19 @@ def api_trade_review():
                 return None, None
             highs  = [float(b.high)  for b in bars]
             lows   = [float(b.low)   for b in bars]
-            ep     = float(exit_time_str and bars[0].open or 0) or None
-            if not ep:
-                return None, None
-            max_high = max(highs)
-            min_low  = min(lows)
-            return max_high, min_low
+            return max(highs), min(lows)
         except Exception as _be:
             log.debug("post_exit_bars %s: %s", ticker, _be)
             return None, None
 
     def _stream():
+        try:
+            yield from _stream_inner()
+        except Exception as _ex:
+            log.exception("trade_review _stream crash: %s", _ex)
+            yield f"data: {json.dumps({'error': f'Internal error: {_ex}'})}\n\n"
+
+    def _stream_inner():
         if not alpaca_broker2:
             yield f"data: {json.dumps({'error': 'Refined account not configured'})}\n\n"
             return
@@ -3668,11 +3670,17 @@ def api_trade_review():
         yield f"data: {json.dumps({'status': f'Analysing {len(records)} trades ({premature_pct}% flagged as premature exits)…'})}\n\n"
 
         # Build compact trade table for the prompt
+        def _fmt_pct(v):
+            return f"{v:+.2f}%" if v is not None else "n/a"
+
+        def _fmt_dur(v):
+            return f"{v}m" if v is not None else "?m"
+
         trade_rows = "\n".join(
             f"{r['ticker']}|{r['strategy'].replace('_CAM_','_').replace('_V02_5MIN','')}|"
-            f"{r['side']}|{r['exit_time_et']}|{r['duration_min']}m|"
+            f"{r['side']}|{r['exit_time_et']}|{_fmt_dur(r['duration_min'])}|"
             f"${r['pnl']:+.2f}|"
-            f"{('+' if (r['post_fav_pct'] or 0)>=0 else '')}{r['post_fav_pct']:.2f}%|"
+            f"{_fmt_pct(r['post_fav_pct'])}|"
             f"{'⚠ EARLY' if r['premature'] else 'ok'}"
             for r in records
         )
