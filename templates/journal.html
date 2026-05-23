@@ -611,11 +611,16 @@
     if (!ch) { alert('No changes found for this review.'); return; }
 
     // Build human-readable summary for confirm dialog
+    // Use 'in ch' so explicit 0 (disable) shows up too
     const lines = [];
     (ch.trail_rules || []).forEach(r => lines.push(`• ${r.pattern} rules → ${r.trail}% trail`));
-    if (ch.morning_trail   > 0) lines.push(`• Morning trail (9:30–10:30 ET) → ${ch.morning_trail}% floor`);
-    if (ch.afternoon_trail > 0) lines.push(`• Afternoon trail (12:00–close ET) → ${ch.afternoon_trail}% ceiling`);
-    if (ch.clear_triggers)      lines.push(`• Clear all trail triggers`);
+    if ('morning_trail' in ch)   lines.push(ch.morning_trail > 0
+      ? `• Morning trail (9:30–10:30 ET) → ${ch.morning_trail}% floor`
+      : `• Morning trail → disabled`);
+    if ('afternoon_trail' in ch) lines.push(ch.afternoon_trail > 0
+      ? `• Afternoon trail (12:00–close ET) → ${ch.afternoon_trail}% ceiling`
+      : `• Afternoon trail → disabled`);
+    if (ch.clear_triggers)       lines.push(`• Clear all trail triggers`);
     if (!lines.length) { alert('No actionable changes in this review.'); return; }
 
     if (!confirm(`Apply to Signal Router?\n\n${lines.join('\n')}`)) return;
@@ -645,20 +650,20 @@
         if (!r.ok) errors.push(`Clear triggers failed (HTTP ${r.status})`);
       }
 
-      // Morning trail
-      if (ch.morning_trail > 0) {
+      // Morning trail — explicit 0 means disable, undefined/absent means leave alone
+      if ('morning_trail' in ch) {
         const r = await fetch('/api/risk/limit', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({morning_trail_pct: ch.morning_trail}),
+          body: JSON.stringify({morning_trail_pct: ch.morning_trail || 0}),
         });
         if (!r.ok) errors.push(`Morning trail update failed (HTTP ${r.status})`);
       }
 
-      // Afternoon trail
-      if (ch.afternoon_trail > 0) {
+      // Afternoon trail — explicit 0 means disable, undefined/absent means leave alone
+      if ('afternoon_trail' in ch) {
         const r = await fetch('/api/risk/limit', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({afternoon_trail_pct: ch.afternoon_trail}),
+          body: JSON.stringify({afternoon_trail_pct: ch.afternoon_trail || 0}),
         });
         if (!r.ok) errors.push(`Afternoon trail update failed (HTTP ${r.status})`);
       }
