@@ -85,6 +85,7 @@
     .reason-stop     { background: rgba(231,76,60,0.15);  color: #e74c3c; }
     .reason-max_hold { background: rgba(242,231,172,0.15); color: #F2E7AC; }
     .reason-eod      { background: rgba(100,100,100,0.15); color: #888; }
+    .reason-actual   { background: rgba(100,100,100,0.1);  color: #666; }
     .delta-arrow { font-size: 0.8rem; margin-right: 3px; }
 
     /* Rule presets */
@@ -403,8 +404,8 @@
     // Results table
     const reasonLabel = r => {
       if (!r) return '';
-      const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD'};
-      const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod'};
+      const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit'};
+      const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual'};
       return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
     };
 

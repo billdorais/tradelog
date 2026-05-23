@@ -4007,11 +4007,18 @@ def api_simulate_stops():
         except Exception:
             continue
 
-        # Use rule qty if found, else fill qty
+        # Always use actual fill qty — rule qty is for live sizing, not P&L replay
         rule      = rule_settings.get(strategy.upper(), {})
-        qty       = rule.get("qty") or fill_qty
+        qty       = fill_qty
         r_trail   = rule.get("trail_pct",   trail_pct)
         r_trigger = rule.get("trigger_pct", 0.0)
+
+        # Parse actual exit datetime for the time cap
+        try:
+            actual_exit_dt = _dt.datetime.fromisoformat(exit_time.replace("Z", "+00:00")) \
+                             if exit_time else None
+        except Exception:
+            actual_exit_dt = None
 
         # Session overrides applied to baseline only — baseline must match live-system behaviour;
         # new-params sim uses the exact values the user entered so the comparison is meaningful.
@@ -4020,16 +4027,21 @@ def api_simulate_stops():
         bars       = day_bars.get((ticker, date), [])
         trade_bars = [b for b in bars if b.timestamp >= entry_dt]
 
-        # Baseline: current rule trail + session override, no extra stop loss
+        # Baseline: current rule trail + session override, capped at actual exit time.
+        # If the rule trail wouldn't have fired during the actual hold window, the baseline
+        # exits at the actual exit price — so baseline P&L ≈ actual P&L.
         base_sim = _simulate_exit(trade_bars, entry_px, side,
                                   eff_r_trail, r_trigger, 0.0,
-                                  max_hold_mins, entry_dt)
+                                  max_hold_mins, entry_dt,
+                                  cap_dt=actual_exit_dt, cap_price=exit_px)
         base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
 
-        # New: user params exactly as entered — no session override applied
+        # New params: also capped at actual exit time — asks "would this stop have fired
+        # earlier within the actual hold window, and at what P&L?"
         new_sim  = _simulate_exit(trade_bars, entry_px, side,
                                   trail_pct, trigger_pct, stop_loss_pct,
-                                  max_hold_mins, entry_dt)
+                                  max_hold_mins, entry_dt,
+                                  cap_dt=actual_exit_dt, cap_price=exit_px)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
@@ -7599,9 +7611,16 @@ def _fetch_day_bars(ticker: str, date_str: str):
 def _simulate_exit(bars, entry_price: float, side: str,
                    trail_pct: float, trigger_pct: float,
                    stop_loss_pct: float, max_hold_mins: int,
-                   entry_dt):
+                   entry_dt, cap_dt=None, cap_price=None):
     """Walk 1-min bars and return the simulated exit.
-    Returns dict {exit_price, exit_time, reason, exit_mins} or None if no bars."""
+
+    cap_dt / cap_price: if supplied, bars past cap_dt are ignored. If no stop
+    fires before cap_dt the function returns the cap_price with reason 'actual'.
+    This lets the baseline simulation match the actual hold window so its P&L
+    converges to real P&L when the trailing stop wouldn't have fired earlier.
+
+    Returns dict {exit_price, exit_time, reason, exit_mins} or None if no bars.
+    """
     import datetime as _dt
     if not bars:
         return None
@@ -7612,6 +7631,12 @@ def _simulate_exit(bars, entry_price: float, side: str,
         bar_ts = bar.timestamp
         if not isinstance(bar_ts, _dt.datetime):
             bar_ts = _dt.datetime.fromisoformat(str(bar_ts).replace("Z", "+00:00"))
+
+        # Respect the actual-exit time cap before any stop logic
+        if cap_dt is not None and bar_ts > cap_dt:
+            hold_mins = (cap_dt - entry_dt).total_seconds() / 60
+            return {"exit_price": round(cap_price, 4), "exit_time": str(cap_dt),
+                    "reason": "actual", "exit_mins": round(hold_mins, 1)}
 
         hold_mins = (bar_ts - entry_dt).total_seconds() / 60
         high = float(bar.high)
@@ -7650,6 +7675,11 @@ def _simulate_exit(bars, entry_price: float, side: str,
             return {"exit_price": round(float(bar.close), 4), "exit_time": str(bar_ts),
                     "reason": "max_hold", "exit_mins": round(hold_mins, 1)}
 
+    # Reached end of bars without a stop firing
+    if cap_dt is not None and cap_price is not None:
+        hold_mins = (cap_dt - entry_dt).total_seconds() / 60
+        return {"exit_price": round(cap_price, 4), "exit_time": str(cap_dt),
+                "reason": "actual", "exit_mins": round(hold_mins, 1)}
     last    = bars[-1]
     last_ts = last.timestamp
     if not isinstance(last_ts, _dt.datetime):
