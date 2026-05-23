@@ -3324,6 +3324,22 @@ def api_journal_generate():
     except Exception as _me:
         log.warning("Journal market data error: %s", _me)
 
+    # ── Account equity → system return % ────────────────────────────────
+    if trade_stats and trade_stats.get('total_pnl') is not None:
+        try:
+            _ae_broker = alpaca_broker2 if use_acct2 else alpaca_broker
+            if _ae_broker is not None:
+                _ae_broker._ensure_client()
+                _ae_acct   = _ae_broker._trading.get_account()
+                _ae_equity = float(getattr(_ae_acct, 'equity', 0) or 0)
+                if _ae_equity > 0:
+                    trade_stats['account_equity'] = round(_ae_equity, 2)
+                    trade_stats['system_ret_pct'] = round(
+                        trade_stats['total_pnl'] / _ae_equity * 100, 3
+                    )
+        except Exception as _ae:
+            log.debug("Journal equity fetch error: %s", _ae)
+
     # ── Persist stats + stream AI summary ───────────────────────────────
     p = placeholder()
     conn = get_db()

@@ -297,6 +297,12 @@
     const pnlCls = pnl >= 0 ? 'pos' : 'neg';
     const wrCls  = (ts.win_rate || 0) >= 50 ? 'pos' : 'neg';
     const pfCls  = ts.profit_factor >= 1.5 ? 'pos' : ts.profit_factor >= 1.0 ? 'neu' : 'neg';
+    const sysRet     = typeof ts.system_ret_pct === 'number' ? ts.system_ret_pct : null;
+    const spyWeekRet = (md.SPY && typeof md.SPY.weekly_return === 'number') ? md.SPY.weekly_return : null;
+    const sysRetStr  = sysRet !== null ? (sysRet >= 0 ? '+' : '') + sysRet.toFixed(2) + '%' : null;
+    const sysVsSpyCls = sysRet !== null
+      ? (spyWeekRet !== null ? (sysRet >= spyWeekRet ? 'pos' : 'neg') : (sysRet >= 0 ? 'pos' : 'neg'))
+      : '';
 
     // Market pills
     const mktSyms = ['SPY','QQQ','VIX'];
@@ -445,6 +451,11 @@
         <div class="stat-box"><div class="stat-label">Trades</div><div class="stat-val">${ts.trades || 0}</div></div>
         <div class="stat-box"><div class="stat-label">Win Rate</div><div class="stat-val ${wrCls}">${ts.win_rate || 0}%</div></div>
         <div class="stat-box"><div class="stat-label">Profit Factor</div><div class="stat-val ${pfCls}">${ts.profit_factor || '—'}</div></div>
+        ${sysRetStr ? `<div class="stat-box">
+          <div class="stat-label">vs SPY</div>
+          <div class="stat-val ${sysVsSpyCls}">${sysRetStr}</div>
+          ${spyWeekRet !== null ? `<div style="font-size:0.68rem;color:#555;margin-top:3px">SPY ${spyWeekRet >= 0 ? '+' : ''}${spyWeekRet}%</div>` : ''}
+        </div>` : ''}
       </div>
 
       <div class="market-row">
