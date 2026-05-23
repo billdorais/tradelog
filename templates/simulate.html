@@ -186,8 +186,8 @@
       </div>
       <div class="divider"></div>
       <label class="toggle-wrap" title="Ignore TV signal exit times — simulation runs until stop/trail fires, max hold, or EOD">
-        <input type="checkbox" id="skipTvExits" checked onchange="document.getElementById('skipTvLabel').className='toggle-label'+(this.checked?' active':'')">
-        <span class="toggle-label active" id="skipTvLabel">Stops only (skip TV exits)</span>
+        <input type="checkbox" id="skipTvExits" onchange="document.getElementById('skipTvLabel').className='toggle-label'+(this.checked?' active':'')">
+        <span class="toggle-label" id="skipTvLabel">Stops only (skip TV exits)</span>
       </label>
       <div style="flex:1"></div>
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
