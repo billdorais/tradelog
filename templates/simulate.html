@@ -100,6 +100,13 @@
     .preset-trail { color: #7FE098; font-weight: 600; margin-left: 5px; }
     .session-badge { display: inline-flex; align-items: center; gap: 5px; background: #1a1d2e; border: 1px solid #2a2d3e; border-radius: 4px; padding: 3px 9px; font-size: 0.73rem; color: #888; white-space: nowrap; }
     .session-badge .sb-val { color: #F2E7AC; font-weight: 600; }
+    /* Per-strategy new params overrides */
+    .overrides-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 10px; margin-top: 2px; }
+    .override-chip { display: inline-flex; align-items: center; gap: 5px; background: #0f1117; border: 1px solid #7FE098; border-radius: 4px; padding: 3px 8px; font-size: 0.73rem; }
+    .override-chip .oc-name { color: #7FE098; font-weight: 600; white-space: nowrap; }
+    .override-chip input { width: 46px; background: transparent; border: none; border-bottom: 1px solid #2a2d3e; color: #e0e0e0; font-size: 0.73rem; font-family: inherit; text-align: right; padding: 0 2px; outline: none; }
+    .override-chip input:focus { border-bottom-color: #7FE098; }
+    .override-chip .oc-unit { color: #555; font-size: 0.68rem; }
     .toggle-wrap { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
     .toggle-wrap input[type=checkbox] { width: 14px; height: 14px; accent-color: #7FE098; cursor: pointer; }
     .toggle-label { font-size: 0.75rem; color: #888; white-space: nowrap; }
@@ -197,6 +204,7 @@
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
     </div>
     <div class="presets-row" id="presetsRow" style="display:none"></div>
+    <div class="overrides-row" id="overridesRow" style="display:none"></div>
   </div>
 
   <!-- Summary -->
@@ -285,6 +293,20 @@
           `<button class="preset-chip" onclick="applyPreset(${c.trail},${c.trigger})" title="Trail ${c.trail}%  Trigger ${c.trigger}%">${c.label}<span class="preset-trail">${c.trail}%</span></button>`
         ).join('');
 
+      // Build per-strategy override inputs (pre-filled with current rule values)
+      const oRow = document.getElementById('overridesRow');
+      oRow.innerHTML = '<span class="presets-label" style="color:#7FE098">New Params / strategy</span>' +
+        chips.map(c =>
+          `<div class="override-chip">
+            <span class="oc-name">${c.label}</span>
+            <input type="number" class="override-input" data-strategy="${c.label}"
+                   value="${c.trail}" step="0.05" min="0" max="10"
+                   title="Trail % for ${c.label} in New Params simulation">
+            <span class="oc-unit">%</span>
+          </div>`
+        ).join('');
+      oRow.style.display = 'flex';
+
       // Fetch session trail overrides and show as info badges
       try {
         const rs  = await fetch('/api/risk/status');
@@ -357,6 +379,11 @@
 
     const skipTvExits     = document.getElementById('skipTvExits').checked;
     const stopLossDollars = parseFloat(document.getElementById('stopLossDollars').value) || 0;
+    const strategyOverrides = {};
+    document.querySelectorAll('.override-input').forEach(inp => {
+      const val = parseFloat(inp.value);
+      if (!isNaN(val)) strategyOverrides[inp.dataset.strategy] = val;
+    });
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
     btn.textContent = 'Fetching bars…';
@@ -373,7 +400,8 @@
         body:    JSON.stringify({ from_date: fromDate, to_date: toDate, account,
                                   trail_pct: trailPct, trigger_pct: triggerPct,
                                   stop_loss_pct: stopLossPct, stop_loss_dollars: stopLossDollars,
-                                  max_hold_mins: maxHold, skip_tv_exits: skipTvExits }),
+                                  max_hold_mins: maxHold, skip_tv_exits: skipTvExits,
+                                  strategy_overrides: strategyOverrides }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
