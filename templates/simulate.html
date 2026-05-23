@@ -401,6 +401,9 @@
     const mornNote = p.morning_trail_pct ? ` · morn ${p.morning_trail_pct}%` : '';
     const aftnNote = p.afternoon_trail_pct ? ` · aftn ${p.afternoon_trail_pct}%` : '';
     const baseSubNote = `router trail + session overrides${mornNote}${aftnNote}`;
+    let stopStr = p.stop_loss_pct > 0 ? `stop ${p.stop_loss_pct}%` : '';
+    if (p.stop_loss_dollars > 0) stopStr += (stopStr ? ' / ' : '') + `stop $${p.stop_loss_dollars}`;
+    if (!stopStr) stopStr = 'no stop';
     const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}m`;
     document.getElementById('summaryCards').innerHTML = `
       <div class="stat-card"><div class="stat-label">Current Rules P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
@@ -412,9 +415,6 @@
     document.getElementById('summarySection').style.display = 'block';
 
     // Results title
-    let stopStr = p.stop_loss_pct > 0 ? `stop ${p.stop_loss_pct}%` : '';
-    if (p.stop_loss_dollars > 0) stopStr += (stopStr ? ' / ' : '') + `stop $${p.stop_loss_dollars}`;
-    if (!stopStr) stopStr = 'no stop';
     let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}min`;
     if (p.morning_trail_pct)   titleStr += `  ·  morning ${p.morning_trail_pct}%`;
     if (p.afternoon_trail_pct) titleStr += `  ·  afternoon ${p.afternoon_trail_pct}%`;
