@@ -87,6 +87,17 @@
     .reason-eod      { background: rgba(100,100,100,0.15); color: #888; }
     .delta-arrow { font-size: 0.8rem; margin-right: 3px; }
 
+    /* Rule presets */
+    .presets-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 14px; border-top: 1px solid #1e2130; margin-top: 4px; }
+    .presets-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; white-space: nowrap; margin-right: 4px; }
+    .preset-chip {
+      background: #1a1d2e; border: 1px solid #2a2d3e; color: #aaa;
+      border-radius: 4px; padding: 4px 10px; font-size: 0.75rem; font-family: inherit;
+      cursor: pointer; white-space: nowrap; transition: border-color 0.15s, color 0.15s;
+    }
+    .preset-chip:hover { border-color: #7FE098; color: #7FE098; }
+    .preset-trail { color: #7FE098; font-weight: 600; margin-left: 5px; }
+
     /* Status / empty */
     .status-msg { color: #555; font-size: 0.9rem; padding: 40px 0; text-align: center; }
     .error-msg  { color: #e74c3c; font-size: 0.85rem; padding: 20px 0; text-align: center; }
@@ -164,6 +175,7 @@
       <div style="flex:1"></div>
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
     </div>
+    <div class="presets-row" id="presetsRow" style="display:none"></div>
   </div>
 
   <!-- Summary -->
@@ -214,6 +226,53 @@
     document.getElementById('toDate').value   = fmt(today);
     document.getElementById('fromDate').value = fmt(ago);
   })();
+
+  // Load Signal Router presets on page load
+  async function loadRulePresets() {
+    try {
+      const res   = await fetch('/api/routing/rules');
+      const rules = await res.json();
+      const seen  = new Set();
+      const chips = [];
+      for (const rule of rules) {
+        if (!rule.enabled) continue;
+        let trail = null, trigger = 0;
+        for (const nd of (rule.nodes || [])) {
+          if (nd.type === 'exit_params') {
+            trail   = nd.trail_offset  ? parseFloat(nd.trail_offset)  : null;
+            trigger = nd.trail_trigger ? parseFloat(nd.trail_trigger) : 0;
+          }
+        }
+        if (trail == null) continue;
+        // Extract TYPE_LEVEL from CAM rule names (e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN → BREAKOUT R4S4)
+        let label = rule.name.toUpperCase();
+        const camIdx = label.indexOf('_CAM_');
+        if (camIdx >= 0) {
+          const parts = label.slice(camIdx + 5).split('_');
+          label = parts.slice(0, 2).join(' ');
+        }
+        const key = `${label}|${trail}|${trigger}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          chips.push({ label, trail, trigger });
+        }
+      }
+      const row = document.getElementById('presetsRow');
+      if (!chips.length) return;
+      row.innerHTML = '<span class="presets-label">Signal Router</span>' +
+        chips.map(c =>
+          `<button class="preset-chip" onclick="applyPreset(${c.trail},${c.trigger})" title="Trail ${c.trail}%  Trigger ${c.trigger}%">${c.label}<span class="preset-trail">${c.trail}%</span></button>`
+        ).join('');
+      row.style.display = 'flex';
+    } catch (e) { console.warn('loadRulePresets failed:', e); }
+  }
+
+  function applyPreset(trail, trigger) {
+    document.getElementById('trailPct').value   = trail;
+    document.getElementById('triggerPct').value = trigger;
+  }
+
+  loadRulePresets();
 
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
