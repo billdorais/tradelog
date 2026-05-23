@@ -590,6 +590,17 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             _ep_hard_stop     = ep_hard_stop
             _broker_captured  = _broker_inst
 
+            # Morning trail override: 9:30–10:30 ET widens trail when MORNING_TRAIL_PCT > 0
+            if not _is_exit and _ep_trail_offset is not None and _ep_trail_mode == "percent":
+                import app as _app_morn
+                _morn_pct = getattr(_app_morn, "MORNING_TRAIL_PCT", 0.0)
+                if _morn_pct > 0:
+                    _now_et = datetime.now(ZoneInfo("America/New_York"))
+                    _morn_start = _now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+                    _morn_end   = _now_et.replace(hour=10, minute=30, second=0, microsecond=0)
+                    if _morn_start <= _now_et < _morn_end:
+                        _ep_trail_offset = max(_ep_trail_offset, _morn_pct)
+
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
                 sec_type=_sec_type, currency=_currency, trade_id=_trade_id,

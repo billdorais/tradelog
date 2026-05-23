@@ -60,6 +60,7 @@ MAX_POSITION_LOSS           = float(os.environ.get("MAX_POSITION_LOSS", "0"))   
 MAX_POSITION_LOSS_PCT       = float(os.environ.get("MAX_POSITION_LOSS_PCT", "0"))   # % stop — Refined only
 MAX_POSITION_LOSS_REFINED   = float(os.environ.get("MAX_POSITION_LOSS_REFINED", "0"))  # dollar cap — Refined only, fires alongside %
 MAX_TRAILING_GIVEBACK       = float(os.environ.get("MAX_TRAILING_GIVEBACK", "0"))
+MORNING_TRAIL_PCT           = float(os.environ.get("MORNING_TRAIL_PCT", "0"))       # overrides trail_offset 9:30–10:30 ET when > 0
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
 MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
 
@@ -1639,6 +1640,7 @@ def risk_status():
         "position_stop_mode":         "percent" if MAX_POSITION_LOSS_PCT < 0 else "dollars",
         "max_trailing_giveback":   MAX_TRAILING_GIVEBACK if MAX_TRAILING_GIVEBACK != 0 else None,
         "trailing_stop_enabled":   MAX_TRAILING_GIVEBACK > 0,
+        "morning_trail_pct":       MORNING_TRAIL_PCT if MORNING_TRAIL_PCT > 0 else None,
         "positions":            positions,
         "blocked_strategies":   blocked,
     })
@@ -1670,7 +1672,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT
     data = request.get_json(silent=True) or {}
     changed = []
     if "max_daily_loss" in data:
@@ -1723,10 +1725,22 @@ def risk_set_limit():
             with _risk_lock:
                 _position_peaks.clear()
         changed.append("max_trailing_giveback")
+    if "morning_trail_pct" in data:
+        try:
+            MORNING_TRAIL_PCT = float(data["morning_trail_pct"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "morning_trail_pct must be a number"}), 400
+        if MORNING_TRAIL_PCT < 0:
+            MORNING_TRAIL_PCT = 0.0
+        _update_env_file("MORNING_TRAIL_PCT", f"{MORNING_TRAIL_PCT:g}")
+        _save_setting("MORNING_TRAIL_PCT", f"{MORNING_TRAIL_PCT:g}")
+        log.info("MORNING_TRAIL_PCT updated to %g", MORNING_TRAIL_PCT)
+        changed.append("morning_trail_pct")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
         "max_trailing_giveback":  MAX_TRAILING_GIVEBACK,
+        "morning_trail_pct":      MORNING_TRAIL_PCT,
         "changed":                changed,
     })
 
@@ -4757,13 +4771,15 @@ def bulk_update_exit_params():
     re-keyed to the new unit.
 
     If a rule has no exit_params node, one is appended."""
-    data          = request.get_json(silent=True) or {}
-    mode          = (data.get("mode") or "percent").lower()
-    trail_offset  = data.get("trail_offset")
-    trail_trigger = data.get("trail_trigger")
-    stop_loss     = data.get("stop_loss")
-    clear_trail   = bool(data.get("clear_trail", False))
-    if trail_offset is None and trail_trigger is None and stop_loss is None:
+    data                 = request.get_json(silent=True) or {}
+    mode                 = (data.get("mode") or "percent").lower()
+    trail_offset         = data.get("trail_offset")
+    trail_trigger        = data.get("trail_trigger")
+    stop_loss            = data.get("stop_loss")
+    clear_trail          = bool(data.get("clear_trail", False))
+    clear_trail_trigger  = bool(data.get("clear_trail_trigger", False))
+    name_contains        = (data.get("name_contains") or "").strip().lower()
+    if trail_offset is None and trail_trigger is None and stop_loss is None and not clear_trail and not clear_trail_trigger:
         trail_offset = 0.15
     try:
         if trail_offset  is not None: trail_offset  = float(trail_offset)
@@ -4775,12 +4791,16 @@ def bulk_update_exit_params():
         return jsonify({"error": "mode must be 'percent' or 'dollars'"}), 400
 
     conn = get_db(); cur = conn.cursor(); p = placeholder()
-    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    cur.execute("SELECT id, name, nodes FROM routing_rules ORDER BY id")
     rows = cur.fetchall()
-    updated = added_node = 0
+    updated = added_node = skipped = 0
     for row in rows:
         rid       = row[0] if DATABASE_URL else row["id"]
-        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        rname     = (row[1] if DATABASE_URL else row["name"] or "").lower()
+        nodes_raw = row[2] if DATABASE_URL else row["nodes"]
+        if name_contains and name_contains not in rname:
+            skipped += 1
+            continue
         nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
         ep = next((n for n in nodes if n.get("type") == "exit_params"), None)
         if ep is None:
@@ -4794,13 +4814,16 @@ def bulk_update_exit_params():
         if clear_trail:
             ep.pop("trail_offset",  None)
             ep.pop("trail_trigger", None)
+        if clear_trail_trigger:
+            ep.pop("trail_trigger", None)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()
-    log.info("bulk_update_exit_params: %d rules updated (mode=%s trail_offset=%s trail_trigger=%s added_node=%d)",
-             updated, mode, trail_offset, trail_trigger, added_node)
+    log.info("bulk_update_exit_params: %d rules updated, %d skipped (pattern=%r mode=%s trail_offset=%s trail_trigger=%s added_node=%d)",
+             updated, skipped, name_contains or "*", mode, trail_offset, trail_trigger, added_node)
     return jsonify({
         "updated":      updated,
+        "skipped":      skipped,
         "added_node":   added_node,
         "mode":         mode,
         "trail_offset": trail_offset,
@@ -7873,7 +7896,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -7907,6 +7930,13 @@ def _restore_risk_settings():
         try:
             MAX_TRAILING_GIVEBACK = float(stored)
             log.info("Restored MAX_TRAILING_GIVEBACK=%g from DB", MAX_TRAILING_GIVEBACK)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("MORNING_TRAIL_PCT")
+    if stored is not None:
+        try:
+            MORNING_TRAIL_PCT = float(stored)
+            log.info("Restored MORNING_TRAIL_PCT=%g from DB", MORNING_TRAIL_PCT)
         except (TypeError, ValueError):
             pass
 
