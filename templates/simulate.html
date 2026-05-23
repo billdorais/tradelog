@@ -375,6 +375,7 @@
 
   function renderResults(data) {
     const s = data.summary;
+    const p = data.params;
     document.getElementById('statusMsg').style.display = 'none';
 
     // Summary cards — current rules vs new params
@@ -395,7 +396,6 @@
     document.getElementById('summarySection').style.display = 'block';
 
     // Results title
-    const p = data.params;
     let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
     if (p.morning_trail_pct)   titleStr += `  ·  morning ${p.morning_trail_pct}%`;
     if (p.afternoon_trail_pct) titleStr += `  ·  afternoon ${p.afternoon_trail_pct}%`;
