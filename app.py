@@ -61,6 +61,7 @@ MAX_POSITION_LOSS_PCT       = float(os.environ.get("MAX_POSITION_LOSS_PCT", "0")
 MAX_POSITION_LOSS_REFINED   = float(os.environ.get("MAX_POSITION_LOSS_REFINED", "0"))  # dollar cap — Refined only, fires alongside %
 MAX_TRAILING_GIVEBACK       = float(os.environ.get("MAX_TRAILING_GIVEBACK", "0"))
 MORNING_TRAIL_PCT           = float(os.environ.get("MORNING_TRAIL_PCT", "0"))       # overrides trail_offset 9:30–10:30 ET when > 0
+AFTERNOON_TRAIL_PCT         = float(os.environ.get("AFTERNOON_TRAIL_PCT", "0"))     # caps trail_offset 12:00–close ET when > 0
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
 MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
 
@@ -1640,7 +1641,8 @@ def risk_status():
         "position_stop_mode":         "percent" if MAX_POSITION_LOSS_PCT < 0 else "dollars",
         "max_trailing_giveback":   MAX_TRAILING_GIVEBACK if MAX_TRAILING_GIVEBACK != 0 else None,
         "trailing_stop_enabled":   MAX_TRAILING_GIVEBACK > 0,
-        "morning_trail_pct":       MORNING_TRAIL_PCT if MORNING_TRAIL_PCT > 0 else None,
+        "morning_trail_pct":       MORNING_TRAIL_PCT   if MORNING_TRAIL_PCT   > 0 else None,
+        "afternoon_trail_pct":     AFTERNOON_TRAIL_PCT if AFTERNOON_TRAIL_PCT > 0 else None,
         "positions":            positions,
         "blocked_strategies":   blocked,
     })
@@ -1672,7 +1674,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT
     data = request.get_json(silent=True) or {}
     changed = []
     if "max_daily_loss" in data:
@@ -1736,11 +1738,23 @@ def risk_set_limit():
         _save_setting("MORNING_TRAIL_PCT", f"{MORNING_TRAIL_PCT:g}")
         log.info("MORNING_TRAIL_PCT updated to %g", MORNING_TRAIL_PCT)
         changed.append("morning_trail_pct")
+    if "afternoon_trail_pct" in data:
+        try:
+            AFTERNOON_TRAIL_PCT = float(data["afternoon_trail_pct"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "afternoon_trail_pct must be a number"}), 400
+        if AFTERNOON_TRAIL_PCT < 0:
+            AFTERNOON_TRAIL_PCT = 0.0
+        _update_env_file("AFTERNOON_TRAIL_PCT", f"{AFTERNOON_TRAIL_PCT:g}")
+        _save_setting("AFTERNOON_TRAIL_PCT", f"{AFTERNOON_TRAIL_PCT:g}")
+        log.info("AFTERNOON_TRAIL_PCT updated to %g", AFTERNOON_TRAIL_PCT)
+        changed.append("afternoon_trail_pct")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
         "max_trailing_giveback":  MAX_TRAILING_GIVEBACK,
         "morning_trail_pct":      MORNING_TRAIL_PCT,
+        "afternoon_trail_pct":    AFTERNOON_TRAIL_PCT,
         "changed":                changed,
     })
 
@@ -7927,7 +7941,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -7968,6 +7982,13 @@ def _restore_risk_settings():
         try:
             MORNING_TRAIL_PCT = float(stored)
             log.info("Restored MORNING_TRAIL_PCT=%g from DB", MORNING_TRAIL_PCT)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("AFTERNOON_TRAIL_PCT")
+    if stored is not None:
+        try:
+            AFTERNOON_TRAIL_PCT = float(stored)
+            log.info("Restored AFTERNOON_TRAIL_PCT=%g from DB", AFTERNOON_TRAIL_PCT)
         except (TypeError, ValueError):
             pass
 

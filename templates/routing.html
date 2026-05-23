@@ -288,6 +288,24 @@
       <div class="risk-hint" id="morningTrailHint">Widens trail_offset to this % on all entries placed 9:30–10:30 ET (uses whichever is larger vs the rule's own trail). 0 = disabled.</div>
     </div>
 
+    <div class="risk-divider"></div>
+
+    <div class="risk-section">
+      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+        <span>Afternoon Trail (%) <span style="color:#888;font-weight:400;font-size:0.7rem">12:00–close ET</span></span>
+        <span id="afternoonTrailBadge" class="risk-status-badge disabled">
+          <span class="risk-dot grey" id="afternoonTrailDot"></span>
+          <span id="afternoonTrailText">Disabled</span>
+        </span>
+      </div>
+      <div class="risk-input-row">
+        <input class="risk-input" id="afternoonTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.18">
+        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveAfternoonTrail()">Set</button>
+        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearAfternoonTrail()">Off</button>
+      </div>
+      <div class="risk-hint" id="afternoonTrailHint">Caps trail_offset to this % on entries placed 12:00–close ET (uses whichever is smaller vs the rule's own trail). 0 = disabled.</div>
+    </div>
+
     <div id="riskResetSection" style="display:none; margin-left:auto">
       <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
     </div>
@@ -608,6 +626,27 @@
         mornHint.textContent = 'Widens trail_offset to this % on all entries placed 9:30–10:30 ET (uses whichever is larger vs the rule\'s own trail). 0 = disabled.';
       }
 
+      // Afternoon trail status badge
+      const aftnInput = document.getElementById('afternoonTrailInput');
+      if (document.activeElement !== aftnInput && data.afternoon_trail_pct !== null) {
+        aftnInput.value = data.afternoon_trail_pct || '';
+      }
+      const aftnBadge = document.getElementById('afternoonTrailBadge');
+      const aftnDot   = document.getElementById('afternoonTrailDot');
+      const aftnText  = document.getElementById('afternoonTrailText');
+      const aftnHint  = document.getElementById('afternoonTrailHint');
+      if (data.afternoon_trail_pct !== null && data.afternoon_trail_pct > 0) {
+        aftnBadge.className = 'risk-status-badge active';
+        aftnDot.className   = 'risk-dot green';
+        aftnText.textContent = 'Active';
+        aftnHint.textContent = `Entry orders 12:00–close ET cap at ${data.afternoon_trail_pct}% trail (tightens any wider per-rule trail during afternoon session).`;
+      } else {
+        aftnBadge.className = 'risk-status-badge disabled';
+        aftnDot.className   = 'risk-dot grey';
+        aftnText.textContent = 'Disabled';
+        aftnHint.textContent = 'Caps trail_offset to this % on entries placed 12:00–close ET (uses whichever is smaller vs the rule\'s own trail). 0 = disabled.';
+      }
+
       // Status badge + panel border
       if (data.halted) {
         badge.className = 'risk-status-badge halted';
@@ -755,6 +794,23 @@
     document.getElementById('morningTrailInput').value = '';
     try { await _postLimit({morning_trail_pct: 0}); }
     catch(e) { console.error('clearMorningTrail failed:', e); }
+  }
+
+  async function saveAfternoonTrail() {
+    const input = document.getElementById('afternoonTrailInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearAfternoonTrail(); return; }
+    const val = parseFloat(raw);
+    if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({afternoon_trail_pct: val}); }
+    catch(e) { console.error('saveAfternoonTrail failed:', e); }
+  }
+
+  async function clearAfternoonTrail() {
+    document.getElementById('afternoonTrailInput').value = '';
+    try { await _postLimit({afternoon_trail_pct: 0}); }
+    catch(e) { console.error('clearAfternoonTrail failed:', e); }
   }
 
   async function resetRiskHalt() {

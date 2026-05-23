@@ -590,16 +590,21 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             _ep_hard_stop     = ep_hard_stop
             _broker_captured  = _broker_inst
 
-            # Morning trail override: 9:30–10:30 ET widens trail when MORNING_TRAIL_PCT > 0
+            # Session-based trail overrides (entry orders with percent-mode trail only)
             if not _is_exit and _ep_trail_offset is not None and _ep_trail_mode == "percent":
                 import app as _app_morn
-                _morn_pct = getattr(_app_morn, "MORNING_TRAIL_PCT", 0.0)
-                if _morn_pct > 0:
-                    _now_et = datetime.now(ZoneInfo("America/New_York"))
-                    _morn_start = _now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
-                    _morn_end   = _now_et.replace(hour=10, minute=30, second=0, microsecond=0)
-                    if _morn_start <= _now_et < _morn_end:
-                        _ep_trail_offset = max(_ep_trail_offset, _morn_pct)
+                _now_et     = datetime.now(ZoneInfo("America/New_York"))
+                _morn_pct   = getattr(_app_morn, "MORNING_TRAIL_PCT",   0.0)
+                _aftern_pct = getattr(_app_morn, "AFTERNOON_TRAIL_PCT", 0.0)
+                _morn_start = _now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+                _morn_end   = _now_et.replace(hour=10, minute=30, second=0, microsecond=0)
+                _aftn_start = _now_et.replace(hour=12, minute=0,  second=0, microsecond=0)
+                if _morn_pct > 0 and _morn_start <= _now_et < _morn_end:
+                    # Morning: widen — use whichever is larger
+                    _ep_trail_offset = max(_ep_trail_offset, _morn_pct)
+                elif _aftern_pct > 0 and _now_et >= _aftn_start:
+                    # Afternoon: tighten — use whichever is smaller
+                    _ep_trail_offset = min(_ep_trail_offset, _aftern_pct)
 
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
