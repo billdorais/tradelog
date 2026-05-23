@@ -3511,6 +3511,240 @@ def api_journal_generate():
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
+@app.route("/api/journal/trade_review", methods=["POST"])
+def api_trade_review():
+    """Generate AI stop-tightness analysis using post-exit price action.
+    Streams SSE. Fetches Refined fills for the week, gets 30-min bars after
+    each exit, then asks Claude to identify premature exit patterns and suggest
+    parameter changes."""
+    import datetime as _dtmod
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    data = request.get_json(silent=True) or {}
+    week = data.get("week", "").strip()
+    if not week:
+        today = _dtmod.date.today()
+        week  = today.strftime("%Y-W%W")
+    try:
+        year, wnum = week.split("-W")
+        week_start = _dtmod.date.fromisocalendar(int(year), int(wnum), 1)
+        week_end   = week_start + _dtmod.timedelta(days=4)
+    except Exception:
+        today = _dtmod.date.today()
+        week_start = today - _dtmod.timedelta(days=today.weekday())
+        week_end   = week_start + _dtmod.timedelta(days=4)
+    from_date = str(week_start)
+    to_date   = str(week_end)
+
+    def _fetch_post_exit_bars(ticker, exit_time_str):
+        """Return (max_fav_pct, max_adv_pct) in 30 min after exit.
+        max_fav = best price in exit direction as % of exit price (positive = price continued profitably)
+        max_adv = worst price in exit direction as % (negative = price moved against trade)"""
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            import datetime as _dt
+
+            _client = StockHistoricalDataClient(
+                api_key    = alpaca_broker._key,
+                secret_key = alpaca_broker._secret,
+            )
+            _exit_dt = _dt.datetime.fromisoformat(exit_time_str.replace("Z", "+00:00"))
+            _end_dt  = _exit_dt + _dt.timedelta(minutes=30)
+            req = StockBarsRequest(
+                symbol_or_symbols = ticker.upper(),
+                timeframe         = TimeFrame(1, TimeFrameUnit.Minute),
+                start             = _exit_dt,
+                end               = _end_dt,
+            )
+            bars_df = _client.get_stock_bars(req)
+            bars = list(bars_df[ticker.upper()])
+            if not bars:
+                return None, None
+            highs  = [float(b.high)  for b in bars]
+            lows   = [float(b.low)   for b in bars]
+            ep     = float(exit_time_str and bars[0].open or 0) or None
+            if not ep:
+                return None, None
+            max_high = max(highs)
+            min_low  = min(lows)
+            return max_high, min_low
+        except Exception as _be:
+            log.debug("post_exit_bars %s: %s", ticker, _be)
+            return None, None
+
+    def _stream():
+        if not alpaca_broker2:
+            yield f"data: {json.dumps({'error': 'Refined account not configured'})}\n\n"
+            return
+
+        fills = _get_cached_fills_2()
+        week_fills = [f for f in fills if from_date <= (f.get("time") or "")[:10] <= to_date]
+        if not week_fills:
+            yield f"data: {json.dumps({'error': 'No Refined fills found for this week'})}\n\n"
+            return
+
+        # Pair into round-trips
+        paired = _pair_alpaca_fills_lifo(week_fills)
+        trades = paired.get("closed_clean") or []
+        if not trades:
+            yield f"data: {json.dumps({'error': 'No completed round-trips found'})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'status': f'Fetching post-exit data for {len(trades)} trades…'})}\n\n"
+
+        # Build trade records with post-exit price action
+        records = []
+        for t in trades:
+            ticker   = (t.get("ticker") or t.get("symbol") or "").upper()
+            side     = t.get("side") or ""
+            entry_px = float(t.get("entry_price") or 0)
+            exit_px  = float(t.get("exit_price")  or 0)
+            pnl      = float(t.get("pnl") or 0)
+            exit_t   = t.get("exit_time") or t.get("time") or ""
+            strategy = (t.get("strategy") or "Unknown")
+
+            is_long = side.upper() in ("BOT", "LONG", "BUY")
+
+            # Duration in minutes
+            try:
+                _ent_t = _dtmod.datetime.fromisoformat((t.get("entry_time") or exit_t).replace("Z", "+00:00"))
+                _ex_t  = _dtmod.datetime.fromisoformat(exit_t.replace("Z", "+00:00"))
+                duration_mins = round((_ex_t - _ent_t).total_seconds() / 60, 1)
+                exit_hour_et  = (_ex_t.astimezone(_dtmod.timezone(_dtmod.timedelta(hours=-4)))).strftime("%H:%M")
+            except Exception:
+                duration_mins = None
+                exit_hour_et  = exit_t[11:16] if len(exit_t) > 15 else "?"
+
+            if not ticker or not exit_t or exit_px == 0:
+                continue
+
+            max_high, min_low = _fetch_post_exit_bars(ticker, exit_t)
+
+            # Compute post-exit continuation as % of exit price
+            if max_high and min_low and exit_px > 0:
+                if is_long:
+                    # For longs: favorable = price went higher after exit
+                    post_fav_pct  = round((max_high - exit_px) / exit_px * 100, 3)
+                    post_adv_pct  = round((min_low  - exit_px) / exit_px * 100, 3)
+                else:
+                    # For shorts: favorable = price went lower after exit
+                    post_fav_pct  = round((exit_px - min_low)  / exit_px * 100, 3)
+                    post_adv_pct  = round((exit_px - max_high) / exit_px * 100, 3)
+                premature = post_fav_pct > 0.15  # price continued >0.15% after exit
+            else:
+                post_fav_pct = post_adv_pct = None
+                premature = None
+
+            records.append({
+                "strategy":     strategy,
+                "ticker":       ticker,
+                "side":         "LONG" if is_long else "SHORT",
+                "exit_time_et": exit_hour_et,
+                "duration_min": duration_mins,
+                "entry_px":     round(entry_px, 2),
+                "exit_px":      round(exit_px,  2),
+                "pnl":          round(pnl, 2),
+                "post_fav_pct": post_fav_pct,
+                "post_adv_pct": post_adv_pct,
+                "premature":    premature,
+            })
+
+        if not records:
+            yield f"data: {json.dumps({'error': 'Could not build trade records'})}\n\n"
+            return
+
+        premature_count = sum(1 for r in records if r["premature"])
+        premature_pct   = round(premature_count / len(records) * 100) if records else 0
+
+        yield f"data: {json.dumps({'status': f'Analysing {len(records)} trades ({premature_pct}% flagged as premature exits)…'})}\n\n"
+
+        # Build compact trade table for the prompt
+        trade_rows = "\n".join(
+            f"{r['ticker']}|{r['strategy'].replace('_CAM_','_').replace('_V02_5MIN','')}|"
+            f"{r['side']}|{r['exit_time_et']}|{r['duration_min']}m|"
+            f"${r['pnl']:+.2f}|"
+            f"{('+' if (r['post_fav_pct'] or 0)>=0 else '')}{r['post_fav_pct']:.2f}%|"
+            f"{'⚠ EARLY' if r['premature'] else 'ok'}"
+            for r in records
+        )
+
+        prompt = (
+            f"You are reviewing {len(records)} trades from a Camarilla 5-minute breakout/reversal system "
+            f"for the week {from_date} to {to_date}.\n\n"
+            f"The system uses Kairos broker-side trailing stops (default 0.15% offset) with an optional "
+            f"0.10% trigger before the trail activates. TV signals are the fallback exit. "
+            f"Position sizes: SPY/QQQ ~16 shares, cheaper stocks ~50 shares.\n\n"
+            f"For each trade, POST_FAV shows how much price continued in the profitable direction "
+            f"in the 30 minutes after exit (positive = left money on the table, ⚠ EARLY = >0.15% continuation). "
+            f"POST_ADV shows the worst price in 30 min (negative = exit was well-timed).\n\n"
+            f"TICKER | STRATEGY | SIDE | EXIT_TIME | DURATION | PNL | POST_FAV_30M | FLAG\n"
+            f"{trade_rows}\n\n"
+            f"SUMMARY: {len(records)} trades, {premature_count} flagged as early exits ({premature_pct}%).\n\n"
+            f"Analyse this data and provide:\n"
+            f"1. **Stop Tightness Assessment** — is the 0.15% trail too tight, too wide, or well-calibrated? "
+            f"Quote specific trades as evidence.\n"
+            f"2. **Time-of-Day Patterns** — which exit times (9:30-10:30, 10:30-12, afternoon) show the most "
+            f"premature exits? Any windows to avoid or widen the trail?\n"
+            f"3. **Per-Strategy Findings** — which strategies exit too early most consistently?\n"
+            f"4. **Specific Recommendations** — give exact parameter values to try next week "
+            f"(e.g. 'increase SPY trail to 0.20%', 'add 0.15% trigger on QQQ'). Be specific.\n\n"
+            f"Be direct and data-driven. 3-4 sentences per section max."
+        )
+
+        summary = ""
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            with client.messages.stream(
+                model      = "claude-haiku-4-5-20251001",
+                max_tokens = 1200,
+                messages   = [{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    summary += text
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as _ae:
+            yield f"data: {json.dumps({'error': str(_ae)})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+        # Persist to settings keyed by week
+        try:
+            _save_setting(f"TRADE_REVIEW_{week}", json.dumps({
+                "summary":    summary,
+                "week":       week,
+                "trade_count": len(records),
+                "premature_pct": premature_pct,
+                "generated_at": _dtmod.datetime.now(_dtmod.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }))
+        except Exception as _pe:
+            log.warning("Trade review persist error: %s", _pe)
+
+    return Response(stream_with_context(_stream()), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+@app.route("/api/journal/trade_review/<week>", methods=["GET"])
+def api_get_trade_review(week):
+    """Return cached trade review for a week."""
+    stored = _load_setting(f"TRADE_REVIEW_{week}")
+    if stored:
+        try:
+            return jsonify(json.loads(stored))
+        except Exception:
+            pass
+    return jsonify({"summary": None})
+
+
 @app.route("/about")
 def about():
     return render_template("about.html")
