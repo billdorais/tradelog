@@ -496,6 +496,21 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 "detail":   _block_info,
             }), 200
 
+    # If the matched pipeline has an exit_params node the broker-side trailing stop
+    # manages the exit — suppress the TV exit signal so it doesn't close the position
+    # before the stop has a chance to fire.
+    if _is_exit and ep_trail_offset is not None:
+        _suppress_msg = (
+            f"TV exit suppressed — pipeline has exit_params "
+            f"(trail {ep_trail_offset}%), broker-side trailing stop controls exit"
+        )
+        app.log.info("%s: %s %s", _suppress_msg, strategy_name, ticker)
+        if conn:
+            app._update_exec(cur, trade_id, "skipped", _suppress_msg)
+            conn.commit()
+            conn.close()
+        return jsonify({"status": "skipped", "reason": "exit_params_controls_exit"}), 200
+
     # 2. Route to broker(s) — supports single or multi-broker pipelines
     exec_status = None
     exec_detail = None
