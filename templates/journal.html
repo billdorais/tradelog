@@ -397,7 +397,9 @@
     const tagRow   = (grade || labels.length) ? `
       <div class="tag-row">
         ${grade ? `<span class="tag-grade tag-grade-${grade}" title="Week grade">${grade}</span>` : ''}
-        ${labels.map(l => {
+        ${labels.map(raw => {
+          const l    = raw.replace(/[^a-z0-9-]/g, '');
+          if (!l) return '';
           const _VOL = new Set(['high-vol','low-vol']);
           const _CTX = new Set(['fed-week','opex','earnings-heavy']);
           const cls  = _VOL.has(l) ? 'tag-label tag-vol' : _CTX.has(l) ? 'tag-label tag-ctx' : 'tag-label';

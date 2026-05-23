@@ -3475,7 +3475,8 @@ def api_journal_generate():
         _labels = []
         _clean_summary = summary
         if _tag_match:
-            _labels = [t.strip().lower() for t in _tag_match.group(1).split(',') if t.strip()]
+            _labels = [_re.sub(r'[^a-z0-9-]', '', t.strip().lower()) for t in _tag_match.group(1).split(',') if t.strip()]
+            _labels = [l for l in _labels if l]  # drop empty after sanitize
             _clean_summary = summary[:_tag_match.start()].rstrip()
 
         # Compute letter grade from trade stats
