@@ -176,8 +176,12 @@
       </div>
       <div class="divider"></div>
       <div class="param-group">
-        <label>Stop Loss</label>
-        <div class="input-wrap"><input type="number" id="stopLossPct" value="0.50" step="0.05" min="0" max="10"><span class="unit">%</span></div>
+        <label>Stop Loss %</label>
+        <div class="input-wrap"><input type="number" id="stopLossPct" value="0" step="0.05" min="0" max="10"><span class="unit">%</span></div>
+      </div>
+      <div class="param-group">
+        <label>Stop Loss $</label>
+        <div class="input-wrap"><input type="number" id="stopLossDollars" value="0" step="1" min="0" max="9999"><span class="unit">$</span></div>
       </div>
       <div class="divider"></div>
       <div class="param-group">
@@ -351,7 +355,8 @@
       return;
     }
 
-    const skipTvExits = document.getElementById('skipTvExits').checked;
+    const skipTvExits     = document.getElementById('skipTvExits').checked;
+    const stopLossDollars = parseFloat(document.getElementById('stopLossDollars').value) || 0;
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
     btn.textContent = 'Fetching bars…';
@@ -367,8 +372,8 @@
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ from_date: fromDate, to_date: toDate, account,
                                   trail_pct: trailPct, trigger_pct: triggerPct,
-                                  stop_loss_pct: stopLossPct, max_hold_mins: maxHold,
-                                  skip_tv_exits: skipTvExits }),
+                                  stop_loss_pct: stopLossPct, stop_loss_dollars: stopLossDollars,
+                                  max_hold_mins: maxHold, skip_tv_exits: skipTvExits }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
@@ -396,7 +401,7 @@
     const mornNote = p.morning_trail_pct ? ` · morn ${p.morning_trail_pct}%` : '';
     const aftnNote = p.afternoon_trail_pct ? ` · aftn ${p.afternoon_trail_pct}%` : '';
     const baseSubNote = `router trail + session overrides${mornNote}${aftnNote}`;
-    const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}m`;
+    const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}m`;
     document.getElementById('summaryCards').innerHTML = `
       <div class="stat-card"><div class="stat-label">Current Rules P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
       <div class="stat-card"><div class="stat-label">New Params P&L</div><div class="stat-value ${newClass}">${fmt(s.new_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${newSubNote}</div></div>
@@ -407,7 +412,10 @@
     document.getElementById('summarySection').style.display = 'block';
 
     // Results title
-    let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
+    let stopStr = p.stop_loss_pct > 0 ? `stop ${p.stop_loss_pct}%` : '';
+    if (p.stop_loss_dollars > 0) stopStr += (stopStr ? ' / ' : '') + `stop $${p.stop_loss_dollars}`;
+    if (!stopStr) stopStr = 'no stop';
+    let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}min`;
     if (p.morning_trail_pct)   titleStr += `  ·  morning ${p.morning_trail_pct}%`;
     if (p.afternoon_trail_pct) titleStr += `  ·  afternoon ${p.afternoon_trail_pct}%`;
     if (p.skip_tv_exits)       titleStr += `  ·  stops only`;

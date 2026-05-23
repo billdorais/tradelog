@@ -3918,11 +3918,12 @@ def api_simulate_stops():
     from_date     = body.get("from_date", "")
     to_date       = body.get("to_date",   "")
     use_acct2     = str(body.get("account", "2")) == "2"
-    trail_pct     = float(body.get("trail_pct",      0.5))
-    trigger_pct   = float(body.get("trigger_pct",    0.0))
-    stop_loss_pct = float(body.get("stop_loss_pct",  0.0))
-    max_hold_mins = int(body.get("max_hold_mins",   60))
-    skip_tv_exits = bool(body.get("skip_tv_exits",  False))
+    trail_pct          = float(body.get("trail_pct",         0.5))
+    trigger_pct        = float(body.get("trigger_pct",       0.0))
+    stop_loss_pct      = float(body.get("stop_loss_pct",     0.0))
+    stop_loss_dollars  = float(body.get("stop_loss_dollars", 0.0))
+    max_hold_mins      = int(body.get("max_hold_mins",      60))
+    skip_tv_exits      = bool(body.get("skip_tv_exits",     False))
 
     broker = alpaca_broker2 if use_acct2 else alpaca_broker
     if broker is None:
@@ -4037,13 +4038,15 @@ def api_simulate_stops():
         base_sim = _simulate_exit(trade_bars, entry_px, side,
                                   eff_r_trail, r_trigger, 0.0,
                                   max_hold_mins, entry_dt,
-                                  cap_dt=_cap_dt, cap_price=_cap_price)
+                                  cap_dt=_cap_dt, cap_price=_cap_price,
+                                  stop_loss_dollars=0.0, qty=qty)
         base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
 
         new_sim  = _simulate_exit(trade_bars, entry_px, side,
                                   trail_pct, trigger_pct, stop_loss_pct,
                                   max_hold_mins, entry_dt,
-                                  cap_dt=_cap_dt, cap_price=_cap_price)
+                                  cap_dt=_cap_dt, cap_price=_cap_price,
+                                  stop_loss_dollars=stop_loss_dollars, qty=qty)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
@@ -4092,10 +4095,11 @@ def api_simulate_stops():
             "neutral":     len(results) - improved - worse,
         },
         "params": {
-            "trail_pct":         trail_pct,
-            "trigger_pct":       trigger_pct,
-            "stop_loss_pct":     stop_loss_pct,
-            "max_hold_mins":     max_hold_mins,
+            "trail_pct":          trail_pct,
+            "trigger_pct":        trigger_pct,
+            "stop_loss_pct":      stop_loss_pct,
+            "stop_loss_dollars":  stop_loss_dollars,
+            "max_hold_mins":      max_hold_mins,
             "from_date":         from_date,
             "to_date":           to_date,
             "morning_trail_pct":   MORNING_TRAIL_PCT   if MORNING_TRAIL_PCT   > 0 else None,
@@ -7614,13 +7618,16 @@ def _fetch_day_bars(ticker: str, date_str: str):
 def _simulate_exit(bars, entry_price: float, side: str,
                    trail_pct: float, trigger_pct: float,
                    stop_loss_pct: float, max_hold_mins: int,
-                   entry_dt, cap_dt=None, cap_price=None):
+                   entry_dt, cap_dt=None, cap_price=None,
+                   stop_loss_dollars: float = 0.0, qty: float = 1.0):
     """Walk 1-min bars and return the simulated exit.
 
     cap_dt / cap_price: if supplied, bars past cap_dt are ignored. If no stop
     fires before cap_dt the function returns the cap_price with reason 'actual'.
-    This lets the baseline simulation match the actual hold window so its P&L
-    converges to real P&L when the trailing stop wouldn't have fired earlier.
+
+    stop_loss_dollars: dollar-based hard stop. Converted to a per-share price
+    level using qty. When both stop_loss_pct and stop_loss_dollars are set the
+    tighter stop (closer to entry) fires first.
 
     Returns dict {exit_price, exit_time, reason, exit_mins} or None if no bars.
     """
@@ -7629,6 +7636,16 @@ def _simulate_exit(bars, entry_price: float, side: str,
         return None
     is_long = side.upper() == "LONG"
     peak    = entry_price
+
+    # Pre-compute dollar stop price level (tighter of % and $ wins)
+    if stop_loss_dollars > 0 and qty > 0:
+        dollar_sl_per_share = stop_loss_dollars / qty
+        if is_long:
+            _dollar_sl_px = entry_price - dollar_sl_per_share
+        else:
+            _dollar_sl_px = entry_price + dollar_sl_per_share
+    else:
+        _dollar_sl_px = None
 
     for bar in bars:
         bar_ts = bar.timestamp
@@ -7647,11 +7664,13 @@ def _simulate_exit(bars, entry_price: float, side: str,
 
         if is_long:
             peak = max(peak, high)
-            if stop_loss_pct > 0:
-                sl_px = entry_price * (1 - stop_loss_pct / 100)
-                if low <= sl_px:
-                    return {"exit_price": round(sl_px, 4), "exit_time": str(bar_ts),
-                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            # Combine % and $ stops — use tighter (higher) stop price
+            _pct_sl_px = entry_price * (1 - stop_loss_pct / 100) if stop_loss_pct > 0 else None
+            _sl_px = max(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
+                     if (_pct_sl_px is not None or _dollar_sl_px is not None) else None
+            if _sl_px is not None and low <= _sl_px:
+                return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
+                        "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
             if trail_pct > 0:
                 triggered = (trigger_pct == 0) or (peak >= entry_price * (1 + trigger_pct / 100))
                 if triggered:
@@ -7661,11 +7680,13 @@ def _simulate_exit(bars, entry_price: float, side: str,
                                 "reason": "trail", "exit_mins": round(hold_mins, 1)}
         else:
             peak = min(peak, low)
-            if stop_loss_pct > 0:
-                sl_px = entry_price * (1 + stop_loss_pct / 100)
-                if high >= sl_px:
-                    return {"exit_price": round(sl_px, 4), "exit_time": str(bar_ts),
-                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            # Combine % and $ stops — use tighter (lower) stop price
+            _pct_sl_px = entry_price * (1 + stop_loss_pct / 100) if stop_loss_pct > 0 else None
+            _sl_px = min(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
+                     if (_pct_sl_px is not None or _dollar_sl_px is not None) else None
+            if _sl_px is not None and high >= _sl_px:
+                return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
+                        "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
             if trail_pct > 0:
                 triggered = (trigger_pct == 0) or (peak <= entry_price * (1 - trigger_pct / 100))
                 if triggered:
