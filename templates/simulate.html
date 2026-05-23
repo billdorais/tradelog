@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stop Simulator — Kairos Automata</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; padding: 0 0 60px; }
+
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
+    .nav-back { color: #888; text-decoration: none; font-size: 0.85rem; border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; }
+    .nav-back:hover { color: #ccc; border-color: #444; }
+
+    .page { padding: 28px 24px; max-width: 1300px; margin: 0 auto; }
+    .page-title { font-size: 1.3rem; font-weight: 600; margin-bottom: 4px; }
+    .page-sub   { font-size: 0.85rem; color: #555; margin-bottom: 28px; }
+
+    /* Config panel */
+    .config-panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 20px 24px; margin-bottom: 28px; }
+    .config-row { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+    .config-row:last-child { margin-bottom: 0; }
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+    .field input, .field select {
+      background: #0f1117; border: 1px solid #2a2d3e; color: #e0e0e0;
+      border-radius: 6px; padding: 7px 10px; font-size: 0.85rem; font-family: inherit;
+      width: 130px;
+    }
+    .field input[type=number] { width: 90px; }
+    .field input:focus, .field select:focus { outline: none; border-color: #7FE098; }
+    .field .unit { font-size: 0.78rem; color: #555; margin-top: 2px; }
+    .param-group { display: flex; flex-direction: column; gap: 5px; }
+    .param-group label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+    .param-group .input-wrap { display: flex; align-items: center; gap: 6px; }
+    .param-group .unit { font-size: 0.78rem; color: #555; }
+    .param-group input {
+      background: #0f1117; border: 1px solid #2a2d3e; color: #e0e0e0;
+      border-radius: 6px; padding: 7px 10px; font-size: 0.85rem; font-family: inherit;
+      width: 80px;
+    }
+    .param-group input:focus { outline: none; border-color: #7FE098; }
+    .divider { width: 1px; height: 40px; background: #1e2130; margin: 0 4px; }
+    .run-btn {
+      background: rgba(127,224,152,0.12); border: 1px solid #88BF8B; color: #7FE098;
+      border-radius: 6px; padding: 9px 22px; font-size: 0.9rem; font-family: inherit;
+      cursor: pointer; font-weight: 600; white-space: nowrap;
+    }
+    .run-btn:hover { background: rgba(127,224,152,0.2); }
+    .run-btn:disabled { opacity: 0.5; cursor: default; }
+
+    /* Summary cards */
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .stat-card { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 18px; }
+    .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 6px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: #fff; }
+    .stat-value.pos { color: #7FE098; }
+    .stat-value.neg { color: #e74c3c; }
+    .stat-value.neu { color: #F2E7AC; }
+    .stat-sub { font-size: 0.72rem; color: #555; margin-top: 4px; }
+
+    /* Results table */
+    .section-title { font-size: 0.9rem; font-weight: 600; color: #ccc; margin-bottom: 12px; }
+    .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2130; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    thead th { background: #13161f; color: #666; font-weight: 500; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.05em; padding: 10px 12px; text-align: left; border-bottom: 1px solid #1e2130; white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid #1a1d2e; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #13161f; }
+    tbody tr.improved { background: rgba(127,224,152,0.04); }
+    tbody tr.improved:hover { background: rgba(127,224,152,0.08); }
+    tbody tr.worse    { background: rgba(231,76,60,0.04); }
+    tbody tr.worse:hover { background: rgba(231,76,60,0.08); }
+    td { padding: 9px 12px; color: #b0b0b0; white-space: nowrap; }
+    td.mono { font-family: monospace; font-size: 0.8rem; }
+    td.pos { color: #7FE098; font-weight: 600; }
+    td.neg { color: #e74c3c; font-weight: 600; }
+    td.neu { color: #F2E7AC; font-weight: 600; }
+    .side-badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; }
+    .side-badge.long  { background: rgba(127,224,152,0.15); color: #7FE098; }
+    .side-badge.short { background: rgba(231,76,60,0.15);  color: #e74c3c; }
+    .reason-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; }
+    .reason-trail    { background: rgba(164,128,245,0.15); color: #c4b5fd; }
+    .reason-stop     { background: rgba(231,76,60,0.15);  color: #e74c3c; }
+    .reason-max_hold { background: rgba(242,231,172,0.15); color: #F2E7AC; }
+    .reason-eod      { background: rgba(100,100,100,0.15); color: #888; }
+    .delta-arrow { font-size: 0.8rem; margin-right: 3px; }
+
+    /* Status / empty */
+    .status-msg { color: #555; font-size: 0.9rem; padding: 40px 0; text-align: center; }
+    .error-msg  { color: #e74c3c; font-size: 0.85rem; padding: 20px 0; text-align: center; }
+
+    /* Nav */
+    .nav-menu-wrap { position: relative; display: inline-block; }
+    #navMenu { display:none; position:absolute; top:calc(100% + 6px); right:0; background:#1a1d2e; border:1px solid #2a2d3e; border-radius:6px; min-width:180px; z-index:999; box-shadow:0 4px 16px rgba(0,0,0,0.4); }
+    #navMenu a { display:block; padding:10px 16px; color:#ccc; text-decoration:none; font-size:0.9rem; border-bottom:1px solid #2a2d3e; }
+    #navMenu a:last-child { border-bottom: none; }
+    #navMenu a:hover { background: #22263a; color: #fff; }
+    #navMenu a.active { color: #7FE098; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>&#127916; Stop Simulator</h1>
+  <div class="nav-menu-wrap">
+    <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+    <div id="navMenu">
+      <a href="/">&#127968; Dashboard</a>
+      <a href="/routing">&#128257; Signal Router</a>
+      <a href="/analysis">&#128300; Analysis</a>
+      <a href="/strategies">&#128200; Strategies</a>
+      <a href="/simulate" class="active">&#127916; Simulator</a>
+      <a href="/optimize">&#9881; Optimize</a>
+      <a href="/research">&#129514; Research</a>
+      <a href="/journal">&#128221; Journal</a>
+      <a href="/about">&#8505; About</a>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+  <div class="page-title">Stop Simulator</div>
+  <div class="page-sub">Replay historical fills with different stop parameters to see what the P&amp;L would have been.</div>
+
+  <!-- Config -->
+  <div class="config-panel">
+    <div class="config-row">
+      <div class="field">
+        <label>From</label>
+        <input type="date" id="fromDate">
+      </div>
+      <div class="field">
+        <label>To</label>
+        <input type="date" id="toDate">
+      </div>
+      <div class="field">
+        <label>Account</label>
+        <select id="account">
+          <option value="2">Refined (account 2)</option>
+          <option value="1">Paper All (account 1)</option>
+        </select>
+      </div>
+    </div>
+    <div class="config-row">
+      <div class="param-group">
+        <label>Trail</label>
+        <div class="input-wrap"><input type="number" id="trailPct" value="0.50" step="0.05" min="0" max="10"><span class="unit">%</span></div>
+      </div>
+      <div class="param-group">
+        <label>Trigger</label>
+        <div class="input-wrap"><input type="number" id="triggerPct" value="0.00" step="0.05" min="0" max="10"><span class="unit">%</span></div>
+      </div>
+      <div class="divider"></div>
+      <div class="param-group">
+        <label>Stop Loss</label>
+        <div class="input-wrap"><input type="number" id="stopLossPct" value="0.50" step="0.05" min="0" max="10"><span class="unit">%</span></div>
+      </div>
+      <div class="divider"></div>
+      <div class="param-group">
+        <label>Max Hold</label>
+        <div class="input-wrap"><input type="number" id="maxHold" value="60" step="5" min="0" max="480"><span class="unit">min</span></div>
+      </div>
+      <div style="flex:1"></div>
+      <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
+    </div>
+  </div>
+
+  <!-- Summary -->
+  <div id="summarySection" style="display:none">
+    <div class="summary-grid" id="summaryCards"></div>
+  </div>
+
+  <!-- Results -->
+  <div id="resultsSection" style="display:none">
+    <div class="section-title" id="resultsTitle"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Side</th>
+            <th>Ticker</th>
+            <th>Qty</th>
+            <th>Entry</th>
+            <th>Actual Exit</th>
+            <th>Sim Exit</th>
+            <th>Reason</th>
+            <th>Hold</th>
+            <th>Actual P&amp;L</th>
+            <th>Sim P&amp;L</th>
+            <th>Delta</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="statusMsg" class="status-msg">Enter parameters above and click Run Simulation.</div>
+  <div id="errorMsg"  class="error-msg" style="display:none"></div>
+</div>
+
+<script>
+  // Default dates: from = 5 business days ago, to = today
+  (function () {
+    const today = new Date();
+    const pad   = n => String(n).padStart(2, '0');
+    const fmt   = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const ago   = new Date(today);
+    ago.setDate(ago.getDate() - 7);
+    document.getElementById('toDate').value   = fmt(today);
+    document.getElementById('fromDate').value = fmt(ago);
+  })();
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    const btn  = document.getElementById('navMenuBtn');
+    const menu = document.getElementById('navMenu');
+    if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+  });
+
+  function fmt(v) {
+    if (v == null) return '—';
+    const s = v < 0 ? '-' : '+';
+    return `${s}$${Math.abs(v).toFixed(2)}`;
+  }
+
+  function fmtPct(v) {
+    if (v == null) return '—';
+    return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:true});
+    } catch { return iso.slice(11,16); }
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function runSimulation() {
+    const fromDate    = document.getElementById('fromDate').value;
+    const toDate      = document.getElementById('toDate').value;
+    const account     = document.getElementById('account').value;
+    const trailPct    = parseFloat(document.getElementById('trailPct').value)    || 0;
+    const triggerPct  = parseFloat(document.getElementById('triggerPct').value)  || 0;
+    const stopLossPct = parseFloat(document.getElementById('stopLossPct').value) || 0;
+    const maxHold     = parseInt(document.getElementById('maxHold').value)       || 0;
+
+    if (!fromDate || !toDate) {
+      showError('Please select a date range.');
+      return;
+    }
+
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.textContent = 'Fetching bars…';
+    hideError();
+    document.getElementById('statusMsg').textContent     = 'Fetching 1-min bars and running simulation…';
+    document.getElementById('statusMsg').style.display   = 'block';
+    document.getElementById('summarySection').style.display = 'none';
+    document.getElementById('resultsSection').style.display = 'none';
+
+    try {
+      const res = await fetch('/api/simulate_stops', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ from_date: fromDate, to_date: toDate, account,
+                                  trail_pct: trailPct, trigger_pct: triggerPct,
+                                  stop_loss_pct: stopLossPct, max_hold_mins: maxHold }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        showError(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      renderResults(data);
+    } catch (e) {
+      showError('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '▶ Run Simulation';
+    }
+  }
+
+  function renderResults(data) {
+    const s = data.summary;
+    document.getElementById('statusMsg').style.display = 'none';
+
+    // Summary cards
+    const deltaClass = s.total_delta > 0.01 ? 'pos' : s.total_delta < -0.01 ? 'neg' : 'neu';
+    const simClass   = s.sim_pnl    > 0     ? 'pos' : s.sim_pnl    < 0     ? 'neg' : '';
+    const actClass   = s.actual_pnl > 0     ? 'pos' : s.actual_pnl < 0     ? 'neg' : '';
+    document.getElementById('summaryCards').innerHTML = `
+      <div class="stat-card"><div class="stat-label">Actual P&L</div><div class="stat-value ${actClass}">${fmt(s.actual_pnl)}</div><div class="stat-sub">${s.trade_count} trade${s.trade_count===1?'':'s'}</div></div>
+      <div class="stat-card"><div class="stat-label">Sim P&L</div><div class="stat-value ${simClass}">${fmt(s.sim_pnl)}</div><div class="stat-sub">with new params</div></div>
+      <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">sim vs actual</div></div>
+      <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
+      <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
+    `;
+    document.getElementById('summarySection').style.display = 'block';
+
+    // Results title
+    const p = data.params;
+    document.getElementById('resultsTitle').textContent =
+      `Trade-by-Trade  ·  trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
+
+    // Results table
+    const reasonLabel = r => {
+      if (!r) return '';
+      const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD'};
+      const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod'};
+      return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
+    };
+
+    document.getElementById('resultsBody').innerHTML = data.trades.map(t => {
+      const simPnlCls = (t.sim_pnl ?? 0) >= 0 ? 'pos' : 'neg';
+      const actPnlCls = t.actual_pnl >= 0 ? 'pos' : 'neg';
+      const delta     = t.pnl_delta;
+      const deltaCls  = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
+      const deltaArrow= delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
+      const rowCls    = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
+      const sideCls   = t.side === 'LONG' ? 'long' : 'short';
+
+      const simPx = t.sim_exit_price != null ? `$${Number(t.sim_exit_price).toFixed(2)}` : '—';
+      const actPx = `$${Number(t.actual_exit_price).toFixed(2)}`;
+      const holdStr = t.sim_exit_mins != null ? `${t.sim_exit_mins}m` : '—';
+
+      return `<tr class="${rowCls}">
+        <td class="mono">${esc(t.date.slice(5))}</td>
+        <td><span class="side-badge ${sideCls}">${t.side}</span></td>
+        <td class="mono" style="color:#e0e0e0">${esc(t.ticker)}</td>
+        <td>${t.qty}</td>
+        <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
+        <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
+        <td class="mono">${simPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.sim_exit_time)}</span></td>
+        <td>${reasonLabel(t.sim_exit_reason)}</td>
+        <td style="color:#666">${holdStr}</td>
+        <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
+        <td class="${simPnlCls}">${t.sim_pnl != null ? fmt(t.sim_pnl) : '—'}</td>
+        <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('resultsSection').style.display = 'block';
+  }
+
+  function showError(msg) {
+    document.getElementById('statusMsg').style.display = 'none';
+    const el = document.getElementById('errorMsg');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+
+  function hideError() {
+    document.getElementById('errorMsg').style.display = 'none';
+  }
+</script>
+</body>
+</html>

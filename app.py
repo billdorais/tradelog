@@ -3880,6 +3880,143 @@ def about():
     return render_template("about.html")
 
 
+@app.route("/simulate")
+def simulate():
+    return render_template("simulate.html")
+
+
+@app.route("/api/simulate_stops", methods=["POST"])
+def api_simulate_stops():
+    """Replay historical fills with simulated stop parameters.
+    Body: {from_date, to_date, account, trail_pct, trigger_pct, stop_loss_pct, max_hold_mins}
+    """
+    import concurrent.futures as _cf
+    import datetime as _dt
+
+    body          = request.get_json(force=True) or {}
+    from_date     = body.get("from_date", "")
+    to_date       = body.get("to_date",   "")
+    use_acct2     = str(body.get("account", "2")) == "2"
+    trail_pct     = float(body.get("trail_pct",      0.5))
+    trigger_pct   = float(body.get("trigger_pct",    0.0))
+    stop_loss_pct = float(body.get("stop_loss_pct",  0.5))
+    max_hold_mins = int(body.get("max_hold_mins",   60))
+
+    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    if broker is None:
+        return jsonify({"error": "Alpaca account not configured"}), 400
+    if not from_date or not to_date:
+        return jsonify({"error": "from_date and to_date are required"}), 400
+
+    fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
+                                            signal_lookup=signal_lookup)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No completed round-trips found for the selected period"}), 404
+
+    # Batch bar fetches by (ticker, date) — one API call per ticker/day
+    ticker_dates = set()
+    for t in trades:
+        ticker = (t.get("ticker") or "").upper()
+        date   = (t.get("entry_time") or "")[:10]
+        if ticker and date:
+            ticker_dates.add((ticker, date))
+
+    day_bars = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch_day_bars, tk, dt): (tk, dt) for tk, dt in ticker_dates}
+        for f in _cf.as_completed(futures):
+            tk, dt = futures[f]
+            try:
+                day_bars[(tk, dt)] = f.result()
+            except Exception:
+                day_bars[(tk, dt)] = []
+
+    results = []
+    for t in trades:
+        ticker     = (t.get("ticker") or "").upper()
+        side       = (t.get("side")   or "").upper()
+        entry_px   = float(t.get("entry_price") or 0)
+        exit_px    = float(t.get("exit_price")  or 0)
+        qty        = float(t.get("qty")         or 1)
+        actual_pnl = float(t.get("pnl")         or 0)
+        entry_time = t.get("entry_time") or ""
+        exit_time  = t.get("exit_time")  or ""
+        strategy   = t.get("strategy")   or ""
+        date       = entry_time[:10]
+
+        if not ticker or not entry_time or entry_px == 0:
+            continue
+
+        try:
+            entry_dt = _dt.datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+        except Exception:
+            continue
+
+        bars = day_bars.get((ticker, date), [])
+        trade_bars = [b for b in bars if b.timestamp >= entry_dt]
+
+        sim = _simulate_exit(trade_bars, entry_px, side,
+                             trail_pct, trigger_pct, stop_loss_pct,
+                             max_hold_mins, entry_dt)
+
+        if sim:
+            sim_pnl = round((sim["exit_price"] - entry_px) * qty, 2) if side == "LONG" \
+                      else round((entry_px - sim["exit_price"]) * qty, 2)
+            delta = round(sim_pnl - actual_pnl, 2)
+        else:
+            sim_pnl = delta = None
+
+        results.append({
+            "date":              date,
+            "ticker":            ticker,
+            "side":              side,
+            "strategy":          strategy,
+            "qty":               qty,
+            "entry_price":       entry_px,
+            "entry_time":        entry_time,
+            "actual_exit_price": exit_px,
+            "actual_exit_time":  exit_time,
+            "actual_pnl":        actual_pnl,
+            "sim_exit_price":    sim["exit_price"] if sim else None,
+            "sim_exit_time":     sim["exit_time"]  if sim else None,
+            "sim_exit_reason":   sim["reason"]     if sim else None,
+            "sim_exit_mins":     sim["exit_mins"]  if sim else None,
+            "sim_pnl":           sim_pnl,
+            "pnl_delta":         delta,
+        })
+
+    results.sort(key=lambda r: (r["date"], r["entry_time"]))
+
+    actual_total = round(sum(r["actual_pnl"] for r in results), 2)
+    sim_total    = round(sum(r["sim_pnl"] for r in results if r["sim_pnl"] is not None), 2)
+    improved     = sum(1 for r in results if (r["pnl_delta"] or 0) >  0.01)
+    worse        = sum(1 for r in results if (r["pnl_delta"] or 0) < -0.01)
+
+    return jsonify({
+        "trades":  results,
+        "summary": {
+            "trade_count": len(results),
+            "actual_pnl":  actual_total,
+            "sim_pnl":     sim_total,
+            "total_delta": round(sim_total - actual_total, 2),
+            "improved":    improved,
+            "worse":       worse,
+            "neutral":     len(results) - improved - worse,
+        },
+        "params": {
+            "trail_pct":     trail_pct,
+            "trigger_pct":   trigger_pct,
+            "stop_loss_pct": stop_loss_pct,
+            "max_hold_mins": max_hold_mins,
+            "from_date":     from_date,
+            "to_date":       to_date,
+        },
+    })
+
+
 @app.route("/strategies")
 def strategies():
     return render_template("strategies.html")
@@ -7354,6 +7491,99 @@ def _fetch_post_exit_range(ticker: str, exit_time_str: str):
     except Exception as _pe:
         log.debug("post_exit_range %s: %s", ticker, _pe)
         return None, None
+
+
+def _fetch_day_bars(ticker: str, date_str: str):
+    """Fetch all 1-min bars for a ticker on a single market day via Alpaca.
+    Returns list of bar objects sorted by timestamp, or [] on error."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        client = StockHistoricalDataClient(
+            api_key    = alpaca_broker._key,
+            secret_key = alpaca_broker._secret,
+        )
+        day   = _dt.date.fromisoformat(date_str)
+        start = _dt.datetime(day.year, day.month, day.day, 13,  0, tzinfo=_dt.timezone.utc)  # 8am ET
+        end   = _dt.datetime(day.year, day.month, day.day, 21,  0, tzinfo=_dt.timezone.utc)  # 5pm ET
+        req   = StockBarsRequest(
+            symbol_or_symbols = ticker.upper(),
+            timeframe         = TimeFrame(1, TimeFrameUnit.Minute),
+            start             = start,
+            end               = end,
+        )
+        bars_df = client.get_stock_bars(req)
+        return list(bars_df[ticker.upper()])
+    except Exception as _de:
+        log.debug("fetch_day_bars %s %s: %s", ticker, date_str, _de)
+        return []
+
+
+def _simulate_exit(bars, entry_price: float, side: str,
+                   trail_pct: float, trigger_pct: float,
+                   stop_loss_pct: float, max_hold_mins: int,
+                   entry_dt):
+    """Walk 1-min bars and return the simulated exit.
+    Returns dict {exit_price, exit_time, reason, exit_mins} or None if no bars."""
+    import datetime as _dt
+    if not bars:
+        return None
+    is_long = side.upper() == "LONG"
+    peak    = entry_price
+
+    for bar in bars:
+        bar_ts = bar.timestamp
+        if not isinstance(bar_ts, _dt.datetime):
+            bar_ts = _dt.datetime.fromisoformat(str(bar_ts).replace("Z", "+00:00"))
+
+        hold_mins = (bar_ts - entry_dt).total_seconds() / 60
+        high = float(bar.high)
+        low  = float(bar.low)
+
+        if is_long:
+            peak = max(peak, high)
+            if stop_loss_pct > 0:
+                sl_px = entry_price * (1 - stop_loss_pct / 100)
+                if low <= sl_px:
+                    return {"exit_price": round(sl_px, 4), "exit_time": str(bar_ts),
+                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            if trail_pct > 0:
+                triggered = (trigger_pct == 0) or (peak >= entry_price * (1 + trigger_pct / 100))
+                if triggered:
+                    trail_px = peak * (1 - trail_pct / 100)
+                    if low <= trail_px:
+                        return {"exit_price": round(trail_px, 4), "exit_time": str(bar_ts),
+                                "reason": "trail", "exit_mins": round(hold_mins, 1)}
+        else:
+            peak = min(peak, low)
+            if stop_loss_pct > 0:
+                sl_px = entry_price * (1 + stop_loss_pct / 100)
+                if high >= sl_px:
+                    return {"exit_price": round(sl_px, 4), "exit_time": str(bar_ts),
+                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            if trail_pct > 0:
+                triggered = (trigger_pct == 0) or (peak <= entry_price * (1 - trigger_pct / 100))
+                if triggered:
+                    trail_px = peak * (1 + trail_pct / 100)
+                    if high >= trail_px:
+                        return {"exit_price": round(trail_px, 4), "exit_time": str(bar_ts),
+                                "reason": "trail", "exit_mins": round(hold_mins, 1)}
+
+        if max_hold_mins > 0 and hold_mins >= max_hold_mins:
+            return {"exit_price": round(float(bar.close), 4), "exit_time": str(bar_ts),
+                    "reason": "max_hold", "exit_mins": round(hold_mins, 1)}
+
+    last    = bars[-1]
+    last_ts = last.timestamp
+    if not isinstance(last_ts, _dt.datetime):
+        last_ts = _dt.datetime.fromisoformat(str(last_ts).replace("Z", "+00:00"))
+    hold_mins = (last_ts - entry_dt).total_seconds() / 60
+    return {"exit_price": round(float(last.close), 4), "exit_time": str(last_ts),
+            "reason": "eod", "exit_mins": round(hold_mins, 1)}
 
 
 @app.route("/api/alpaca/analysis")
