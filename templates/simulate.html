@@ -97,6 +97,8 @@
     }
     .preset-chip:hover { border-color: #7FE098; color: #7FE098; }
     .preset-trail { color: #7FE098; font-weight: 600; margin-left: 5px; }
+    .session-badge { display: inline-flex; align-items: center; gap: 5px; background: #1a1d2e; border: 1px solid #2a2d3e; border-radius: 4px; padding: 3px 9px; font-size: 0.73rem; color: #888; white-space: nowrap; }
+    .session-badge .sb-val { color: #F2E7AC; font-weight: 600; }
 
     /* Status / empty */
     .status-msg { color: #555; font-size: 0.9rem; padding: 40px 0; text-align: center; }
@@ -263,6 +265,20 @@
         chips.map(c =>
           `<button class="preset-chip" onclick="applyPreset(${c.trail},${c.trigger})" title="Trail ${c.trail}%  Trigger ${c.trigger}%">${c.label}<span class="preset-trail">${c.trail}%</span></button>`
         ).join('');
+
+      // Fetch session trail overrides and show as info badges
+      try {
+        const rs  = await fetch('/api/risk/status');
+        const rd  = await rs.json();
+        const morn = rd.morning_trail_pct;
+        const aftn = rd.afternoon_trail_pct;
+        if (morn || aftn) {
+          row.innerHTML += '<span style="width:1px;height:20px;background:#2a2d3e;margin:0 4px"></span>';
+          if (morn) row.innerHTML += `<span class="session-badge" title="9:30–10:30 ET: max(rule_trail, ${morn}%)">Morning <span class="sb-val">${morn}%</span></span>`;
+          if (aftn) row.innerHTML += `<span class="session-badge" title="12:00–close ET: min(rule_trail, ${aftn}%)">Afternoon <span class="sb-val">${aftn}%</span></span>`;
+        }
+      } catch (_) {}
+
       row.style.display = 'flex';
     } catch (e) { console.warn('loadRulePresets failed:', e); }
   }
@@ -370,8 +386,10 @@
 
     // Results title
     const p = data.params;
-    document.getElementById('resultsTitle').textContent =
-      `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
+    let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}min`;
+    if (p.morning_trail_pct)   titleStr += `  ·  morning ${p.morning_trail_pct}%`;
+    if (p.afternoon_trail_pct) titleStr += `  ·  afternoon ${p.afternoon_trail_pct}%`;
+    document.getElementById('resultsTitle').textContent = titleStr;
 
     // Results table
     const reasonLabel = r => {
