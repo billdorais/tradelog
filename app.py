@@ -4830,6 +4830,10 @@ def bulk_update_exit_params():
             continue
         nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
         ep = next((n for n in nodes if n.get("type") == "exit_params"), None)
+        # clear_trail_trigger only: skip rules with no existing exit_params (nothing to clear)
+        if ep is None and clear_trail_trigger and trail_offset is None and trail_trigger is None and stop_loss is None and not clear_trail:
+            skipped += 1
+            continue
         if ep is None:
             ep = {"type": "exit_params"}
             nodes.append(ep)
