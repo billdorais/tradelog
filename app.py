@@ -3922,6 +3922,7 @@ def api_simulate_stops():
     trigger_pct   = float(body.get("trigger_pct",    0.0))
     stop_loss_pct = float(body.get("stop_loss_pct",  0.0))
     max_hold_mins = int(body.get("max_hold_mins",   60))
+    skip_tv_exits = bool(body.get("skip_tv_exits",  False))
 
     broker = alpaca_broker2 if use_acct2 else alpaca_broker
     if broker is None:
@@ -4027,21 +4028,22 @@ def api_simulate_stops():
         bars       = day_bars.get((ticker, date), [])
         trade_bars = [b for b in bars if b.timestamp >= entry_dt]
 
-        # Baseline: current rule trail + session override, capped at actual exit time.
-        # If the rule trail wouldn't have fired during the actual hold window, the baseline
-        # exits at the actual exit price — so baseline P&L ≈ actual P&L.
+        # When skip_tv_exits=True run stops freely (no time cap); baseline P&L won't match
+        # actual but shows what the stop alone would have done over the full session.
+        # When False, cap at actual exit time so baseline ≈ actual P&L.
+        _cap_dt    = None      if skip_tv_exits else actual_exit_dt
+        _cap_price = None      if skip_tv_exits else exit_px
+
         base_sim = _simulate_exit(trade_bars, entry_px, side,
                                   eff_r_trail, r_trigger, 0.0,
                                   max_hold_mins, entry_dt,
-                                  cap_dt=actual_exit_dt, cap_price=exit_px)
+                                  cap_dt=_cap_dt, cap_price=_cap_price)
         base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
 
-        # New params: also capped at actual exit time — asks "would this stop have fired
-        # earlier within the actual hold window, and at what P&L?"
         new_sim  = _simulate_exit(trade_bars, entry_px, side,
                                   trail_pct, trigger_pct, stop_loss_pct,
                                   max_hold_mins, entry_dt,
-                                  cap_dt=actual_exit_dt, cap_price=exit_px)
+                                  cap_dt=_cap_dt, cap_price=_cap_price)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
@@ -4096,8 +4098,9 @@ def api_simulate_stops():
             "max_hold_mins":     max_hold_mins,
             "from_date":         from_date,
             "to_date":           to_date,
-            "morning_trail_pct": MORNING_TRAIL_PCT   if MORNING_TRAIL_PCT   > 0 else None,
+            "morning_trail_pct":   MORNING_TRAIL_PCT   if MORNING_TRAIL_PCT   > 0 else None,
             "afternoon_trail_pct": AFTERNOON_TRAIL_PCT if AFTERNOON_TRAIL_PCT > 0 else None,
+            "skip_tv_exits":       skip_tv_exits,
         },
     })
 
