@@ -3746,9 +3746,10 @@ def api_trade_review():
             f"(e.g. 'increase SPY trail to 0.20%', 'add 0.15% trigger on QQQ'). Be specific.\n\n"
             f"Be direct and data-driven. 3-4 sentences per section max.\n\n"
             f"After your analysis, output ONE line in exactly this format (no extra text, no markdown):\n"
-            f"CHANGES_JSON: {{\"trail_rules\":[{{\"pattern\":\"X\",\"trail\":N}},...],\"morning_trail\":N,\"clear_triggers\":true}}\n"
+            f"CHANGES_JSON: {{\"trail_rules\":[{{\"pattern\":\"X\",\"trail\":N}},...],\"morning_trail\":N,\"afternoon_trail\":N,\"clear_triggers\":true}}\n"
             f"Rules: pattern is a short substring matching routing rule names (available patterns from this data: {_strat_hint}). "
-            f"trail is the recommended float % (e.g. 0.22). morning_trail is the 9:30-10:30 ET override % (0 if not needed). "
+            f"trail is the recommended float % (e.g. 0.22). morning_trail is the 9:30-10:30 ET session trail floor % (0 if not needed). "
+            f"afternoon_trail is the 12:00-close ET session trail ceiling % (0 if not needed). "
             f"clear_triggers is true only if you recommend removing all trail triggers. "
             f"Only include trail_rules entries for patterns you are actually recommending a change for."
         )
