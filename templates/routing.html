@@ -357,15 +357,8 @@
     </div>
   </div>
 
-  <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-    <input type="text" id="pipelineSearch" placeholder="Filter pipelines (TSLA, BREAKOUT, 5MIN…)"
-           oninput="renderAll()"
-           style="flex:1;min-width:240px;background:#0a0a0a;border:1px solid #2a2d3e;border-radius:7px;
-                  color:#e0e0e0;padding:8px 12px;font-size:0.88rem;font-family:inherit;outline:none">
-    <span id="pipelineFilterCount" style="font-size:0.78rem;color:#666;white-space:nowrap"></span>
-  </div>
   <!-- Bulk actions row — pattern filter scopes trail/trigger buttons to matching rules -->
-  <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
     <div style="display:inline-flex;align-items:center;gap:4px;background:#0d0f16;border:1px solid #2a2d3e;border-radius:6px;overflow:hidden"
          title="Optional: only update rules whose name contains this text (case-insensitive). Leave blank for all rules.">
       <span style="font-size:0.72rem;color:#555;padding:0 6px;white-space:nowrap">pattern</span>
@@ -427,7 +420,7 @@
     </button>
   </div>
 
-  <div id="refinedStatusPanel" style="background:#13101f;border:1px solid #3d2d6e;border-radius:8px;padding:12px 18px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+  <div id="refinedStatusPanel" style="background:#13101f;border:1px solid #3d2d6e;border-radius:8px;padding:12px 18px;margin-bottom:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
     <div>
       <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:#7c6fa0;margin-bottom:2px">Alpaca Refined — Daily Refresh</div>
       <div id="refinedLastRun" style="font-size:0.82rem;color:#c4b5fd">Loading…</div>
@@ -452,6 +445,14 @@
         Refresh Now
       </button>
     </div>
+  </div>
+
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+    <input type="text" id="pipelineSearch" placeholder="Filter pipelines (TSLA, BREAKOUT, 5MIN…)"
+           oninput="renderAll()"
+           style="flex:1;min-width:240px;background:#0a0a0a;border:1px solid #2a2d3e;border-radius:7px;
+                  color:#e0e0e0;padding:8px 12px;font-size:0.88rem;font-family:inherit;outline:none">
+    <span id="pipelineFilterCount" style="font-size:0.78rem;color:#666;white-space:nowrap"></span>
   </div>
 
   <div id="blockedPanel" style="display:none;background:#1a0e0e;border:1px solid #5a1a1a;border-radius:8px;padding:14px 18px;margin-bottom:16px">
