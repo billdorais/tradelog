@@ -4013,22 +4013,22 @@ def api_simulate_stops():
         r_trail   = rule.get("trail_pct",   trail_pct)
         r_trigger = rule.get("trigger_pct", 0.0)
 
-        # Apply morning/afternoon session trail overrides (same as live system)
-        eff_r_trail   = _apply_session_trail(r_trail,   entry_dt)
-        eff_new_trail = _apply_session_trail(trail_pct, entry_dt)
+        # Session overrides applied to baseline only — baseline must match live-system behaviour;
+        # new-params sim uses the exact values the user entered so the comparison is meaningful.
+        eff_r_trail = _apply_session_trail(r_trail, entry_dt)
 
         bars       = day_bars.get((ticker, date), [])
         trade_bars = [b for b in bars if b.timestamp >= entry_dt]
 
-        # Baseline: current rule trail (with session override), no extra stop loss
+        # Baseline: current rule trail + session override, no extra stop loss
         base_sim = _simulate_exit(trade_bars, entry_px, side,
                                   eff_r_trail, r_trigger, 0.0,
                                   max_hold_mins, entry_dt)
         base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
 
-        # New: user params (with session override applied)
+        # New: user params exactly as entered — no session override applied
         new_sim  = _simulate_exit(trade_bars, entry_px, side,
-                                  eff_new_trail, trigger_pct, stop_loss_pct,
+                                  trail_pct, trigger_pct, stop_loss_pct,
                                   max_hold_mins, entry_dt)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 

@@ -274,8 +274,8 @@
         const aftn = rd.afternoon_trail_pct;
         if (morn || aftn) {
           row.innerHTML += '<span style="width:1px;height:20px;background:#2a2d3e;margin:0 4px"></span>';
-          if (morn) row.innerHTML += `<span class="session-badge" title="9:30–10:30 ET: max(rule_trail, ${morn}%)">Morning <span class="sb-val">${morn}%</span></span>`;
-          if (aftn) row.innerHTML += `<span class="session-badge" title="12:00–close ET: min(rule_trail, ${aftn}%)">Afternoon <span class="sb-val">${aftn}%</span></span>`;
+          if (morn) row.innerHTML += `<span class="session-badge" title="Applied to Current Rules baseline only. 9:30–10:30 ET: max(rule_trail, ${morn}%)">Morning <span class="sb-val">${morn}%</span></span>`;
+          if (aftn) row.innerHTML += `<span class="session-badge" title="Applied to Current Rules baseline only. 12:00–close ET: min(rule_trail, ${aftn}%)">Afternoon <span class="sb-val">${aftn}%</span></span>`;
         }
       } catch (_) {}
 
