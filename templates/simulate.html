@@ -156,6 +156,11 @@
       </div>
     </div>
     <div class="config-row">
+      <div style="display:flex;flex-direction:column;justify-content:center;gap:2px;margin-right:4px">
+        <span style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.07em;color:#7FE098;font-weight:700;white-space:nowrap">New Params</span>
+        <span style="font-size:0.62rem;color:#444;white-space:nowrap">right columns ↓</span>
+      </div>
+      <div class="divider"></div>
       <div class="param-group">
         <label>Trail</label>
         <div class="input-wrap"><input type="number" id="trailPct" value="0.50" step="0.05" min="0" max="10"><span class="unit">%</span></div>
@@ -261,7 +266,7 @@
       }
       const row = document.getElementById('presetsRow');
       if (!chips.length) return;
-      row.innerHTML = '<span class="presets-label">Signal Router</span>' +
+      row.innerHTML = '<span class="presets-label" title="Click to load into New Params fields">Current Rules baseline — click to load into fields</span>' +
         chips.map(c =>
           `<button class="preset-chip" onclick="applyPreset(${c.trail},${c.trigger})" title="Trail ${c.trail}%  Trigger ${c.trigger}%">${c.label}<span class="preset-trail">${c.trail}%</span></button>`
         ).join('');
@@ -375,9 +380,13 @@
     const deltaClass = s.total_delta > 0.01 ? 'pos' : s.total_delta < -0.01 ? 'neg' : 'neu';
     const baseClass  = s.base_pnl > 0 ? 'pos' : s.base_pnl < 0 ? 'neg' : '';
     const newClass   = s.new_pnl  > 0 ? 'pos' : s.new_pnl  < 0 ? 'neg' : '';
+    const mornNote = p.morning_trail_pct ? ` · morn ${p.morning_trail_pct}%` : '';
+    const aftnNote = p.afternoon_trail_pct ? ` · aftn ${p.afternoon_trail_pct}%` : '';
+    const baseSubNote = `router trail + session overrides${mornNote}${aftnNote}`;
+    const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  stop ${p.stop_loss_pct}%  max ${p.max_hold_mins}m`;
     document.getElementById('summaryCards').innerHTML = `
-      <div class="stat-card"><div class="stat-label">Current Rules P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub">rule trail + rule qty</div></div>
-      <div class="stat-card"><div class="stat-label">New Params P&L</div><div class="stat-value ${newClass}">${fmt(s.new_pnl)}</div><div class="stat-sub">your new settings</div></div>
+      <div class="stat-card"><div class="stat-label">Current Rules P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
+      <div class="stat-card"><div class="stat-label">New Params P&L</div><div class="stat-value ${newClass}">${fmt(s.new_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${newSubNote}</div></div>
       <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">new vs current</div></div>
       <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
