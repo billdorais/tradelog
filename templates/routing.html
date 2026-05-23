@@ -98,8 +98,17 @@
     .empty-state p { font-size: 0.95rem; margin-bottom: 20px; }
 
     /* Risk panel */
-    .risk-panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+    .risk-panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; display: flex; flex-direction: column; gap: 0; }
     .risk-panel.halted { border-color: #e74c3c; background: #1a0e0e; }
+    .rg-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .rg-cards { display: flex; gap: 10px; flex-wrap: wrap; width: 100%; margin-top: 14px; }
+    .rg-card { flex: 1; min-width: 220px; border-radius: 8px; padding: 12px 14px; }
+    .rg-card-refined { background: #160f28; border: 1px solid #3d2466; border-left: 3px solid #a78bfa; }
+    .rg-card-paper   { background: #0e1810; border: 1px solid #264530; border-left: 3px solid #7FE098; }
+    .rg-card-trail   { background: #0f1318; border: 1px solid #232840; border-left: 3px solid #7bb3d6; }
+    .rg-card-session { background: #0f1618; border: 1px solid #1e3030; border-left: 3px solid #5cc0b0; }
+    .rg-card-title { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700; margin-bottom: 10px; }
+    .rg-session-row { display: flex; gap: 0; flex-wrap: wrap; width: 100%; margin-top: 14px; }
     .risk-section { display: flex; flex-direction: column; gap: 4px; }
     .risk-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; }
     .risk-value { font-size: 1rem; font-weight: 600; }
@@ -170,144 +179,166 @@
 
   <!-- Risk panel -->
   <div class="risk-panel" id="riskPanel">
-    <div class="risk-section">
-      <div class="risk-label">Risk Guard</div>
-      <div id="riskStatusBadge" class="risk-status-badge disabled">
-        <span class="risk-dot grey" id="riskDot"></span>
-        <span id="riskStatusText">Loading…</span>
+
+    <!-- Row 1: System — status · P&L · daily halt · reset -->
+    <div class="rg-row" style="padding-bottom:14px;border-bottom:1px solid #1e2130">
+      <div class="risk-section">
+        <div class="risk-label">Risk Guard</div>
+        <div id="riskStatusBadge" class="risk-status-badge disabled">
+          <span class="risk-dot grey" id="riskDot"></span>
+          <span id="riskStatusText">Loading…</span>
+        </div>
+        <div class="risk-hint" id="riskHint"></div>
       </div>
-      <div class="risk-hint" id="riskHint"></div>
+
+      <div class="risk-divider"></div>
+
+      <div class="risk-section">
+        <div class="risk-label">Today's P&amp;L</div>
+        <div class="risk-value neutral" id="riskPnl">—</div>
+      </div>
+
+      <div class="risk-divider"></div>
+
+      <div class="risk-section">
+        <div class="risk-label">Max Daily Loss — Halt &amp; Liquidate</div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="riskLimitInput" type="number" step="1" placeholder="e.g. -500">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRiskLimit()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRiskLimit()" title="Disable risk guard">Off</button>
+        </div>
+        <div class="risk-hint">Negative value halts &amp; liquidates all positions (e.g. -500). 0 = disabled.</div>
+      </div>
+
+      <div id="riskResetSection" style="display:none;margin-left:auto">
+        <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
+      </div>
     </div>
 
-    <div class="risk-divider"></div>
+    <!-- Row 2: Account-scoped + trailing stop cards -->
+    <div class="rg-cards">
 
-    <div class="risk-section">
-      <div class="risk-label">Today's P&amp;L</div>
-      <div class="risk-value neutral" id="riskPnl">—</div>
+      <!-- Refined Account -->
+      <div class="rg-card rg-card-refined">
+        <div class="rg-card-title" style="color:#a78bfa">&#9670; Refined Account</div>
+
+        <div class="risk-section" style="margin-bottom:10px">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Per-Position Stop (%)
+            <span id="posStatusBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="posStatusDot"></span>
+              <span id="posStatusText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="posLimitInput" type="number" step="0.1" placeholder="e.g. -0.5">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()">Off</button>
+          </div>
+          <div class="risk-hint" id="posStatusHint">Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.</div>
+        </div>
+
+        <div class="risk-section">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Max Loss Cap ($)
+            <span id="refinedDollarBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="refinedDollarDot"></span>
+              <span id="refinedDollarText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="refinedDollarInput" type="number" step="5" placeholder="e.g. -60">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedDollarLimit()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedDollarLimit()">Off</button>
+          </div>
+          <div class="risk-hint" id="refinedDollarHint">Fires alongside the % stop — whichever hits first. Caps large-position $ damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
+        </div>
+      </div>
+
+      <!-- Paper All Account -->
+      <div class="rg-card rg-card-paper">
+        <div class="rg-card-title" style="color:#7FE098">&#9670; Paper All Account</div>
+
+        <div class="risk-section">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Per-Position Stop ($)
+            <span id="paperPosStatusBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="paperPosStatusDot"></span>
+              <span id="paperPosStatusText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="paperPosLimitInput" type="number" step="1" placeholder="e.g. -15">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperPositionLimit()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperPositionLimit()">Off</button>
+          </div>
+          <div class="risk-hint" id="paperPosStatusHint">Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.</div>
+        </div>
+      </div>
+
+      <!-- Trailing Stop — both accounts -->
+      <div class="rg-card rg-card-trail">
+        <div class="rg-card-title" style="color:#7bb3d6">&#9670; Trailing Stop — Both Accounts</div>
+
+        <div class="risk-section">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Giveback Stop ($)
+            <span id="trailStatusBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="trailStatusDot"></span>
+              <span id="trailStatusText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="trailLimitInput" type="number" step="1" min="0" placeholder="e.g. 30">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTrailLimit()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTrailLimit()">Off</button>
+          </div>
+          <div class="risk-hint" id="trailStatusHint">Arms once a position is up by this amount ($), then closes if it gives the gain back. Strategy stays active.</div>
+        </div>
+      </div>
     </div>
 
-    <div class="risk-divider"></div>
+    <!-- Row 3: Session Trail Overrides — morning + afternoon side by side -->
+    <div class="rg-card rg-card-session" style="margin-top:10px">
+      <div class="rg-card-title" style="color:#5cc0b0">&#9670; Session Trail Overrides — webhook-level % applied at order time</div>
+      <div style="display:flex;gap:0;flex-wrap:wrap">
 
-    <div class="risk-section">
-      <div class="risk-label">Max Daily Loss</div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="riskLimitInput" type="number" step="1" placeholder="e.g. -500">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRiskLimit()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRiskLimit()" title="Disable risk guard">Off</button>
+        <div class="risk-section" style="flex:1;min-width:200px;padding-right:16px">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Morning Trail (%)
+            <span style="color:#666;font-size:0.68rem">9:30–10:30 ET · widens ↑</span>
+            <span id="morningTrailBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="morningTrailDot"></span>
+              <span id="morningTrailText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="morningTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.25">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveMorningTrail()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearMorningTrail()">Off</button>
+          </div>
+          <div class="risk-hint" id="morningTrailHint">Floor: uses max(this, rule's trail) so morning entries always get at least this wide a trail. 0 = disabled.</div>
+        </div>
+
+        <div style="width:1px;background:#1e3030;align-self:stretch;flex-shrink:0;margin:0 4px"></div>
+
+        <div class="risk-section" style="flex:1;min-width:200px;padding-left:16px">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Afternoon Trail (%)
+            <span style="color:#666;font-size:0.68rem">12:00–close ET · tightens ↓</span>
+            <span id="afternoonTrailBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="afternoonTrailDot"></span>
+              <span id="afternoonTrailText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="afternoonTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.18">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveAfternoonTrail()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearAfternoonTrail()">Off</button>
+          </div>
+          <div class="risk-hint" id="afternoonTrailHint">Ceiling: uses min(this, rule's trail) so afternoon entries never trail wider than this. 0 = disabled.</div>
+        </div>
       </div>
-      <div class="risk-hint">Negative value halts &amp; liquidates (e.g. -500). 0 = disabled.</div>
-    </div>
-
-    <div class="risk-divider"></div>
-
-    <div class="risk-section">
-      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Per-Position Stop (%) <span style="color:#c4b5fd;font-weight:400;font-size:0.7rem">Refined only</span></span>
-        <span id="posStatusBadge" class="risk-status-badge disabled">
-          <span class="risk-dot grey" id="posStatusDot"></span>
-          <span id="posStatusText">Disabled</span>
-        </span>
-      </div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="posLimitInput" type="number" step="0.1" placeholder="e.g. -0.5">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()" title="Disable position stop">Off</button>
-      </div>
-      <div class="risk-hint" id="posStatusHint">Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.</div>
-    </div>
-
-    <div class="risk-divider"></div>
-
-    <div class="risk-section">
-      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Max Loss Cap ($) <span style="color:#c4b5fd;font-weight:400;font-size:0.7rem">Refined only</span></span>
-        <span id="refinedDollarBadge" class="risk-status-badge disabled">
-          <span class="risk-dot grey" id="refinedDollarDot"></span>
-          <span id="refinedDollarText">Disabled</span>
-        </span>
-      </div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="refinedDollarInput" type="number" step="5" placeholder="e.g. -60">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedDollarLimit()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedDollarLimit()">Off</button>
-      </div>
-      <div class="risk-hint" id="refinedDollarHint">Refined only: fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
-    </div>
-
-    <div class="risk-divider"></div>
-
-    <div class="risk-section">
-      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Per-Position Stop ($) <span style="color:#7FE098;font-weight:400;font-size:0.7rem">Paper All</span></span>
-        <span id="paperPosStatusBadge" class="risk-status-badge disabled">
-          <span class="risk-dot grey" id="paperPosStatusDot"></span>
-          <span id="paperPosStatusText">Disabled</span>
-        </span>
-      </div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="paperPosLimitInput" type="number" step="1" placeholder="e.g. -15">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperPositionLimit()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperPositionLimit()">Off</button>
-      </div>
-      <div class="risk-hint" id="paperPosStatusHint">Applies to Paper All account only. Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.</div>
-    </div>
-
-    <div class="risk-divider"></div>
-
-    <div class="risk-section">
-      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Trailing Stop ($)</span>
-        <span id="trailStatusBadge" class="risk-status-badge disabled">
-          <span class="risk-dot grey" id="trailStatusDot"></span>
-          <span id="trailStatusText">Disabled</span>
-        </span>
-      </div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="trailLimitInput" type="number" step="1" min="0" placeholder="e.g. 30">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTrailLimit()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTrailLimit()" title="Disable trailing stop">Off</button>
-      </div>
-      <div class="risk-hint" id="trailStatusHint">Arms once a position is up by this amount, then closes if it gives the gain back. Strategy stays active.</div>
-    </div>
-
-    <div class="risk-divider"></div>
-
-    <div class="risk-section">
-      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Morning Trail (%) <span style="color:#888;font-weight:400;font-size:0.7rem">9:30–10:30 ET</span></span>
-        <span id="morningTrailBadge" class="risk-status-badge disabled">
-          <span class="risk-dot grey" id="morningTrailDot"></span>
-          <span id="morningTrailText">Disabled</span>
-        </span>
-      </div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="morningTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.25">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveMorningTrail()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearMorningTrail()">Off</button>
-      </div>
-      <div class="risk-hint" id="morningTrailHint">Widens trail_offset to this % on all entries placed 9:30–10:30 ET (uses whichever is larger vs the rule's own trail). 0 = disabled.</div>
-    </div>
-
-    <div class="risk-divider"></div>
-
-    <div class="risk-section">
-      <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-        <span>Afternoon Trail (%) <span style="color:#888;font-weight:400;font-size:0.7rem">12:00–close ET</span></span>
-        <span id="afternoonTrailBadge" class="risk-status-badge disabled">
-          <span class="risk-dot grey" id="afternoonTrailDot"></span>
-          <span id="afternoonTrailText">Disabled</span>
-        </span>
-      </div>
-      <div class="risk-input-row">
-        <input class="risk-input" id="afternoonTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.18">
-        <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveAfternoonTrail()">Set</button>
-        <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearAfternoonTrail()">Off</button>
-      </div>
-      <div class="risk-hint" id="afternoonTrailHint">Caps trail_offset to this % on entries placed 12:00–close ET (uses whichever is smaller vs the rule's own trail). 0 = disabled.</div>
-    </div>
-
-    <div id="riskResetSection" style="display:none; margin-left:auto">
-      <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
     </div>
 
     <!-- Blocked strategies + live positions (shown when there is data) -->
