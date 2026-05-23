@@ -122,6 +122,36 @@
     .save-ok { color: #7FE098; font-size: 0.78rem; margin-left: 8px; opacity: 0; transition: opacity 0.3s; }
 
     .empty { text-align: center; padding: 60px; color: #444; font-size: 0.9rem; }
+
+    /* Risk controls panel (shared with Signal Router) */
+    .rg-cards { display: flex; gap: 10px; flex-wrap: wrap; width: 100%; margin-top: 12px; }
+    .rg-card { flex: 1; min-width: 220px; border-radius: 8px; padding: 12px 14px; }
+    .rg-card-refined { background: #160f28; border: 1px solid #3d2466; border-left: 3px solid #a78bfa; }
+    .rg-card-paper   { background: #0e1810; border: 1px solid #264530; border-left: 3px solid #7FE098; }
+    .rg-card-trail   { background: #0f1318; border: 1px solid #232840; border-left: 3px solid #7bb3d6; }
+    .rg-card-session { background: #0f1618; border: 1px solid #1e3030; border-left: 3px solid #5cc0b0; }
+    .rg-card-title { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700; margin-bottom: 10px; }
+    .risk-section { display: flex; flex-direction: column; gap: 4px; }
+    .risk-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; }
+    .risk-status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
+    .risk-status-badge.active   { background: #0e1e0e; border: 1px solid #517356; color: #7FE098; }
+    .risk-status-badge.disabled { background: #1a1d2e; border: 1px solid #2a2d3e; color: #555; }
+    .risk-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .risk-dot.green { background: #517356; }
+    .risk-dot.grey  { background: #444; }
+    .risk-input-row { display: flex; align-items: center; gap: 8px; }
+    .risk-input { background: #0f1117; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 10px; font-size: 0.88rem; width: 120px; outline: none; }
+    .risk-input:focus { border-color: #7FE098; }
+    .risk-input.invalid { border-color: #e74c3c; }
+    .risk-hint { font-size: 0.72rem; color: #555; margin-top: 3px; }
+    .rg-collapse-bar { display: flex; align-items: center; justify-content: space-between; background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 10px 16px; margin-bottom: 6px; cursor: pointer; user-select: none; }
+    .rg-collapse-bar:hover { border-color: #2a2d3e; }
+    .rg-collapse-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #555; font-weight: 600; }
+    .rg-collapse-summary { font-size: 0.75rem; color: #555; }
+    .rg-collapse-summary .active-val { color: #7FE098; font-weight: 600; }
+    .rg-collapse-chevron { color: #444; font-size: 0.8rem; transition: transform 0.2s; }
+    .rg-collapse-chevron.open { transform: rotate(180deg); }
+    .rg-panel-body { overflow: hidden; transition: max-height 0.25s ease; }
   </style>
 </head>
 <body>
@@ -156,6 +186,97 @@
     <input type="week" id="weekPicker" class="week-input" title="Select week to generate">
     <button class="btn btn-primary" id="genBtn" onclick="generate()">&#10024; Generate This Week</button>
     <span style="font-size:0.78rem;color:#555">Pulls your Alpaca Refined trades + SPY/QQQ/VIX + last week's entry + AI analysis</span>
+  </div>
+
+  <!-- Risk Controls — collapsed by default, expand to view/edit -->
+  <div class="rg-collapse-bar" onclick="toggleRiskPanel()" id="rgCollapseBar">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="rg-collapse-title">&#9670; Risk Controls</span>
+      <span class="rg-collapse-summary" id="rgSummary">loading…</span>
+    </div>
+    <span class="rg-collapse-chevron" id="rgChevron">&#9660;</span>
+  </div>
+  <div class="rg-panel-body" id="rgPanelBody" style="max-height:0">
+    <div style="padding-bottom:20px">
+      <div class="rg-cards">
+
+        <!-- Refined Account -->
+        <div class="rg-card rg-card-refined">
+          <div class="rg-card-title" style="color:#a78bfa">&#9670; Refined Account</div>
+          <div class="risk-section" style="margin-bottom:10px">
+            <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+              Per-Position Stop (%)
+              <span id="posStatusBadge" class="risk-status-badge disabled">
+                <span class="risk-dot grey" id="posStatusDot"></span>
+                <span id="posStatusText">Disabled</span>
+              </span>
+            </div>
+            <div class="risk-input-row">
+              <input class="risk-input" id="posLimitInput" type="number" step="0.1" placeholder="e.g. -0.5">
+              <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
+              <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem;background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;cursor:pointer" onclick="clearPositionLimit()">Off</button>
+            </div>
+            <div class="risk-hint" id="posStatusHint">Refined only: close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.</div>
+          </div>
+          <div class="risk-section">
+            <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+              Max Loss Cap ($)
+              <span id="refinedDollarBadge" class="risk-status-badge disabled">
+                <span class="risk-dot grey" id="refinedDollarDot"></span>
+                <span id="refinedDollarText">Disabled</span>
+              </span>
+            </div>
+            <div class="risk-input-row">
+              <input class="risk-input" id="refinedDollarInput" type="number" step="5" placeholder="e.g. -60">
+              <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedDollarLimit()">Set</button>
+              <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem;background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;cursor:pointer" onclick="clearRefinedDollarLimit()">Off</button>
+            </div>
+            <div class="risk-hint" id="refinedDollarHint">Fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
+          </div>
+        </div>
+
+        <!-- Session Trail Overrides -->
+        <div class="rg-card rg-card-session" style="flex:2;min-width:300px">
+          <div class="rg-card-title" style="color:#5cc0b0">&#9670; Session Trail Overrides — webhook-level % applied at order time</div>
+          <div style="display:flex;gap:0;flex-wrap:wrap">
+            <div class="risk-section" style="flex:1;min-width:180px;padding-right:14px">
+              <div class="risk-label" style="display:flex;align-items:center;gap:6px">
+                Morning Trail (%)
+                <span style="color:#666;font-size:0.68rem">9:30–10:30 ET · widens ↑</span>
+                <span id="morningTrailBadge" class="risk-status-badge disabled">
+                  <span class="risk-dot grey" id="morningTrailDot"></span>
+                  <span id="morningTrailText">Disabled</span>
+                </span>
+              </div>
+              <div class="risk-input-row">
+                <input class="risk-input" id="morningTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.25">
+                <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveMorningTrail()">Set</button>
+                <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem;background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;cursor:pointer" onclick="clearMorningTrail()">Off</button>
+              </div>
+              <div class="risk-hint" id="morningTrailHint">Floor: uses max(this, rule's trail) so morning entries always get at least this wide a trail. 0 = disabled.</div>
+            </div>
+            <div style="width:1px;background:#1e3030;align-self:stretch;flex-shrink:0;margin:0 4px"></div>
+            <div class="risk-section" style="flex:1;min-width:180px;padding-left:14px">
+              <div class="risk-label" style="display:flex;align-items:center;gap:6px">
+                Afternoon Trail (%)
+                <span style="color:#666;font-size:0.68rem">12:00–close ET · tightens ↓</span>
+                <span id="afternoonTrailBadge" class="risk-status-badge disabled">
+                  <span class="risk-dot grey" id="afternoonTrailDot"></span>
+                  <span id="afternoonTrailText">Disabled</span>
+                </span>
+              </div>
+              <div class="risk-input-row">
+                <input class="risk-input" id="afternoonTrailInput" type="number" step="0.01" min="0" placeholder="e.g. 0.18">
+                <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveAfternoonTrail()">Set</button>
+                <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem;background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;cursor:pointer" onclick="clearAfternoonTrail()">Off</button>
+              </div>
+              <div class="risk-hint" id="afternoonTrailHint">Ceiling: uses min(this, rule's trail) so afternoon entries never trail wider than this. 0 = disabled.</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
   </div>
 
   <div id="entries"></div>
@@ -550,6 +671,129 @@
   });
 
   loadEntries();
+  loadRisk();
+
+  // ── Risk Controls ───────────────────────────────────────────────────────
+  let _rgOpen = false;
+
+  function toggleRiskPanel() {
+    _rgOpen = !_rgOpen;
+    const body    = document.getElementById('rgPanelBody');
+    const chevron = document.getElementById('rgChevron');
+    body.style.maxHeight    = _rgOpen ? '600px' : '0';
+    chevron.classList.toggle('open', _rgOpen);
+  }
+
+  async function loadRisk() {
+    try {
+      const data = await fetch('/api/risk/status').then(r => r.json());
+
+      // Per-position stop %
+      const posInput = document.getElementById('posLimitInput');
+      if (document.activeElement !== posInput && data.max_position_loss_pct != null)
+        posInput.value = data.max_position_loss_pct || '';
+      const posBadge = document.getElementById('posStatusBadge');
+      const posDot   = document.getElementById('posStatusDot');
+      const posText  = document.getElementById('posStatusText');
+      const posHint  = document.getElementById('posStatusHint');
+      if (data.position_stop_enabled) {
+        posBadge.className = 'risk-status-badge active'; posDot.className = 'risk-dot green'; posText.textContent = 'Active';
+        posHint.textContent = 'Refined only: auto-closes any position whose unrealized loss exceeds ' + Math.abs(data.max_position_loss_pct).toFixed(1) + '% of market value. Strategy stays active.';
+      } else {
+        posBadge.className = 'risk-status-badge disabled'; posDot.className = 'risk-dot grey'; posText.textContent = 'Disabled';
+        posHint.textContent = 'Applies to Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
+      }
+
+      // Refined dollar cap
+      const refInput = document.getElementById('refinedDollarInput');
+      if (document.activeElement !== refInput && data.max_position_loss_refined != null)
+        refInput.value = data.max_position_loss_refined || '';
+      const refBadge = document.getElementById('refinedDollarBadge');
+      const refDot   = document.getElementById('refinedDollarDot');
+      const refText  = document.getElementById('refinedDollarText');
+      const refHint  = document.getElementById('refinedDollarHint');
+      if (data.max_position_loss_refined != null && data.max_position_loss_refined < 0) {
+        refBadge.className = 'risk-status-badge active'; refDot.className = 'risk-dot green'; refText.textContent = 'Active';
+        refHint.textContent = `Refined only: closes any position whose unrealized loss reaches $${Math.abs(data.max_position_loss_refined).toFixed(0)} — fires alongside the % stop, whichever hits first.`;
+      } else {
+        refBadge.className = 'risk-status-badge disabled'; refDot.className = 'risk-dot grey'; refText.textContent = 'Disabled';
+        refHint.textContent = 'Refined only: fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).';
+      }
+
+      // Morning trail
+      const mornInput = document.getElementById('morningTrailInput');
+      if (document.activeElement !== mornInput && data.morning_trail_pct != null)
+        mornInput.value = data.morning_trail_pct || '';
+      const mornBadge = document.getElementById('morningTrailBadge');
+      const mornDot   = document.getElementById('morningTrailDot');
+      const mornText  = document.getElementById('morningTrailText');
+      const mornHint  = document.getElementById('morningTrailHint');
+      if (data.morning_trail_pct > 0) {
+        mornBadge.className = 'risk-status-badge active'; mornDot.className = 'risk-dot green'; mornText.textContent = 'Active';
+        mornHint.textContent = `Entry orders 9:30–10:30 ET use ${data.morning_trail_pct}% trail (overrides any tighter per-rule trail during morning session).`;
+      } else {
+        mornBadge.className = 'risk-status-badge disabled'; mornDot.className = 'risk-dot grey'; mornText.textContent = 'Disabled';
+        mornHint.textContent = "Widens trail_offset to this % on all entries placed 9:30–10:30 ET (uses whichever is larger vs the rule's own trail). 0 = disabled.";
+      }
+
+      // Afternoon trail
+      const aftnInput = document.getElementById('afternoonTrailInput');
+      if (document.activeElement !== aftnInput && data.afternoon_trail_pct != null)
+        aftnInput.value = data.afternoon_trail_pct || '';
+      const aftnBadge = document.getElementById('afternoonTrailBadge');
+      const aftnDot   = document.getElementById('afternoonTrailDot');
+      const aftnText  = document.getElementById('afternoonTrailText');
+      const aftnHint  = document.getElementById('afternoonTrailHint');
+      if (data.afternoon_trail_pct > 0) {
+        aftnBadge.className = 'risk-status-badge active'; aftnDot.className = 'risk-dot green'; aftnText.textContent = 'Active';
+        aftnHint.textContent = `Entry orders 12:00–close ET cap at ${data.afternoon_trail_pct}% trail (tightens any wider per-rule trail during afternoon session).`;
+      } else {
+        aftnBadge.className = 'risk-status-badge disabled'; aftnDot.className = 'risk-dot grey'; aftnText.textContent = 'Disabled';
+        aftnHint.textContent = "Caps trail_offset to this % on entries placed 12:00–close ET (uses whichever is smaller vs the rule's own trail). 0 = disabled.";
+      }
+
+      // Collapse bar summary
+      const parts = [];
+      if (data.position_stop_enabled) parts.push(`<span class="active-val">Stop ${data.max_position_loss_pct}%</span>`);
+      if (data.max_position_loss_refined != null && data.max_position_loss_refined < 0) parts.push(`<span class="active-val">Cap $${data.max_position_loss_refined}</span>`);
+      if (data.morning_trail_pct > 0)  parts.push(`<span class="active-val">Morn ${data.morning_trail_pct}%</span>`);
+      if (data.afternoon_trail_pct > 0) parts.push(`<span class="active-val">Aftn ${data.afternoon_trail_pct}%</span>`);
+      document.getElementById('rgSummary').innerHTML = parts.length ? parts.join(' · ') : 'all disabled';
+    } catch (e) { console.warn('loadRisk failed:', e); }
+  }
+
+  async function _postLimit(body) {
+    await fetch('/api/risk/limit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    await loadRisk();
+  }
+  async function savePositionLimit() {
+    const input = document.getElementById('posLimitInput'); const raw = input.value.trim();
+    if (raw === '') { await clearPositionLimit(); return; }
+    const val = parseFloat(raw); if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid'); await _postLimit({max_position_loss_pct: val, max_position_loss: 0});
+  }
+  async function clearPositionLimit() { document.getElementById('posLimitInput').value = ''; await _postLimit({max_position_loss_pct: 0}); }
+  async function saveRefinedDollarLimit() {
+    const input = document.getElementById('refinedDollarInput'); const raw = input.value.trim();
+    if (raw === '') { await clearRefinedDollarLimit(); return; }
+    const val = parseFloat(raw); if (isNaN(val)) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid'); await _postLimit({max_position_loss_refined: val});
+  }
+  async function clearRefinedDollarLimit() { document.getElementById('refinedDollarInput').value = ''; await _postLimit({max_position_loss_refined: 0}); }
+  async function saveMorningTrail() {
+    const input = document.getElementById('morningTrailInput'); const raw = input.value.trim();
+    if (raw === '') { await clearMorningTrail(); return; }
+    const val = parseFloat(raw); if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid'); await _postLimit({morning_trail_pct: val});
+  }
+  async function clearMorningTrail() { document.getElementById('morningTrailInput').value = ''; await _postLimit({morning_trail_pct: 0}); }
+  async function saveAfternoonTrail() {
+    const input = document.getElementById('afternoonTrailInput'); const raw = input.value.trim();
+    if (raw === '') { await clearAfternoonTrail(); return; }
+    const val = parseFloat(raw); if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid'); await _postLimit({afternoon_trail_pct: val});
+  }
+  async function clearAfternoonTrail() { document.getElementById('afternoonTrailInput').value = ''; await _postLimit({afternoon_trail_pct: 0}); }
 
   // ── Trade Review ────────────────────────────────────────────────────────
   const _tradeReviewCache = {};  // week → {summary, trade_count, premature_pct, generated_at}
