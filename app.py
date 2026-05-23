@@ -3731,20 +3731,48 @@ def api_trade_review():
                 pass
         _strat_hint = ", ".join(sorted(_strat_parts)) if _strat_parts else "BREAKOUT_R4S4, REVERSAL_R3S3"
 
-        _morn_now  = MORNING_TRAIL_PCT
-        _aftn_now  = AFTERNOON_TRAIL_PCT
+        # Read current exit_params trail values per pattern from live routing rules
+        _rule_trails: dict = {}
+        try:
+            _rc = get_db()
+            _rrows = _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall()
+            for _rrow in _rrows:
+                _rname  = (_rrow['name'] or '').upper()
+                _rnodes = json.loads(_rrow['nodes'] or '[]')
+                _rparts = _rname.split('_')
+                try:
+                    _rci = _rparts.index('CAM')
+                    _rpat = f"{_rparts[_rci+1]}_{_rparts[_rci+2]}" if _rci + 2 < len(_rparts) else None
+                except (ValueError, IndexError):
+                    _rpat = None
+                if not _rpat:
+                    continue
+                for _nd in _rnodes:
+                    if _nd.get('type') == 'exit_params' and _nd.get('trail_offset'):
+                        _rule_trails.setdefault(_rpat, []).append(float(_nd['trail_offset']))
+                        break
+        except Exception:
+            pass
+        _trail_context = "; ".join(
+            f"{pat}={sum(vals)/len(vals):.3g}% ({len(vals)} rules)"
+            for pat, vals in sorted(_rule_trails.items())
+        ) if _rule_trails else "not available"
+
+        _morn_now = MORNING_TRAIL_PCT
+        _aftn_now = AFTERNOON_TRAIL_PCT
         prompt = (
             f"You are reviewing {len(records)} trades from a Camarilla 5-minute breakout/reversal system "
             f"for the week {from_date} to {to_date}.\n\n"
-            f"The system uses Kairos broker-side trailing stops (default 0.15% offset) with an optional "
-            f"0.10% trigger before the trail activates. TV signals are the fallback exit. "
+            f"The system uses Kairos broker-side trailing stops with an optional trigger before the trail activates. "
+            f"TV signals are the fallback exit. "
             f"Position sizes: SPY/QQQ ~16 shares, cheaper stocks ~50 shares.\n\n"
-            f"SESSION TRAIL OVERRIDES (currently active — understand before recommending):\n"
+            f"CURRENT ROUTING RULE STATE (live values — base your recommendations on these):\n"
+            f"  exit_params trail_offset per pattern: {_trail_context}\n"
             f"  morning_trail={_morn_now}% (floor, 9:30-10:30 ET): applied as max(rule_trail, morning_trail). "
-            f"Only widens the trail — has NO effect unless it is GREATER than the rule's own trail_offset.\n"
+            f"Has NO effect unless GREATER than the rule's trail_offset.\n"
             f"  afternoon_trail={_aftn_now}% (ceiling, 12:00-close ET): applied as min(rule_trail, afternoon_trail). "
-            f"Only tightens the trail — has NO effect unless it is LESS than the rule's own trail_offset.\n"
-            f"Example: if baseline trail=0.24%, morning must be >0.24% to widen, afternoon must be <0.24% to tighten.\n\n"
+            f"Has NO effect unless LESS than the rule's trail_offset.\n"
+            f"  Constraint: morning_trail must exceed the baseline trail; afternoon_trail must be below it.\n\n"
             f"For each trade, POST_FAV shows how much price continued in the profitable direction "
             f"in the 30 minutes after exit (positive = left money on the table, ⚠ EARLY = >0.15% continuation). "
             f"POST_ADV shows the worst price in 30 min (negative = exit was well-timed).\n\n"
@@ -3763,15 +3791,14 @@ def api_trade_review():
             f"Be direct and data-driven. 3-4 sentences per section max.\n\n"
             f"After your analysis, output ONE line in exactly this format (no extra text, no markdown):\n"
             f"CHANGES_JSON: {{\"trail_rules\":[{{\"pattern\":\"X\",\"trail\":N}},...],\"morning_trail\":N,\"afternoon_trail\":N,\"clear_triggers\":true}}\n"
-            f"Rules: pattern must be a substring of the actual routing rule names — use TYPE_LEVEL format WITH underscore "
-            f"(e.g. BREAKOUT_R4S4, REVERSAL_R3S3). Available patterns in this data: {_strat_hint}. "
-            f"Do NOT strip underscores — 'BREAKOUTR4S4' will match nothing; 'BREAKOUT_R4S4' will match all tickers. "
-            f"trail is the recommended baseline float % for that pattern. "
-            f"morning_trail is a FLOOR — MUST be GREATER THAN the baseline trail to have any effect "
-            f"(widens entries in the 9:30-10:30 ET window). Set 0 if not needed. "
-            f"afternoon_trail is a CEILING — MUST be LESS THAN the baseline trail to have any effect "
-            f"(tightens entries in the 12:00-close ET window). Set 0 if not needed. "
-            f"If morning_trail <= baseline or afternoon_trail >= baseline it will be a no-op — omit or set 0. "
+            f"Rules: pattern must be a TYPE_LEVEL substring WITH underscore matching routing rule names "
+            f"(e.g. BREAKOUT_R4S4, REVERSAL_R3S3 — never strip underscores or they match nothing). "
+            f"Available patterns: {_strat_hint}. "
+            f"trail is the recommended new baseline float % for that pattern (current values: {_trail_context}). "
+            f"morning_trail: set ABOVE your recommended baseline trail to widen morning entries — "
+            f"e.g. if recommending baseline=0.30%, morning_trail must be >0.30% to activate. Set 0 if not useful. "
+            f"afternoon_trail: set BELOW your recommended baseline trail to tighten afternoon entries — "
+            f"e.g. if recommending baseline=0.30%, afternoon_trail must be <0.30% to activate. Set 0 if not useful. "
             f"clear_triggers is true only if you recommend removing all trail triggers. "
             f"Only include trail_rules entries for patterns you are actually recommending a change for."
         )
