@@ -349,9 +349,17 @@
       : `<div class="ai-placeholder">No AI summary — click Regenerate to generate one.</div>`;
 
     // Trade review — loaded from cache if available
-    const trCache = _tradeReviewCache[e.week];
+    const trCache   = _tradeReviewCache[e.week];
     const trContent = trCache?.summary ? `<div class="ai-text">${renderMd(trCache.summary)}</div>` : '';
     const trMeta    = trCache ? `${trCache.trade_count} trades · ${trCache.premature_pct}% early exits · ${trCache.generated_at}` : '';
+    const trChanges = trCache?.changes || null;
+    const trApplyBtn = trChanges && Object.keys(trChanges).length
+      ? `<button onclick="applyTradeReviewChanges('${esc(e.week)}')"
+           style="margin-left:auto;background:rgba(127,224,152,0.1);border:1px solid #88BF8B;color:#7FE098;
+                  border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;font-family:inherit"
+           title="Apply recommended trail/trigger changes to Signal Router">
+           ⚡ Apply to Signal Router
+         </button>` : '';
 
     function perfBars(map, labels, shortLabel) {
       const vals   = labels.map(l => (map[l] || {}).pnl || 0);
@@ -476,10 +484,11 @@
       </div>
 
       <div class="ai-section" id="tr-section-${esc(e.week)}" style="${trContent ? '' : 'display:none'}">
-        <div class="ai-label">
+        <div class="ai-label" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span class="ai-badge" style="background:linear-gradient(135deg,rgba(127,224,152,0.2),rgba(112,168,245,0.2));border-color:rgba(127,224,152,0.3);color:#7FE098">📊 Trade Review</span>
           Stop-Tightness Analysis
           ${trMeta ? `<span style="font-size:0.68rem;color:#555;margin-left:8px">${esc(trMeta)}</span>` : ''}
+          <span id="tr-apply-wrap-${esc(e.week)}">${trApplyBtn}</span>
         </div>
         <div class="ai-text" id="tr-text-${esc(e.week)}">${trContent || ''}</div>
       </div>
@@ -574,13 +583,85 @@
             if (msg.error)  { textEl.textContent = 'Error: ' + msg.error; return; }
             if (msg.status) { textEl.innerHTML = `<span class="ai-placeholder">${esc(msg.status)}</span>`; }
             if (msg.text)   { text += msg.text; textEl.innerHTML = renderMd(text); }
-            if (msg.done)   { buf = ''; }
+            if (msg.done) {
+              buf = '';
+              // Cache changes and show Apply button if recommendations present
+              if (msg.changes && Object.keys(msg.changes).length) {
+                if (_tradeReviewCache[week]) _tradeReviewCache[week].changes = msg.changes;
+                const applyWrap = document.getElementById(`tr-apply-wrap-${week}`);
+                if (applyWrap && !applyWrap.querySelector('button')) {
+                  applyWrap.innerHTML = `<button onclick="applyTradeReviewChanges('${week}')"
+                    style="margin-left:auto;background:rgba(127,224,152,0.1);border:1px solid #88BF8B;color:#7FE098;
+                           border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;font-family:inherit"
+                    title="Apply recommended trail/trigger changes to Signal Router">⚡ Apply to Signal Router</button>`;
+                }
+              }
+            }
           } catch {}
         }
         buf = buf.split('\n').filter(l => !l.startsWith('data:')).join('\n');
       }
     } catch(e) {
       textEl.textContent = 'Error: ' + e.message;
+    }
+  }
+
+  async function applyTradeReviewChanges(week) {
+    const ch = _tradeReviewCache[week]?.changes;
+    if (!ch) { alert('No changes found for this review.'); return; }
+
+    // Build human-readable summary for confirm dialog
+    const lines = [];
+    (ch.trail_rules || []).forEach(r => lines.push(`• ${r.pattern} rules → ${r.trail}% trail`));
+    if (ch.morning_trail > 0) lines.push(`• Morning trail (9:30–10:30) → ${ch.morning_trail}%`);
+    if (ch.clear_triggers)    lines.push(`• Clear all trail triggers`);
+    if (!lines.length) { alert('No actionable changes in this review.'); return; }
+
+    if (!confirm(`Apply to Signal Router?\n\n${lines.join('\n')}`)) return;
+
+    const btn = document.querySelector(`#tr-apply-wrap-${week} button`);
+    if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+
+    try {
+      const errors = [];
+
+      // Per-pattern trail updates
+      for (const rule of (ch.trail_rules || [])) {
+        if (!rule.pattern || !rule.trail) continue;
+        const r = await fetch('/api/routing/rules/bulk_update_exit_params', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({mode: 'percent', trail_offset: rule.trail, name_contains: rule.pattern}),
+        });
+        if (!r.ok) errors.push(`${rule.pattern} trail update failed (HTTP ${r.status})`);
+      }
+
+      // Clear triggers
+      if (ch.clear_triggers) {
+        const r = await fetch('/api/routing/rules/bulk_update_exit_params', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({mode: 'percent', clear_trail_trigger: true}),
+        });
+        if (!r.ok) errors.push(`Clear triggers failed (HTTP ${r.status})`);
+      }
+
+      // Morning trail
+      if (ch.morning_trail > 0) {
+        const r = await fetch('/api/risk/limit', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({morning_trail_pct: ch.morning_trail}),
+        });
+        if (!r.ok) errors.push(`Morning trail update failed (HTTP ${r.status})`);
+      }
+
+      if (errors.length) {
+        alert('Applied with errors:\n' + errors.join('\n'));
+      } else {
+        if (btn) { btn.textContent = '✓ Applied'; btn.style.color = '#7FE098'; }
+        setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = '⚡ Apply to Signal Router'; btn.style.color = '#7FE098'; } }, 3000);
+      }
+    } catch(e) {
+      alert('Apply failed: ' + e.message);
+      if (btn) { btn.disabled = false; btn.textContent = '⚡ Apply to Signal Router'; }
     }
   }
 

@@ -3533,6 +3533,7 @@ def api_trade_review():
     each exit, then asks Claude to identify premature exit patterns and suggest
     parameter changes."""
     import datetime as _dtmod
+    import re as _re
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -3700,6 +3701,15 @@ def api_trade_review():
             for r in records
         )
 
+        # Extract unique strategy patterns present in the data (e.g. R4S4, R3S3, REV)
+        _strat_patterns = sorted(set(
+            _re.sub(r'[^A-Z0-9]', '', s)
+            for r in records
+            for s in [r['strategy'].upper()]
+            if s and s != "UNKNOWN"
+        ))
+        _strat_hint = ", ".join(_strat_patterns[:8]) if _strat_patterns else "R4S4, R3S3, REV"
+
         prompt = (
             f"You are reviewing {len(records)} trades from a Camarilla 5-minute breakout/reversal system "
             f"for the week {from_date} to {to_date}.\n\n"
@@ -3720,7 +3730,13 @@ def api_trade_review():
             f"3. **Per-Strategy Findings** — which strategies exit too early most consistently?\n"
             f"4. **Specific Recommendations** — give exact parameter values to try next week "
             f"(e.g. 'increase SPY trail to 0.20%', 'add 0.15% trigger on QQQ'). Be specific.\n\n"
-            f"Be direct and data-driven. 3-4 sentences per section max."
+            f"Be direct and data-driven. 3-4 sentences per section max.\n\n"
+            f"After your analysis, output ONE line in exactly this format (no extra text, no markdown):\n"
+            f"CHANGES_JSON: {{\"trail_rules\":[{{\"pattern\":\"X\",\"trail\":N}},...],\"morning_trail\":N,\"clear_triggers\":true}}\n"
+            f"Rules: pattern is a short substring matching routing rule names (available patterns from this data: {_strat_hint}). "
+            f"trail is the recommended float % (e.g. 0.22). morning_trail is the 9:30-10:30 ET override % (0 if not needed). "
+            f"clear_triggers is true only if you recommend removing all trail triggers. "
+            f"Only include trail_rules entries for patterns you are actually recommending a change for."
         )
 
         summary = ""
@@ -3728,7 +3744,7 @@ def api_trade_review():
             client = _anthropic.Anthropic(api_key=api_key)
             with client.messages.stream(
                 model      = "claude-haiku-4-5-20251001",
-                max_tokens = 1200,
+                max_tokens = 1500,
                 messages   = [{"role": "user", "content": prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -3738,16 +3754,27 @@ def api_trade_review():
             yield f"data: {json.dumps({'error': str(_ae)})}\n\n"
             return
 
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        # Extract CHANGES_JSON block from summary; strip it from the displayed text
+        changes = {}
+        _changes_match = _re.search(r'CHANGES_JSON:\s*(\{.+\})', summary)
+        if _changes_match:
+            try:
+                changes = json.loads(_changes_match.group(1))
+            except Exception:
+                pass
+            summary = summary[:_changes_match.start()].rstrip()
+
+        yield f"data: {json.dumps({'done': True, 'changes': changes})}\n\n"
 
         # Persist to settings keyed by week
         try:
             _save_setting(f"TRADE_REVIEW_{week}", json.dumps({
-                "summary":    summary,
-                "week":       week,
-                "trade_count": len(records),
+                "summary":       summary,
+                "changes":       changes,
+                "week":          week,
+                "trade_count":   len(records),
                 "premature_pct": premature_pct,
-                "generated_at": _dtmod.datetime.now(_dtmod.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                "generated_at":  _dtmod.datetime.now(_dtmod.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             }))
         except Exception as _pe:
             log.warning("Trade review persist error: %s", _pe)
