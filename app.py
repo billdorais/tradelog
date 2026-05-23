@@ -3715,14 +3715,21 @@ def api_trade_review():
             for r in records
         )
 
-        # Extract unique strategy patterns present in the data (e.g. R4S4, R3S3, REV)
-        _strat_patterns = sorted(set(
-            _re.sub(r'[^A-Z0-9]', '', s)
-            for r in records
-            for s in [r['strategy'].upper()]
-            if s and s != "UNKNOWN"
-        ))
-        _strat_hint = ", ".join(_strat_patterns[:8]) if _strat_patterns else "R4S4, R3S3, REV"
+        # Extract TYPE_LEVEL substrings that will actually match rule names (e.g. BREAKOUT_R4S4).
+        # Rule names follow TICKER_CAM_TYPE_LEVEL_VERSION_TF — we want TYPE_LEVEL so the AI
+        # generates patterns that work as name_contains substrings.
+        _strat_parts = set()
+        for _r in records:
+            _parts = _r['strategy'].upper().split('_')
+            try:
+                _ci = _parts.index('CAM')
+                if _ci + 2 < len(_parts):
+                    _strat_parts.add(f"{_parts[_ci+1]}_{_parts[_ci+2]}")
+                elif _ci + 1 < len(_parts):
+                    _strat_parts.add(_parts[_ci+1])
+            except ValueError:
+                pass
+        _strat_hint = ", ".join(sorted(_strat_parts)) if _strat_parts else "BREAKOUT_R4S4, REVERSAL_R3S3"
 
         _morn_now  = MORNING_TRAIL_PCT
         _aftn_now  = AFTERNOON_TRAIL_PCT
@@ -3756,11 +3763,15 @@ def api_trade_review():
             f"Be direct and data-driven. 3-4 sentences per section max.\n\n"
             f"After your analysis, output ONE line in exactly this format (no extra text, no markdown):\n"
             f"CHANGES_JSON: {{\"trail_rules\":[{{\"pattern\":\"X\",\"trail\":N}},...],\"morning_trail\":N,\"afternoon_trail\":N,\"clear_triggers\":true}}\n"
-            f"Rules: pattern is a short substring matching routing rule names (available patterns from this data: {_strat_hint}). "
+            f"Rules: pattern must be a substring of the actual routing rule names — use TYPE_LEVEL format WITH underscore "
+            f"(e.g. BREAKOUT_R4S4, REVERSAL_R3S3). Available patterns in this data: {_strat_hint}. "
+            f"Do NOT strip underscores — 'BREAKOUTR4S4' will match nothing; 'BREAKOUT_R4S4' will match all tickers. "
             f"trail is the recommended baseline float % for that pattern. "
-            f"morning_trail is a FLOOR — set it ABOVE the baseline trail to widen entries in the 9:30-10:30 ET window (0 if no change needed). "
-            f"afternoon_trail is a CEILING — set it BELOW the baseline trail to tighten entries in the 12:00-close ET window (0 if no change needed). "
-            f"If morning_trail <= baseline or afternoon_trail >= baseline it will have no effect — do not include it. "
+            f"morning_trail is a FLOOR — MUST be GREATER THAN the baseline trail to have any effect "
+            f"(widens entries in the 9:30-10:30 ET window). Set 0 if not needed. "
+            f"afternoon_trail is a CEILING — MUST be LESS THAN the baseline trail to have any effect "
+            f"(tightens entries in the 12:00-close ET window). Set 0 if not needed. "
+            f"If morning_trail <= baseline or afternoon_trail >= baseline it will be a no-op — omit or set 0. "
             f"clear_triggers is true only if you recommend removing all trail triggers. "
             f"Only include trail_rules entries for patterns you are actually recommending a change for."
         )
