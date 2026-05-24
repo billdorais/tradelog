@@ -88,6 +88,23 @@
     .reason-actual   { background: rgba(100,100,100,0.1);  color: #666; }
     .delta-arrow { font-size: 0.8rem; margin-right: 3px; }
 
+    /* Ticker modal */
+    .ticker-link { color: #e0e0e0; cursor: pointer; text-decoration: none; border-bottom: 1px dotted #444; }
+    .ticker-link:hover { color: #c4b5fd; border-bottom-color: #c4b5fd; }
+    #tickerModal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }
+    #tickerModal.open { display:flex; }
+    .modal-box { background:#13161f; border:1px solid #2a2d3e; border-radius:12px; width:90vw; max-width:1100px; max-height:85vh; display:flex; flex-direction:column; overflow:hidden; }
+    .modal-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid #1e2130; flex-shrink:0; }
+    .modal-title { font-size:1rem; font-weight:600; color:#e0e0e0; }
+    .modal-stats { display:flex; gap:20px; font-size:0.8rem; }
+    .modal-stat { color:#888; }
+    .modal-stat span { font-weight:600; color:#e0e0e0; }
+    .modal-stat span.pos { color:#7FE098; }
+    .modal-stat span.neg { color:#e74c3c; }
+    .modal-close { background:none; border:none; color:#555; font-size:1.3rem; cursor:pointer; padding:0 4px; line-height:1; }
+    .modal-close:hover { color:#e0e0e0; }
+    .modal-body { overflow-y:auto; padding:0; }
+
     /* Rule presets */
     .presets-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 14px; border-top: 1px solid #1e2130; margin-top: 4px; }
     .presets-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; white-space: nowrap; margin-right: 4px; }
@@ -241,6 +258,7 @@
             <th>Date</th>
             <th>Side</th>
             <th>Ticker</th>
+            <th>Strategy</th>
             <th>Qty</th>
             <th title="Trail % from Signal Router rule">Rule Trail</th>
             <th>Entry</th>
@@ -262,6 +280,20 @@
 
   <div id="statusMsg" class="status-msg">Enter parameters above and click Run Simulation.</div>
   <div id="errorMsg"  class="error-msg" style="display:none"></div>
+</div>
+
+<!-- Ticker drill-down modal -->
+<div id="tickerModal" onclick="if(event.target===this)closeTickerModal()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <span class="modal-title" id="modalTitle"></span>
+        <div class="modal-stats" id="modalStats"></div>
+      </div>
+      <button class="modal-close" onclick="closeTickerModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
 </div>
 
 <script>
@@ -493,6 +525,84 @@
     }
   }
 
+  // ── Global trade store for modal ────────────────────────────────────────
+  let _simTrades = [];
+
+  function shortStrategy(name) {
+    const upper = name.toUpperCase();
+    const idx = upper.indexOf('_CAM_');
+    if (idx >= 0) {
+      const parts = upper.slice(idx + 5).split('_');
+      return parts.slice(0, 2).join(' ');
+    }
+    return name;
+  }
+
+  function openTickerModal(ticker) {
+    const trades = _simTrades.filter(t => t.ticker === ticker);
+    if (!trades.length) return;
+    const newTotal  = trades.reduce((s, t) => s + (t.new_pnl  ?? 0), 0);
+    const baseTotal = trades.reduce((s, t) => s + (t.base_pnl ?? 0), 0);
+    const improved  = trades.filter(t => (t.pnl_delta ?? 0) >  0.01).length;
+    const worse     = trades.filter(t => (t.pnl_delta ?? 0) < -0.01).length;
+    const newCls    = newTotal >= 0 ? 'pos' : 'neg';
+    const deltaCls  = (newTotal - baseTotal) >= 0 ? 'pos' : 'neg';
+    document.getElementById('modalTitle').textContent = ticker;
+    document.getElementById('modalStats').innerHTML = `
+      <div class="modal-stat">${trades.length} trades</div>
+      <div class="modal-stat">New P&L: <span class="${newCls}">${fmt(newTotal)}</span></div>
+      <div class="modal-stat">Delta: <span class="${deltaCls}">${fmt(newTotal - baseTotal)}</span></div>
+      <div class="modal-stat">Improved: <span class="pos">${improved}</span> &nbsp; Worse: <span class="neg">${worse}</span></div>
+    `;
+    const reasonLabel = r => {
+      if (!r) return '';
+      const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit'};
+      const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual'};
+      return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
+    };
+    document.getElementById('modalBody').innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Date</th><th>Side</th><th>Strategy</th><th>Qty</th>
+          <th>Entry</th><th>Actual Exit</th><th>New Params Exit</th>
+          <th>New Reason</th><th>Actual P&L</th><th>New P&L</th><th>Delta</th>
+        </tr></thead>
+        <tbody>
+          ${trades.map(t => {
+            const sideCls   = t.side === 'LONG' ? 'long' : 'short';
+            const actCls    = t.actual_pnl >= 0 ? 'pos' : 'neg';
+            const newCls    = (t.new_pnl ?? 0) >= 0 ? 'pos' : 'neg';
+            const delta     = t.pnl_delta;
+            const deltaCls  = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
+            const deltaArrow= delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
+            const rowCls    = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
+            const newPx     = t.new_exit_price != null ? `$${Number(t.new_exit_price).toFixed(2)}` : '—';
+            const holdStr   = t.new_exit_mins  != null ? `${t.new_exit_mins}m` : '—';
+            return `<tr class="${rowCls}">
+              <td class="mono">${esc(t.date.slice(5))}</td>
+              <td><span class="side-badge ${sideCls}">${t.side}</span></td>
+              <td style="color:#888;font-size:0.75rem">${esc(shortStrategy(t.strategy || ''))}</td>
+              <td>${t.qty}</td>
+              <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
+              <td class="mono">$${Number(t.actual_exit_price).toFixed(2)} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
+              <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
+              <td>${reasonLabel(t.new_exit_reason)}</td>
+              <td class="${actCls}">${fmt(t.actual_pnl)}</td>
+              <td class="${newCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
+              <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+    document.getElementById('tickerModal').classList.add('open');
+  }
+
+  function closeTickerModal() {
+    document.getElementById('tickerModal').classList.remove('open');
+  }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTickerModal(); });
+
   function renderResults(data) {
     const s = data.summary;
     const p = data.params;
@@ -517,6 +627,8 @@
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
     `;
     document.getElementById('summarySection').style.display = 'block';
+
+    _simTrades = data.trades;
 
     // Results title
     let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}min`;
@@ -545,6 +657,7 @@
       const rowCls     = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
       const sideCls    = t.side === 'LONG' ? 'long' : 'short';
       const ruleTrail  = t.rule_trail_pct != null ? `${t.rule_trail_pct}%` : '—';
+      const stratLabel = shortStrategy(t.strategy || '');
 
       const basePx = t.base_exit_price != null ? `$${Number(t.base_exit_price).toFixed(2)}` : '—';
       const newPx  = t.new_exit_price  != null ? `$${Number(t.new_exit_price).toFixed(2)}`  : '—';
@@ -555,7 +668,8 @@
       return `<tr class="${rowCls}">
         <td class="mono">${esc(t.date.slice(5))}</td>
         <td><span class="side-badge ${sideCls}">${t.side}</span></td>
-        <td class="mono" style="color:#e0e0e0">${esc(t.ticker)}</td>
+        <td class="mono"><a class="ticker-link" onclick="openTickerModal(${JSON.stringify(t.ticker)})" title="Show all ${esc(t.ticker)} trades">${esc(t.ticker)}</a></td>
+        <td style="color:#888;font-size:0.75rem">${esc(stratLabel)}</td>
         <td>${t.qty}</td>
         <td class="mono" style="color:#888">${ruleTrail}</td>
         <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
