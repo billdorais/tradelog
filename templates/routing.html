@@ -1469,14 +1469,30 @@
     const slug    = label.replace(' ', '_');
     const trail   = parseFloat(document.getElementById(`eptrail-${slug}`)?.value);
     const trigger = parseFloat(document.getElementById(`eptrig-${slug}`)?.value);
+    // Always send both fields so a 0 trigger explicitly clears it rather than being skipped
     const body = { mode: 'percent', name_contains: slug };
-    if (!isNaN(trail))   body.trail_offset  = trail;
-    if (!isNaN(trigger)) body.trail_trigger = trigger;
+    body.trail_offset  = isNaN(trail)   ? null : trail;
+    body.trail_trigger = isNaN(trigger) ? null : trigger;
     const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!res.ok) { alert('Save failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    if (data.updated === 0) {
+      alert(`No pipelines matching "${label}" found — check that your pipeline names contain ${slug}.`);
+      return;
+    }
+    // Sync in-memory rules so modals show updated values without a full reload
+    const slug_lc = slug.toLowerCase();
+    for (const rule of rules) {
+      if (!(rule.name || '').toLowerCase().includes(slug_lc)) continue;
+      const ep = rule.nodes.find(n => n.type === 'exit_params');
+      if (!ep) continue;
+      if (body.trail_offset  !== null) ep.trail_offset  = body.trail_offset;
+      if (body.trail_trigger !== null) ep.trail_trigger = body.trail_trigger;
+    }
+    renderExitParamsTable();
     const chip = document.getElementById(`epchip-${slug}`);
     if (chip) {
       chip.classList.add('saved');
