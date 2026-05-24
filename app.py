@@ -3958,6 +3958,20 @@ def _resolve_strategy_trail(strategy_name: str, overrides: dict, default_trail: 
     return default_trail
 
 
+def _get_tiered_trail(peak_gain_pct: float, tiers: list, base_trail: float) -> float:
+    """Return the effective trail % for the current peak gain using sorted tier list.
+    Tiers: [(gain_threshold_pct, trail_pct), ...] sorted ascending.
+    Each tier activates when peak_gain_pct >= threshold, overriding the previous.
+    """
+    effective = base_trail
+    for threshold, trail in tiers:
+        if peak_gain_pct >= threshold:
+            effective = trail
+        else:
+            break
+    return effective
+
+
 def _resolve_strategy_trigger(strategy_name: str, overrides: dict, default_trigger: float) -> float:
     """Return the per-strategy trigger override if one matches, else default_trigger."""
     if not overrides or not strategy_name:
@@ -4011,6 +4025,21 @@ def api_simulate_stops():
     skip_tv_exits       = bool(body.get("skip_tv_exits",      False))
     strategy_overrides          = body.get("strategy_overrides",         {})
     strategy_trigger_overrides  = body.get("strategy_trigger_overrides", {})
+    # Dynamic trail tiers: [{gain: float, trail: float}, ...] sorted ascending by gain
+    _tiers_raw  = body.get("trail_tiers", [])
+    trail_tiers = None
+    if _tiers_raw:
+        _parsed = []
+        for t in _tiers_raw:
+            try:
+                _g = float(t.get("gain",  0))
+                _t = float(t.get("trail", 0))
+                if _t > 0:
+                    _parsed.append((_g, _t))
+            except (TypeError, ValueError):
+                pass
+        if _parsed:
+            trail_tiers = sorted(_parsed, key=lambda x: x[0])
 
     broker = alpaca_broker2 if use_acct2 else alpaca_broker
     if broker is None:
@@ -4137,7 +4166,8 @@ def api_simulate_stops():
                                   new_trail, new_trigger, stop_loss_pct,
                                   max_hold_mins, entry_dt,
                                   cap_dt=_cap_dt, cap_price=_cap_price,
-                                  stop_loss_dollars=stop_loss_dollars, qty=qty)
+                                  stop_loss_dollars=stop_loss_dollars, qty=qty,
+                                  trail_tiers=trail_tiers)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
@@ -7717,7 +7747,8 @@ def _simulate_exit(bars, entry_price: float, side: str,
                    trail_pct: float, trigger_pct: float,
                    stop_loss_pct: float, max_hold_mins: int,
                    entry_dt, cap_dt=None, cap_price=None,
-                   stop_loss_dollars: float = 0.0, qty: float = 1.0):
+                   stop_loss_dollars: float = 0.0, qty: float = 1.0,
+                   trail_tiers: list = None):
     """Walk 1-min bars and return the simulated exit.
 
     cap_dt / cap_price: if supplied, bars past cap_dt are ignored. If no stop
@@ -7762,6 +7793,8 @@ def _simulate_exit(bars, entry_price: float, side: str,
 
         if is_long:
             peak = max(peak, high)
+            peak_gain_pct = (peak - entry_price) / entry_price * 100 if peak > entry_price else 0.0
+            eff_trail = _get_tiered_trail(peak_gain_pct, trail_tiers, trail_pct) if trail_tiers else trail_pct
             # Combine % and $ stops — use tighter (higher) stop price
             _pct_sl_px = entry_price * (1 - stop_loss_pct / 100) if stop_loss_pct > 0 else None
             _sl_px = max(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
@@ -7769,15 +7802,17 @@ def _simulate_exit(bars, entry_price: float, side: str,
             if _sl_px is not None and low <= _sl_px:
                 return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
                         "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
-            if trail_pct > 0:
+            if eff_trail > 0:
                 triggered = (trigger_pct == 0) or (peak >= entry_price * (1 + trigger_pct / 100))
                 if triggered:
-                    trail_px = peak * (1 - trail_pct / 100)
+                    trail_px = peak * (1 - eff_trail / 100)
                     if low <= trail_px:
                         return {"exit_price": round(trail_px, 4), "exit_time": str(bar_ts),
                                 "reason": "trail", "exit_mins": round(hold_mins, 1)}
         else:
             peak = min(peak, low)
+            peak_gain_pct = (entry_price - peak) / entry_price * 100 if peak < entry_price else 0.0
+            eff_trail = _get_tiered_trail(peak_gain_pct, trail_tiers, trail_pct) if trail_tiers else trail_pct
             # Combine % and $ stops — use tighter (lower) stop price
             _pct_sl_px = entry_price * (1 + stop_loss_pct / 100) if stop_loss_pct > 0 else None
             _sl_px = min(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
@@ -7785,10 +7820,10 @@ def _simulate_exit(bars, entry_price: float, side: str,
             if _sl_px is not None and high >= _sl_px:
                 return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
                         "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
-            if trail_pct > 0:
+            if eff_trail > 0:
                 triggered = (trigger_pct == 0) or (peak <= entry_price * (1 - trigger_pct / 100))
                 if triggered:
-                    trail_px = peak * (1 + trail_pct / 100)
+                    trail_px = peak * (1 + eff_trail / 100)
                     if high >= trail_px:
                         return {"exit_price": round(trail_px, 4), "exit_time": str(bar_ts),
                                 "reason": "trail", "exit_mins": round(hold_mins, 1)}

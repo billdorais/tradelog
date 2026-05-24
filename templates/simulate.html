@@ -107,6 +107,13 @@
     .override-chip input { width: 46px; background: transparent; border: none; border-bottom: 1px solid #2a2d3e; color: #e0e0e0; font-size: 0.73rem; font-family: inherit; text-align: right; padding: 0 2px; outline: none; }
     .override-chip input:focus { border-bottom-color: #7FE098; }
     .override-chip .oc-unit { color: #555; font-size: 0.68rem; }
+    .tier-chip { display: inline-flex; align-items: center; gap: 4px; background: #0f0f1a; border: 1px solid #4a3f7a; border-radius: 4px; padding: 3px 7px; font-size: 0.73rem; }
+    .tier-chip input { width: 42px; background: transparent; border: none; border-bottom: 1px solid #2a2d3e; color: #c4b5fd; font-size: 0.73rem; font-family: inherit; text-align: right; padding: 0 2px; outline: none; }
+    .tier-chip input:focus { border-bottom-color: #a78bfa; }
+    .tier-chip .tc-label { color: #666; font-size: 0.68rem; }
+    .tier-chip .tc-trail { color: #c4b5fd; font-size: 0.68rem; }
+    .tier-chip .tc-rm { background: transparent; border: none; color: #444; cursor: pointer; padding: 0 2px; font-size: 0.8rem; line-height: 1; }
+    .tier-chip .tc-rm:hover { color: #e74c3c; }
     .toggle-wrap { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
     .toggle-wrap input[type=checkbox] { width: 14px; height: 14px; accent-color: #7FE098; cursor: pointer; }
     .toggle-label { font-size: 0.75rem; color: #888; white-space: nowrap; }
@@ -205,6 +212,18 @@
     </div>
     <div class="presets-row" id="presetsRow" style="display:none"></div>
     <div class="overrides-row" id="overridesRow" style="display:none"></div>
+    <!-- Dynamic trail tiers -->
+    <div class="overrides-row" id="tiersRow" style="display:flex;flex-wrap:wrap;gap:8px;padding-top:10px;margin-top:2px;align-items:center">
+      <label class="toggle-wrap">
+        <input type="checkbox" id="tiersEnabled" onchange="toggleTiersRow(this.checked)">
+        <span class="toggle-label" id="tiersLabel" style="color:#c4b5fd;white-space:nowrap">Dynamic trail tiers</span>
+      </label>
+      <div id="tiersInputs" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
+        <span style="font-size:0.68rem;color:#666;white-space:nowrap">gain ≥</span>
+        <div id="tiersList" style="display:contents"></div>
+        <button onclick="addTier()" style="background:transparent;border:1px dashed #555;color:#666;border-radius:3px;padding:1px 8px;font-size:0.7rem;cursor:pointer">+ tier</button>
+      </div>
+    </div>
   </div>
 
   <!-- Summary -->
@@ -337,6 +356,50 @@
 
   loadRulePresets();
 
+  // Default tiers pre-populated on first enable
+  const DEFAULT_TIERS = [
+    { gain: 0,   trail: 0.50 },
+    { gain: 0.5, trail: 0.35 },
+    { gain: 1.0, trail: 0.25 },
+    { gain: 2.0, trail: 0.15 },
+  ];
+
+  function toggleTiersRow(enabled) {
+    const inp = document.getElementById('tiersInputs');
+    const lbl = document.getElementById('tiersLabel');
+    inp.style.display = enabled ? 'flex' : 'none';
+    lbl.style.color   = enabled ? '#c4b5fd' : '#888';
+    if (enabled && document.getElementById('tiersList').children.length === 0) {
+      DEFAULT_TIERS.forEach(t => addTier(t.gain, t.trail));
+    }
+  }
+
+  let _tierIdx = 0;
+  function addTier(gain = '', trail = '') {
+    const id  = _tierIdx++;
+    const div = document.createElement('div');
+    div.className = 'tier-chip';
+    div.id = `tier-${id}`;
+    div.innerHTML =
+      `<input type="number" class="tier-gain" value="${gain}" step="0.1" min="0" placeholder="0" title="Price gain % to activate this trail">` +
+      `<span class="tc-label">%&nbsp;→&nbsp;trail</span>` +
+      `<input type="number" class="tier-trail" value="${trail}" step="0.05" min="0.01" placeholder="0.5" title="Trail % when this tier is active">` +
+      `<span class="tc-trail">%</span>` +
+      `<button class="tc-rm" onclick="document.getElementById('tier-${id}').remove()" title="Remove tier">×</button>`;
+    document.getElementById('tiersList').appendChild(div);
+  }
+
+  function collectTiers() {
+    if (!document.getElementById('tiersEnabled').checked) return [];
+    const tiers = [];
+    document.querySelectorAll('#tiersList .tier-chip').forEach(chip => {
+      const gain  = parseFloat(chip.querySelector('.tier-gain').value);
+      const trail = parseFloat(chip.querySelector('.tier-trail').value);
+      if (!isNaN(gain) && !isNaN(trail) && trail > 0) tiers.push({ gain, trail });
+    });
+    return tiers.sort((a, b) => a.gain - b.gain);
+  }
+
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
     m.style.display = m.style.display === 'none' ? 'block' : 'none';
@@ -413,7 +476,8 @@
                                   stop_loss_pct: stopLossPct, stop_loss_dollars: stopLossDollars,
                                   max_hold_mins: maxHold, skip_tv_exits: skipTvExits,
                                   strategy_overrides: strategyOverrides,
-                                  strategy_trigger_overrides: strategyTriggerOverrides }),
+                                  strategy_trigger_overrides: strategyTriggerOverrides,
+                                  trail_tiers: collectTiers() }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
@@ -459,6 +523,8 @@
     if (p.morning_trail_pct)   titleStr += `  ·  morning ${p.morning_trail_pct}%`;
     if (p.afternoon_trail_pct) titleStr += `  ·  afternoon ${p.afternoon_trail_pct}%`;
     if (p.skip_tv_exits)       titleStr += `  ·  stops only`;
+    const activeTiers = collectTiers();
+    if (activeTiers.length) titleStr += `  ·  dynamic trail (${activeTiers.map(t => `≥${t.gain}%→${t.trail}%`).join(' ')})`;
     document.getElementById('resultsTitle').textContent = titleStr;
 
     // Results table
