@@ -257,6 +257,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     ep_trail_trigger = None
     ep_trail_offset  = None
     ep_trail_mode    = "dollars"
+    ep_max_hold_mins = None
 
     matched_rule_id   = None  # set when a routing rule matches; used to flip tv_alert_created
     _routing_rule_count = 0   # total enabled rules; used for whitelist enforcement below
@@ -358,6 +359,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     # Per-pipeline override of the global MAX_POSITION_LOSS.
                     # Always in DOLLARS — not affected by exit_params mode.
                     ep_hard_stop     = n.get("hard_stop")
+                    _mhm = n.get("max_hold_mins")
+                    ep_max_hold_mins = float(_mhm) if _mhm else None
             if broker_targets:
                 broker_name = ",".join(t[0] for t in broker_targets)
             app.log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
@@ -603,6 +606,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             _ep_trail_offset  = ep_trail_offset
             _ep_trail_mode    = ep_trail_mode
             _ep_hard_stop     = ep_hard_stop
+            _ep_max_hold_mins = ep_max_hold_mins
             _broker_captured  = _broker_inst
 
             # Session-based trail overrides (entry orders with percent-mode trail only)
@@ -628,7 +632,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 strategy=_strategy, is_entry=_is_entry,
                 ep_stop_loss=_ep_stop_loss, ep_trail_trigger=_ep_trail_trigger,
                 ep_trail_offset=_ep_trail_offset, ep_trail_mode=_ep_trail_mode,
-                ep_hard_stop=_ep_hard_stop,
+                ep_hard_stop=_ep_hard_stop, ep_max_hold_mins=_ep_max_hold_mins,
                 broker=_broker_captured,
             ):
                 _exec_status = _exec_detail = None
@@ -735,6 +739,15 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     _exec_status = "ok" if result.get("success") else "error"
                     _exec_detail = json.dumps(result)
                     app.log.info("Alpaca order %s %s %s: %s", action, qty, ticker, result)
+                    # Register max-hold timer if this entry has a max_hold_mins constraint
+                    if is_entry and result.get("success") and ep_max_hold_mins:
+                        _broker_tag = "alpaca2" if broker is app.alpaca_broker2 else "alpaca"
+                        with app._risk_lock:
+                            app._max_hold_positions[(_broker_tag, ticker.upper())] = {
+                                "entry_time":    datetime.now(timezone.utc),
+                                "max_hold_mins": ep_max_hold_mins,
+                            }
+                        app.log.info("Max hold registered: %s [%s] — %.0f min", ticker, _broker_tag, ep_max_hold_mins)
                     # If we cancelled a pending BUY, mark the original BUY trade record
                     # as "cancelled" so it doesn't appear as an orphaned/open trade.
                     if result.get("cancelled_buy") and result.get("cancelled_order_ids"):

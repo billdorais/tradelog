@@ -71,6 +71,7 @@ _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
 _auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed today; keyed per-account so same ticker on alpaca + alpaca2 trips independently
 _position_peaks       = {}      # {SYMBOL: peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
+_max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
 _risk_lock            = threading.Lock()
 
 _IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
@@ -733,6 +734,9 @@ def _check_position_stops():
         stale_peaks = [s for s in _position_peaks if s not in open_symbols]
         for s in stale_peaks:
             _position_peaks.pop(s, None)
+        stale_holds = [k for k in _max_hold_positions if k not in open_keys]
+        for k in stale_holds:
+            _max_hold_positions.pop(k, None)
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
 
@@ -893,6 +897,58 @@ def _check_exit_params_recovery():
                           sym, broker_tag, _e)
 
 
+def _check_max_hold_exits():
+    """Close positions that have exceeded their max hold time (set via exit_params node)."""
+    with _risk_lock:
+        snapshot = dict(_max_hold_positions)
+    if not snapshot:
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    for (broker_tag, symbol), info in snapshot.items():
+        elapsed_mins = (now_utc - info["entry_time"]).total_seconds() / 60
+        if elapsed_mins < info["max_hold_mins"]:
+            continue
+
+        with _risk_lock:
+            if (broker_tag, symbol) in _auto_closed_symbols:
+                continue
+
+        broker_inst = alpaca_broker2 if broker_tag == "alpaca2" else alpaca_broker
+        if broker_inst is None:
+            continue
+
+        try:
+            broker_inst._invalidate_pos_cache()
+            positions = broker_inst.get_positions()
+            still_open = any(
+                p["symbol"].upper() == symbol and abs(float(p.get("qty") or 0)) > 0
+                for p in positions
+            )
+        except Exception as _e:
+            log.warning("Max hold check: get_positions failed for %s [%s]: %s", symbol, broker_tag, _e)
+            continue
+
+        if not still_open:
+            with _risk_lock:
+                _max_hold_positions.pop((broker_tag, symbol), None)
+            continue
+
+        log.info("MAX HOLD: %s [%s] — %.1f min elapsed (limit %.0f min) — closing",
+                 symbol, broker_tag, elapsed_mins, info["max_hold_mins"])
+        try:
+            res = broker_inst.close_position(symbol)
+            if res.get("success"):
+                with _risk_lock:
+                    _auto_closed_symbols.add((broker_tag, symbol))
+                    _max_hold_positions.pop((broker_tag, symbol), None)
+                log.info("Max hold: close order submitted for %s on %s", symbol, broker_tag)
+            else:
+                log.error("Max hold: close failed for %s [%s]: %s", symbol, broker_tag, res.get("error"))
+        except Exception as _e:
+            log.error("Max hold: close_position raised for %s [%s]: %s", symbol, broker_tag, _e)
+
+
 _exit_recovery_tick = 0
 
 
@@ -907,6 +963,11 @@ def _position_monitor_loop():
                 _check_position_stops()
             except Exception as _e:
                 log.warning("Position monitor error: %s", _e)
+        if _max_hold_positions:
+            try:
+                _check_max_hold_exits()
+            except Exception as _e:
+                log.warning("Max hold monitor error: %s", _e)
         _exit_recovery_tick += 1
         if _exit_recovery_tick >= 5:  # every 5 ticks * 3s = 15s
             _exit_recovery_tick = 0
