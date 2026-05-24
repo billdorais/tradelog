@@ -3947,10 +3947,7 @@ def simulate():
 
 
 def _resolve_strategy_trail(strategy_name: str, overrides: dict, default_trail: float) -> float:
-    """Return the per-strategy trail override if one matches, else default_trail.
-    Override keys are TYPE_LEVEL labels like 'BREAKOUT R4S4' (space-separated).
-    Matching is done by checking whether the underscore form is in the strategy name.
-    """
+    """Return the per-strategy trail override if one matches, else default_trail."""
     if not overrides or not strategy_name:
         return default_trail
     sname = strategy_name.upper()
@@ -3959,6 +3956,18 @@ def _resolve_strategy_trail(strategy_name: str, overrides: dict, default_trail: 
         if key and key in sname:
             return float(trail)
     return default_trail
+
+
+def _resolve_strategy_trigger(strategy_name: str, overrides: dict, default_trigger: float) -> float:
+    """Return the per-strategy trigger override if one matches, else default_trigger."""
+    if not overrides or not strategy_name:
+        return default_trigger
+    sname = strategy_name.upper()
+    for label, trigger in overrides.items():
+        key = str(label).upper().replace(' ', '_')
+        if key and key in sname:
+            return float(trigger)
+    return default_trigger
 
 
 def _apply_session_trail(trail_pct: float, entry_dt) -> float:
@@ -4000,7 +4009,8 @@ def api_simulate_stops():
     stop_loss_dollars   = float(body.get("stop_loss_dollars",  0.0))
     max_hold_mins       = int(body.get("max_hold_mins",       60))
     skip_tv_exits       = bool(body.get("skip_tv_exits",      False))
-    strategy_overrides  = body.get("strategy_overrides",      {})  # {"BREAKOUT R4S4": 0.35, ...}
+    strategy_overrides          = body.get("strategy_overrides",         {})
+    strategy_trigger_overrides  = body.get("strategy_trigger_overrides", {})
 
     broker = alpaca_broker2 if use_acct2 else alpaca_broker
     if broker is None:
@@ -4099,8 +4109,9 @@ def api_simulate_stops():
         except Exception:
             actual_exit_dt = None
 
-        # Per-strategy trail override for new params (falls back to global trail_pct)
-        new_trail = _resolve_strategy_trail(strategy, strategy_overrides, trail_pct)
+        # Per-strategy trail/trigger overrides for new params (fall back to global values)
+        new_trail   = _resolve_strategy_trail(strategy, strategy_overrides, trail_pct)
+        new_trigger = _resolve_strategy_trigger(strategy, strategy_trigger_overrides, trigger_pct)
 
         # Session overrides applied to baseline only — baseline must match live-system behaviour;
         # new-params sim uses the exact values the user entered so the comparison is meaningful.
@@ -4123,7 +4134,7 @@ def api_simulate_stops():
         base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
 
         new_sim  = _simulate_exit(trade_bars, entry_px, side,
-                                  new_trail, trigger_pct, stop_loss_pct,
+                                  new_trail, new_trigger, stop_loss_pct,
                                   max_hold_mins, entry_dt,
                                   cap_dt=_cap_dt, cap_price=_cap_price,
                                   stop_loss_dollars=stop_loss_dollars, qty=qty)

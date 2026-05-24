@@ -304,6 +304,11 @@
                    value="${c.trail}" step="0.05" min="0" max="10"
                    title="Trail % for ${c.label} in New Params simulation">
             <span class="oc-unit">%</span>
+            <span class="oc-unit" style="margin-left:4px;color:#888">trig</span>
+            <input type="number" class="override-trigger-input" data-strategy="${c.label}"
+                   value="${c.trigger}" step="0.05" min="0" max="10"
+                   title="Trigger % for ${c.label} in New Params simulation">
+            <span class="oc-unit">%</span>
           </div>`
         ).join('');
       oRow.style.display = 'flex';
@@ -385,6 +390,11 @@
       const val = parseFloat(inp.value);
       if (!isNaN(val)) strategyOverrides[inp.dataset.strategy] = val;
     });
+    const strategyTriggerOverrides = {};
+    document.querySelectorAll('.override-trigger-input').forEach(inp => {
+      const val = parseFloat(inp.value);
+      if (!isNaN(val)) strategyTriggerOverrides[inp.dataset.strategy] = val;
+    });
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
     btn.textContent = 'Fetching bars…';
@@ -402,7 +412,8 @@
                                   trail_pct: trailPct, trigger_pct: triggerPct,
                                   stop_loss_pct: stopLossPct, stop_loss_dollars: stopLossDollars,
                                   max_hold_mins: maxHold, skip_tv_exits: skipTvExits,
-                                  strategy_overrides: strategyOverrides }),
+                                  strategy_overrides: strategyOverrides,
+                                  strategy_trigger_overrides: strategyTriggerOverrides }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
