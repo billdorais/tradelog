@@ -228,7 +228,8 @@
             <th>Actual Exit</th>
             <th title="Simulated exit using current Signal Router trail settings">Current Rules Exit</th>
             <th title="Simulated exit using your new parameters">New Params Exit</th>
-            <th>Reason</th>
+            <th>Base Reason</th>
+            <th>New Reason</th>
             <th>Actual P&amp;L</th>
             <th title="P&L with current rule trail settings and rule qty">Current P&amp;L</th>
             <th title="P&L with your new parameters and rule qty">New P&amp;L</th>
@@ -484,7 +485,8 @@
         <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
         <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
         <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
-        <td>${reasonLabel(t.base_exit_reason)} ${t.new_exit_reason && t.new_exit_reason !== t.base_exit_reason ? reasonLabel(t.new_exit_reason) : ''}</td>
+        <td>${reasonLabel(t.base_exit_reason)}</td>
+        <td>${reasonLabel(t.new_exit_reason)}</td>
         <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
         <td class="${basePnlCls}">${t.base_pnl != null ? fmt(t.base_pnl) : '—'}</td>
         <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
