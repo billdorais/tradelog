@@ -5193,15 +5193,18 @@ def bulk_update_exit_params():
     trail_offset         = data.get("trail_offset")
     trail_trigger        = data.get("trail_trigger")
     stop_loss            = data.get("stop_loss")
+    max_hold_mins        = data.get("max_hold_mins")
     clear_trail          = bool(data.get("clear_trail", False))
     clear_trail_trigger  = bool(data.get("clear_trail_trigger", False))
+    clear_max_hold       = bool(data.get("clear_max_hold", False))
     name_contains        = (data.get("name_contains") or "").strip().lower()
-    if trail_offset is None and trail_trigger is None and stop_loss is None and not clear_trail and not clear_trail_trigger:
+    if trail_offset is None and trail_trigger is None and stop_loss is None and max_hold_mins is None and not clear_trail and not clear_trail_trigger and not clear_max_hold:
         trail_offset = 0.15
     try:
         if trail_offset  is not None: trail_offset  = float(trail_offset)
         if trail_trigger is not None: trail_trigger = float(trail_trigger)
         if stop_loss     is not None: stop_loss     = float(stop_loss)
+        if max_hold_mins is not None: max_hold_mins = float(max_hold_mins)
     except (TypeError, ValueError):
         return jsonify({"error": "exit param values must be numbers"}), 400
     if mode not in ("percent", "dollars"):
@@ -5232,11 +5235,14 @@ def bulk_update_exit_params():
         if trail_offset  is not None: ep["trail_offset"]  = trail_offset
         if trail_trigger is not None: ep["trail_trigger"] = trail_trigger
         if stop_loss     is not None: ep["stop_loss"]     = stop_loss
+        if max_hold_mins is not None: ep["max_hold_mins"] = max_hold_mins
         if clear_trail:
             ep.pop("trail_offset",  None)
             ep.pop("trail_trigger", None)
         if clear_trail_trigger:
             ep.pop("trail_trigger", None)
+        if clear_max_hold:
+            ep.pop("max_hold_mins", None)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()

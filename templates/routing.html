@@ -413,6 +413,25 @@
             title="Remove trail_trigger from matching pipelines (trail activates immediately on entry)">
       clear triggers
     </button>
+    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #6a7fad;border-radius:6px;overflow:hidden">
+      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">min</span>
+      <input id="bulkMaxHoldInput" type="number" min="1" step="1" value="10"
+             style="width:50px;background:transparent;border:none;color:#a8c0f0;font-size:0.78rem;
+                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
+             title="Auto-close position after this many minutes">
+      <button onclick="bulkSetMaxHold()"
+              style="background:transparent;border:none;border-left:1px solid #6a7fad;color:#a8c0f0;
+                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Set max hold time on matching pipelines">
+        max hold to all
+      </button>
+    </div>
+    <button onclick="bulkClearMaxHold()"
+            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Remove max hold limit from matching pipelines">
+      clear max hold
+    </button>
     <button onclick="bulkRemoveExitParams()"
             style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;
                    padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
@@ -1346,6 +1365,38 @@
     await load();
     const skipped = data.skipped ? `, ${data.skipped} skipped` : '';
     alert(`Done — cleared trail trigger from ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}${skipped}.`);
+  }
+
+  async function bulkSetMaxHold() {
+    const mins = parseFloat(document.getElementById('bulkMaxHoldInput')?.value) || 10;
+    const pat = _bulkPattern();
+    if (!confirm(`Set max hold to ${mins} min${_patternLabel(pat)}?\n\nKairos will auto-close positions after ${mins} minutes regardless of trail status.`)) return;
+    const body = { max_hold_mins: mins };
+    if (pat) body.name_contains = pat;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    const skipped = data.skipped ? `, ${data.skipped} skipped` : '';
+    alert(`Done — set max hold ${mins}m on ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}${skipped}.`);
+  }
+
+  async function bulkClearMaxHold() {
+    const pat = _bulkPattern();
+    if (!confirm(`Remove max hold limit from all rules${_patternLabel(pat)}?`)) return;
+    const body = { clear_max_hold: true };
+    if (pat) body.name_contains = pat;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — cleared max hold from ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkRemoveExitParams() {
