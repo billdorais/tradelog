@@ -381,9 +381,9 @@
     div.className = 'tier-chip';
     div.id = `tier-${id}`;
     div.innerHTML =
-      `<input type="number" class="tier-gain" value="${gain}" step="0.1" min="0" placeholder="0" title="Price gain % to activate this trail">` +
+      `<input type="number" class="tier-gain" value="${gain}" step="0.1" min="0" max="20" placeholder="0.0" title="Unrealised gain % to activate this trail">` +
       `<span class="tc-label">%&nbsp;→&nbsp;trail</span>` +
-      `<input type="number" class="tier-trail" value="${trail}" step="0.05" min="0.01" placeholder="0.5" title="Trail % when this tier is active">` +
+      `<input type="number" class="tier-trail" value="${trail}" step="0.05" min="0.01" max="5" placeholder="0.50" title="Trail % when gain reaches this threshold (e.g. 0.15, not 15)">` +
       `<span class="tc-trail">%</span>` +
       `<button class="tc-rm" onclick="document.getElementById('tier-${id}').remove()" title="Remove tier">×</button>`;
     document.getElementById('tiersList').appendChild(div);
