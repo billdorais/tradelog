@@ -7799,16 +7799,28 @@ def _simulate_exit(bars, entry_price: float, side: str,
             _pct_sl_px = entry_price * (1 - stop_loss_pct / 100) if stop_loss_pct > 0 else None
             _sl_px = max(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
                      if (_pct_sl_px is not None or _dollar_sl_px is not None) else None
-            if _sl_px is not None and low <= _sl_px:
-                return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
-                        "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            _stop_fires = _sl_px is not None and low <= _sl_px
+            _trail_px = None
             if eff_trail > 0:
                 triggered = (trigger_pct == 0) or (peak >= entry_price * (1 + trigger_pct / 100))
                 if triggered:
-                    trail_px = peak * (1 - eff_trail / 100)
-                    if low <= trail_px:
-                        return {"exit_price": round(trail_px, 4), "exit_time": str(bar_ts),
+                    _trail_px = peak * (1 - eff_trail / 100)
+            _trail_fires = _trail_px is not None and low <= _trail_px
+            if _stop_fires or _trail_fires:
+                # When both fire on the same bar, the higher price was crossed first
+                if _stop_fires and _trail_fires:
+                    if _trail_px > _sl_px:
+                        return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
                                 "reason": "trail", "exit_mins": round(hold_mins, 1)}
+                    else:
+                        return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
+                                "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+                elif _trail_fires:
+                    return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
+                            "reason": "trail", "exit_mins": round(hold_mins, 1)}
+                else:
+                    return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
+                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
         else:
             peak = min(peak, low)
             peak_gain_pct = (entry_price - peak) / entry_price * 100 if peak < entry_price else 0.0
@@ -7817,16 +7829,28 @@ def _simulate_exit(bars, entry_price: float, side: str,
             _pct_sl_px = entry_price * (1 + stop_loss_pct / 100) if stop_loss_pct > 0 else None
             _sl_px = min(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
                      if (_pct_sl_px is not None or _dollar_sl_px is not None) else None
-            if _sl_px is not None and high >= _sl_px:
-                return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
-                        "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            _stop_fires = _sl_px is not None and high >= _sl_px
+            _trail_px = None
             if eff_trail > 0:
                 triggered = (trigger_pct == 0) or (peak <= entry_price * (1 - trigger_pct / 100))
                 if triggered:
-                    trail_px = peak * (1 + eff_trail / 100)
-                    if high >= trail_px:
-                        return {"exit_price": round(trail_px, 4), "exit_time": str(bar_ts),
+                    _trail_px = peak * (1 + eff_trail / 100)
+            _trail_fires = _trail_px is not None and high >= _trail_px
+            if _stop_fires or _trail_fires:
+                # When both fire on the same bar, the lower price was crossed first
+                if _stop_fires and _trail_fires:
+                    if _trail_px < _sl_px:
+                        return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
                                 "reason": "trail", "exit_mins": round(hold_mins, 1)}
+                    else:
+                        return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
+                                "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+                elif _trail_fires:
+                    return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
+                            "reason": "trail", "exit_mins": round(hold_mins, 1)}
+                else:
+                    return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
+                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
 
         if max_hold_mins > 0 and hold_mins >= max_hold_mins:
             return {"exit_price": round(float(bar.close), 4), "exit_time": str(bar_ts),
