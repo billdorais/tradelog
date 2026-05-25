@@ -4055,8 +4055,8 @@ def api_simulate_stops():
         _p    = placeholder()
         _rows = _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall()
         for _row in _rows:
-            _rname  = ((_row["name"]  if DATABASE_URL else _row[0]) or "").upper()
-            _rnodes = json.loads((_row["nodes"] if DATABASE_URL else _row[1]) or "[]")
+            _rname  = (_row[0] or "").upper()
+            _rnodes = json.loads(_row[1] or "[]")
             _trail = _trigger = _qty = _mhm = None
             for _nd in _rnodes:
                 if _nd.get("type") == "exit_params":
