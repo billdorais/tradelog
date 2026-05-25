@@ -4200,15 +4200,17 @@ def api_simulate_stops():
 
     results.sort(key=lambda r: (r["date"], r["entry_time"]))
 
-    base_total = round(sum(r["base_pnl"] for r in results if r["base_pnl"] is not None), 2)
-    new_total  = round(sum(r["new_pnl"]  for r in results if r["new_pnl"]  is not None), 2)
-    improved   = sum(1 for r in results if (r["pnl_delta"] or 0) >  0.01)
-    worse      = sum(1 for r in results if (r["pnl_delta"] or 0) < -0.01)
+    base_total   = round(sum(r["base_pnl"]   for r in results if r["base_pnl"]   is not None), 2)
+    new_total    = round(sum(r["new_pnl"]    for r in results if r["new_pnl"]    is not None), 2)
+    actual_total = round(sum(r["actual_pnl"] for r in results), 2)
+    improved     = sum(1 for r in results if (r["pnl_delta"] or 0) >  0.01)
+    worse        = sum(1 for r in results if (r["pnl_delta"] or 0) < -0.01)
 
     return jsonify({
         "trades":  results,
         "summary": {
             "trade_count": len(results),
+            "actual_pnl":  actual_total,
             "base_pnl":    base_total,
             "new_pnl":     new_total,
             "total_delta": round(new_total - base_total, 2),

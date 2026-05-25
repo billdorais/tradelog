@@ -702,9 +702,10 @@
     document.getElementById('statusMsg').style.display = 'none';
 
     // Summary cards — current rules vs new params
-    const deltaClass = s.total_delta > 0.01 ? 'pos' : s.total_delta < -0.01 ? 'neg' : 'neu';
-    const baseClass  = s.base_pnl > 0 ? 'pos' : s.base_pnl < 0 ? 'neg' : '';
-    const newClass   = s.new_pnl  > 0 ? 'pos' : s.new_pnl  < 0 ? 'neg' : '';
+    const deltaClass  = s.total_delta > 0.01 ? 'pos' : s.total_delta < -0.01 ? 'neg' : 'neu';
+    const baseClass   = s.base_pnl   > 0 ? 'pos' : s.base_pnl   < 0 ? 'neg' : '';
+    const newClass    = s.new_pnl    > 0 ? 'pos' : s.new_pnl    < 0 ? 'neg' : '';
+    const actualClass = s.actual_pnl > 0 ? 'pos' : s.actual_pnl < 0 ? 'neg' : '';
     const mornNote = p.morning_trail_pct ? ` · morn ${p.morning_trail_pct}%` : '';
     const aftnNote = p.afternoon_trail_pct ? ` · aftn ${p.afternoon_trail_pct}%` : '';
     const baseSubNote = `router trail + session overrides${mornNote}${aftnNote}`;
@@ -713,9 +714,10 @@
     if (!stopStr) stopStr = 'no stop';
     const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}m`;
     document.getElementById('summaryCards').innerHTML = `
+      <div class="stat-card"><div class="stat-label">Actual P&L</div><div class="stat-value ${actualClass}">${fmt(s.actual_pnl)}</div><div class="stat-sub">real fills</div></div>
       <div class="stat-card"><div class="stat-label">Signal Router P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
       <div class="stat-card"><div class="stat-label">New Params P&L</div><div class="stat-value ${newClass}">${fmt(s.new_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${newSubNote}</div></div>
-      <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">new vs current</div></div>
+      <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">new vs signal router</div></div>
       <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
     `;
