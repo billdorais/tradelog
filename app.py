@@ -4057,18 +4057,21 @@ def api_simulate_stops():
         for _row in _rows:
             _rname  = ((_row["name"]  if DATABASE_URL else _row[0]) or "").upper()
             _rnodes = json.loads((_row["nodes"] if DATABASE_URL else _row[1]) or "[]")
-            _trail = _trigger = _qty = None
+            _trail = _trigger = _qty = _mhm = None
             for _nd in _rnodes:
                 if _nd.get("type") == "exit_params":
                     _trail   = float(_nd.get("trail_offset") or 0) or None
                     _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mhm_raw = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mhm_raw)) if _mhm_raw else None
                 if _nd.get("type") == "quantity":
                     _qty = float(_nd.get("amount") or 0) or None
             if _trail is not None:
                 rule_settings[_rname] = {
-                    "trail_pct":   _trail,
-                    "trigger_pct": _trigger or 0.0,
-                    "qty":         _qty,
+                    "trail_pct":    _trail,
+                    "trigger_pct":  _trigger or 0.0,
+                    "qty":          _qty,
+                    "max_hold_mins": _mhm,
                 }
         _rc.close()
     except Exception as _re:
@@ -4126,10 +4129,11 @@ def api_simulate_stops():
             continue
 
         # Always use actual fill qty — rule qty is for live sizing, not P&L replay
-        rule      = rule_settings.get(strategy.upper(), {})
-        qty       = fill_qty
-        r_trail   = rule.get("trail_pct",   trail_pct)
-        r_trigger = rule.get("trigger_pct", 0.0)
+        rule         = rule_settings.get(strategy.upper(), {})
+        qty          = fill_qty
+        r_trail      = rule.get("trail_pct",    trail_pct)
+        r_trigger    = rule.get("trigger_pct",  0.0)
+        r_max_hold   = rule.get("max_hold_mins") or 0  # locked to Signal Router node; 0 = no limit
 
         # Parse actual exit datetime for the time cap
         try:
@@ -4157,7 +4161,7 @@ def api_simulate_stops():
 
         base_sim = _simulate_exit(trade_bars, entry_px, side,
                                   eff_r_trail, r_trigger, 0.0,
-                                  max_hold_mins, entry_dt,
+                                  r_max_hold, entry_dt,
                                   cap_dt=_cap_dt, cap_price=_cap_price,
                                   stop_loss_dollars=0.0, qty=qty)
         base_pnl = _pnl(base_sim["exit_price"], entry_px, qty, side) if base_sim else None
