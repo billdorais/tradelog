@@ -783,7 +783,9 @@
     const actualClass = s.actual_pnl > 0 ? 'pos' : s.actual_pnl < 0 ? 'neg' : '';
     const mornNote = p.morning_trail_pct ? ` · morn ${p.morning_trail_pct}%` : '';
     const aftnNote = p.afternoon_trail_pct ? ` · aftn ${p.afternoon_trail_pct}%` : '';
-    const baseSubNote = `router trail + session overrides${mornNote}${aftnNote}`;
+    const sessionNote = (mornNote || aftnNote) ? `session overrides${mornNote}${aftnNote}` : 'no session overrides';
+    const srMaxNote = p.sr_max_hold_mins ? ` · max ${p.sr_max_hold_mins}m (from rule)` : '';
+    const baseSubNote = `router trail · ${sessionNote}${srMaxNote}`;
     let stopStr = p.stop_loss_pct > 0 ? `stop ${p.stop_loss_pct}%` : '';
     if (p.stop_loss_dollars > 0) stopStr += (stopStr ? ' / ' : '') + `stop $${p.stop_loss_dollars}`;
     if (!stopStr) stopStr = 'no stop';

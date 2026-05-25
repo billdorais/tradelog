@@ -4246,6 +4246,7 @@ def api_simulate_stops():
             "morning_trail_pct":   MORNING_TRAIL_PCT   if MORNING_TRAIL_PCT   > 0 else None,
             "afternoon_trail_pct": AFTERNOON_TRAIL_PCT if AFTERNOON_TRAIL_PCT > 0 else None,
             "skip_tv_exits":       skip_tv_exits,
+            "sr_max_hold_mins":    next((v["max_hold_mins"] for v in rule_settings.values() if v.get("max_hold_mins")), None),
         },
     })
 
