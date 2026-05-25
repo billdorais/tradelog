@@ -4254,6 +4254,210 @@ def api_simulate_stops():
     })
 
 
+@app.route("/api/simulate/sweep", methods=["POST"])
+def simulate_sweep():
+    """Parameter sweep: grid-search trail/trigger combos, return ranked results."""
+    import datetime as _dt
+    from collections import defaultdict
+    body         = request.get_json() or {}
+    from_date    = body.get("from_date", "")
+    to_date      = body.get("to_date",   "")
+    use_acct2    = str(body.get("account", "2")) == "2"
+    trail_min    = float(body.get("trail_min",  0.05))
+    trail_max    = float(body.get("trail_max",  0.40))
+    trail_step   = float(body.get("trail_step", 0.05))
+    triggers     = [round(float(x), 4) for x in (body.get("triggers") or [0])]
+    stop_dollars = float(body.get("stop_loss_dollars", 0))
+    max_hold     = int(body.get("max_hold_mins", 0))
+    skip_exits   = bool(body.get("skip_tv_exits", True))
+    per_strategy = bool(body.get("per_strategy", False))
+    if not from_date or not to_date:
+        return jsonify({"error": "from_date and to_date are required"}), 400
+    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    if broker is None:
+        return jsonify({"error": "Alpaca account not configured"}), 400
+
+    # Build trail grid
+    trail_values, v = [], trail_min
+    while v <= trail_max + 1e-9:
+        trail_values.append(round(v, 4))
+        v = round(v + trail_step, 4)
+
+    # Rule settings (same pattern as /api/simulate)
+    rule_settings = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname  = (_row[0] or "").upper()
+            _rnodes = json.loads(_row[1] or "[]")
+            _trail = _trigger = _mhm = None
+            for _nd in _rnodes:
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mhm_raw = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mhm_raw)) if _mhm_raw else None
+            if _trail is not None:
+                rule_settings[_rname] = {"trail_pct": _trail, "trigger_pct": _trigger or 0.0, "max_hold_mins": _mhm}
+        _rc.close()
+    except Exception as _re:
+        log.debug("Sweep rule_settings: %s", _re)
+
+    def _rule_for(strategy):
+        rule = rule_settings.get(strategy.upper())
+        if rule is None:
+            sname = strategy.upper().replace(' ', '_')
+            for rkey, rval in rule_settings.items():
+                pattern = '_'.join(rkey.split('_CAM_')[1].split('_')[:2]) if '_CAM_' in rkey else rkey
+                if pattern and pattern in sname:
+                    rule = rval; break
+        return rule or {}
+
+    def _type_level(strategy):
+        s = (strategy or "").upper()
+        idx = s.find("_CAM_")
+        if idx >= 0:
+            parts = s[idx+5:].split("_")
+            if len(parts) >= 2:
+                return f"{parts[0]} {parts[1]}"
+        return s or "Unknown"
+
+    # Fetch trades + bars
+    fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
+                                            signal_lookup=signal_lookup)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No completed round-trips found for the selected period"}), 404
+
+    ticker_dates = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
+                    for t in trades if t.get("ticker") and t.get("entry_time")}
+    day_bars = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_fetch_day_bars, tk, dt): (tk, dt) for tk, dt in ticker_dates}
+        for f in _cf.as_completed(futs):
+            tk, dt = futs[f]
+            try:    day_bars[(tk, dt)] = f.result()
+            except: day_bars[(tk, dt)] = []
+
+    def _pnl(exit_price, entry_px, qty, side):
+        return round((exit_price - entry_px) * qty, 2) if side == "LONG" \
+               else round((entry_px - exit_price) * qty, 2)
+
+    # Pre-process: parse datetimes, slice bars, compute SR baseline once
+    prepared = []
+    for t in trades:
+        ticker     = (t.get("ticker") or "").upper()
+        side       = (t.get("side")   or "").upper()
+        entry_px   = float(t.get("entry_price") or 0)
+        qty        = float(t.get("qty") or 1)
+        entry_time = t.get("entry_time") or ""
+        exit_time  = t.get("exit_time")  or ""
+        strategy   = t.get("strategy")   or ""
+        if not ticker or not entry_time or entry_px == 0:
+            continue
+        try:
+            entry_dt = _dt.datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        try:
+            exit_dt = _dt.datetime.fromisoformat(exit_time.replace("Z", "+00:00")) if exit_time else None
+        except Exception:
+            exit_dt = None
+        bars       = day_bars.get((ticker, entry_time[:10]), [])
+        trade_bars = [b for b in bars if b.timestamp >= entry_dt]
+        cap_dt     = None if skip_exits else exit_dt
+        cap_price  = None if skip_exits else float(t.get("exit_price") or 0)
+        rule       = _rule_for(strategy)
+        r_trail    = _apply_session_trail(rule.get("trail_pct", 0.15), entry_dt)
+        r_trigger  = rule.get("trigger_pct", 0.0)
+        r_mh       = rule.get("max_hold_mins") or 0
+        sr_sim     = _simulate_exit(trade_bars, entry_px, side, r_trail, r_trigger, 0.0,
+                                    r_mh, entry_dt, cap_dt=cap_dt, cap_price=cap_price,
+                                    stop_loss_dollars=0.0, qty=qty)
+        prepared.append({
+            "ticker":     ticker,
+            "side":       side,
+            "entry_px":   entry_px,
+            "qty":        qty,
+            "trade_bars": trade_bars,
+            "entry_dt":   entry_dt,
+            "cap_dt":     cap_dt,
+            "cap_price":  cap_price,
+            "sr_pnl":     _pnl(sr_sim["exit_price"], entry_px, qty, side) if sr_sim else 0.0,
+            "type_level": _type_level(strategy),
+        })
+
+    if not prepared:
+        return jsonify({"error": "No trades could be prepared for sweep"}), 404
+
+    sr_total = round(sum(p["sr_pnl"] for p in prepared), 2)
+
+    def _sim_pnl(td, trail, trigger):
+        sim = _simulate_exit(td["trade_bars"], td["entry_px"], td["side"],
+                             trail, trigger, 0.0, max_hold, td["entry_dt"],
+                             cap_dt=td["cap_dt"], cap_price=td["cap_price"],
+                             stop_loss_dollars=stop_dollars, qty=td["qty"])
+        return _pnl(sim["exit_price"], td["entry_px"], td["qty"], td["side"]) if sim else 0.0
+
+    if not per_strategy:
+        sweep_results = []
+        for trail in trail_values:
+            for trigger in triggers:
+                total = imp = worse = 0.0
+                for td in prepared:
+                    p = _sim_pnl(td, trail, trigger)
+                    total += p
+                    if p > td["sr_pnl"] + 0.01:   imp   += 1
+                    elif p < td["sr_pnl"] - 0.01: worse += 1
+                sweep_results.append({
+                    "trail": trail, "trigger": trigger,
+                    "total_pnl":   round(total, 2),
+                    "delta_vs_sr": round(total - sr_total, 2),
+                    "improved": int(imp), "worse": int(worse), "trades": len(prepared),
+                })
+        sweep_results.sort(key=lambda r: r["total_pnl"], reverse=True)
+        return jsonify({"mode": "global", "sr_total": sr_total, "results": sweep_results})
+
+    else:
+        groups = defaultdict(list)
+        for td in prepared:
+            groups[td["type_level"]].append(td)
+
+        strategy_results = []
+        combined_pnl     = 0.0
+        best_overrides   = {}
+        for strat, tds in sorted(groups.items()):
+            best_pnl = best_trail = best_trigger = None
+            grid = []
+            for trail in trail_values:
+                for trigger in triggers:
+                    total = sum(_sim_pnl(td, trail, trigger) for td in tds)
+                    grid.append({"trail": trail, "trigger": trigger, "total_pnl": round(total, 2)})
+                    if best_pnl is None or total > best_pnl:
+                        best_pnl = total; best_trail = trail; best_trigger = trigger
+            sr_strat = sum(td["sr_pnl"] for td in tds)
+            strategy_results.append({
+                "strategy": strat, "trades": len(tds),
+                "best_trail": best_trail, "best_trigger": best_trigger,
+                "best_pnl":  round(best_pnl, 2),
+                "sr_pnl":    round(sr_strat, 2),
+                "delta":     round(best_pnl - sr_strat, 2),
+                "top5": sorted(grid, key=lambda x: x["total_pnl"], reverse=True)[:5],
+            })
+            combined_pnl   += best_pnl
+            best_overrides[strat] = {"trail": best_trail, "trigger": best_trigger}
+
+        return jsonify({
+            "mode": "per_strategy", "sr_total": sr_total,
+            "combined_pnl": round(combined_pnl, 2),
+            "delta": round(combined_pnl - sr_total, 2),
+            "strategies": strategy_results,
+            "best_overrides": best_overrides,
+        })
+
+
 @app.route("/strategies")
 def strategies():
     return render_template("strategies.html")

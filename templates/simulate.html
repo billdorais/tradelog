@@ -56,6 +56,25 @@
     }
     .apply-sr-btn:hover { background: rgba(196,181,253,0.2); }
     .apply-sr-btn:disabled { opacity: 0.5; cursor: default; }
+    .sweep-btn {
+      background: rgba(250,204,21,0.08); border: 1px solid #6b5a1a; color: #fbbf24;
+      border-radius: 6px; padding: 9px 18px; font-size: 0.85rem; font-family: inherit;
+      cursor: pointer; font-weight: 600; white-space: nowrap;
+    }
+    .sweep-btn:hover  { background: rgba(250,204,21,0.15); }
+    .sweep-btn.active { background: rgba(250,204,21,0.18); border-color: #f59e0b; color: #fde68a; }
+    .sweep-panel { margin-top: 14px; padding-top: 14px; border-top: 1px solid #1e2130; display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; }
+    .sweep-results { margin-bottom: 28px; }
+    .sweep-results table { font-size: 0.8rem; }
+    .sweep-results thead th { font-size: 0.67rem; }
+    .sweep-row-best td { color: #fde68a; }
+    .sweep-apply-btn {
+      background: transparent; border: 1px solid #3a3a1a; color: #fbbf24;
+      border-radius: 4px; padding: 3px 10px; font-size: 0.72rem; cursor: pointer;
+    }
+    .sweep-apply-btn:hover { border-color: #fbbf24; }
+    .sweep-strat-section { margin-bottom: 18px; }
+    .sweep-strat-title { font-size: 0.78rem; font-weight: 600; color: #fbbf24; margin-bottom: 6px; }
 
     /* Summary cards */
     .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-bottom: 28px; }
@@ -247,6 +266,38 @@
     <div class="config-row" style="margin-top:4px">
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
       <button class="apply-sr-btn" id="applyBtn" onclick="applyToSignalRouter()" style="display:none" title="Push new params trail/trigger to all matching Signal Router pipelines">&#8593; Apply to Signal Router</button>
+      <button class="sweep-btn" id="sweepToggleBtn" onclick="toggleSweepPanel()">⚡ Sweep</button>
+    </div>
+    <div id="sweepPanel" style="display:none">
+      <div class="sweep-panel">
+        <div class="param-group">
+          <label>Trail min</label>
+          <div class="input-wrap"><input type="number" id="sweepMin" value="0.05" step="0.05" min="0.01" max="5"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group">
+          <label>Trail max</label>
+          <div class="input-wrap"><input type="number" id="sweepMax" value="0.40" step="0.05" min="0.01" max="5"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group">
+          <label>Step</label>
+          <div class="input-wrap"><input type="number" id="sweepStep" value="0.05" step="0.01" min="0.01" max="1"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group">
+          <label title="Comma-separated trigger values to test, e.g. 0, 0.1, 0.2">Triggers to test</label>
+          <input type="text" id="sweepTriggers" value="0, 0.1" style="width:110px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit">
+        </div>
+        <div class="param-group" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <label class="toggle-wrap" title="Find the best trail independently per strategy type">
+            <input type="checkbox" id="sweepPerStrategy" checked>
+            <span class="toggle-label active" id="sweepPerStratLabel">Per strategy</span>
+          </label>
+        </div>
+        <div class="param-group" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <button class="run-btn" id="sweepRunBtn" onclick="runSweep()" style="padding:7px 18px;font-size:0.82rem">⚡ Run Sweep</button>
+        </div>
+      </div>
     </div>
     <div class="presets-row" id="presetsRow" style="display:none"></div>
     <div class="overrides-row" id="overridesRow" style="display:none"></div>
@@ -262,6 +313,12 @@
         <button onclick="addTier()" style="background:transparent;border:1px dashed #555;color:#666;border-radius:3px;padding:1px 8px;font-size:0.7rem;cursor:pointer">+ tier</button>
       </div>
     </div>
+  </div>
+
+  <!-- Sweep results -->
+  <div id="sweepResults" class="sweep-results" style="display:none">
+    <div class="section-title" id="sweepTitle" style="margin-bottom:12px"></div>
+    <div id="sweepBody"></div>
   </div>
 
   <!-- Summary -->
@@ -863,6 +920,135 @@
 
   function hideError() {
     document.getElementById('errorMsg').style.display = 'none';
+  }
+
+  // ── Sweep ──────────────────────────────────────────────────────────────
+  function toggleSweepPanel() {
+    const panel = document.getElementById('sweepPanel');
+    const btn   = document.getElementById('sweepToggleBtn');
+    const shown = panel.style.display !== 'none';
+    panel.style.display = shown ? 'none' : 'block';
+    btn.classList.toggle('active', !shown);
+  }
+
+  async function runSweep() {
+    const btn      = document.getElementById('sweepRunBtn');
+    const fromDate = document.getElementById('fromDate').value;
+    const toDate   = document.getElementById('toDate').value;
+    const account  = document.getElementById('account').value;
+    if (!fromDate || !toDate) { alert('Please set a date range first.'); return; }
+    const trailMin    = parseFloat(document.getElementById('sweepMin').value)  || 0.05;
+    const trailMax    = parseFloat(document.getElementById('sweepMax').value)  || 0.40;
+    const trailStep   = parseFloat(document.getElementById('sweepStep').value) || 0.05;
+    const triggerRaw  = document.getElementById('sweepTriggers').value;
+    const triggers    = triggerRaw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+    const perStrategy = document.getElementById('sweepPerStrategy').checked;
+    const skipExits   = document.getElementById('skipTvExits').checked;
+    const maxHold     = parseInt(document.getElementById('maxHold').value) || 0;
+    const stopDollars = parseFloat(document.getElementById('stopLossDollars').value) || 0;
+    btn.disabled = true; btn.textContent = '⏳ Sweeping…';
+    document.getElementById('sweepResults').style.display = 'none';
+    try {
+      const res  = await fetch('/api/simulate/sweep', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ from_date: fromDate, to_date: toDate, account,
+          trail_min: trailMin, trail_max: trailMax, trail_step: trailStep,
+          triggers, per_strategy: perStrategy, skip_tv_exits: skipExits,
+          max_hold_mins: maxHold, stop_loss_dollars: stopDollars }),
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      renderSweepResults(data);
+    } catch(e) {
+      alert('Sweep failed: ' + e);
+    } finally {
+      btn.disabled = false; btn.textContent = '⚡ Run Sweep';
+    }
+  }
+
+  function renderSweepResults(data) {
+    const el    = document.getElementById('sweepResults');
+    const body  = document.getElementById('sweepBody');
+    const title = document.getElementById('sweepTitle');
+    const fmt   = v => v >= 0 ? `<span style="color:#7FE098">+$${v.toFixed(2)}</span>`
+                              : `<span style="color:#e74c3c">-$${Math.abs(v).toFixed(2)}</span>`;
+
+    if (data.mode === 'global') {
+      title.textContent = `Sweep results — SR baseline $${data.sr_total >= 0 ? '+' : ''}${data.sr_total.toFixed(2)} · ${data.results[0]?.trades || 0} trades`;
+      const rows = data.results.map((r, i) => `
+        <tr class="${i === 0 ? 'sweep-row-best' : ''}">
+          <td>${i+1}</td>
+          <td>${r.trail}%</td>
+          <td>${r.trigger}%</td>
+          <td>${fmt(r.total_pnl)}</td>
+          <td>${fmt(r.delta_vs_sr)}</td>
+          <td style="color:#7FE098">${r.improved}</td>
+          <td style="color:#e74c3c">${r.worse}</td>
+          <td><button class="sweep-apply-btn" onclick="applySweepGlobal(${r.trail},${r.trigger})">Apply</button></td>
+        </tr>`).join('');
+      body.innerHTML = `
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th>#</th><th>Trail</th><th>Trigger</th><th>Total P&L</th>
+              <th>vs SR</th><th>↑ Better</th><th>↓ Worse</th><th></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    } else {
+      const best = data.best_overrides;
+      title.innerHTML = `Per-strategy sweep &nbsp;·&nbsp; SR baseline ${fmt(data.sr_total)} &nbsp;·&nbsp; `
+        + `Combined best ${fmt(data.combined_pnl)} &nbsp;·&nbsp; Delta ${fmt(data.delta)} `
+        + `&nbsp;<button class="sweep-apply-btn" style="margin-left:8px" onclick='applyAllSweepOptima(${JSON.stringify(best)})'>Apply all optima to chips</button>`;
+      const sections = data.strategies.map(s => {
+        const top5rows = s.top5.map((r, i) => `
+          <tr class="${i===0?'sweep-row-best':''}">
+            <td>${r.trail}%</td><td>${r.trigger}%</td><td>${fmt(r.total_pnl)}</td>
+            <td><button class="sweep-apply-btn" onclick="applySweepStrategy('${s.strategy}',${r.trail},${r.trigger})">Apply</button></td>
+          </tr>`).join('');
+        return `
+          <div class="sweep-strat-section">
+            <div class="sweep-strat-title">${s.strategy} &nbsp;(${s.trades} trades · SR ${fmt(s.sr_pnl)} · best ${fmt(s.best_pnl)} · delta ${fmt(s.delta)})</div>
+            <div class="tbl-wrap" style="max-width:480px">
+              <table>
+                <thead><tr><th>Trail</th><th>Trigger</th><th>P&L</th><th></th></tr></thead>
+                <tbody>${top5rows}</tbody>
+              </table>
+            </div>
+          </div>`;
+      }).join('');
+      body.innerHTML = sections;
+    }
+    el.style.display = 'block';
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function applySweepGlobal(trail, trigger) {
+    document.getElementById('trailPct').value   = trail;
+    document.getElementById('triggerPct').value = trigger;
+    document.querySelectorAll('.override-input').forEach(inp => inp.value = trail);
+    document.querySelectorAll('.override-trigger-input').forEach(inp => inp.value = trigger);
+  }
+
+  function applySweepStrategy(stratLabel, trail, trigger) {
+    document.querySelectorAll('.override-input').forEach(inp => {
+      if (inp.dataset.strategy === stratLabel) inp.value = trail;
+    });
+    document.querySelectorAll('.override-trigger-input').forEach(inp => {
+      if (inp.dataset.strategy === stratLabel) inp.value = trigger;
+    });
+  }
+
+  function applyAllSweepOptima(overrides) {
+    for (const [label, vals] of Object.entries(overrides)) {
+      document.querySelectorAll('.override-input').forEach(inp => {
+        if (inp.dataset.strategy === label) inp.value = vals.trail;
+      });
+      document.querySelectorAll('.override-trigger-input').forEach(inp => {
+        if (inp.dataset.strategy === label) inp.value = vals.trigger;
+      });
+    }
   }
 </script>
 </body>
