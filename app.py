@@ -4075,7 +4075,10 @@ def api_simulate_stops():
                 }
         _rc.close()
     except Exception as _re:
-        log.debug("Rule settings lookup: %s", _re)
+        log.warning("Rule settings lookup failed: %s", _re)
+    log.info("Simulate rule_settings: %d rules loaded: %s",
+             len(rule_settings),
+             {k: v.get("trail_pct") for k, v in rule_settings.items()})
 
     fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
     signal_lookup = _build_signal_lookup_for_alpaca()
