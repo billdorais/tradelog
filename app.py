@@ -8016,69 +8016,69 @@ def _simulate_exit(bars, entry_price: float, side: str,
                     "reason": "actual", "exit_mins": round(hold_mins, 1)}
 
         hold_mins = (bar_ts - entry_dt).total_seconds() / 60
-        high = float(bar.high)
-        low  = float(bar.low)
+        high  = float(bar.high)
+        low   = float(bar.low)
+        close = float(bar.close)
+        mid   = (high + low) / 2.0
+
+        # Intra-bar ordering heuristic: use close position to infer which
+        # extreme came first within the minute.
+        #   LONG:  close > mid  → bullish bar → low came before high
+        #   SHORT: close < mid  → bearish bar → high came before low
+        # For the "first" extreme, check stop/trail against the pre-bar peak
+        # before updating it, giving a more conservative (realistic) estimate
+        # for tight trail percentages.
+
+        def _exit(reason, px):
+            return {"exit_price": round(px, 4), "exit_time": str(bar_ts),
+                    "reason": reason, "exit_mins": round(hold_mins, 1)}
+
+        def _check_exit(trail_px, sl_px, stop_fires, trail_fires, long):
+            if stop_fires and trail_fires:
+                better = (trail_px > sl_px) if long else (trail_px < sl_px)
+                return _exit("trail", trail_px) if better else _exit("stop_loss", sl_px)
+            if trail_fires: return _exit("trail",     trail_px)
+            if stop_fires:  return _exit("stop_loss", sl_px)
+            return None
 
         if is_long:
-            peak = max(peak, high)
+            low_first = close > mid          # bullish bar: low before high
+            if not low_first:
+                peak = max(peak, high)        # bearish: update peak before checking low
             peak_gain_pct = (peak - entry_price) / entry_price * 100 if peak > entry_price else 0.0
             eff_trail = _get_tiered_trail(peak_gain_pct, trail_tiers, trail_pct) if trail_tiers else trail_pct
-            # Combine % and $ stops — use tighter (higher) stop price
             _pct_sl_px = entry_price * (1 - stop_loss_pct / 100) if stop_loss_pct > 0 else None
             _sl_px = max(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
                      if (_pct_sl_px is not None or _dollar_sl_px is not None) else None
-            _stop_fires = _sl_px is not None and low <= _sl_px
             _trail_px = None
             if eff_trail > 0:
-                triggered = (trigger_pct == 0) or (peak >= entry_price * (1 + trigger_pct / 100))
-                if triggered:
+                if (trigger_pct == 0) or (peak >= entry_price * (1 + trigger_pct / 100)):
                     _trail_px = peak * (1 - eff_trail / 100)
-            _trail_fires = _trail_px is not None and low <= _trail_px
-            if _stop_fires or _trail_fires:
-                # When both fire on the same bar, the higher price was crossed first
-                if _stop_fires and _trail_fires:
-                    if _trail_px > _sl_px:
-                        return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
-                                "reason": "trail", "exit_mins": round(hold_mins, 1)}
-                    else:
-                        return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
-                                "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
-                elif _trail_fires:
-                    return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
-                            "reason": "trail", "exit_mins": round(hold_mins, 1)}
-                else:
-                    return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
-                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            result = _check_exit(_trail_px, _sl_px,
+                                 _sl_px is not None and low <= _sl_px,
+                                 _trail_px is not None and low <= _trail_px, True)
+            if result: return result
+            if low_first:
+                peak = max(peak, high)        # bullish: update peak after low was checked
         else:
-            peak = min(peak, low)
+            high_first = close < mid         # bearish bar: high before low
+            if not high_first:
+                peak = min(peak, low)         # bullish: update trough before checking high
             peak_gain_pct = (entry_price - peak) / entry_price * 100 if peak < entry_price else 0.0
             eff_trail = _get_tiered_trail(peak_gain_pct, trail_tiers, trail_pct) if trail_tiers else trail_pct
-            # Combine % and $ stops — use tighter (lower) stop price
             _pct_sl_px = entry_price * (1 + stop_loss_pct / 100) if stop_loss_pct > 0 else None
             _sl_px = min(p for p in [_pct_sl_px, _dollar_sl_px] if p is not None) \
                      if (_pct_sl_px is not None or _dollar_sl_px is not None) else None
-            _stop_fires = _sl_px is not None and high >= _sl_px
             _trail_px = None
             if eff_trail > 0:
-                triggered = (trigger_pct == 0) or (peak <= entry_price * (1 - trigger_pct / 100))
-                if triggered:
+                if (trigger_pct == 0) or (peak <= entry_price * (1 - trigger_pct / 100)):
                     _trail_px = peak * (1 + eff_trail / 100)
-            _trail_fires = _trail_px is not None and high >= _trail_px
-            if _stop_fires or _trail_fires:
-                # When both fire on the same bar, the lower price was crossed first
-                if _stop_fires and _trail_fires:
-                    if _trail_px < _sl_px:
-                        return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
-                                "reason": "trail", "exit_mins": round(hold_mins, 1)}
-                    else:
-                        return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
-                                "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
-                elif _trail_fires:
-                    return {"exit_price": round(_trail_px, 4), "exit_time": str(bar_ts),
-                            "reason": "trail", "exit_mins": round(hold_mins, 1)}
-                else:
-                    return {"exit_price": round(_sl_px, 4), "exit_time": str(bar_ts),
-                            "reason": "stop_loss", "exit_mins": round(hold_mins, 1)}
+            result = _check_exit(_trail_px, _sl_px,
+                                 _sl_px is not None and high >= _sl_px,
+                                 _trail_px is not None and high >= _trail_px, False)
+            if result: return result
+            if high_first:
+                peak = min(peak, low)         # bearish: update trough after high was checked
 
         if max_hold_mins > 0 and hold_mins >= max_hold_mins:
             return {"exit_price": round(float(bar.close), 4), "exit_time": str(bar_ts),
