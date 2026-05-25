@@ -668,7 +668,7 @@
       return `<tr class="${rowCls}">
         <td class="mono">${esc(t.date.slice(5))}</td>
         <td><span class="side-badge ${sideCls}">${t.side}</span></td>
-        <td class="mono"><a class="ticker-link" onclick="openTickerModal(${JSON.stringify(t.ticker)})" title="Show all ${esc(t.ticker)} trades">${esc(t.ticker)}</a></td>
+        <td class="mono"><a class="ticker-link" onclick="openTickerModal('${esc(t.ticker)}')" title="Show all ${esc(t.ticker)} trades">${esc(t.ticker)}</a></td>
         <td style="color:#888;font-size:0.75rem">${esc(stratLabel)}</td>
         <td>${t.qty}</td>
         <td class="mono" style="color:#888">${ruleTrail}</td>
