@@ -613,40 +613,54 @@
     return name;
   }
 
+  function avgMins(trades, field) {
+    const vals = trades.map(t => t[field]).filter(v => v != null);
+    if (!vals.length) return null;
+    return (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1);
+  }
+
   function openTickerModal(ticker) {
     const trades = _simTrades.filter(t => t.ticker === ticker);
     if (!trades.length) return;
-    const newTotal  = trades.reduce((s, t) => s + (t.new_pnl  ?? 0), 0);
-    const baseTotal = trades.reduce((s, t) => s + (t.base_pnl ?? 0), 0);
-    const improved  = trades.filter(t => (t.pnl_delta ?? 0) >  0.01).length;
-    const worse     = trades.filter(t => (t.pnl_delta ?? 0) < -0.01).length;
-    const newCls    = newTotal >= 0 ? 'pos' : 'neg';
-    const deltaCls  = (newTotal - baseTotal) >= 0 ? 'pos' : 'neg';
+    const newTotal   = trades.reduce((s, t) => s + (t.new_pnl  ?? 0), 0);
+    const baseTotal  = trades.reduce((s, t) => s + (t.base_pnl ?? 0), 0);
+    const improved   = trades.filter(t => (t.pnl_delta ?? 0) >  0.01).length;
+    const worse      = trades.filter(t => (t.pnl_delta ?? 0) < -0.01).length;
+    const newCls     = newTotal  >= 0 ? 'pos' : 'neg';
+    const baseCls    = baseTotal >= 0 ? 'pos' : 'neg';
+    const deltaCls   = (newTotal - baseTotal) >= 0 ? 'pos' : 'neg';
+    const avgBase    = avgMins(trades, 'base_exit_mins');
+    const avgNew     = avgMins(trades, 'new_exit_mins');
     document.getElementById('modalTitle').textContent = ticker;
     document.getElementById('modalStats').innerHTML = `
       <div class="modal-stat">${trades.length} trades</div>
+      <div class="modal-stat">Current P&L: <span class="${baseCls}">${fmt(baseTotal)}</span></div>
       <div class="modal-stat">New P&L: <span class="${newCls}">${fmt(newTotal)}</span></div>
       <div class="modal-stat">Delta: <span class="${deltaCls}">${fmt(newTotal - baseTotal)}</span></div>
       <div class="modal-stat">Improved: <span class="pos">${improved}</span> &nbsp; Worse: <span class="neg">${worse}</span></div>
+      ${avgBase != null ? `<div class="modal-stat">Avg hold: <span>${avgBase}m</span> → <span>${avgNew ?? '—'}m</span></div>` : ''}
     `;
     document.getElementById('modalBody').innerHTML = `
       <table>
         <thead><tr>
           <th>Date</th><th>Side</th><th>Strategy</th><th>Qty</th>
-          <th>Entry</th><th>Actual Exit</th><th>New Params Exit</th>
-          <th>New Reason</th><th>Actual P&L</th><th>New P&L</th><th>Delta</th>
+          <th>Entry</th><th>Actual Exit</th><th>Current Rules Exit</th><th>New Params Exit</th>
+          <th>New Reason</th><th>Actual P&L</th><th>Current P&L</th><th>New P&L</th><th>Delta</th>
         </tr></thead>
         <tbody>
           ${trades.map(t => {
             const sideCls   = t.side === 'LONG' ? 'long' : 'short';
             const actCls    = t.actual_pnl >= 0 ? 'pos' : 'neg';
-            const newCls    = (t.new_pnl ?? 0) >= 0 ? 'pos' : 'neg';
+            const baseCls   = (t.base_pnl ?? 0) >= 0 ? 'pos' : 'neg';
+            const newCls    = (t.new_pnl  ?? 0) >= 0 ? 'pos' : 'neg';
             const delta     = t.pnl_delta;
             const deltaCls  = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
             const deltaArrow= delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
             const rowCls    = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
-            const newPx     = t.new_exit_price != null ? `$${Number(t.new_exit_price).toFixed(2)}` : '—';
-            const holdStr   = t.new_exit_mins  != null ? `${t.new_exit_mins}m` : '—';
+            const basePx    = t.base_exit_price != null ? `$${Number(t.base_exit_price).toFixed(2)}` : '—';
+            const newPx     = t.new_exit_price  != null ? `$${Number(t.new_exit_price).toFixed(2)}`  : '—';
+            const baseHold  = t.base_exit_mins != null ? `${t.base_exit_mins}m` : '—';
+            const newHold   = t.new_exit_mins  != null ? `${t.new_exit_mins}m`  : '—';
             return `<tr class="${rowCls}">
               <td class="mono">${esc(t.date.slice(5))}</td>
               <td><span class="side-badge ${sideCls}">${t.side}</span></td>
@@ -654,9 +668,11 @@
               <td>${t.qty}</td>
               <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
               <td class="mono">$${Number(t.actual_exit_price).toFixed(2)} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
-              <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
+              <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHold}</span></td>
+              <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${newHold}</span></td>
               <td>${reasonLabel(t.new_exit_reason)}</td>
               <td class="${actCls}">${fmt(t.actual_pnl)}</td>
+              <td class="${baseCls}">${t.base_pnl != null ? fmt(t.base_pnl) : '—'}</td>
               <td class="${newCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
               <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
             </tr>`;
