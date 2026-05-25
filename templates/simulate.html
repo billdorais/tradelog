@@ -69,6 +69,10 @@
     thead th[data-col]:hover { color: #aaa; }
     thead th[data-col].sort-asc::after  { content: ' ▲'; color: #c4b5fd; }
     thead th[data-col].sort-desc::after { content: ' ▼'; color: #c4b5fd; }
+    thead th.col-sr  { color: #5a8fa8; border-top: 2px solid #2a5a70; }
+    thead th.col-sr[data-col]:hover { color: #7ab8d0; }
+    thead th.col-new { color: #7FE098; border-top: 2px solid #7FE098; }
+    thead th.col-new[data-col]:hover { color: #a8f0bb; }
     tbody tr { border-bottom: 1px solid #1a1d2e; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #13161f; }
@@ -264,17 +268,18 @@
             <th data-col="ticker">Ticker</th>
             <th data-col="strategy">Strategy</th>
             <th data-col="qty">Qty</th>
-            <th data-col="rule_trail_pct" title="Trail % from Signal Router rule">Rule Trail</th>
             <th data-col="entry_price">Entry</th>
             <th data-col="actual_exit_price">Actual Exit</th>
-            <th data-col="base_exit_price" title="Simulated exit using current Signal Router trail settings">Signal Router Exit</th>
-            <th data-col="new_exit_price" title="Simulated exit using your new parameters">New Params Exit</th>
-            <th data-col="base_exit_reason">Base Reason</th>
-            <th data-col="new_exit_reason">New Reason</th>
             <th data-col="actual_pnl">Actual P&amp;L</th>
-            <th data-col="base_pnl" title="P&L with current rule trail settings and rule qty">Signal Router P&amp;L</th>
-            <th data-col="new_pnl" title="P&L with your new parameters and rule qty">New P&amp;L</th>
-            <th data-col="pnl_delta" title="New P&L minus Signal Router P&L">Delta</th>
+            <th data-col="rule_trail_pct"   class="col-sr"  title="Trail % from Signal Router rule">SR Trail</th>
+            <th data-col="base_exit_price"  class="col-sr"  title="Simulated exit using Signal Router trail settings">SR Exit</th>
+            <th data-col="base_exit_reason" class="col-sr">SR Reason</th>
+            <th data-col="base_pnl"         class="col-sr"  title="P&L with Signal Router trail settings">SR P&amp;L</th>
+            <th data-col="new_trail_pct"    class="col-new" title="Effective trail % applied in new params simulation">New Trail</th>
+            <th data-col="new_exit_price"   class="col-new" title="Simulated exit using your new parameters">New Exit</th>
+            <th data-col="new_exit_reason"  class="col-new">New Reason</th>
+            <th data-col="new_pnl"          class="col-new" title="P&L with your new parameters">New P&amp;L</th>
+            <th data-col="pnl_delta"        class="col-new" title="New P&L minus Signal Router P&L">Delta</th>
           </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -344,7 +349,7 @@
       }
       const row = document.getElementById('presetsRow');
       if (!chips.length) return;
-      row.innerHTML = '<span class="presets-label" title="Click to load into New Params fields">Current Rules baseline — click to load into fields</span>' +
+      row.innerHTML = '<span class="presets-label" style="color:#5a8fa8" title="Click to load into New Params fields">Signal Router baseline — click to load into fields</span>' +
         chips.map(c =>
           `<button class="preset-chip" onclick="applyPreset(${c.trail},${c.trigger})" title="Trail ${c.trail}%  Trigger ${c.trigger}%">${c.label}<span class="preset-trail">${c.trail}%</span></button>`
         ).join('');
@@ -573,6 +578,7 @@
     const rowCls     = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
     const sideCls    = t.side === 'LONG' ? 'long' : 'short';
     const ruleTrail  = t.rule_trail_pct != null ? `${t.rule_trail_pct}%` : '—';
+    const newTrail   = t.new_trail_pct  != null ? `${t.new_trail_pct}%`  : '—';
     const stratLabel = shortStrategy(t.strategy || '');
     const basePx     = t.base_exit_price != null ? `$${Number(t.base_exit_price).toFixed(2)}` : '—';
     const newPx      = t.new_exit_price  != null ? `$${Number(t.new_exit_price).toFixed(2)}`  : '—';
@@ -585,15 +591,16 @@
       <td class="mono"><a class="ticker-link" onclick="openTickerModal('${esc(t.ticker)}')" title="Show all ${esc(t.ticker)} trades">${esc(t.ticker)}</a></td>
       <td style="color:#888;font-size:0.75rem">${esc(stratLabel)}</td>
       <td>${t.qty}</td>
-      <td class="mono" style="color:#888">${ruleTrail}</td>
       <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
       <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
-      <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
-      <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
-      <td>${reasonLabel(t.base_exit_reason)}</td>
-      <td>${reasonLabel(t.new_exit_reason)}</td>
       <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
+      <td class="mono" style="color:#5a8fa8">${ruleTrail}</td>
+      <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
+      <td>${reasonLabel(t.base_exit_reason)}</td>
       <td class="${basePnlCls}">${t.base_pnl != null ? fmt(t.base_pnl) : '—'}</td>
+      <td class="mono" style="color:#7FE098">${newTrail}</td>
+      <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
+      <td>${reasonLabel(t.new_exit_reason)}</td>
       <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
       <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
     </tr>`;
