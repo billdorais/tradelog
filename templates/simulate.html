@@ -956,6 +956,7 @@
           triggers, per_strategy: perStrategy, skip_tv_exits: skipExits,
           max_hold_mins: maxHold, stop_loss_dollars: stopDollars }),
       });
+      if (!res.ok) { alert(`Sweep error ${res.status}: ${await res.text()}`); return; }
       const data = await res.json();
       if (data.error) { alert(data.error); return; }
       renderSweepResults(data);

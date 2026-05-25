@@ -4258,6 +4258,7 @@ def api_simulate_stops():
 def simulate_sweep():
     """Parameter sweep: grid-search trail/trigger combos, return ranked results."""
     import datetime as _dt
+    import concurrent.futures as _cf
     from collections import defaultdict
     body         = request.get_json() or {}
     from_date    = body.get("from_date", "")
