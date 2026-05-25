@@ -499,6 +499,20 @@
       const val = parseFloat(inp.value);
       if (!isNaN(val)) strategyTriggerOverrides[inp.dataset.strategy] = val;
     });
+
+    // Build human-readable note for the New Params card/title
+    const _stopStr = stopLossPct > 0 ? `stop ${stopLossPct}%` : stopLossDollars > 0 ? `stop $${stopLossDollars}` : 'no stop';
+    const _overrideKeys = Object.keys(strategyOverrides);
+    if (_overrideKeys.length) {
+      const chips = _overrideKeys.map(k => {
+        const trig = strategyTriggerOverrides[k];
+        return `${k} ${strategyOverrides[k]}%${trig ? ` trig ${trig}%` : ''}`;
+      });
+      _newParamsNote = chips.join(' · ') + ` · ${_stopStr} · max ${maxHold}m`;
+    } else {
+      _newParamsNote = `trail ${trailPct}% trigger ${triggerPct}% ${_stopStr} max ${maxHold}m`;
+    }
+
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
     btn.textContent = 'Fetching bars…';
@@ -537,6 +551,7 @@
   // ── Global trade store + sort state ─────────────────────────────────────
   let _simTrades = [];
   let _sortCol = 'date', _sortDir = 1;
+  let _newParamsNote = '';
 
   function initSortHeaders() {
     document.getElementById('sortHeader').querySelectorAll('th[data-col]').forEach(th => {
@@ -712,7 +727,7 @@
     let stopStr = p.stop_loss_pct > 0 ? `stop ${p.stop_loss_pct}%` : '';
     if (p.stop_loss_dollars > 0) stopStr += (stopStr ? ' / ' : '') + `stop $${p.stop_loss_dollars}`;
     if (!stopStr) stopStr = 'no stop';
-    const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}m`;
+    const newSubNote = _newParamsNote;
     document.getElementById('summaryCards').innerHTML = `
       <div class="stat-card"><div class="stat-label">Actual P&L</div><div class="stat-value ${actualClass}">${fmt(s.actual_pnl)}</div><div class="stat-sub">real fills</div></div>
       <div class="stat-card"><div class="stat-label">Signal Router P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
@@ -726,7 +741,7 @@
     _simTrades = data.trades;
 
     // Results title
-    let titleStr = `Before / After  ·  new trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}min`;
+    let titleStr = `Before / After  ·  ${_newParamsNote}`;
     if (p.morning_trail_pct)   titleStr += `  ·  morning ${p.morning_trail_pct}%`;
     if (p.afternoon_trail_pct) titleStr += `  ·  afternoon ${p.afternoon_trail_pct}%`;
     if (p.skip_tv_exits)       titleStr += `  ·  stops only`;
