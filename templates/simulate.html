@@ -49,6 +49,13 @@
     }
     .run-btn:hover { background: rgba(127,224,152,0.2); }
     .run-btn:disabled { opacity: 0.5; cursor: default; }
+    .apply-sr-btn {
+      background: rgba(196,181,253,0.1); border: 1px solid #6d5fa8; color: #c4b5fd;
+      border-radius: 6px; padding: 9px 18px; font-size: 0.85rem; font-family: inherit;
+      cursor: pointer; font-weight: 600; white-space: nowrap; margin-right: 8px;
+    }
+    .apply-sr-btn:hover { background: rgba(196,181,253,0.2); }
+    .apply-sr-btn:disabled { opacity: 0.5; cursor: default; }
 
     /* Summary cards */
     .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-bottom: 28px; }
@@ -233,6 +240,7 @@
         <span class="toggle-label active" id="skipTvLabel">Stops only (skip TV exits)</span>
       </label>
       <div style="flex:1"></div>
+      <button class="apply-sr-btn" id="applyBtn" onclick="applyToSignalRouter()" style="display:none" title="Push new params trail/trigger to all matching Signal Router pipelines">&#8593; Apply to Signal Router</button>
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
     </div>
     <div class="presets-row" id="presetsRow" style="display:none"></div>
@@ -372,6 +380,7 @@
           </div>`
         ).join('');
       oRow.style.display = 'flex';
+      document.getElementById('applyBtn').style.display = chips.length ? 'inline-block' : 'none';
 
       // Fetch session trail overrides and show as info badges
       try {
@@ -710,6 +719,57 @@
 
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTickerModal(); });
   document.addEventListener('DOMContentLoaded', initSortHeaders);
+
+  async function applyToSignalRouter() {
+    const overrides = {};
+    document.querySelectorAll('.override-input').forEach(inp => {
+      const val = parseFloat(inp.value);
+      if (!isNaN(val)) overrides[inp.dataset.strategy] = { trail: val };
+    });
+    document.querySelectorAll('.override-trigger-input').forEach(inp => {
+      const val = parseFloat(inp.value);
+      if (!isNaN(val) && overrides[inp.dataset.strategy])
+        overrides[inp.dataset.strategy].trigger = val;
+    });
+
+    const labels = Object.keys(overrides);
+    if (!labels.length) { alert('No per-strategy overrides set.'); return; }
+
+    const preview = labels.map(l =>
+      `  ${l}: trail ${overrides[l].trail}%  trig ${overrides[l].trigger ?? 0}%`
+    ).join('\n');
+    if (!confirm(`Apply these settings to all matching Signal Router pipelines?\n\n${preview}\n\nThis will overwrite the trail and trigger on every matching rule.`)) return;
+
+    const btn = document.getElementById('applyBtn');
+    btn.disabled = true;
+    btn.textContent = 'Applying…';
+
+    let totalUpdated = 0, errors = [];
+    for (const label of labels) {
+      const slug = label.toUpperCase().replace(/\s+/g, '_');
+      try {
+        const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name_contains:  slug,
+            trail_offset:   overrides[label].trail,
+            trail_trigger:  overrides[label].trigger ?? 0,
+          }),
+        });
+        const d = await res.json();
+        if (d.error) errors.push(`${label}: ${d.error}`);
+        else totalUpdated += d.updated || 0;
+      } catch (e) {
+        errors.push(`${label}: ${e.message}`);
+      }
+    }
+
+    btn.disabled = false;
+    btn.textContent = '↑ Apply to Signal Router';
+    if (errors.length) alert('Errors:\n' + errors.join('\n'));
+    else alert(`Done — ${totalUpdated} pipeline${totalUpdated !== 1 ? 's' : ''} updated.`);
+  }
 
   function renderResults(data) {
     const s = data.summary;
