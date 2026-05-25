@@ -192,7 +192,11 @@
     <div class="config-row">
       <div class="field">
         <label>From</label>
-        <input type="date" id="fromDate">
+        <div style="display:flex;align-items:center;gap:6px">
+          <input type="date" id="fromDate">
+          <button id="anchorBtn" onclick="toggleAnchor()" title="Lock start date so it doesn't reset on refresh"
+                  style="background:transparent;border:1px solid #2a2d3e;border-radius:4px;color:#555;cursor:pointer;font-size:0.85rem;padding:5px 7px;line-height:1">⚓</button>
+        </div>
       </div>
       <div class="field">
         <label>To</label>
@@ -239,9 +243,10 @@
         <input type="checkbox" id="skipTvExits" checked onchange="document.getElementById('skipTvLabel').className='toggle-label'+(this.checked?' active':'')">
         <span class="toggle-label active" id="skipTvLabel">Stops only (skip TV exits)</span>
       </label>
-      <div style="flex:1"></div>
-      <button class="apply-sr-btn" id="applyBtn" onclick="applyToSignalRouter()" style="display:none" title="Push new params trail/trigger to all matching Signal Router pipelines">&#8593; Apply to Signal Router</button>
+    </div>
+    <div class="config-row" style="margin-top:4px">
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
+      <button class="apply-sr-btn" id="applyBtn" onclick="applyToSignalRouter()" style="display:none" title="Push new params trail/trigger to all matching Signal Router pipelines">&#8593; Apply to Signal Router</button>
     </div>
     <div class="presets-row" id="presetsRow" style="display:none"></div>
     <div class="overrides-row" id="overridesRow" style="display:none"></div>
@@ -314,16 +319,48 @@
 </div>
 
 <script>
-  // Default dates: from = 5 business days ago, to = today
+  // Default dates: from = 5 business days ago, to = today; anchor persists fromDate
   (function () {
     const today = new Date();
     const pad   = n => String(n).padStart(2, '0');
     const fmt   = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
     const ago   = new Date(today);
     ago.setDate(ago.getDate() - 7);
-    document.getElementById('toDate').value   = fmt(today);
-    document.getElementById('fromDate').value = fmt(ago);
+    document.getElementById('toDate').value = fmt(today);
+    const anchored = localStorage.getItem('sim_from_anchored');
+    const saved    = localStorage.getItem('sim_from_date');
+    if (anchored === '1' && saved) {
+      document.getElementById('fromDate').value = saved;
+      document.getElementById('anchorBtn').style.color = '#7FE098';
+      document.getElementById('anchorBtn').style.borderColor = '#7FE098';
+    } else {
+      document.getElementById('fromDate').value = fmt(ago);
+    }
   })();
+
+  function toggleAnchor() {
+    const btn       = document.getElementById('anchorBtn');
+    const fromInput = document.getElementById('fromDate');
+    const isAnchored = localStorage.getItem('sim_from_anchored') === '1';
+    if (isAnchored) {
+      localStorage.removeItem('sim_from_anchored');
+      localStorage.removeItem('sim_from_date');
+      btn.style.color       = '#555';
+      btn.style.borderColor = '#2a2d3e';
+    } else {
+      localStorage.setItem('sim_from_anchored', '1');
+      localStorage.setItem('sim_from_date', fromInput.value);
+      btn.style.color       = '#7FE098';
+      btn.style.borderColor = '#7FE098';
+    }
+  }
+
+  // Keep anchor in sync if user changes the date while anchored
+  document.getElementById('fromDate').addEventListener('change', function () {
+    if (localStorage.getItem('sim_from_anchored') === '1') {
+      localStorage.setItem('sim_from_date', this.value);
+    }
+  });
 
   // Load Signal Router presets on page load
   async function loadRulePresets() {
