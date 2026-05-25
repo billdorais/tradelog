@@ -4129,8 +4129,21 @@ def api_simulate_stops():
             continue
 
         # Always use actual fill qty — rule qty is for live sizing, not P&L replay
-        rule         = rule_settings.get(strategy.upper(), {})
-        qty          = fill_qty
+        qty = fill_qty
+        # Exact match first; fall back to substring match (same logic as _resolve_strategy_trail)
+        rule = rule_settings.get(strategy.upper())
+        if rule is None:
+            sname = strategy.upper()
+            for rkey, rval in rule_settings.items():
+                if '_CAM_' in rkey:
+                    parts = rkey.split('_CAM_')[1].split('_')
+                    pattern = '_'.join(parts[:2])  # e.g. BREAKOUT_R3S3
+                else:
+                    pattern = rkey
+                if pattern and pattern in sname:
+                    rule = rval
+                    break
+        rule         = rule or {}
         r_trail      = rule.get("trail_pct",    trail_pct)
         r_trigger    = rule.get("trigger_pct",  0.0)
         r_max_hold   = rule.get("max_hold_mins") or 0  # locked to Signal Router node; 0 = no limit
