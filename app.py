@@ -4133,7 +4133,7 @@ def api_simulate_stops():
         # Exact match first; fall back to substring match (same logic as _resolve_strategy_trail)
         rule = rule_settings.get(strategy.upper())
         if rule is None:
-            sname = strategy.upper()
+            sname = strategy.upper().replace(' ', '_')
             for rkey, rval in rule_settings.items():
                 if '_CAM_' in rkey:
                     parts = rkey.split('_CAM_')[1].split('_')
