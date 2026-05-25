@@ -267,14 +267,14 @@
             <th data-col="rule_trail_pct" title="Trail % from Signal Router rule">Rule Trail</th>
             <th data-col="entry_price">Entry</th>
             <th data-col="actual_exit_price">Actual Exit</th>
-            <th data-col="base_exit_price" title="Simulated exit using current Signal Router trail settings">Current Rules Exit</th>
+            <th data-col="base_exit_price" title="Simulated exit using current Signal Router trail settings">Signal Router Exit</th>
             <th data-col="new_exit_price" title="Simulated exit using your new parameters">New Params Exit</th>
             <th data-col="base_exit_reason">Base Reason</th>
             <th data-col="new_exit_reason">New Reason</th>
             <th data-col="actual_pnl">Actual P&amp;L</th>
-            <th data-col="base_pnl" title="P&L with current rule trail settings and rule qty">Current P&amp;L</th>
+            <th data-col="base_pnl" title="P&L with current rule trail settings and rule qty">Signal Router P&amp;L</th>
             <th data-col="new_pnl" title="P&L with your new parameters and rule qty">New P&amp;L</th>
-            <th data-col="pnl_delta" title="New P&L minus Current P&L">Delta</th>
+            <th data-col="pnl_delta" title="New P&L minus Signal Router P&L">Delta</th>
           </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -634,7 +634,7 @@
     document.getElementById('modalTitle').textContent = ticker;
     document.getElementById('modalStats').innerHTML = `
       <div class="modal-stat">${trades.length} trades</div>
-      <div class="modal-stat">Current P&L: <span class="${baseCls}">${fmt(baseTotal)}</span></div>
+      <div class="modal-stat">Signal Router P&L: <span class="${baseCls}">${fmt(baseTotal)}</span></div>
       <div class="modal-stat">New P&L: <span class="${newCls}">${fmt(newTotal)}</span></div>
       <div class="modal-stat">Delta: <span class="${deltaCls}">${fmt(newTotal - baseTotal)}</span></div>
       <div class="modal-stat">Improved: <span class="pos">${improved}</span> &nbsp; Worse: <span class="neg">${worse}</span></div>
@@ -644,8 +644,8 @@
       <table>
         <thead><tr>
           <th>Date</th><th>Side</th><th>Strategy</th><th>Qty</th>
-          <th>Entry</th><th>Actual Exit</th><th>Current Rules Exit</th><th>New Params Exit</th>
-          <th>New Reason</th><th>Actual P&L</th><th>Current P&L</th><th>New P&L</th><th>Delta</th>
+          <th>Entry</th><th>Actual Exit</th><th>Signal Router Exit</th><th>New Params Exit</th>
+          <th>New Reason</th><th>Actual P&L</th><th>Signal Router P&L</th><th>New P&L</th><th>Delta</th>
         </tr></thead>
         <tbody>
           ${trades.map(t => {
@@ -706,7 +706,7 @@
     if (!stopStr) stopStr = 'no stop';
     const newSubNote  = `trail ${p.trail_pct}%  trigger ${p.trigger_pct}%  ${stopStr}  max ${p.max_hold_mins}m`;
     document.getElementById('summaryCards').innerHTML = `
-      <div class="stat-card"><div class="stat-label">Current Rules P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
+      <div class="stat-card"><div class="stat-label">Signal Router P&L</div><div class="stat-value ${baseClass}">${fmt(s.base_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${baseSubNote}</div></div>
       <div class="stat-card"><div class="stat-label">New Params P&L</div><div class="stat-value ${newClass}">${fmt(s.new_pnl)}</div><div class="stat-sub" style="font-size:0.65rem">${newSubNote}</div></div>
       <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">new vs current</div></div>
       <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
