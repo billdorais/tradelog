@@ -65,6 +65,10 @@
     .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2130; }
     table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
     thead th { background: #13161f; color: #666; font-weight: 500; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.05em; padding: 10px 12px; text-align: left; border-bottom: 1px solid #1e2130; white-space: nowrap; }
+    thead th[data-col] { cursor: pointer; user-select: none; }
+    thead th[data-col]:hover { color: #aaa; }
+    thead th[data-col].sort-asc::after  { content: ' ▲'; color: #c4b5fd; }
+    thead th[data-col].sort-desc::after { content: ' ▼'; color: #c4b5fd; }
     tbody tr { border-bottom: 1px solid #1a1d2e; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: #13161f; }
@@ -217,12 +221,12 @@
       <div class="divider"></div>
       <div class="param-group">
         <label>Max Hold</label>
-        <div class="input-wrap"><input type="number" id="maxHold" value="60" step="5" min="0" max="480"><span class="unit">min</span></div>
+        <div class="input-wrap"><input type="number" id="maxHold" value="10" step="5" min="0" max="480"><span class="unit">min</span></div>
       </div>
       <div class="divider"></div>
       <label class="toggle-wrap" title="Ignore TV signal exit times — simulation runs until stop/trail fires, max hold, or EOD">
-        <input type="checkbox" id="skipTvExits" onchange="document.getElementById('skipTvLabel').className='toggle-label'+(this.checked?' active':'')">
-        <span class="toggle-label" id="skipTvLabel">Stops only (skip TV exits)</span>
+        <input type="checkbox" id="skipTvExits" checked onchange="document.getElementById('skipTvLabel').className='toggle-label'+(this.checked?' active':'')">
+        <span class="toggle-label active" id="skipTvLabel">Stops only (skip TV exits)</span>
       </label>
       <div style="flex:1"></div>
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
@@ -254,23 +258,23 @@
     <div class="tbl-wrap">
       <table>
         <thead>
-          <tr>
-            <th>Date</th>
-            <th>Side</th>
-            <th>Ticker</th>
-            <th>Strategy</th>
-            <th>Qty</th>
-            <th title="Trail % from Signal Router rule">Rule Trail</th>
-            <th>Entry</th>
-            <th>Actual Exit</th>
-            <th title="Simulated exit using current Signal Router trail settings">Current Rules Exit</th>
-            <th title="Simulated exit using your new parameters">New Params Exit</th>
-            <th>Base Reason</th>
-            <th>New Reason</th>
-            <th>Actual P&amp;L</th>
-            <th title="P&L with current rule trail settings and rule qty">Current P&amp;L</th>
-            <th title="P&L with your new parameters and rule qty">New P&amp;L</th>
-            <th title="New P&L minus Current P&L">Delta</th>
+          <tr id="sortHeader">
+            <th data-col="date">Date</th>
+            <th data-col="side">Side</th>
+            <th data-col="ticker">Ticker</th>
+            <th data-col="strategy">Strategy</th>
+            <th data-col="qty">Qty</th>
+            <th data-col="rule_trail_pct" title="Trail % from Signal Router rule">Rule Trail</th>
+            <th data-col="entry_price">Entry</th>
+            <th data-col="actual_exit_price">Actual Exit</th>
+            <th data-col="base_exit_price" title="Simulated exit using current Signal Router trail settings">Current Rules Exit</th>
+            <th data-col="new_exit_price" title="Simulated exit using your new parameters">New Params Exit</th>
+            <th data-col="base_exit_reason">Base Reason</th>
+            <th data-col="new_exit_reason">New Reason</th>
+            <th data-col="actual_pnl">Actual P&amp;L</th>
+            <th data-col="base_pnl" title="P&L with current rule trail settings and rule qty">Current P&amp;L</th>
+            <th data-col="new_pnl" title="P&L with your new parameters and rule qty">New P&amp;L</th>
+            <th data-col="pnl_delta" title="New P&L minus Current P&L">Delta</th>
           </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -525,8 +529,79 @@
     }
   }
 
-  // ── Global trade store for modal ────────────────────────────────────────
+  // ── Global trade store + sort state ─────────────────────────────────────
   let _simTrades = [];
+  let _sortCol = 'date', _sortDir = 1;
+
+  function initSortHeaders() {
+    document.getElementById('sortHeader').querySelectorAll('th[data-col]').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (_sortCol === col) _sortDir *= -1;
+        else { _sortCol = col; _sortDir = 1; }
+        renderTableBody();
+        document.querySelectorAll('#sortHeader th').forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
+        th.classList.add(_sortDir === 1 ? 'sort-asc' : 'sort-desc');
+      });
+    });
+  }
+
+  function sortedTrades() {
+    const col = _sortCol, dir = _sortDir;
+    return [..._simTrades].sort((a, b) => {
+      let av = a[col] ?? '', bv = b[col] ?? '';
+      if (col === 'strategy') { av = shortStrategy(String(av)); bv = shortStrategy(String(bv)); }
+      if (typeof av === 'number' || typeof bv === 'number') return (Number(av) - Number(bv)) * dir;
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+  }
+
+  function reasonLabel(r) {
+    if (!r) return '';
+    const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit'};
+    const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual'};
+    return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
+  }
+
+  function renderRow(t) {
+    const basePnlCls = (t.base_pnl ?? 0) >= 0 ? 'pos' : 'neg';
+    const newPnlCls  = (t.new_pnl  ?? 0) >= 0 ? 'pos' : 'neg';
+    const actPnlCls  = t.actual_pnl >= 0 ? 'pos' : 'neg';
+    const delta      = t.pnl_delta;
+    const deltaCls   = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
+    const deltaArrow = delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
+    const rowCls     = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
+    const sideCls    = t.side === 'LONG' ? 'long' : 'short';
+    const ruleTrail  = t.rule_trail_pct != null ? `${t.rule_trail_pct}%` : '—';
+    const stratLabel = shortStrategy(t.strategy || '');
+    const basePx     = t.base_exit_price != null ? `$${Number(t.base_exit_price).toFixed(2)}` : '—';
+    const newPx      = t.new_exit_price  != null ? `$${Number(t.new_exit_price).toFixed(2)}`  : '—';
+    const actPx      = `$${Number(t.actual_exit_price).toFixed(2)}`;
+    const holdStr    = t.new_exit_mins  != null ? `${t.new_exit_mins}m`  : '—';
+    const baseHoldStr= t.base_exit_mins != null ? `${t.base_exit_mins}m` : '—';
+    return `<tr class="${rowCls}">
+      <td class="mono">${esc(t.date.slice(5))}</td>
+      <td><span class="side-badge ${sideCls}">${t.side}</span></td>
+      <td class="mono"><a class="ticker-link" onclick="openTickerModal('${esc(t.ticker)}')" title="Show all ${esc(t.ticker)} trades">${esc(t.ticker)}</a></td>
+      <td style="color:#888;font-size:0.75rem">${esc(stratLabel)}</td>
+      <td>${t.qty}</td>
+      <td class="mono" style="color:#888">${ruleTrail}</td>
+      <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
+      <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
+      <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
+      <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
+      <td>${reasonLabel(t.base_exit_reason)}</td>
+      <td>${reasonLabel(t.new_exit_reason)}</td>
+      <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
+      <td class="${basePnlCls}">${t.base_pnl != null ? fmt(t.base_pnl) : '—'}</td>
+      <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
+      <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
+    </tr>`;
+  }
+
+  function renderTableBody() {
+    document.getElementById('resultsBody').innerHTML = sortedTrades().map(renderRow).join('');
+  }
 
   function shortStrategy(name) {
     const upper = name.toUpperCase();
@@ -554,12 +629,6 @@
       <div class="modal-stat">Delta: <span class="${deltaCls}">${fmt(newTotal - baseTotal)}</span></div>
       <div class="modal-stat">Improved: <span class="pos">${improved}</span> &nbsp; Worse: <span class="neg">${worse}</span></div>
     `;
-    const reasonLabel = r => {
-      if (!r) return '';
-      const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit'};
-      const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual'};
-      return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
-    };
     document.getElementById('modalBody').innerHTML = `
       <table>
         <thead><tr>
@@ -602,6 +671,7 @@
   }
 
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTickerModal(); });
+  document.addEventListener('DOMContentLoaded', initSortHeaders);
 
   function renderResults(data) {
     const s = data.summary;
@@ -640,50 +710,7 @@
     document.getElementById('resultsTitle').textContent = titleStr;
 
     // Results table
-    const reasonLabel = r => {
-      if (!r) return '';
-      const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit'};
-      const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual'};
-      return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
-    };
-
-    document.getElementById('resultsBody').innerHTML = data.trades.map(t => {
-      const basePnlCls = (t.base_pnl ?? 0) >= 0 ? 'pos' : 'neg';
-      const newPnlCls  = (t.new_pnl  ?? 0) >= 0 ? 'pos' : 'neg';
-      const actPnlCls  = t.actual_pnl >= 0 ? 'pos' : 'neg';
-      const delta      = t.pnl_delta;
-      const deltaCls   = delta == null ? '' : delta > 0.01 ? 'pos' : delta < -0.01 ? 'neg' : '';
-      const deltaArrow = delta == null ? '' : delta > 0.01 ? '↑' : delta < -0.01 ? '↓' : '→';
-      const rowCls     = delta == null ? '' : delta > 0.01 ? 'improved' : delta < -0.01 ? 'worse' : '';
-      const sideCls    = t.side === 'LONG' ? 'long' : 'short';
-      const ruleTrail  = t.rule_trail_pct != null ? `${t.rule_trail_pct}%` : '—';
-      const stratLabel = shortStrategy(t.strategy || '');
-
-      const basePx = t.base_exit_price != null ? `$${Number(t.base_exit_price).toFixed(2)}` : '—';
-      const newPx  = t.new_exit_price  != null ? `$${Number(t.new_exit_price).toFixed(2)}`  : '—';
-      const actPx  = `$${Number(t.actual_exit_price).toFixed(2)}`;
-      const holdStr = t.new_exit_mins != null ? `${t.new_exit_mins}m` : '—';
-
-      const baseHoldStr = t.base_exit_mins != null ? `${t.base_exit_mins}m` : '—';
-      return `<tr class="${rowCls}">
-        <td class="mono">${esc(t.date.slice(5))}</td>
-        <td><span class="side-badge ${sideCls}">${t.side}</span></td>
-        <td class="mono"><a class="ticker-link" onclick="openTickerModal('${esc(t.ticker)}')" title="Show all ${esc(t.ticker)} trades">${esc(t.ticker)}</a></td>
-        <td style="color:#888;font-size:0.75rem">${esc(stratLabel)}</td>
-        <td>${t.qty}</td>
-        <td class="mono" style="color:#888">${ruleTrail}</td>
-        <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
-        <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
-        <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
-        <td class="mono">${newPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.new_exit_time)} ${holdStr}</span></td>
-        <td>${reasonLabel(t.base_exit_reason)}</td>
-        <td>${reasonLabel(t.new_exit_reason)}</td>
-        <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
-        <td class="${basePnlCls}">${t.base_pnl != null ? fmt(t.base_pnl) : '—'}</td>
-        <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
-        <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
-      </tr>`;
-    }).join('');
+    renderTableBody();
 
     document.getElementById('resultsSection').style.display = 'block';
   }
