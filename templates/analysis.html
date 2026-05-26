@@ -321,6 +321,7 @@
       </div>
       <button class="modal-close" onclick="closePairs()">Close</button>
     </div>
+    <div id="pairsSnapNote" style="display:none;padding:6px 16px;background:#2a2000;border-bottom:1px solid #5a4a00;font-size:0.82rem;color:#F2E7AC"></div>
     <div class="pair-tabs">
       <div class="pair-tab active" data-tab="clean" onclick="switchPairTab('clean')">Round-trips<span class="count" id="pairsCleanCount">0</span></div>
       <div class="pair-tab"        data-tab="orphans" onclick="switchPairTab('orphans')">Orphans<span class="count" id="pairsOrphanCount">0</span></div>
@@ -713,7 +714,7 @@
         const tenureCell = tn === 1
           ? `<span style="color:#7FE098;font-weight:600" title="Newly added in this run">NEW</span>`
           : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
-        return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" title="Click to see round-trip pairs">
+        return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${r.trades}" data-snap-wr="${r.win_rate}" data-snap-pnl="${r.total_pnl}" title="Click to see round-trip pairs (from current date range)">
           <td style="color:#666">${i + 1}</td>
           <td class="name"><span style="color:#c4b5fd;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
@@ -987,7 +988,7 @@
     }
   }
 
-  function openPairs(kind, key) {
+  function openPairs(kind, key, snapStats) {
     const closed  = (analysisData && analysisData.closed)  || [];
     const orphans = (analysisData && analysisData.orphans) || [];
     const matches = arr => arr.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
@@ -998,6 +999,13 @@
     document.getElementById('pairsTitle').textContent = key;
     document.getElementById('pairsCleanCount').textContent  = ` (${clean.length})`;
     document.getElementById('pairsOrphanCount').textContent = ` (${orph.length})`;
+    const noteEl = document.getElementById('pairsSnapNote');
+    if (snapStats && snapStats.trades !== clean.length) {
+      noteEl.innerHTML = `⚠ The Refined Snapshot showed <strong>${snapStats.trades} trade${snapStats.trades === 1 ? '' : 's'} · ${snapStats.win_rate}% · ${fmt(snapStats.total_pnl)}</strong> — computed at the last refresh (45-day window). The pairs below reflect your <strong>current date range</strong> and may differ.`;
+      noteEl.style.display = '';
+    } else {
+      noteEl.style.display = 'none';
+    }
     switchPairTab('clean');
     document.getElementById('pairsBackdrop').classList.add('open');
     document.getElementById('pairsModal').classList.add('open');
@@ -1015,13 +1023,28 @@
 
   // Delegated click handlers for leaderboard drill-down — bound once to a
   // stable parent so they survive tbody re-renders.
-  for (const id of ['stratBody', 'tickerBody', 'refinedSnapRows']) {
+  for (const id of ['stratBody', 'tickerBody']) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.addEventListener('click', e => {
       const tr = e.target.closest('tr.drill');
       if (!tr) return;
       openPairs(tr.dataset.kind, tr.dataset.key);
+    });
+  }
+  // Refined snapshot rows pass their snapshot stats so openPairs can warn when
+  // the current-period data differs from the snapshot's 45-day window.
+  const _snapEl = document.getElementById('refinedSnapRows');
+  if (_snapEl) {
+    _snapEl.addEventListener('click', e => {
+      const tr = e.target.closest('tr.drill');
+      if (!tr) return;
+      const snapStats = {
+        trades:    parseInt(tr.dataset.snapTrades || '0', 10),
+        win_rate:  parseFloat(tr.dataset.snapWr  || '0'),
+        total_pnl: parseFloat(tr.dataset.snapPnl || '0'),
+      };
+      openPairs(tr.dataset.kind, tr.dataset.key, snapStats);
     });
   }
 
