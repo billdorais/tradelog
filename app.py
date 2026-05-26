@@ -1441,7 +1441,7 @@ def _recover_max_hold_positions():
             cur.execute(
                 f"SELECT strategy, received_at FROM trades "
                 f"WHERE ticker={p} AND exec_status='filled' "
-                f"AND action NOT LIKE 'EXIT%%' AND sentiment!='flat' "
+                f"AND action NOT IN ('EXIT_LONG','EXIT_SHORT','EXIT') AND sentiment!='flat' "
                 f"ORDER BY id DESC LIMIT 10",
                 (symbol,),
             )
