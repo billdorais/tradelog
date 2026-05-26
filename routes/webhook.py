@@ -742,11 +742,13 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     # Register max-hold timer if this entry has a max_hold_mins constraint
                     if is_entry and result.get("success") and ep_max_hold_mins:
                         _broker_tag = "alpaca2" if broker is app.alpaca_broker2 else "alpaca"
+                        _entry_ts   = datetime.now(timezone.utc)
                         with app._risk_lock:
                             app._max_hold_positions[(_broker_tag, ticker.upper())] = {
-                                "entry_time":    datetime.now(timezone.utc),
+                                "entry_time":    _entry_ts,
                                 "max_hold_mins": ep_max_hold_mins,
                             }
+                        app._persist_max_hold(_broker_tag, ticker.upper(), _entry_ts, ep_max_hold_mins)
                         app.log.info("Max hold registered: %s [%s] — %.0f min", ticker, _broker_tag, ep_max_hold_mins)
                     # If we cancelled a pending BUY, mark the original BUY trade record
                     # as "cancelled" so it doesn't appear as an orphaned/open trade.

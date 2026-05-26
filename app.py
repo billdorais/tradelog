@@ -737,6 +737,7 @@ def _check_position_stops():
         stale_holds = [k for k in _max_hold_positions if k not in open_keys]
         for k in stale_holds:
             _max_hold_positions.pop(k, None)
+            _clear_max_hold_db(k[0], k[1])
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
 
@@ -942,6 +943,7 @@ def _check_max_hold_exits():
                 with _risk_lock:
                     _auto_closed_symbols.add((broker_tag, symbol))
                     _max_hold_positions.pop((broker_tag, symbol), None)
+                _clear_max_hold_db(broker_tag, symbol)
                 log.info("Max hold: close order submitted for %s on %s", symbol, broker_tag)
             else:
                 log.error("Max hold: close failed for %s [%s]: %s", symbol, broker_tag, res.get("error"))
@@ -956,7 +958,11 @@ def _position_monitor_loop():
     """Background thread: poll positions every 3s, fire fixed-loss or trailing-giveback stops.
     Every ~15s, also run the exit-params partial-fill recovery watchdog."""
     global _exit_recovery_tick
-    time.sleep(25)  # stagger from risk monitor
+    time.sleep(25)  # stagger from risk monitor; also gives brokers time to init before recovery
+    try:
+        _recover_max_hold_positions()
+    except Exception as _e:
+        log.warning("Max hold recovery error on startup: %s", _e)
     while True:
         if MAX_POSITION_LOSS < 0 or MAX_POSITION_LOSS_PCT < 0 or MAX_POSITION_LOSS_REFINED < 0 or MAX_TRAILING_GIVEBACK > 0:
             try:
@@ -1275,7 +1281,108 @@ def init_db():
     """)
     conn.commit()
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS position_timers (
+            broker_tag    TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            entry_time    TEXT NOT NULL,
+            max_hold_mins REAL NOT NULL,
+            PRIMARY KEY (broker_tag, symbol)
+        )
+    """)
+    conn.commit()
+
     conn.close()
+
+
+def _persist_max_hold(broker_tag: str, symbol: str, entry_time, max_hold_mins: float):
+    """Upsert a max-hold timer to the DB so it survives process restarts."""
+    p = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        entry_iso = entry_time.isoformat()
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO position_timers (broker_tag, symbol, entry_time, max_hold_mins) "
+                f"VALUES ({p},{p},{p},{p}) "
+                f"ON CONFLICT (broker_tag, symbol) DO UPDATE SET "
+                f"entry_time=EXCLUDED.entry_time, max_hold_mins=EXCLUDED.max_hold_mins",
+                (broker_tag, symbol, entry_iso, max_hold_mins),
+            )
+        else:
+            cur.execute(
+                f"INSERT OR REPLACE INTO position_timers (broker_tag, symbol, entry_time, max_hold_mins) "
+                f"VALUES ({p},{p},{p},{p})",
+                (broker_tag, symbol, entry_iso, max_hold_mins),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as _e:
+        log.warning("_persist_max_hold failed for %s [%s]: %s", symbol, broker_tag, _e)
+
+
+def _clear_max_hold_db(broker_tag: str, symbol: str):
+    """Remove a max-hold timer from the DB."""
+    p = placeholder()
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"DELETE FROM position_timers WHERE broker_tag={p} AND symbol={p}",
+                    (broker_tag, symbol))
+        conn.commit()
+        conn.close()
+    except Exception as _e:
+        log.warning("_clear_max_hold_db failed for %s [%s]: %s", symbol, broker_tag, _e)
+
+
+def _recover_max_hold_positions():
+    """Reload max-hold timers from DB on startup; drop any whose position is already closed."""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT broker_tag, symbol, entry_time, max_hold_mins FROM position_timers")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception as _e:
+        log.warning("Max hold recovery: DB query failed: %s", _e)
+        return
+    if not rows:
+        return
+
+    open_keys = set()
+    for _tag, _inst in [("alpaca", alpaca_broker), ("alpaca2", alpaca_broker2)]:
+        if _inst is None:
+            continue
+        try:
+            for _p in _inst.get_positions():
+                if abs(float(_p.get("qty") or 0)) > 0:
+                    open_keys.add((_tag, _p["symbol"].upper()))
+        except Exception as _e:
+            log.warning("Max hold recovery: get_positions failed [%s]: %s", _tag, _e)
+
+    recovered = 0
+    for row in rows:
+        broker_tag, symbol, entry_iso, max_hold_mins = row[0], row[1], row[2], float(row[3])
+        key = (broker_tag, symbol.upper())
+        if key not in open_keys:
+            _clear_max_hold_db(broker_tag, symbol)
+            continue
+        try:
+            entry_time = datetime.fromisoformat(entry_iso)
+            if entry_time.tzinfo is None:
+                entry_time = entry_time.replace(tzinfo=timezone.utc)
+        except Exception:
+            _clear_max_hold_db(broker_tag, symbol)
+            continue
+        with _risk_lock:
+            _max_hold_positions[key] = {"entry_time": entry_time, "max_hold_mins": max_hold_mins}
+        recovered += 1
+        log.info("Max hold recovered: %s [%s] — entry %s, limit %.0f min",
+                 symbol, broker_tag, entry_iso, max_hold_mins)
+
+    if recovered:
+        log.info("Max hold recovery: %d position(s) restored from DB", recovered)
 
 
 def _load_setting(key, default=None):
