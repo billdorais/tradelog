@@ -72,6 +72,7 @@ _auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed tod
 _position_peaks       = {}      # {SYMBOL: peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
+_max_hold_fail_ticks  = {}      # {(broker_tag, SYMBOL): consecutive_fail_count}
 _risk_lock            = threading.Lock()
 
 _IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
@@ -936,6 +937,13 @@ def _check_max_hold_exits():
             _clear_max_hold_db(broker_tag, symbol)
             continue
 
+        # Throttle retries: skip every other tick after first failure, then
+        # every 5 ticks (15s) after 3 consecutive failures.
+        fail_count = _max_hold_fail_ticks.get((broker_tag, symbol), 0)
+        if fail_count == 1 or (fail_count >= 3 and fail_count % 5 != 0):
+            _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
+            continue
+
         log.info("MAX HOLD: %s [%s] — %.1f min elapsed (limit %.0f min) — closing",
                  symbol, broker_tag, elapsed_mins, info["max_hold_mins"])
         try:
@@ -944,11 +952,14 @@ def _check_max_hold_exits():
                 with _risk_lock:
                     _auto_closed_symbols.add((broker_tag, symbol))
                     _max_hold_positions.pop((broker_tag, symbol), None)
+                _max_hold_fail_ticks.pop((broker_tag, symbol), None)
                 _clear_max_hold_db(broker_tag, symbol)
                 log.info("Max hold: close order submitted for %s on %s", symbol, broker_tag)
             else:
+                _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
                 log.error("Max hold: close failed for %s [%s]: %s", symbol, broker_tag, res.get("error"))
         except Exception as _e:
+            _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
             log.error("Max hold: close_position raised for %s [%s]: %s", symbol, broker_tag, _e)
 
 

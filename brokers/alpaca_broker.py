@@ -908,8 +908,27 @@ class AlpacaBroker:
             return []
 
     def close_position(self, symbol):
-        """Close a single open position by symbol."""
+        """Close a single open position by symbol.
+
+        Cancels any open orders for the symbol first so the shares are not
+        held_for_orders when the market close is submitted (trailing stop
+        orders reserve the full qty and cause a 40310000 rejection otherwise).
+        """
         self._ensure_client()
+        # Cancel open orders for this symbol so shares become available
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums   import QueryOrderStatus
+            open_req    = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol.upper()])
+            open_orders = self._trading.get_orders(filter=open_req)
+            for o in open_orders:
+                try:
+                    self._trading.cancel_order_by_id(o.id)
+                    log.info("close_position %s: cancelled open order %s (%s)", symbol, o.id, o.order_type)
+                except Exception as _ce:
+                    log.warning("close_position %s: cancel order %s failed: %s", symbol, o.id, _ce)
+        except Exception as _oe:
+            log.warning("close_position %s: could not fetch open orders: %s", symbol, _oe)
         try:
             order = self._trading.close_position(symbol)
             self._invalidate_pos_cache()
