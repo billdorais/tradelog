@@ -933,6 +933,7 @@ def _check_max_hold_exits():
         if not still_open:
             with _risk_lock:
                 _max_hold_positions.pop((broker_tag, symbol), None)
+            _clear_max_hold_db(broker_tag, symbol)
             continue
 
         log.info("MAX HOLD: %s [%s] — %.1f min elapsed (limit %.0f min) — closing",
@@ -1337,34 +1338,49 @@ def _clear_max_hold_db(broker_tag: str, symbol: str):
 
 
 def _recover_max_hold_positions():
-    """Reload max-hold timers from DB on startup; drop any whose position is already closed."""
+    """Reload max-hold timers on startup.
+
+    Two passes:
+    1. Restore from position_timers DB (handles clean restarts).
+    2. Scan all open Alpaca positions not yet tracked and cross-reference
+       against routing rules + recent trades — catches positions entered
+       during a deploy window before the DB write was in place.
+    """
+    p = placeholder()
+
+    # ── Pass 1: restore from DB ───────────────────────────────────────────
     try:
         conn = get_db()
         cur  = conn.cursor()
         cur.execute("SELECT broker_tag, symbol, entry_time, max_hold_mins FROM position_timers")
-        rows = cur.fetchall()
+        db_rows = cur.fetchall()
         conn.close()
     except Exception as _e:
         log.warning("Max hold recovery: DB query failed: %s", _e)
-        return
-    if not rows:
-        return
+        db_rows = []
 
-    open_keys = set()
+    # ── Fetch open Alpaca positions ───────────────────────────────────────
+    open_positions = {}   # (broker_tag, symbol) -> position dict
+    failed_brokers = set()
     for _tag, _inst in [("alpaca", alpaca_broker), ("alpaca2", alpaca_broker2)]:
         if _inst is None:
             continue
         try:
-            for _p in _inst.get_positions():
-                if abs(float(_p.get("qty") or 0)) > 0:
-                    open_keys.add((_tag, _p["symbol"].upper()))
+            for _pos in _inst.get_positions():
+                if abs(float(_pos.get("qty") or 0)) > 0:
+                    open_positions[(_tag, _pos["symbol"].upper())] = _pos
         except Exception as _e:
             log.warning("Max hold recovery: get_positions failed [%s]: %s", _tag, _e)
+            failed_brokers.add(_tag)
 
+    open_keys = set(open_positions.keys())
     recovered = 0
-    for row in rows:
+
+    for row in db_rows:
         broker_tag, symbol, entry_iso, max_hold_mins = row[0], row[1], row[2], float(row[3])
         key = (broker_tag, symbol.upper())
+        if broker_tag in failed_brokers:
+            continue  # can't verify — leave DB row for next startup
         if key not in open_keys:
             _clear_max_hold_db(broker_tag, symbol)
             continue
@@ -1378,11 +1394,98 @@ def _recover_max_hold_positions():
         with _risk_lock:
             _max_hold_positions[key] = {"entry_time": entry_time, "max_hold_mins": max_hold_mins}
         recovered += 1
-        log.info("Max hold recovered: %s [%s] — entry %s, limit %.0f min",
+        log.info("Max hold recovered (DB): %s [%s] — entry %s, limit %.0f min",
                  symbol, broker_tag, entry_iso, max_hold_mins)
 
+    # ── Pass 2: pick up untracked open positions (deploy-window entries) ──
+    already_tracked = set(_max_hold_positions.keys())
+    untracked = {k: v for k, v in open_positions.items()
+                 if k not in already_tracked and k[0] not in failed_brokers}
+    if not untracked:
+        if recovered:
+            log.info("Max hold recovery: %d position(s) restored", recovered)
+        return
+
+    # Load routing rules that have max_hold_mins configured
+    rule_max_hold = {}  # strategy_name_upper -> max_hold_mins
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1")
+        for rrow in cur.fetchall():
+            rname = (rrow[0] or "").upper()
+            try:
+                nodes = json.loads(rrow[1] or "[]")
+            except Exception:
+                continue
+            for nd in nodes:
+                if nd.get("type") == "exit_params":
+                    mhm = nd.get("max_hold_mins")
+                    if mhm:
+                        rule_max_hold[rname] = float(mhm)
+                    break
+        conn.close()
+    except Exception as _e:
+        log.warning("Max hold recovery: routing rules query failed: %s", _e)
+
+    if not rule_max_hold:
+        if recovered:
+            log.info("Max hold recovery: %d position(s) restored", recovered)
+        return
+
+    for (broker_tag, symbol) in untracked:
+        # Find the most recent filled entry trade for this symbol today
+        try:
+            conn = get_db()
+            cur  = conn.cursor()
+            cur.execute(
+                f"SELECT strategy, received_at FROM trades "
+                f"WHERE ticker={p} AND exec_status='filled' "
+                f"AND action NOT LIKE 'EXIT%%' AND sentiment!='flat' "
+                f"ORDER BY id DESC LIMIT 10",
+                (symbol,),
+            )
+            trade_rows = cur.fetchall()
+            conn.close()
+        except Exception as _e:
+            log.warning("Max hold recovery: trades query failed for %s: %s", symbol, _e)
+            continue
+
+        for trow in trade_rows:
+            strategy   = (trow[0] or "").upper()
+            received_at = trow[1] or ""
+            # Match strategy against rule_max_hold
+            mhm = rule_max_hold.get(strategy)
+            if mhm is None:
+                sname = strategy.replace(" ", "_")
+                for rkey, rval in rule_max_hold.items():
+                    if "_CAM_" in rkey:
+                        parts   = rkey.split("_CAM_")[1].split("_")
+                        pattern = "_".join(parts[:2]) if len(parts) >= 2 else rkey
+                    else:
+                        pattern = rkey
+                    if pattern and pattern in sname:
+                        mhm = rval
+                        break
+            if mhm is None:
+                continue
+            try:
+                entry_time = datetime.fromisoformat(received_at.replace(" ", "T"))
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            key = (broker_tag, symbol)
+            with _risk_lock:
+                _max_hold_positions[key] = {"entry_time": entry_time, "max_hold_mins": mhm}
+            _persist_max_hold(broker_tag, symbol, entry_time, mhm)
+            recovered += 1
+            log.info("Max hold recovered (open pos): %s [%s] — entry %s, limit %.0f min",
+                     symbol, broker_tag, received_at, mhm)
+            break  # found match for this symbol
+
     if recovered:
-        log.info("Max hold recovery: %d position(s) restored from DB", recovered)
+        log.info("Max hold recovery: %d position(s) restored total", recovered)
 
 
 def _load_setting(key, default=None):
