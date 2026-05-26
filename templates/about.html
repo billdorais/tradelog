@@ -128,7 +128,7 @@
       tab is active.
     </p>
     <p>
-      Beyond live trading, the platform includes a full backtesting and optimisation suite.
+      Beyond live trading, the platform includes a full backtesting, optimisation, and replay suite.
       The <strong>Backtester</strong> runs a single strategy over Alpaca or Yahoo Finance data.
       The <strong>Optimizer</strong> sweeps parameter ranges across multiple tickers and timeframes
       using random search, exports the best result as a ready-to-use Pine Script, and compares
@@ -136,6 +136,9 @@
       The <strong>Variants</strong> browser fans user-saved strategies out across tickers and timeframes,
       auto-populates defaults from the live strategy params, applies an IS/OOS walk-forward gate, and
       provisions approved variants directly into the Signal Router.
+      The <strong>Replay</strong> page re-simulates exits on actual Alpaca fills using 1-minute bar data,
+      letting you compare Signal Router stops against different trail/trigger parameters, run a parameter
+      sweep (global or per-strategy), and inspect results through a strategy+ticker breakdown with daily P&amp;L charts.
     </p>
     <p>
       The <strong>Progress</strong> page tracks TradingView alert setup per ticker using the naming
@@ -266,7 +269,7 @@
       <tr><td>Broker</td><td>Selects the execution broker: <strong style="color:#517356">IB</strong>, <strong style="color:#88BF8B">Alpaca</strong>, <strong style="color:#c4b5fd">Alpaca Refined</strong> (account 2, paper or live), or <strong style="color:#70a8f5">Coinbase</strong>. Overrides the "broker" field in the TradingView payload.</td></tr>
       <tr><td>Ticker Override</td><td>Forces a specific ticker regardless of what TradingView sends.</td></tr>
       <tr><td>Trading Hours</td><td>Drops signals arriving outside a configured session window (e.g. 09:30–16:00 ET). No trade is logged.</td></tr>
-      <tr><td>Exit Params</td><td>Attaches a broker-side stop-loss (and optional trailing stop) to every entry order. The Routing UI shows the stop value as a $ amount and as a % of the current stock price (colour-coded — red &lt;0.15%, yellow &lt;0.30%, green ≥0.30%). A "stop to all" bulk button on the Routing page adds the same stop to every pipeline that doesn't already have one. TradingView exit signals remain active — whichever fires first (TV exit or broker stop) closes the position.</td></tr>
+      <tr><td>Exit Params</td><td>Attaches a broker-side stop-loss and/or trailing stop to every entry order. The Routing UI shows the stop value as a $ amount and as a % of the current stock price (colour-coded — red &lt;0.15%, yellow &lt;0.30%, green ≥0.30%). A bulk "stop to all" button adds the same stop to every pipeline that doesn't already have one. <strong>Behaviour depends on configuration:</strong> when a trailing stop percentage is set, incoming TradingView exit signals are suppressed — the broker-side trailing stop is solely responsible for closing the position. When only a hard stop-loss is set (no trail), TradingView exit signals remain active and whichever fires first closes the position.</td></tr>
     </table>
 
     <h2>Alpaca Refined — Daily Top-N Refresh</h2>
@@ -469,12 +472,13 @@
       <tr>
         <td>Routing — Exit Params Node</td>
         <td>
-          The <strong>Exit Params</strong> pipeline node attaches a broker-side stop-loss (and optional
-          trailing stop) to every entry order. The Routing UI shows the stop value as a $ amount and
-          as a colour-coded % of the current stock price. A new "$ stop to all" bulk button (with an
-          editable dollar amount, default $0.50) adds the same stop to every pipeline that doesn't
-          already have one. TradingView exit signals are no longer dropped when an exit_params node
-          is present — whichever fires first (TV exit or broker stop) closes the position.
+          The <strong>Exit Params</strong> pipeline node attaches a broker-side stop-loss and/or
+          trailing stop to every entry order. The Routing UI shows the stop value as a $ amount and
+          as a colour-coded % of the current stock price (red &lt;0.15%, yellow &lt;0.30%, green ≥0.30%).
+          A bulk "$ stop to all" button adds the same stop to every pipeline without one.
+          When a trailing stop percentage is configured, TradingView exit signals for that pipeline
+          are suppressed — the broker-side trail is the sole exit mechanism. When only a hard stop
+          is configured (no trail), TV exits remain active alongside it.
         </td>
       </tr>
       <tr>
@@ -554,6 +558,54 @@
           <code style="font-size:0.82rem;color:#aaa">{% raw %}{{strategy.order.alert_message}}{% endraw %}</code>
           for the action field so LONG/SHORT/EXIT signals pass through correctly
           and count toward performance stats.
+        </td>
+      </tr>
+      <tr>
+        <td>Replay Page (formerly Stop Simulator)</td>
+        <td>
+          Renamed to <strong>Replay</strong> to better reflect what the tool does: re-simulate exits
+          on actual Alpaca fills using 1-minute OHLC bar data. Entry prices are real fills — only
+          the exit logic varies. An <strong>anchor button</strong> next to the start date locks it
+          across page refreshes via localStorage so the date range persists between sessions.
+        </td>
+      </tr>
+      <tr>
+        <td>Replay — Parameter Sweep</td>
+        <td>
+          A <strong>⚡ Sweep</strong> panel lets you grid-search trail % (min/max/step) against a
+          set of trigger values to find the combination that maximises P&amp;L over the selected period.
+          Two modes: <strong>Global</strong> (all trades together, ranked table) and
+          <strong>Per-Strategy</strong> (independent optimum per TYPE_LEVEL, with a combined best and
+          one-click "Apply all optima" button). The SR baseline is shown alongside every result for
+          context. Default sweep range: 0.10–0.40% trail, 0.01% step.
+        </td>
+      </tr>
+      <tr>
+        <td>Replay — Intra-Bar Ordering Heuristic</td>
+        <td>
+          The bar-by-bar stop simulation now sequences peak updates and stop checks based on where
+          the bar closed relative to its midpoint. On a bullish bar (close &gt; mid), the low is
+          visited before the high for long positions — preventing the simulator from crediting an
+          unrealistically high peak on bars that reversed intraday. This makes tight-trail results
+          more conservative and closer to live Alpaca fills.
+        </td>
+      </tr>
+      <tr>
+        <td>Replay — Strategy + Ticker Breakdown</td>
+        <td>
+          A <strong>📊 Breakdown</strong> toggle in the results title bar reveals a per-ticker table
+          grouped by strategy. Each row shows trade count, Actual P&amp;L, SR P&amp;L, New P&amp;L,
+          Delta, Win%, and Avg Hold. Tickers are sorted by delta ascending (worst first) so
+          problem tickers surface immediately. A TOTAL row summarises each strategy group.
+        </td>
+      </tr>
+      <tr>
+        <td>Replay — Daily P&amp;L Charts</td>
+        <td>
+          Three side-by-side bar charts appear above the results table after each simulation run:
+          <strong>Actual P&amp;L</strong>, <strong>SR P&amp;L</strong>, and <strong>New P&amp;L</strong>
+          per day. Green/red bars use the same Chart.js style as the dashboard Daily P&amp;L chart,
+          making it easy to spot which days drove the difference between parameter sets.
         </td>
       </tr>
     </table>
