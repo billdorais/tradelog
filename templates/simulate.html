@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Replay — Kairos Automata</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; padding: 0 0 60px; }
@@ -75,6 +76,13 @@
     .sweep-apply-btn:hover { border-color: #fbbf24; }
     .sweep-strat-section { margin-bottom: 18px; }
     .sweep-strat-title { font-size: 0.78rem; font-weight: 600; color: #fbbf24; margin-bottom: 6px; }
+
+    /* Daily P&L charts */
+    .daily-charts-section { margin-bottom: 28px; }
+    .daily-charts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 900px) { .daily-charts-grid { grid-template-columns: 1fr; } }
+    .daily-chart-card { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 16px; }
+    .daily-chart-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 10px; }
 
     /* Breakdown panel */
     .breakdown-section { margin-top: 28px; }
@@ -344,6 +352,24 @@
   <!-- Summary -->
   <div id="summarySection" style="display:none">
     <div class="summary-grid" id="summaryCards"></div>
+  </div>
+
+  <!-- Daily P&L Charts -->
+  <div id="dailyChartsSection" class="daily-charts-section" style="display:none">
+    <div class="daily-charts-grid">
+      <div class="daily-chart-card">
+        <div class="daily-chart-label">Actual P&amp;L per Day</div>
+        <canvas id="dailyActualChart" height="110"></canvas>
+      </div>
+      <div class="daily-chart-card">
+        <div class="daily-chart-label">SR P&amp;L per Day</div>
+        <canvas id="dailySrChart" height="110"></canvas>
+      </div>
+      <div class="daily-chart-card">
+        <div class="daily-chart-label">New P&amp;L per Day</div>
+        <canvas id="dailyNewChart" height="110"></canvas>
+      </div>
+    </div>
   </div>
 
   <!-- Results -->
@@ -936,8 +962,10 @@
     // Results table
     renderTableBody();
     renderBreakdown();
+    renderDailyCharts();
 
     document.getElementById('resultsSection').style.display = 'block';
+    document.getElementById('dailyChartsSection').style.display = 'block';
     // hide breakdown by default on each new run
     document.getElementById('breakdownSection').style.display = 'none';
     document.getElementById('breakdownBtn').classList.remove('active');
@@ -952,6 +980,59 @@
 
   function hideError() {
     document.getElementById('errorMsg').style.display = 'none';
+  }
+
+  // ── Daily P&L Charts ──────────────────────────────────────────────────
+  const _dailyChartInstances = {};
+
+  function _buildDailyBar(canvasId, values, labels) {
+    if (_dailyChartInstances[canvasId]) { _dailyChartInstances[canvasId].destroy(); }
+    const ctx = document.getElementById(canvasId).getContext('2d');
+    _dailyChartInstances[canvasId] = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: values.map(v => v >= 0 ? 'rgba(38,166,91,0.75)' : 'rgba(239,83,80,0.75)'),
+          borderColor:     values.map(v => v >= 0 ? '#7FE098' : '#ef5350'),
+          borderWidth: 1,
+          borderRadius: 2,
+        }],
+      },
+      options: {
+        animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: c => (c.parsed.y >= 0 ? '+' : '') + '$' + c.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { color: '#1a1d2a' } },
+          y: { grid: { color: '#1a1d2a', borderDash: [4,4] }, ticks: { color: '#666', callback: v => '$' + v.toLocaleString() } },
+        },
+      },
+    });
+  }
+
+  function renderDailyCharts() {
+    if (!_simTrades || !_simTrades.length) return;
+    const byDate = {};
+    for (const t of _simTrades) {
+      const d = (t.date || '').slice(0, 10);
+      if (!byDate[d]) byDate[d] = { actual: 0, sr: 0, nw: 0 };
+      byDate[d].actual += t.actual_pnl  ?? 0;
+      byDate[d].sr     += t.base_pnl    ?? 0;
+      byDate[d].nw     += t.new_pnl     ?? 0;
+    }
+    const dates   = Object.keys(byDate).sort();
+    const labels  = dates.map(d => d.slice(5));  // MM-DD
+    _buildDailyBar('dailyActualChart', dates.map(d => +byDate[d].actual.toFixed(2)), labels);
+    _buildDailyBar('dailySrChart',     dates.map(d => +byDate[d].sr.toFixed(2)),     labels);
+    _buildDailyBar('dailyNewChart',    dates.map(d => +byDate[d].nw.toFixed(2)),     labels);
   }
 
   // ── Breakdown ─────────────────────────────────────────────────────────
