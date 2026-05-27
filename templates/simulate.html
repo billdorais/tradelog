@@ -143,11 +143,12 @@
     .side-badge.long  { background: rgba(127,224,152,0.15); color: #7FE098; }
     .side-badge.short { background: rgba(231,76,60,0.15);  color: #e74c3c; }
     .reason-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; }
-    .reason-trail    { background: rgba(164,128,245,0.15); color: #c4b5fd; }
-    .reason-stop     { background: rgba(231,76,60,0.15);  color: #e74c3c; }
-    .reason-max_hold { background: rgba(242,231,172,0.15); color: #F2E7AC; }
-    .reason-eod      { background: rgba(100,100,100,0.15); color: #888; }
-    .reason-actual   { background: rgba(100,100,100,0.1);  color: #666; }
+    .reason-trail       { background: rgba(164,128,245,0.15); color: #c4b5fd; }
+    .reason-stop        { background: rgba(231,76,60,0.15);  color: #e74c3c; }
+    .reason-max_hold    { background: rgba(242,231,172,0.15); color: #F2E7AC; }
+    .reason-eod         { background: rgba(100,100,100,0.15); color: #888; }
+    .reason-actual      { background: rgba(100,100,100,0.1);  color: #666; }
+    .reason-take_profit { background: rgba(127,224,152,0.15); color: #7FE098; }
     .delta-arrow { font-size: 0.8rem; margin-right: 3px; }
 
     /* Ticker modal */
@@ -279,6 +280,10 @@
       <div class="param-group">
         <label>Stop Loss $</label>
         <div class="input-wrap"><input type="number" id="stopLossDollars" value="0" step="1" min="0" max="9999"><span class="unit">$</span></div>
+      </div>
+      <div class="param-group">
+        <label style="color:#7FE098">Take Profit</label>
+        <div class="input-wrap"><input type="number" id="takeProfitPct" value="0" step="0.05" min="0" max="20"><span class="unit">%</span></div>
       </div>
       <div class="divider"></div>
       <div class="param-group">
@@ -634,10 +639,11 @@
     const fromDate    = document.getElementById('fromDate').value;
     const toDate      = document.getElementById('toDate').value;
     const account     = document.getElementById('account').value;
-    const trailPct    = parseFloat(document.getElementById('trailPct').value)    || 0;
-    const triggerPct  = parseFloat(document.getElementById('triggerPct').value)  || 0;
-    const stopLossPct = parseFloat(document.getElementById('stopLossPct').value) || 0;
-    const maxHold     = parseInt(document.getElementById('maxHold').value)       || 0;
+    const trailPct      = parseFloat(document.getElementById('trailPct').value)      || 0;
+    const triggerPct    = parseFloat(document.getElementById('triggerPct').value)    || 0;
+    const stopLossPct   = parseFloat(document.getElementById('stopLossPct').value)   || 0;
+    const takeProfitPct = parseFloat(document.getElementById('takeProfitPct').value) || 0;
+    const maxHold       = parseInt(document.getElementById('maxHold').value)         || 0;
 
     if (!fromDate || !toDate) {
       showError('Please select a date range.');
@@ -659,15 +665,16 @@
 
     // Build human-readable note for the New Params card/title
     const _stopStr = stopLossPct > 0 ? `stop ${stopLossPct}%` : stopLossDollars > 0 ? `stop $${stopLossDollars}` : 'no stop';
+    const _tpStr   = takeProfitPct > 0 ? ` · TP ${takeProfitPct}%` : '';
     const _overrideKeys = Object.keys(strategyOverrides);
     if (_overrideKeys.length) {
       const chips = _overrideKeys.map(k => {
         const trig = strategyTriggerOverrides[k];
         return `${k} ${strategyOverrides[k]}%${trig ? ` trig ${trig}%` : ''}`;
       });
-      _newParamsNote = chips.join(' · ') + ` · ${_stopStr} · max ${maxHold}m`;
+      _newParamsNote = chips.join(' · ') + ` · ${_stopStr}${_tpStr} · max ${maxHold}m`;
     } else {
-      _newParamsNote = `trail ${trailPct}% trigger ${triggerPct}% ${_stopStr} max ${maxHold}m`;
+      _newParamsNote = `trail ${trailPct}% trigger ${triggerPct}% ${_stopStr}${_tpStr} max ${maxHold}m`;
     }
 
     const btn = document.getElementById('runBtn');
@@ -686,6 +693,7 @@
         body:    JSON.stringify({ from_date: fromDate, to_date: toDate, account,
                                   trail_pct: trailPct, trigger_pct: triggerPct,
                                   stop_loss_pct: stopLossPct, stop_loss_dollars: stopLossDollars,
+                                  take_profit_pct: takeProfitPct,
                                   max_hold_mins: maxHold, skip_tv_exits: skipTvExits,
                                   strategy_overrides: strategyOverrides,
                                   strategy_trigger_overrides: strategyTriggerOverrides,
@@ -735,8 +743,8 @@
 
   function reasonLabel(r) {
     if (!r) return '';
-    const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit'};
-    const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual'};
+    const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit', take_profit:'TP'};
+    const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual', take_profit:'reason-take_profit'};
     return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
   }
 

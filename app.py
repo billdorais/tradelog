@@ -4250,6 +4250,7 @@ def api_simulate_stops():
     trigger_pct        = float(body.get("trigger_pct",       0.0))
     stop_loss_pct      = float(body.get("stop_loss_pct",     0.0))
     stop_loss_dollars   = float(body.get("stop_loss_dollars",  0.0))
+    take_profit_pct    = float(body.get("take_profit_pct",   0.0))
     max_hold_mins       = int(body.get("max_hold_mins",       60))
     skip_tv_exits       = bool(body.get("skip_tv_exits",      False))
     strategy_overrides          = body.get("strategy_overrides",         {})
@@ -4416,7 +4417,8 @@ def api_simulate_stops():
                                   max_hold_mins, entry_dt,
                                   cap_dt=_cap_dt, cap_price=_cap_price,
                                   stop_loss_dollars=stop_loss_dollars, qty=qty,
-                                  trail_tiers=trail_tiers)
+                                  trail_tiers=trail_tiers,
+                                  take_profit_pct=take_profit_pct)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
@@ -4472,6 +4474,7 @@ def api_simulate_stops():
             "trigger_pct":        trigger_pct,
             "stop_loss_pct":      stop_loss_pct,
             "stop_loss_dollars":  stop_loss_dollars,
+            "take_profit_pct":    take_profit_pct,
             "max_hold_mins":      max_hold_mins,
             "from_date":         from_date,
             "to_date":           to_date,
@@ -8205,7 +8208,7 @@ def _simulate_exit(bars, entry_price: float, side: str,
                    stop_loss_pct: float, max_hold_mins: int,
                    entry_dt, cap_dt=None, cap_price=None,
                    stop_loss_dollars: float = 0.0, qty: float = 1.0,
-                   trail_tiers: list = None):
+                   trail_tiers: list = None, take_profit_pct: float = 0.0):
     """Walk 1-min bars and return the simulated exit.
 
     cap_dt / cap_price: if supplied, bars past cap_dt are ignored. If no stop
@@ -8271,9 +8274,13 @@ def _simulate_exit(bars, entry_price: float, side: str,
             return None
 
         if is_long:
+            tp_px     = entry_price * (1 + take_profit_pct / 100) if take_profit_pct > 0 else None
             low_first = close > mid          # bullish bar: low before high
-            if not low_first:
-                peak = max(peak, high)        # bearish: update peak before checking low
+            if not low_first:               # bearish bar: HIGH came first
+                # TP (on high) fires before stop (on low) in a bearish bar
+                if tp_px is not None and high >= tp_px:
+                    return _exit("take_profit", tp_px)
+                peak = max(peak, high)        # update peak after TP check
             peak_gain_pct = (peak - entry_price) / entry_price * 100 if peak > entry_price else 0.0
             eff_trail = _get_tiered_trail(peak_gain_pct, trail_tiers, trail_pct) if trail_tiers else trail_pct
             _pct_sl_px = entry_price * (1 - stop_loss_pct / 100) if stop_loss_pct > 0 else None
@@ -8287,12 +8294,19 @@ def _simulate_exit(bars, entry_price: float, side: str,
                                  _sl_px is not None and low <= _sl_px,
                                  _trail_px is not None and low <= _trail_px, True)
             if result: return result
-            if low_first:
-                peak = max(peak, high)        # bullish: update peak after low was checked
+            if low_first:                   # bullish bar: LOW already checked, HIGH fires now
+                # TP (on high) fires after stop check in a bullish bar
+                if tp_px is not None and high >= tp_px:
+                    return _exit("take_profit", tp_px)
+                peak = max(peak, high)        # update peak after TP check
         else:
+            tp_px      = entry_price * (1 - take_profit_pct / 100) if take_profit_pct > 0 else None
             high_first = close < mid         # bearish bar: high before low
-            if not high_first:
-                peak = min(peak, low)         # bullish: update trough before checking high
+            if not high_first:              # bullish bar: LOW came first
+                # TP (on low) fires before stop (on high) in a bullish bar
+                if tp_px is not None and low <= tp_px:
+                    return _exit("take_profit", tp_px)
+                peak = min(peak, low)         # update trough after TP check
             peak_gain_pct = (entry_price - peak) / entry_price * 100 if peak < entry_price else 0.0
             eff_trail = _get_tiered_trail(peak_gain_pct, trail_tiers, trail_pct) if trail_tiers else trail_pct
             _pct_sl_px = entry_price * (1 + stop_loss_pct / 100) if stop_loss_pct > 0 else None
@@ -8306,8 +8320,11 @@ def _simulate_exit(bars, entry_price: float, side: str,
                                  _sl_px is not None and high >= _sl_px,
                                  _trail_px is not None and high >= _trail_px, False)
             if result: return result
-            if high_first:
-                peak = min(peak, low)         # bearish: update trough after high was checked
+            if high_first:                  # bearish bar: HIGH already checked, LOW fires now
+                # TP (on low) fires after stop check in a bearish bar
+                if tp_px is not None and low <= tp_px:
+                    return _exit("take_profit", tp_px)
+                peak = min(peak, low)         # update trough after TP check
 
         if max_hold_mins > 0 and hold_mins >= max_hold_mins:
             return {"exit_price": round(float(bar.close), 4), "exit_time": str(bar_ts),
