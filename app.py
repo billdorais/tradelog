@@ -4250,7 +4250,8 @@ def api_simulate_stops():
     trigger_pct        = float(body.get("trigger_pct",       0.0))
     stop_loss_pct      = float(body.get("stop_loss_pct",     0.0))
     stop_loss_dollars   = float(body.get("stop_loss_dollars",  0.0))
-    take_profit_pct    = float(body.get("take_profit_pct",   0.0))
+    take_profit_pct     = float(body.get("take_profit_pct",     0.0))
+    take_profit_dollars = float(body.get("take_profit_dollars", 0.0))
     max_hold_mins       = int(body.get("max_hold_mins",       60))
     skip_tv_exits       = bool(body.get("skip_tv_exits",      False))
     strategy_overrides          = body.get("strategy_overrides",         {})
@@ -4418,7 +4419,8 @@ def api_simulate_stops():
                                   cap_dt=_cap_dt, cap_price=_cap_price,
                                   stop_loss_dollars=stop_loss_dollars, qty=qty,
                                   trail_tiers=trail_tiers,
-                                  take_profit_pct=take_profit_pct)
+                                  take_profit_pct=take_profit_pct,
+                                  take_profit_dollars=take_profit_dollars)
         new_pnl  = _pnl(new_sim["exit_price"], entry_px, qty, side) if new_sim else None
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
@@ -4474,7 +4476,8 @@ def api_simulate_stops():
             "trigger_pct":        trigger_pct,
             "stop_loss_pct":      stop_loss_pct,
             "stop_loss_dollars":  stop_loss_dollars,
-            "take_profit_pct":    take_profit_pct,
+            "take_profit_pct":     take_profit_pct,
+            "take_profit_dollars": take_profit_dollars,
             "max_hold_mins":      max_hold_mins,
             "from_date":         from_date,
             "to_date":           to_date,
@@ -8208,7 +8211,8 @@ def _simulate_exit(bars, entry_price: float, side: str,
                    stop_loss_pct: float, max_hold_mins: int,
                    entry_dt, cap_dt=None, cap_price=None,
                    stop_loss_dollars: float = 0.0, qty: float = 1.0,
-                   trail_tiers: list = None, take_profit_pct: float = 0.0):
+                   trail_tiers: list = None, take_profit_pct: float = 0.0,
+                   take_profit_dollars: float = 0.0):
     """Walk 1-min bars and return the simulated exit.
 
     cap_dt / cap_price: if supplied, bars past cap_dt are ignored. If no stop
@@ -8235,6 +8239,17 @@ def _simulate_exit(bars, entry_price: float, side: str,
             _dollar_sl_px = entry_price + dollar_sl_per_share
     else:
         _dollar_sl_px = None
+
+    # Pre-compute dollar TP price level; if both % and $ are set, take whichever
+    # fires sooner (lower for LONG, higher for SHORT — less movement required).
+    if take_profit_dollars > 0 and qty > 0:
+        dollar_tp_per_share = take_profit_dollars / qty
+        if is_long:
+            _dollar_tp_px = entry_price + dollar_tp_per_share
+        else:
+            _dollar_tp_px = entry_price - dollar_tp_per_share
+    else:
+        _dollar_tp_px = None
 
     for bar in bars:
         bar_ts = bar.timestamp
@@ -8274,7 +8289,9 @@ def _simulate_exit(bars, entry_price: float, side: str,
             return None
 
         if is_long:
-            tp_px     = entry_price * (1 + take_profit_pct / 100) if take_profit_pct > 0 else None
+            _pct_tp_px = entry_price * (1 + take_profit_pct / 100) if take_profit_pct > 0 else None
+            _candidates = [p for p in [_pct_tp_px, _dollar_tp_px] if p is not None]
+            tp_px = min(_candidates) if _candidates else None  # lower fires sooner for LONG
             low_first = close > mid          # bullish bar: low before high
             if not low_first:               # bearish bar: HIGH came first
                 # TP (on high) fires before stop (on low) in a bearish bar
@@ -8300,7 +8317,9 @@ def _simulate_exit(bars, entry_price: float, side: str,
                     return _exit("take_profit", tp_px)
                 peak = max(peak, high)        # update peak after TP check
         else:
-            tp_px      = entry_price * (1 - take_profit_pct / 100) if take_profit_pct > 0 else None
+            _pct_tp_px = entry_price * (1 - take_profit_pct / 100) if take_profit_pct > 0 else None
+            _candidates = [p for p in [_pct_tp_px, _dollar_tp_px] if p is not None]
+            tp_px = max(_candidates) if _candidates else None  # higher fires sooner for SHORT
             high_first = close < mid         # bearish bar: high before low
             if not high_first:              # bullish bar: LOW came first
                 # TP (on low) fires before stop (on high) in a bullish bar

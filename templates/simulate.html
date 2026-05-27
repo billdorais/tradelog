@@ -282,8 +282,12 @@
         <div class="input-wrap"><input type="number" id="stopLossDollars" value="0" step="1" min="0" max="9999"><span class="unit">$</span></div>
       </div>
       <div class="param-group">
-        <label style="color:#7FE098">Take Profit</label>
+        <label style="color:#7FE098">Take Profit %</label>
         <div class="input-wrap"><input type="number" id="takeProfitPct" value="0" step="0.05" min="0" max="20"><span class="unit">%</span></div>
+      </div>
+      <div class="param-group">
+        <label style="color:#7FE098">Take Profit $</label>
+        <div class="input-wrap"><input type="number" id="takeProfitDollars" value="0" step="1" min="0" max="9999"><span class="unit">$</span></div>
       </div>
       <div class="divider"></div>
       <div class="param-group">
@@ -642,7 +646,8 @@
     const trailPct      = parseFloat(document.getElementById('trailPct').value)      || 0;
     const triggerPct    = parseFloat(document.getElementById('triggerPct').value)    || 0;
     const stopLossPct   = parseFloat(document.getElementById('stopLossPct').value)   || 0;
-    const takeProfitPct = parseFloat(document.getElementById('takeProfitPct').value) || 0;
+    const takeProfitPct     = parseFloat(document.getElementById('takeProfitPct').value)     || 0;
+    const takeProfitDollars = parseFloat(document.getElementById('takeProfitDollars').value) || 0;
     const maxHold       = parseInt(document.getElementById('maxHold').value)         || 0;
 
     if (!fromDate || !toDate) {
@@ -665,7 +670,7 @@
 
     // Build human-readable note for the New Params card/title
     const _stopStr = stopLossPct > 0 ? `stop ${stopLossPct}%` : stopLossDollars > 0 ? `stop $${stopLossDollars}` : 'no stop';
-    const _tpStr   = takeProfitPct > 0 ? ` · TP ${takeProfitPct}%` : '';
+    const _tpStr   = takeProfitPct > 0 ? ` · TP ${takeProfitPct}%` : takeProfitDollars > 0 ? ` · TP $${takeProfitDollars}` : '';
     const _overrideKeys = Object.keys(strategyOverrides);
     if (_overrideKeys.length) {
       const chips = _overrideKeys.map(k => {
@@ -694,6 +699,7 @@
                                   trail_pct: trailPct, trigger_pct: triggerPct,
                                   stop_loss_pct: stopLossPct, stop_loss_dollars: stopLossDollars,
                                   take_profit_pct: takeProfitPct,
+                                  take_profit_dollars: takeProfitDollars,
                                   max_hold_mins: maxHold, skip_tv_exits: skipTvExits,
                                   strategy_overrides: strategyOverrides,
                                   strategy_trigger_overrides: strategyTriggerOverrides,
