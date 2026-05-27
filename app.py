@@ -686,6 +686,7 @@ def _check_position_stops():
     amount, then closes if the position gives back that amount from peak."""
     global _latest_positions
     all_positions = []
+    polled_brokers = set()   # only brokers we fetched cleanly; used to gate stale cleanup
 
     if alpaca_broker:
         try:
@@ -694,8 +695,9 @@ def _check_position_stops():
             for p in alpaca_broker.get_positions():
                 p["broker"] = "alpaca"
                 all_positions.append(p)
+            polled_brokers.add("alpaca")
         except Exception as _e:
-            log.debug("Position stop: Alpaca get_positions failed: %s", _e)
+            log.warning("Position stop: Alpaca get_positions failed: %s", _e)
 
     if alpaca_broker2:
         try:
@@ -703,14 +705,16 @@ def _check_position_stops():
             for p in alpaca_broker2.get_positions():
                 p["broker"] = "alpaca2"
                 all_positions.append(p)
+            polled_brokers.add("alpaca2")
         except Exception as _e:
-            log.debug("Position stop: Alpaca account 2 get_positions failed: %s", _e)
+            log.warning("Position stop: Alpaca account 2 get_positions failed: %s", _e)
 
     if _ib_task_queue is not None and ib_broker:
         try:
             for p in _submit_ib_task(ib_broker.get_positions, _timeout=15):
                 p["broker"] = "ib"
                 all_positions.append(p)
+            polled_brokers.add("ib")
         except Exception as _e:
             log.debug("Position stop: IB get_positions failed: %s", _e)
 
@@ -719,6 +723,7 @@ def _check_position_stops():
             for p in _submit_ib_live_task(ib_broker_live.get_positions, _timeout=15):
                 p["broker"] = "ib-live"
                 all_positions.append(p)
+            polled_brokers.add("ib-live")
         except Exception as _e:
             log.debug("Position stop: IB Live get_positions failed: %s", _e)
 
@@ -727,15 +732,18 @@ def _check_position_stops():
 
     # Clear _auto_closed_symbols + peak tracker for any symbol no longer open.
     # This allows the monitor to protect new entries in the same symbol later in the session.
+    # Only clear state for brokers we polled cleanly this tick. A transient
+    # get_positions() failure must NOT make open positions look closed — doing
+    # so would wipe their max-hold timers (in memory + DB) and they'd never exit.
     open_keys    = {(p["broker"], p["symbol"].upper()) for p in all_positions}
     open_symbols = {sym for _, sym in open_keys}
     with _risk_lock:
-        stale = {k for k in _auto_closed_symbols if k not in open_keys}
+        stale = {k for k in _auto_closed_symbols if k[0] in polled_brokers and k not in open_keys}
         _auto_closed_symbols.difference_update(stale)
         stale_peaks = [s for s in _position_peaks if s not in open_symbols]
         for s in stale_peaks:
             _position_peaks.pop(s, None)
-        stale_holds = [k for k in _max_hold_positions if k not in open_keys]
+        stale_holds = [k for k in _max_hold_positions if k[0] in polled_brokers and k not in open_keys]
         for k in stale_holds:
             _max_hold_positions.pop(k, None)
             _clear_max_hold_db(k[0], k[1])
