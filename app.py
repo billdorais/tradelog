@@ -1871,6 +1871,15 @@ def alpaca_positions():
             return jsonify(_alpaca_positions_cache["data"])
     try:
         positions = broker.get_positions()
+        # Enrich each position with entry_time from the max-hold timer dict so the
+        # dashboard can display how long the trade has been live.
+        broker_tag = "alpaca2" if use_acct2 else "alpaca"
+        with _risk_lock:
+            hold_snapshot = dict(_max_hold_positions)
+        for pos in positions:
+            sym  = (pos.get("symbol") or "").upper()
+            info = hold_snapshot.get((broker_tag, sym))
+            pos["entry_time"] = info["entry_time"].isoformat() if info else None
         result = {
             "positions": positions,
             "_debug": {"paper": broker._paper, "raw_count": len(positions)},
