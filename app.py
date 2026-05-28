@@ -3374,10 +3374,11 @@ def api_journal_generate():
     account = str(data.get("account", "2")).strip() or "2"
     use_acct2 = (account == "2")
 
-    # Default to current ISO week
+    # Default to current ISO week (must match <input type="week"> / fromisocalendar;
+    # strftime %W is NOT ISO and can be off by one).
     if not week:
-        today = _dtmod.date.today()
-        week  = today.strftime("%Y-W%W")
+        _iso  = _dtmod.date.today().isocalendar()
+        week  = f"{_iso[0]}-W{_iso[1]:02d}"
 
     # Derive week start/end dates from the ISO 8601 week string (matches <input type="week">)
     try:
@@ -3672,14 +3673,14 @@ def api_journal_generate():
         _prow = _pcur.fetchone()
         _pconn.close()
         if _prow:
-            prior_summary = (_prow[0] if not DATABASE_URL else _prow["ai_summary"]) or ""
-            _prior_raw    = (_prow[1] if not DATABASE_URL else _prow["trade_stats"]) or "{}"
+            prior_summary = (_prow[0] if DATABASE_URL else _prow["ai_summary"]) or ""
+            _prior_raw    = (_prow[1] if DATABASE_URL else _prow["trade_stats"]) or "{}"
             try:
                 prior_stats = json.loads(_prior_raw) if isinstance(_prior_raw, str) else (_prior_raw or {})
             except Exception:
                 prior_stats = {}
     except Exception as _pe:
-        log.debug("Journal prior-week lookup failed: %s", _pe)
+        log.warning("Journal prior-week lookup failed: %s", _pe)
 
     # Build AI prompt
     ts   = trade_stats
