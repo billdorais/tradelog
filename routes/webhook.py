@@ -748,6 +748,12 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                 "entry_time":    _entry_ts,
                                 "max_hold_mins": ep_max_hold_mins,
                             }
+                            # Clear stale auto-closed marker so the new position is
+                            # protected. _auto_closed_symbols is only scrubbed inside
+                            # _check_position_stops which doesn't run when risk limits
+                            # are disabled — without this discard, every second-and-later
+                            # trade in the same ticker is silently skipped by max hold.
+                            app._auto_closed_symbols.discard((_broker_tag, ticker.upper()))
                         app._persist_max_hold(_broker_tag, ticker.upper(), _entry_ts, ep_max_hold_mins)
                         app.log.info("Max hold registered: %s [%s] — %.0f min", ticker, _broker_tag, ep_max_hold_mins)
                     # If we cancelled a pending BUY, mark the original BUY trade record
