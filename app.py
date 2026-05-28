@@ -1857,21 +1857,26 @@ def eod_close_toggle():
 
 @app.route("/api/alpaca/positions")
 def alpaca_positions():
-    """Return current open Alpaca positions with live unrealized P&L."""
-    if alpaca_broker is None:
-        log.warning("alpaca_positions: broker is None")
-        return jsonify([])
-    global _alpaca_positions_cache
-    now = time.time()
-    if _alpaca_positions_cache["data"] is not None and (now - _alpaca_positions_cache["ts"]) < ALPACA_POSITIONS_TTL:
-        return jsonify(_alpaca_positions_cache["data"])
+    """Return current open Alpaca positions with live unrealized P&L.
+    Pass ?account=2 to query the Refined (account 2) broker."""
+    account   = request.args.get("account", "1")
+    use_acct2 = (account == "2")
+    broker    = alpaca_broker2 if use_acct2 else alpaca_broker
+    if broker is None:
+        return jsonify({"positions": [], "_debug": {"error": "broker not configured"}})
+    if not use_acct2:
+        global _alpaca_positions_cache
+        now = time.time()
+        if _alpaca_positions_cache["data"] is not None and (now - _alpaca_positions_cache["ts"]) < ALPACA_POSITIONS_TTL:
+            return jsonify(_alpaca_positions_cache["data"])
     try:
-        positions = alpaca_broker.get_positions()
+        positions = broker.get_positions()
         result = {
             "positions": positions,
-            "_debug": {"paper": alpaca_broker._paper, "raw_count": len(positions)},
+            "_debug": {"paper": broker._paper, "raw_count": len(positions)},
         }
-        _alpaca_positions_cache = {"data": result, "ts": now}
+        if not use_acct2:
+            _alpaca_positions_cache = {"data": result, "ts": time.time()}
         return jsonify(result)
     except Exception as e:
         log.error("alpaca_positions failed: %s", e, exc_info=True)

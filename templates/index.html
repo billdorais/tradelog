@@ -777,13 +777,11 @@
     let allIBExecs     = [];
     let allAlpacaExecs  = [];
     let allAlpaca2Execs = [];      // Refined account (alpaca-paper-2) fills, fetched alongside the main set
-    let allAlpacaPositions = [];   // authoritative open positions from Alpaca — used to reconcile feed pairing
+    let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
+    let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
 
-    // Pick the fills source that matches the current trade feed tab. Refined positions
-    // would require a /api/alpaca/positions?account=2 endpoint that doesn't exist yet,
-    // so on Refined we pass an empty positions list — orphan detection is account-1 only.
-    function _currentAlpacaExecs()     { return feedTab === 'refined' ? allAlpaca2Execs : allAlpacaExecs; }
-    function _currentAlpacaPositions() { return feedTab === 'refined' ? [] : allAlpacaPositions; }
+    function _currentAlpacaExecs()     { return feedTab === 'refined' ? allAlpaca2Execs     : allAlpacaExecs; }
+    function _currentAlpacaPositions() { return feedTab === 'refined' ? allAlpaca2Positions : allAlpacaPositions; }
     let selectedStrategy   = '';
     // Per-tab strategy selections so Paper All and Paper Refined filter independently
     const _tabSelections = { alpaca: new Set(), refined: new Set(), signals: new Set() };
@@ -2627,7 +2625,7 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpacaPosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpacaPosRes, alpaca2PosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
@@ -2635,15 +2633,17 @@
           fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
+          fetch('/api/alpaca/positions?account=2').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
         const stats   = await statsRes.json();
         const brokers = await brokerRes.json();
-        allIBExecs      = ibExecsRes;
-        allAlpacaExecs  = alpacaExecsRes;
-        allAlpaca2Execs = Array.isArray(alpaca2ExecsRes) ? alpaca2ExecsRes : [];
-        allAlpacaPositions = Array.isArray(alpacaPosRes) ? alpacaPosRes : (alpacaPosRes.positions || []);
+        allIBExecs       = ibExecsRes;
+        allAlpacaExecs   = alpacaExecsRes;
+        allAlpaca2Execs  = Array.isArray(alpaca2ExecsRes) ? alpaca2ExecsRes : [];
+        allAlpacaPositions  = Array.isArray(alpacaPosRes)  ? alpacaPosRes  : (alpacaPosRes.positions  || []);
+        allAlpaca2Positions = Array.isArray(alpaca2PosRes) ? alpaca2PosRes : (alpaca2PosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
