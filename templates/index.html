@@ -302,6 +302,16 @@
       color: #888;
     }
 
+    /* Open Positions table (mirrors Signal Router) */
+    .open-pos-card { max-width: 1200px; margin: 0 auto 16px; background: #1c1f2e; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 16px; }
+    .open-pos-card .open-pos-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 8px; }
+    .open-pos-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .open-pos-table th { text-align: left; color: #555; font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 6px 0; border-bottom: 1px solid #1e2130; }
+    .open-pos-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
+    .open-pos-table tr:last-child td { border-bottom: none; }
+    .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
+    .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
+
     .table-wrap {
       max-width: 1200px;
       margin: 0 auto;
@@ -588,6 +598,18 @@
         <div class="value" id="acctEquity">—</div>
       </div>
     </div>
+  </div>
+
+  <!-- Open Positions table (mirrors Signal Router) -->
+  <div id="openPositionsSection" class="open-pos-card" style="display:none">
+    <div class="open-pos-label">Open Positions</div>
+    <table class="open-pos-table">
+      <thead><tr>
+        <th>Symbol</th><th>Broker</th><th>Strategy</th><th>Qty</th>
+        <th>Unrealized P&amp;L</th><th style="width:60px">Held</th><th style="width:90px">vs Limit</th>
+      </tr></thead>
+      <tbody id="openPositionsTbody"></tbody>
+    </table>
   </div>
 
   <!-- Equity curve -->
@@ -3116,9 +3138,11 @@
 
     loadTrades();
     loadAccount();
-    setInterval(loadTrades,   30000);
-    setInterval(loadAccount,  30000);
-    setInterval(refreshLivePnl, 10000);
+    loadOpenPositionsTable();
+    setInterval(loadTrades,            30000);
+    setInterval(loadAccount,           30000);
+    setInterval(loadOpenPositionsTable, 10000);
+    setInterval(refreshLivePnl,        10000);
 
     // Sets used to star Open Positions chips. Both ticker- and strategy-level so
     // the chip can use exact strategy attribution when we have it (purple only if
@@ -3251,6 +3275,47 @@
         }).join(' &nbsp;·&nbsp; ');
         document.getElementById('acctPositionTickers').innerHTML = tickers || '<span style="color:#333">No open positions</span>';
       } catch(e) { /* Alpaca not configured or unreachable */ }
+    }
+
+    async function loadOpenPositionsTable() {
+      try {
+        const data = await fetch('/api/risk/status').then(r => r.json());
+        const positions = data.positions || [];
+        const wrap  = document.getElementById('openPositionsSection');
+        const tbody = document.getElementById('openPositionsTbody');
+        if (!positions.length) { wrap.style.display = 'none'; return; }
+        wrap.style.display = '';
+        const limitVal = data.max_position_loss;
+        tbody.innerHTML = positions.map(p => {
+          const upnl  = p.unrealized_pnl ?? 0;
+          const sign  = upnl >= 0 ? '+' : '';
+          const color = upnl >= 0 ? '#7FE098' : '#e74c3c';
+          let barPct = 0, barColor = '#e74c3c';
+          if (limitVal && limitVal < 0 && upnl < 0) {
+            barPct = Math.min(100, Math.round((upnl / limitVal) * 100));
+            barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#7FE098';
+          }
+          const stratCell = p.strategy
+            ? `<span style="color:#aaa;font-family:monospace;font-size:0.72rem">${escHtml(p.strategy)}</span>`
+            : '<span style="color:#444;font-size:0.72rem">—</span>';
+          let heldCell = '<span style="color:#444">—</span>';
+          if (p.entry_time) {
+            const heldMins = Math.round((Date.now() - new Date(p.entry_time).getTime()) / 60000);
+            if (heldMins >= 0) heldCell = `<span style="color:#888;font-size:0.78rem">${heldMins}m</span>`;
+          }
+          return `<tr>
+            <td style="font-weight:600;color:#ccc">${escHtml(p.symbol)}</td>
+            <td style="color:#666;font-size:0.75rem">${escHtml(p.broker)}</td>
+            <td>${stratCell}</td>
+            <td style="color:#aaa">${escHtml(p.qty)}</td>
+            <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
+            <td>${heldCell}</td>
+            <td>${limitVal && limitVal < 0
+              ? `<div class="open-pos-bar-wrap"><div class="open-pos-bar" style="width:${barPct}%;background:${barColor}"></div></div>`
+              : '<span style="color:#444">—</span>'}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) { /* risk endpoint not available */ }
     }
 
     // ── Strategy detail modal ──────────────────────────────────────────────
