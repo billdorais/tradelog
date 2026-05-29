@@ -754,7 +754,7 @@
 
       // Collapse bar summary
       const parts = [];
-      if (data.position_stop_enabled) parts.push(`<span class="active-val">Stop ${data.max_position_loss_pct}%</span>`);
+      if (data.position_stop_enabled && data.max_position_loss_pct != null) parts.push(`<span class="active-val">Stop ${data.max_position_loss_pct}%</span>`);
       if (data.max_position_loss_refined != null && data.max_position_loss_refined < 0) parts.push(`<span class="active-val">Cap $${data.max_position_loss_refined}</span>`);
       if (data.morning_trail_pct > 0)  parts.push(`<span class="active-val">Morn ${data.morning_trail_pct}%</span>`);
       if (data.afternoon_trail_pct > 0) parts.push(`<span class="active-val">Aftn ${data.afternoon_trail_pct}%</span>`);

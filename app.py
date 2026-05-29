@@ -3817,7 +3817,6 @@ def api_journal_generate():
         except Exception as _ae:
             yield f"data: {json.dumps({'error': str(_ae)})}\n\n"
             return
-        yield f"data: {json.dumps({'done': True})}\n\n"
         # Extract TAGS line, strip from displayed summary, compute grade
         import re as _re
         _tag_match = _re.search(r'TAGS:\s*(.+?)(?:\n|$)', summary, _re.IGNORECASE)
@@ -3843,7 +3842,8 @@ def api_journal_generate():
 
         _tags_json = json.dumps({"grade": _grade, "labels": _labels})
 
-        # Persist the completed summary + tags
+        # Persist the completed summary + tags BEFORE yielding done so that
+        # the client's loadEntries() re-fetch sees committed data.
         try:
             _p = placeholder()
             _c = get_db()
@@ -3856,6 +3856,8 @@ def api_journal_generate():
             _c.close()
         except Exception as _pe:
             log.warning("Journal summary persist error: %s", _pe)
+
+        yield f"data: {json.dumps({'done': True})}\n\n"
 
     return Response(stream_with_context(_stream()), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
