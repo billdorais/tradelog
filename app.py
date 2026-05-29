@@ -3343,6 +3343,27 @@ def api_journal_entries():
     return jsonify(entries)
 
 
+@app.route("/api/journal/summary", methods=["PUT"])
+def api_journal_summary():
+    """Persist the AI-generated summary and tags after streaming completes."""
+    data    = request.get_json(silent=True) or {}
+    week    = data.get("week", "").strip()
+    summary = data.get("ai_summary", "")
+    tags    = data.get("tags")
+    if not week:
+        return jsonify({"error": "week required"}), 400
+    p = placeholder()
+    conn = get_db()
+    cur  = conn.cursor()
+    cur.execute(
+        f"UPDATE journal_entries SET ai_summary={p}, tags={p} WHERE week={p}",
+        (summary, json.dumps(tags) if tags is not None else None, week)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/journal/notes", methods=["PUT"])
 def api_journal_notes():
     data  = request.get_json(silent=True) or {}
@@ -3846,22 +3867,9 @@ def api_journal_generate():
 
         _tags_json = json.dumps({"grade": _grade, "labels": _labels})
 
-        # Persist the completed summary + tags BEFORE yielding done so that
-        # the client's loadEntries() re-fetch sees committed data.
-        try:
-            _p = placeholder()
-            _c = get_db()
-            _cur = _c.cursor()
-            _cur.execute(
-                f"UPDATE journal_entries SET ai_summary={_p}, tags={_p} WHERE week={_p}",
-                (_clean_summary, _tags_json, week)
-            )
-            _c.commit()
-            _c.close()
-        except Exception as _pe:
-            log.warning("Journal summary persist error: %s", _pe)
-
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        # Send grade, labels, and clean summary in the done payload so the
+        # client can POST them back as a reliable separate HTTP request.
+        yield f"data: {json.dumps({'done': True, 'grade': _grade, 'labels': _labels, 'summary': _clean_summary})}\n\n"
 
     return Response(stream_with_context(_stream()), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})

@@ -253,6 +253,7 @@
       const liveEl = document.getElementById('live-text');
       if (liveEl) liveEl.innerHTML = '';
 
+      let donePayload = null;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -263,10 +264,26 @@
             const msg = JSON.parse(line.slice(6));
             if (msg.error) { if (liveEl) liveEl.textContent = 'Error: ' + msg.error; break; }
             if (msg.text)  { text += msg.text; if (liveEl) liveEl.innerHTML = renderMd(text); }
-            if (msg.done)  { buf = ''; }
+            if (msg.done)  { buf = ''; donePayload = msg; }
           } catch {}
         }
         buf = buf.split('\n').filter(l => !l.startsWith('data:')).join('\n');
+      }
+      // Persist summary + tags via a plain HTTP PUT — more reliable than the
+      // SSE generator tail. The initial INSERT already wrote the grade so the
+      // user sees the circle immediately; this adds the AI-generated labels.
+      if (donePayload && donePayload.grade) {
+        try {
+          await fetch('/api/journal/summary', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              week,
+              ai_summary: donePayload.summary || '',
+              tags: { grade: donePayload.grade, labels: donePayload.labels || [] },
+            }),
+          });
+        } catch {}
       }
     } catch(e) {
       const liveEl = document.getElementById('live-text');
