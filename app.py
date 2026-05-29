@@ -732,23 +732,29 @@ def _check_position_stops():
 
     # Clear _auto_closed_symbols + peak tracker for any symbol no longer open.
     # This allows the monitor to protect new entries in the same symbol later in the session.
-    # Only clear state for brokers we polled cleanly this tick. A transient
-    # get_positions() failure must NOT make open positions look closed — doing
-    # so would wipe their max-hold timers (in memory + DB) and they'd never exit.
-    open_keys    = {(p["broker"], p["symbol"].upper()) for p in all_positions}
-    open_symbols = {sym for _, sym in open_keys}
+    # Two safety levels for "broker is reliable enough to trust":
+    #   polled_brokers   — broker call did not raise (covers exception path)
+    #   nonempty_brokers — broker also returned >=1 position (covers the case where
+    #                      Alpaca transiently returns [] without an exception)
+    # Wiping max-hold timers is IRREVERSIBLE (also deletes DB row), so it uses the
+    # stricter nonempty check. The auto-close guard is less critical, so polled is enough.
+    open_keys        = {(p["broker"], p["symbol"].upper()) for p in all_positions}
+    open_symbols     = {sym for _, sym in open_keys}
+    nonempty_brokers = {p["broker"] for p in all_positions}
     with _risk_lock:
         stale = {k for k in _auto_closed_symbols if k[0] in polled_brokers and k not in open_keys}
         _auto_closed_symbols.difference_update(stale)
         stale_peaks = [s for s in _position_peaks if s not in open_symbols]
         for s in stale_peaks:
             _position_peaks.pop(s, None)
-        stale_holds = [k for k in _max_hold_positions if k[0] in polled_brokers and k not in open_keys]
+        stale_holds = [k for k in _max_hold_positions if k[0] in nonempty_brokers and k not in open_keys]
         for k in stale_holds:
             _max_hold_positions.pop(k, None)
             _clear_max_hold_db(k[0], k[1])
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
+    if stale_holds:
+        log.warning("Position stop: cleared max-hold timers for %s (no longer open on broker)", stale_holds)
 
     for pos in all_positions:
         upnl   = float(pos.get("unrealized_pnl") or 0)
