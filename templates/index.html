@@ -562,7 +562,7 @@
 
   <!-- Account / Buying Power -->
   <div id="accountSection" style="display:none">
-    <div class="section-label">Account</div>
+    <div class="section-label">Account<span id="acctScaleNote" style="font-size:0.65rem;color:#888;margin-left:6px;font-weight:normal"></span></div>
     <div class="stats" style="margin-bottom:8px">
       <!-- Buying power card -->
       <div class="stat-card">
@@ -835,6 +835,7 @@
             document.getElementById('equityToDate')?.value   || '',
             '2'
           );
+          loadAccount();
           feedTab = 'refined'; _feedFilter.tv = false; _feedFilter.alpaca = true;
           _syncFeedTabButtons('refined');
           renderTable(allTrades, selectedStrategy);
@@ -857,6 +858,7 @@
             document.getElementById('equityFromDate')?.value || '',
             document.getElementById('equityToDate')?.value   || ''
           );
+          loadAccount();
           feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
           _syncFeedTabButtons('alpaca');
           renderTable(allTrades, selectedStrategy);
@@ -3186,12 +3188,14 @@
         if (d.error) return;
         document.getElementById('accountSection').style.display = '';
 
-        const bp     = d.buying_power   || 0;
-        const equity = d.equity         || 0;
-        const dep    = d.deployed       || 0;
-        const minBP  = d.min_buying_power || 0;
+        const scale  = (activeTab === 'refined') ? 0.25 : 1;
+        const bp     = (d.buying_power    || 0) * scale;
+        const equity = (d.equity          || 0) * scale;
+        const dep    = (d.deployed        || 0) * scale;
+        const minBP  = (d.min_buying_power || 0) * scale;
         const total  = bp + dep;   // approx total capital
         const pct    = total > 0 ? Math.min(100, Math.round(dep / total * 100)) : 0;
+        document.getElementById('acctScaleNote').textContent = scale < 1 ? '(÷4 scaled)' : '';
 
         // Buying power color
         let bpColor = '#7FE098';
