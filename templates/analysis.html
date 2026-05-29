@@ -716,7 +716,7 @@
           : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
         return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${r.trades}" data-snap-wr="${r.win_rate}" data-snap-pnl="${r.total_pnl}" title="Click to see round-trip pairs (from current date range)">
           <td style="color:#666">${i + 1}</td>
-          <td class="name"><span style="color:#c4b5fd;margin-right:6px">★</span>${esc(r.name)}</td>
+          <td class="name"><span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
           <td style="text-align:right;color:#c4b5fd">${shares}</td>
@@ -1173,7 +1173,7 @@
         : `<span ${winCls}>${winStreak}d</span>`;
       const liveTag = _liveStrategies.get(name.toUpperCase());
       const star = liveTag === 'refined'
-        ? `<span title="Live in Signal Router — routed to Alpaca Refined" style="color:#c4b5fd;margin-right:6px">★</span>`
+        ? `<span title="Live in Signal Router — routed to Alpaca Refined" style="color:#60a5fa;margin-right:6px">★</span>`
         : liveTag === 'paper'
           ? `<span title="Live in Signal Router (Paper only)" style="color:#F2E7AC;margin-right:6px">★</span>`
           : '';

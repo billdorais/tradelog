@@ -3233,11 +3233,11 @@
           const stratU = strat ? strat.toUpperCase() : null;
           let star = '';
           if (stratU && _refinedStrategies.has(stratU)) {
-            star = `<span style="color:#c4b5fd;margin-right:4px" title="${strat} is in the Refined top-N">★</span>`;
+            star = `<span style="color:#60a5fa;margin-right:4px" title="${strat} is in the Refined top-N">★</span>`;
           } else if (stratU && _routedStrategies.has(stratU)) {
             star = `<span style="color:#F2E7AC;margin-right:4px" title="${strat} has a routing rule but isn't Refined">★</span>`;
           } else if (!stratU && _refinedTickers.has(sym)) {
-            star = `<span style="color:#c4b5fd;margin-right:4px" title="Ticker has a refined strategy (source strategy unknown)">★</span>`;
+            star = `<span style="color:#60a5fa;margin-right:4px" title="Ticker has a refined strategy (source strategy unknown)">★</span>`;
           } else if (!stratU && _routedTickers.has(sym)) {
             star = `<span style="color:#F2E7AC;margin-right:4px" title="Ticker has a routing rule (source strategy unknown)">★</span>`;
           }

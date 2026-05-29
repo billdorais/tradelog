@@ -1675,11 +1675,13 @@ def api_alpaca_account():
         pos_list     = []
         total_mv     = 0.0
         total_upnl   = 0.0
+        broker_tag   = "alpaca2" if use_acct2 else "alpaca"
         for p in positions:
             mv   = float(p.market_value or 0)
             upnl = float(p.unrealized_pl or 0) if p.unrealized_pl is not None else 0.0
             total_mv   += abs(mv)
             total_upnl += upnl
+            _, entry_t = _resolve_position_entry(p.symbol, broker_tag)
             pos_list.append({
                 "symbol":          p.symbol,
                 "qty":             float(p.qty or 0),
@@ -1688,6 +1690,7 @@ def api_alpaca_account():
                 "avg_entry_price": round(float(p.avg_entry_price or 0), 2),
                 "current_price":   round(float(p.current_price or 0), 2),
                 "side":            "long" if float(p.qty or 0) > 0 else "short",
+                "entry_time":      entry_t,
             })
         pos_list.sort(key=lambda x: abs(x["market_value"]), reverse=True)
         bp       = float(acct.buying_power)
@@ -1892,14 +1895,15 @@ def alpaca_positions():
         return jsonify({"positions": [], "_debug": {"error": str(e)}})
 
 
-def _resolve_position_strategy(symbol, broker):
-    """Best-effort lookup of which strategy owns an open position.
+def _resolve_position_entry(symbol, broker):
+    """Best-effort lookup of (strategy, entry_time_iso) for an open position.
     Walks recent fills (most recent first) for the matching account and returns
     the strategy parsed from the first kairos-{strategy}-{ts} client_order_id
-    that matches this symbol. Trailing/hard stop orders are skipped so we get
-    the entry that opened the position, not the protective stop on top of it."""
+    that matches this symbol, along with that fill's time. Trailing/hard stop
+    orders are skipped so we get the entry that opened the position, not the
+    protective stop on top of it."""
     if not symbol:
-        return ""
+        return "", None
     sym_u = symbol.upper()
     try:
         if broker == "alpaca2":
@@ -1907,7 +1911,7 @@ def _resolve_position_strategy(symbol, broker):
         elif broker == "alpaca":
             fills = _alpaca_fills_cache["data"]
         else:
-            return ""  # IB doesn't tag client_order_id with strategy
+            return "", None  # IB doesn't tag client_order_id with strategy
         for f in sorted(fills, key=lambda x: x.get("time", ""), reverse=True):
             if (f.get("symbol") or "").upper() != sym_u:
                 continue
@@ -1918,10 +1922,10 @@ def _resolve_position_strategy(symbol, broker):
                 continue
             parts = oid.split("-", 2)  # ["kairos", strategy, ts]
             if len(parts) == 3 and parts[1]:
-                return parts[1]
+                return parts[1], (f.get("time") or None)
     except Exception:
         pass
-    return ""
+    return "", None
 
 
 @app.route("/api/risk/status")
@@ -1932,7 +1936,9 @@ def risk_status():
         blocked    = dict(_blocked_strategies)
         positions  = [dict(p) for p in _latest_positions]  # copy for mutation
     for p in positions:
-        p["strategy"] = _resolve_position_strategy(p.get("symbol", ""), p.get("broker", ""))
+        strat, entry_t = _resolve_position_entry(p.get("symbol", ""), p.get("broker", ""))
+        p["strategy"]   = strat
+        p["entry_time"] = entry_t
     return jsonify({
         "halted":               halted,
         "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,
