@@ -1114,11 +1114,15 @@
       const toDate   = document.getElementById('equityToDate')?.value   || '';
 
       if (activeTab === 'alpaca' || activeTab === 'refined') {
-        // Rank by full-history Alpaca P&L so Top N always returns N strategies.
-        // Date range is applied to the chart separately via applyEquityFilter.
+        // Rank by Alpaca P&L within the active date range — the picker should
+        // surface "top performers of this period," not all-time winners that
+        // may not have traded today. If fewer than N strategies traded in the
+        // range, the picker returns as many as exist.
         const acct = activeTab === 'refined' ? '2' : '';
         const params = new URLSearchParams();
-        if (acct) params.set('account', acct);
+        if (acct)     params.set('account',   acct);
+        if (fromDate) params.set('from_date', fromDate);
+        if (toDate)   params.set('to_date',   toDate);
         const data = await fetch('/api/alpaca/analysis?' + params).then(r => r.json()).catch(() => ({}));
         for (const [strat, s] of Object.entries(data.per_strategy || {})) {
           if (s.total_pnl != null) pnlByStrat[strat] = s.total_pnl;
