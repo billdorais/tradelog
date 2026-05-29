@@ -3645,25 +3645,39 @@ def api_journal_generate():
         except Exception as _ae:
             log.debug("Journal equity fetch error: %s", _ae)
 
+    # ── Compute grade now (only needs trade_stats, not AI output) ────────
+    try:
+        _pnl = float((trade_stats or {}).get('total_pnl') or 0)
+        _wr  = float((trade_stats or {}).get('win_rate')  or 0)
+        _pf  = float((trade_stats or {}).get('profit_factor') or 0)
+        if   _pnl > 0 and _wr >= 60 and _pf >= 1.5: _init_grade = 'A'
+        elif _pnl > 0 and (_wr >= 50 or _pf >= 1.0): _init_grade = 'B'
+        elif _pnl > -100: _init_grade = 'C'
+        else:              _init_grade = 'D'
+    except Exception:
+        _init_grade = 'C'
+    _init_tags_json = json.dumps({"grade": _init_grade, "labels": []})
+
     # ── Persist stats + stream AI summary ───────────────────────────────
     p = placeholder()
     conn = get_db()
     cur  = conn.cursor()
     now_str = _dtmod.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Upsert entry so regeneration replaces old content
+    # Upsert entry so regeneration replaces old content; save grade now so it
+    # shows immediately even if the stream's label UPDATE fails later.
     if DATABASE_URL:
         cur.execute(
-            f"INSERT INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes) "
-            f"VALUES ({p},{p},{p},{p},{p},{p}) "
-            f"ON CONFLICT (week) DO UPDATE SET generated_at={p}, trade_stats={p}, market_data={p}, ai_summary=''",
-            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "",
-             now_str, json.dumps(trade_stats), json.dumps(market_data)),
+            f"INSERT INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes, tags) "
+            f"VALUES ({p},{p},{p},{p},{p},{p},{p}) "
+            f"ON CONFLICT (week) DO UPDATE SET generated_at={p}, trade_stats={p}, market_data={p}, ai_summary='', tags={p}",
+            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "", _init_tags_json,
+             now_str, json.dumps(trade_stats), json.dumps(market_data), _init_tags_json),
         )
     else:
         cur.execute(
-            "INSERT OR REPLACE INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes) "
-            f"VALUES ({p},{p},{p},{p},{p},{p})",
-            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", ""),
+            "INSERT OR REPLACE INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes, tags) "
+            f"VALUES ({p},{p},{p},{p},{p},{p},{p})",
+            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "", _init_tags_json),
         )
     conn.commit()
     conn.close()
@@ -3827,18 +3841,8 @@ def api_journal_generate():
             _labels = [l for l in _labels if l]  # drop empty after sanitize
             _clean_summary = summary[:_tag_match.start()].rstrip()
 
-        # Compute letter grade from trade stats
-        try:
-            _ts = json.loads(trade_stats) if isinstance(trade_stats, str) else trade_stats
-            _pnl = float((_ts or {}).get('total_pnl') or 0)
-            _wr  = float((_ts or {}).get('win_rate')  or 0)
-            _pf  = float((_ts or {}).get('profit_factor') or 0)
-            if   _pnl > 0 and _wr >= 60 and _pf >= 1.5: _grade = 'A'
-            elif _pnl > 0 and (_wr >= 50 or _pf >= 1.0): _grade = 'B'
-            elif _pnl > -100: _grade = 'C'
-            else:              _grade = 'D'
-        except Exception:
-            _grade = 'C'
+        # Grade is pre-computed from trade_stats before the stream
+        _grade = _init_grade
 
         _tags_json = json.dumps({"grade": _grade, "labels": _labels})
 
