@@ -8020,6 +8020,20 @@ def _build_analysis_stats():
             if qty > 0 and intent == "legacy":
                 open_shorts.setdefault(key, []).append((price, qty, received))
 
+    def _avg_hold_mins(trade_list):
+        from datetime import datetime as _dth
+        durations = []
+        for t in trade_list:
+            try:
+                et = _dth.fromisoformat((t.get("entry_time") or "").replace("Z", "+00:00"))
+                xt = _dth.fromisoformat((t.get("exit_time")  or "").replace("Z", "+00:00"))
+                diff = (xt - et).total_seconds() / 60
+                if 0 < diff < 600:  # ignore implausible durations (> 10 h)
+                    durations.append(diff)
+            except Exception:
+                pass
+        return round(sum(durations) / len(durations), 1) if durations else None
+
     def _stats_from_trades(trade_list):
         if not trade_list:
             return None
@@ -8040,6 +8054,7 @@ def _build_analysis_stats():
             "avg_loss":             round(-gross_loss / len(losses), 2) if losses else 0,
             "largest_win":          round(max(wins),  2) if wins   else 0,
             "largest_loss":         round(min(losses), 2) if losses else 0,
+            "avg_hold_mins":        _avg_hold_mins(trade_list),
             "consec_losing_days":   _consecutive_losing_days(trade_list),
             "consec_winning_days":  _consecutive_winning_days(trade_list),
             "sharpe":               _sharpe_from_pnls([t["pnl"] / max(float(t.get("qty") or 1), 0.01) for t in trade_list]),
@@ -8507,6 +8522,20 @@ def api_alpaca_analysis():
                     if qty > 0 and intent == "legacy":
                         day_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
+        def _hold_mins(tlist):
+            from datetime import datetime as _dth
+            durs = []
+            for t in tlist:
+                try:
+                    et = _dth.fromisoformat((t.get("entry_time") or "").replace("Z", "+00:00"))
+                    xt = _dth.fromisoformat((t.get("exit_time")  or "").replace("Z", "+00:00"))
+                    d  = (xt - et).total_seconds() / 60
+                    if 0 < d < 600:
+                        durs.append(d)
+                except Exception:
+                    pass
+            return round(sum(durs) / len(durs), 1) if durs else None
+
         def _stats(tlist):
             if not tlist: return None
             wins   = [t["pnl"] for t in tlist if t["pnl"] > 0]
@@ -8523,6 +8552,7 @@ def api_alpaca_analysis():
                 "avg_loss":           round(-gl / len(losses), 2) if losses else 0,
                 "largest_win":        round(max(wins),  2) if wins   else 0,
                 "largest_loss":       round(min(losses), 2) if losses else 0,
+                "avg_hold_mins":      _hold_mins(tlist),
                 "consec_losing_days":  _consecutive_losing_days(tlist),
                 "consec_winning_days": _consecutive_winning_days(tlist),
                 "sharpe":              _sharpe_from_pnls([t["pnl"] / max(float(t.get("qty") or 1), 0.01) for t in tlist]),

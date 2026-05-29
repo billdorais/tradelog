@@ -792,6 +792,12 @@
       </div>`;
     };
 
+    const fmtHold = m => {
+      if (m == null) return '—';
+      const h = Math.floor(m / 60), mins = Math.round(m % 60);
+      return h > 0 ? `${h}h ${mins}m` : `${Math.round(m)}m`;
+    };
+
     document.getElementById('overallStats').innerHTML = `
       ${card('Total P&L',       fmt(s.total_pnl),                      pnlCls)}
       ${card('Profit Factor',   pf != null ? pf : '—',                 pfCls)}
@@ -804,6 +810,7 @@
       ${card('Avg Loss',        fmt(s.avg_loss),                       'neg')}
       ${card('Largest Win',     fmt(s.largest_win),                    'pos')}
       ${card('Largest Loss',    fmt(s.largest_loss),                   'neg')}
+      ${card('Avg Trade Time',  fmtHold(s.avg_hold_mins),              '', 'Average hold time per closed round-trip')}
     `;
   }
 
