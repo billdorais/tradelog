@@ -399,6 +399,9 @@
             <th data-col="entry_price">Entry</th>
             <th data-col="actual_exit_price">Actual Exit</th>
             <th data-col="actual_pnl">Actual P&amp;L</th>
+            <th data-col="peak_gain_pct"    title="Best favorable price move during the actual hold">Peak</th>
+            <th data-col="new_giveback"     title="Dollars left on the table from peak to actual exit">Giveback</th>
+            <th data-col="new_capture_ratio" title="Fraction of peak gain captured at actual exit (1.0 = exited at peak)">Capture</th>
             <th data-col="rule_trail_pct"   class="col-sr"  title="Trail % from Signal Router rule">SR Trail</th>
             <th data-col="base_exit_price"  class="col-sr"  title="Simulated exit using Signal Router trail settings">SR Exit</th>
             <th data-col="base_exit_reason" class="col-sr">SR Reason</th>
@@ -797,6 +800,7 @@
       <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
       <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
       <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
+      ${renderCaptureCells(t)}
       <td class="mono" style="color:#5a8fa8">${ruleTrail}</td>
       <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
       <td>${reasonLabel(t.base_exit_reason)}</td>
@@ -806,7 +810,6 @@
       <td>${reasonLabel(t.new_exit_reason)}</td>
       <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
       <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
-      ${renderCaptureCells(t)}
     </tr>`;
   }
 
