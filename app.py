@@ -4466,6 +4466,20 @@ def api_simulate_stops():
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
 
+        # Peak gain — capped at the new simulation's exit time so the window matches
+        _new_cap_dt = None
+        if new_sim and new_sim.get("exit_time"):
+            try:
+                _new_cap_dt = _dt.datetime.fromisoformat(new_sim["exit_time"].replace("Z", "+00:00"))
+            except Exception:
+                pass
+        peak_px       = _compute_peak(trade_bars, entry_px, side, cap_dt=_new_cap_dt)
+        peak_gain     = round((peak_px - entry_px) * qty, 2) if side == "LONG" \
+                        else round((entry_px - peak_px) * qty, 2)
+        peak_gain_pct = round(abs(peak_px - entry_px) / entry_px * 100, 3) if entry_px > 0 else 0.0
+        new_capture   = round(new_pnl / peak_gain, 3) if (peak_gain > 0 and new_pnl is not None) else None
+        new_giveback  = round(peak_gain - new_pnl, 2)  if (peak_gain > 0 and new_pnl is not None) else None
+
         results.append({
             "date":               date,
             "ticker":             ticker,
@@ -4490,6 +4504,10 @@ def api_simulate_stops():
             "new_exit_mins":      new_sim["exit_mins"]   if new_sim else None,
             "new_pnl":            new_pnl,
             "pnl_delta":          delta,
+            "peak_gain_dollars":  peak_gain,
+            "peak_gain_pct":      peak_gain_pct,
+            "new_capture_ratio":  new_capture,
+            "new_giveback":       new_giveback,
         })
 
     results.sort(key=lambda r: (r["date"], r["entry_time"]))
@@ -4499,18 +4517,22 @@ def api_simulate_stops():
     actual_total = round(sum(r["actual_pnl"] for r in results), 2)
     improved     = sum(1 for r in results if (r["pnl_delta"] or 0) >  0.01)
     worse        = sum(1 for r in results if (r["pnl_delta"] or 0) < -0.01)
+    _cap_vals    = [r["new_capture_ratio"] for r in results
+                    if r.get("new_capture_ratio") is not None and r.get("peak_gain_dollars", 0) > 0]
+    avg_capture  = round(sum(_cap_vals) / len(_cap_vals), 3) if _cap_vals else None
 
     return jsonify({
         "trades":  results,
         "summary": {
-            "trade_count": len(results),
-            "actual_pnl":  actual_total,
-            "base_pnl":    base_total,
-            "new_pnl":     new_total,
-            "total_delta": round(new_total - base_total, 2),
-            "improved":    improved,
-            "worse":       worse,
-            "neutral":     len(results) - improved - worse,
+            "trade_count":       len(results),
+            "actual_pnl":        actual_total,
+            "base_pnl":          base_total,
+            "new_pnl":           new_total,
+            "total_delta":       round(new_total - base_total, 2),
+            "improved":          improved,
+            "worse":             worse,
+            "neutral":           len(results) - improved - worse,
+            "avg_capture_ratio": avg_capture,
         },
         "params": {
             "trail_pct":          trail_pct,
@@ -8263,6 +8285,21 @@ def _fetch_day_bars(ticker: str, date_str: str):
     except Exception as _de:
         log.debug("fetch_day_bars %s %s: %s", ticker, date_str, _de)
         return []
+
+
+def _compute_peak(trade_bars, entry_price: float, side: str, cap_dt=None):
+    """Return the best favorable price (bar.high for LONG, bar.low for SHORT) within the window."""
+    import datetime as _dt
+    is_long = side.upper() == "LONG"
+    peak = entry_price
+    for bar in trade_bars:
+        bar_ts = bar.timestamp
+        if not isinstance(bar_ts, _dt.datetime):
+            bar_ts = _dt.datetime.fromisoformat(str(bar_ts).replace("Z", "+00:00"))
+        if cap_dt is not None and bar_ts > cap_dt:
+            break
+        peak = max(peak, float(bar.high)) if is_long else min(peak, float(bar.low))
+    return peak
 
 
 def _simulate_exit(bars, entry_price: float, side: str,

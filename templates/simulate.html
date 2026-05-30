@@ -408,6 +408,9 @@
             <th data-col="new_exit_reason"  class="col-new">New Reason</th>
             <th data-col="new_pnl"          class="col-new" title="P&L with your new parameters">New P&amp;L</th>
             <th data-col="pnl_delta"        class="col-new" title="New P&L minus Signal Router P&L">Delta</th>
+            <th data-col="peak_gain_pct"    title="Best favorable price move during the simulated hold">Peak</th>
+            <th data-col="new_giveback"     title="Dollars left on the table from peak to simulated exit">Giveback</th>
+            <th data-col="new_capture_ratio" title="Fraction of peak gain captured at exit (1.0 = exited at peak, <0 = was up then went negative)">Capture</th>
           </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -754,6 +757,20 @@
     return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
   }
 
+  function renderCaptureCells(t) {
+    const pg = t.peak_gain_pct;
+    const gv = t.new_giveback;
+    const cr = t.new_capture_ratio;
+    const peakStr    = pg != null && pg > 0 ? `+${pg.toFixed(2)}%` : '—';
+    const giveStr    = gv != null ? (gv > 0 ? `-${fmt(gv).replace(/^[+-]/, '')}` : '—') : '—';
+    const capStr     = cr != null ? cr.toFixed(2) : '—';
+    const capCls     = cr == null ? '' : cr >= 0.7 ? 'pos' : cr < 0.3 ? 'neg' : '';
+    const giveStyle  = gv != null && gv > 0 ? 'color:#ef5350' : 'color:#555';
+    return `<td class="mono" style="color:#888">${peakStr}</td>
+            <td class="mono" style="${giveStyle}">${giveStr}</td>
+            <td class="mono ${capCls}">${capStr}</td>`;
+  }
+
   function renderRow(t) {
     const basePnlCls = (t.base_pnl ?? 0) >= 0 ? 'pos' : 'neg';
     const newPnlCls  = (t.new_pnl  ?? 0) >= 0 ? 'pos' : 'neg';
@@ -789,6 +806,7 @@
       <td>${reasonLabel(t.new_exit_reason)}</td>
       <td class="${newPnlCls}">${t.new_pnl != null ? fmt(t.new_pnl) : '—'}</td>
       <td class="${deltaCls}"><span class="delta-arrow">${deltaArrow}</span>${delta != null ? fmt(delta) : '—'}</td>
+      ${renderCaptureCells(t)}
     </tr>`;
   }
 
@@ -959,6 +977,7 @@
       <div class="stat-card"><div class="stat-label">Net Delta</div><div class="stat-value ${deltaClass}">${fmt(s.total_delta)}</div><div class="stat-sub">new vs signal router</div></div>
       <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
+      ${s.avg_capture_ratio != null ? `<div class="stat-card"><div class="stat-label">Avg Capture</div><div class="stat-value ${s.avg_capture_ratio >= 0.7 ? 'pos' : s.avg_capture_ratio < 0.4 ? 'neg' : ''}">${s.avg_capture_ratio.toFixed(2)}</div><div class="stat-sub">of peak gain captured</div></div>` : ''}
     `;
     document.getElementById('summarySection').style.display = 'block';
 
