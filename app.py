@@ -4466,14 +4466,8 @@ def api_simulate_stops():
 
         delta = round(new_pnl - base_pnl, 2) if (new_pnl is not None and base_pnl is not None) else None
 
-        # Peak gain — capped at the new simulation's exit time so the window matches
-        _new_cap_dt = None
-        if new_sim and new_sim.get("exit_time"):
-            try:
-                _new_cap_dt = _dt.datetime.fromisoformat(new_sim["exit_time"].replace("Z", "+00:00"))
-            except Exception:
-                pass
-        peak_px       = _compute_peak(trade_bars, entry_px, side, cap_dt=_new_cap_dt)
+        # Peak gain — capped at actual exit time to reflect real IRL performance
+        peak_px       = _compute_peak(trade_bars, entry_px, side, cap_dt=actual_exit_dt)
         peak_gain     = round((peak_px - entry_px) * qty, 2) if side == "LONG" \
                         else round((entry_px - peak_px) * qty, 2)
         peak_gain_pct = round(abs(peak_px - entry_px) / entry_px * 100, 3) if entry_px > 0 else 0.0
