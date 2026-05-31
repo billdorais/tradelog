@@ -4751,6 +4751,89 @@ def simulate_sweep():
         })
 
 
+@app.route("/api/simulate/chat", methods=["POST"])
+def simulate_chat():
+    """Chat with Claude about simulation results. Streams SSE.
+    Body: {trades, summary, params, messages: [{role, content}]}
+    Empty messages → auto-generates initial analysis.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+    try:
+        import anthropic as _ant
+    except ImportError:
+        return jsonify({"error": "anthropic package not installed"}), 503
+
+    data     = request.get_json(silent=True) or {}
+    trades   = data.get("trades",   [])
+    summary  = data.get("summary",  {})
+    params   = data.get("params",   {})
+    messages = data.get("messages", [])
+
+    # Compact trade rows — cap at 150 to keep prompt reasonable
+    rows = []
+    for t in trades[:150]:
+        pg  = f"+{t['peak_gain_pct']:.2f}%" if t.get("peak_gain_pct") else "—"
+        cap = f"{t['new_capture_ratio']:.2f}" if t.get("new_capture_ratio") is not None else "—"
+        gv  = f"-${t['new_giveback']:.2f}" if t.get("new_giveback") and t["new_giveback"] > 0 else "—"
+        strat = (t.get("strategy") or "")
+        idx = strat.upper().find("_CAM_")
+        short_strat = strat[idx+5:].replace("_V02", "").replace("_5MIN", "") if idx >= 0 else strat
+        rows.append(
+            f"{t.get('date','')[-5:]} {t.get('side','')[:1]} {t.get('ticker','')} {short_strat} "
+            f"q{int(t.get('qty',0))} @${t.get('entry_price',0):.2f} "
+            f"pnl=${t.get('actual_pnl',0):.2f} peak={pg} gvbk={gv} cap={cap} "
+            f"sr_pnl=${t.get('base_pnl') or 0:.2f} exit={t.get('new_exit_reason','')}"
+        )
+
+    avg_cap = summary.get("avg_capture_ratio")
+    system_prompt = (
+        "You are a trading performance analyst reviewing Kairos — an intraday algo system trading "
+        "Camarilla pivot breakout/reversal strategies on US equities (5-min bars, Alpaca paper account, ~$25k scale). "
+        "Strategy names: {TICKER}_CAM_{BREAKOUT|REVERSAL}_{R#S#}_{version}. "
+        "The user is paper trading to evaluate trailing stop parameters before going live.\n\n"
+        f"Simulation: trail {params.get('trail_pct','?')}% trig {params.get('trigger_pct','?')}% "
+        f"max_hold {params.get('max_hold_mins','?')}m | "
+        f"{params.get('from_date','')} → {params.get('to_date','')}\n"
+        f"Summary: {summary.get('trade_count',0)} trades | "
+        f"Actual P&L ${summary.get('actual_pnl',0):.2f} | "
+        f"SR P&L ${summary.get('base_pnl',0):.2f} | "
+        f"New P&L ${summary.get('new_pnl',0):.2f} | "
+        f"Avg Capture {f'{avg_cap:.2f}' if avg_cap is not None else '—'}\n\n"
+        "Trade data (date side ticker strategy qty entry actual_pnl peak giveback capture sr_pnl exit_reason):\n"
+        + "\n".join(rows) + "\n\n"
+        "Be direct and specific. Focus on patterns across tickers/strategies, not individual trades. "
+        "No filler phrases. Keep responses concise — 150-250 words unless the user asks for more detail."
+    )
+
+    if not messages:
+        messages = [{"role": "user", "content":
+            "Analyze these results. What patterns stand out across strategy types or tickers? "
+            "What does the capture ratio data tell us about exit timing quality? "
+            "What's the single highest-impact change you'd recommend?"}]
+
+    def _stream():
+        client = _ant.Anthropic(api_key=api_key)
+        full_text = ""
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=600,
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    full_text += text
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'full_text': full_text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(_stream()), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
 @app.route("/strategies")
 def strategies():
     return render_template("strategies.html")
