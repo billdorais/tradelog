@@ -1941,10 +1941,60 @@ def risk_status():
         halted     = _risk_halted
         blocked    = dict(_blocked_strategies)
         positions  = [dict(p) for p in _latest_positions]  # copy for mutation
+        peaks_snap = dict(_position_peaks)
+
+    # Load routing rule trail_pct per strategy for stop price estimation
+    _rule_trails = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname  = (_row[0] or "").upper()
+            _rnodes = json.loads(_row[1] or "[]")
+            for _nd in _rnodes:
+                if _nd.get("type") == "exit_params" and _nd.get("trail_offset"):
+                    _rule_trails[_rname] = float(_nd["trail_offset"])
+                    break
+        _rc.close()
+    except Exception:
+        pass
+
+    def _trail_for(strategy):
+        if not strategy:
+            return None
+        su = strategy.upper()
+        if su in _rule_trails:
+            return _rule_trails[su]
+        for rk, rv in _rule_trails.items():
+            if '_CAM_' in rk:
+                pat = '_'.join(rk.split('_CAM_')[1].split('_')[:2])
+                if pat and pat in su:
+                    return rv
+        return None
+
     for p in positions:
         strat, entry_t = _resolve_position_entry(p.get("symbol", ""), p.get("broker", ""))
         p["strategy"]   = strat
         p["entry_time"] = entry_t
+        sym_u = (p.get("symbol") or "").upper()
+        p["peak_unrealized_pnl"] = round(peaks_snap.get(sym_u, p.get("unrealized_pnl") or 0), 2)
+        # Estimate trailing stop price from route trail_pct and peak price
+        trail_pct    = _trail_for(strat)
+        entry_px     = p.get("avg_entry_price") or 0
+        current_px   = p.get("current_price")   or 0
+        qty          = abs(p.get("qty") or 0)
+        is_long      = float(p.get("qty") or 0) > 0
+        peak_pnl     = p["peak_unrealized_pnl"]
+        if trail_pct and entry_px and qty:
+            peak_px = entry_px + (peak_pnl / qty if is_long else -(peak_pnl / qty))
+            if is_long:
+                p["est_stop_price"] = round(peak_px * (1 - trail_pct / 100), 4)
+            else:
+                p["est_stop_price"] = round(peak_px * (1 + trail_pct / 100), 4)
+            p["trail_pct"] = trail_pct
+        else:
+            p["est_stop_price"] = None
+            p["trail_pct"]      = None
+
     return jsonify({
         "halted":               halted,
         "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,

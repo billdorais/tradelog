@@ -311,6 +311,15 @@
     .open-pos-table tr:last-child td { border-bottom: none; }
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
+    .price-meter { width: 130px; user-select: none; }
+    .price-meter-track { position: relative; height: 4px; background: #1a1d2e; border-radius: 2px; margin: 6px 0 0; }
+    .price-meter-fill  { position: absolute; top: 0; height: 100%; border-radius: 2px; }
+    .price-meter-zero  { position: absolute; left: 50%; top: -3px; width: 1px; height: 10px; background: #444; transform: translateX(-50%); }
+    .price-meter-ticks { position: relative; height: 10px; }
+    .price-meter-tick  { position: absolute; transform: translateX(-50%); top: 2px; }
+    .price-meter-tick-cur  { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 7px solid #7FE098; }
+    .price-meter-tick-stop { width: 0; height: 0; border-left: 3px solid transparent; border-right: 3px solid transparent; border-bottom: 5px solid #F2E7AC; opacity: 0.85; }
+    .price-meter-labels { display: flex; justify-content: space-between; font-size: 0.6rem; color: #444; margin-top: 2px; }
 
     .table-wrap {
       max-width: 1200px;
@@ -606,7 +615,7 @@
     <table class="open-pos-table">
       <thead><tr>
         <th>Symbol</th><th>Broker</th><th>Strategy</th><th>Qty</th>
-        <th>Unrealized P&amp;L</th><th style="width:60px">Held</th><th style="width:90px">vs Limit</th>
+        <th>Unrealized P&amp;L</th><th style="width:60px">Held</th><th style="width:140px">Price Range</th>
       </tr></thead>
       <tbody id="openPositionsTbody"></tbody>
     </table>
@@ -3357,6 +3366,48 @@
       } catch(e) { /* Alpaca not configured or unreachable */ }
     }
 
+    function renderPriceMeter(p) {
+      const entry   = parseFloat(p.avg_entry_price  || 0);
+      const current = parseFloat(p.current_price    || 0);
+      const stop    = p.est_stop_price != null ? parseFloat(p.est_stop_price) : null;
+      const isLong  = parseFloat(p.qty || 0) > 0;
+      if (!entry || !current) return '<span style="color:#333;font-size:0.72rem">—</span>';
+
+      // Normalize pct: positive = profitable direction regardless of side
+      const curPct  = isLong ? (current - entry) / entry * 100 : (entry - current) / entry * 100;
+      const stopPct = stop   != null ? (isLong ? (stop  - entry) / entry * 100 : (entry - stop)  / entry * 100) : null;
+
+      const range = Math.max(1.0, Math.abs(curPct) * 1.6, p.trail_pct ? p.trail_pct * 3 : 0);
+      const toPos = pct => Math.max(1, Math.min(99, 50 + (pct / range) * 50));
+
+      const curPos  = toPos(curPct);
+      const stopPos = stopPct != null ? toPos(stopPct) : null;
+
+      const fillLeft  = Math.min(50, curPos);
+      const fillWidth = Math.abs(curPos - 50);
+      const fillColor = curPct >= 0 ? 'rgba(127,224,152,0.35)' : 'rgba(231,76,60,0.3)';
+      const curLabel  = (curPct >= 0 ? '+' : '') + curPct.toFixed(2) + '%';
+      const curColor  = curPct >= 0 ? '#7FE098' : '#ef5350';
+
+      const stopTick = stopPos != null
+        ? `<div class="price-meter-tick price-meter-tick-stop" style="left:${stopPos}%" title="Est. stop ~$${stop.toFixed(2)}"></div>`
+        : '';
+      const curTick = `<div class="price-meter-tick price-meter-tick-cur" style="left:${curPos}%" title="Current $${current.toFixed(2)} (${curLabel})"></div>`;
+
+      return `<div class="price-meter">
+        <div class="price-meter-track">
+          <div class="price-meter-zero"></div>
+          <div class="price-meter-fill" style="left:${fillLeft}%;width:${fillWidth}%;background:${fillColor}"></div>
+        </div>
+        <div class="price-meter-ticks">${stopTick}${curTick}</div>
+        <div class="price-meter-labels">
+          <span>${isLong ? '▼' : '▲'}</span>
+          <span style="color:${curColor};font-weight:600">${curLabel}</span>
+          <span>${isLong ? '▲' : '▼'}</span>
+        </div>
+      </div>`;
+    }
+
     async function loadOpenPositionsTable() {
       try {
         const data = await fetch('/api/risk/status').then(r => r.json());
@@ -3390,9 +3441,7 @@
             <td style="color:#aaa">${escHtml(p.qty)}</td>
             <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
             <td>${heldCell}</td>
-            <td>${limitVal && limitVal < 0
-              ? `<div class="open-pos-bar-wrap"><div class="open-pos-bar" style="width:${barPct}%;background:${barColor}"></div></div>`
-              : '<span style="color:#444">—</span>'}</td>
+            <td>${renderPriceMeter(p)}</td>
           </tr>`;
         }).join('');
       } catch (e) { /* risk endpoint not available */ }
