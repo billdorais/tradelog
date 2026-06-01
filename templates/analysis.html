@@ -89,6 +89,8 @@
     /* ── Drill-down modal ── */
     tr.drill { cursor: pointer; }
     tr.drill:hover td.name { color: #7FE098; text-decoration: underline; }
+    .snap-strat-link { cursor: pointer; }
+    .snap-strat-link:hover { text-decoration: underline; }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 900; display: none; }
     .modal-backdrop.open { display: block; }
     .modal { position: fixed; top: 5%; left: 50%; transform: translateX(-50%);
@@ -215,9 +217,10 @@
         <table style="width:100%">
           <thead>
             <tr>
-              <th style="width:40px">#</th>
+              <th style="width:48px">#</th>
               <th>Strategy</th>
               <th style="text-align:right" title="Consecutive daily runs this strategy has been in the top-N (incl. today)">Tenure</th>
+              <th style="text-align:right" title="Calendar days since this strategy's most recent closed Alpaca trade">Last Trade</th>
               <th style="text-align:right">Score</th>
               <th style="text-align:right" title="Shares to trade on Refined (band $ target ÷ last price)">Shares</th>
               <th style="text-align:right" title="Last price used when sizing this strategy">Price</th>
@@ -227,7 +230,7 @@
               <th style="text-align:right">Total P&amp;L</th>
             </tr>
           </thead>
-          <tbody id="refinedSnapRows"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
+          <tbody id="refinedSnapRows"><tr><td colspan="11" class="empty">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -657,7 +660,7 @@
       if (!d.run_at) {
         meta.textContent = 'never run · daily scheduler fires at 4:15 PM ET on weekdays';
         status.style.display = 'none';
-        rows.innerHTML = '<tr><td colspan="10" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="11" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
         return;
       }
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
@@ -675,14 +678,18 @@
         `<span style="color:#7FE098">✓ added to ${updated} rule${updated === 1 ? '' : 's'}</span>`,
         `<span>stripped from ${removed} prior</span>`,
       ];
+      const _stratLink = (name) => {
+        const e = esc(name);
+        return `<span class="snap-strat-link" data-key="${e}" title="Click to see round-trip pairs">${e}</span>`;
+      };
       if (addedS.length) {
         bits.push(
-          `<span style="color:#7FE098" title="Strategies new to the top-N this run (not present in the previous run)">🆕 ${addedS.length} new: <span style="font-family:monospace">${addedS.map(esc).join(', ')}</span></span>`
+          `<span style="color:#7FE098" title="Strategies new to the top-N this run (not present in the previous run)">🆕 ${addedS.length} new: <span style="font-family:monospace">${addedS.map(_stratLink).join(', ')}</span></span>`
         );
       }
       if (removedS.length) {
         bits.push(
-          `<span style="color:#e74c3c" title="Strategies that were in the top-N last run but dropped out this run">⬇ ${removedS.length} dropped: <span style="font-family:monospace">${removedS.map(esc).join(', ')}</span></span>`
+          `<span style="color:#e74c3c" title="Strategies that were in the top-N last run but dropped out this run">⬇ ${removedS.length} dropped: <span style="font-family:monospace">${removedS.map(_stratLink).join(', ')}</span></span>`
         );
       }
       if (notFound.length) {
@@ -694,10 +701,28 @@
       status.style.display = '';
       const scored = d.top_scored || [];
       if (!scored.length) {
-        rows.innerHTML = '<tr><td colspan="10" class="empty">No profitable strategies in the current window.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="11" class="empty">No profitable strategies in the current window.</td></tr>';
         return;
       }
       const tenureMap = d.tenure_runs || {};
+      // Rank-change chip: ▲N green = moved up since last run; ▼N red = moved down;
+      // blank for unchanged or new (NEW already shown in the Tenure column).
+      const _rankChip = (delta) => {
+        if (delta == null || delta === 0) return '';
+        if (delta > 0) return ` <span style="color:#7FE098;font-size:0.7rem;margin-left:3px" title="Moved up ${delta} spot${delta===1?'':'s'} since last run">▲${delta}</span>`;
+        const d = Math.abs(delta);
+        return ` <span style="color:#e74c3c;font-size:0.7rem;margin-left:3px" title="Moved down ${d} spot${d===1?'':'s'} since last run">▼${d}</span>`;
+      };
+      // Days since the strategy's most recent closed Alpaca trade. Yellow >5d, red >10d.
+      const _lastTradeCell = (iso) => {
+        if (!iso) return '<span style="color:#444">—</span>';
+        const t = new Date(iso).getTime();
+        if (!t || isNaN(t)) return '<span style="color:#444">—</span>';
+        const days = Math.floor((Date.now() - t) / 86400000);
+        const label = days <= 0 ? 'today' : `${days}d`;
+        const color = days > 10 ? '#e74c3c' : days > 5 ? '#F2E7AC' : '#888';
+        return `<span style="color:${color}" title="Last closed trade ${iso}">${label}</span>`;
+      };
       rows.innerHTML = scored.map((r, i) => {
         const pnlCls = (r.total_pnl || 0) >= 0 ? 'pos' : 'neg';
         const wrCls  = (r.win_rate  || 0) >= 50  ? 'pos' : 'neg';
@@ -715,9 +740,10 @@
           ? `<span style="color:#7FE098;font-weight:600" title="Newly added in this run">NEW</span>`
           : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
         return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${r.trades}" data-snap-wr="${r.win_rate}" data-snap-pnl="${r.total_pnl}" title="Click to see round-trip pairs (from current date range)">
-          <td style="color:#666">${i + 1}</td>
+          <td style="color:#666">${i + 1}${_rankChip(r.rank_delta)}</td>
           <td class="name"><span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
+          <td style="text-align:right">${_lastTradeCell(r.last_trade_at)}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
           <td style="text-align:right;color:#c4b5fd">${shares}</td>
           <td style="text-align:right;color:#888">${price}</td>
@@ -729,7 +755,7 @@
       }).join('');
     } catch (e) {
       meta.textContent = 'error loading snapshot';
-      rows.innerHTML = '<tr><td colspan="10" class="empty" style="color:#e74c3c">Error.</td></tr>';
+      rows.innerHTML = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Error.</td></tr>';
     }
   }
 
@@ -746,7 +772,7 @@
     const meta = document.getElementById('refinedSnapMeta');
     const rows = document.getElementById('refinedSnapRows');
     meta.textContent = 'refreshing…';
-    rows.innerHTML   = '<tr><td colspan="10" class="empty">Refreshing…</td></tr>';
+    rows.innerHTML   = '<tr><td colspan="11" class="empty">Refreshing…</td></tr>';
     try {
       const res = await fetch('/api/routing/rules/refresh_refined', {
         method: 'POST',
@@ -759,7 +785,7 @@
       if (_lastStratMap && Object.keys(_lastStratMap).length) renderStratTable(_lastStratMap);
     } catch (e) {
       meta.textContent = 'refresh failed: ' + (e.message || e);
-      rows.innerHTML   = '<tr><td colspan="10" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
+      rows.innerHTML   = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
     }
   }
 
@@ -1052,6 +1078,17 @@
         total_pnl: parseFloat(tr.dataset.snapPnl || '0'),
       };
       openPairs(tr.dataset.kind, tr.dataset.key, snapStats);
+    });
+  }
+  // Added/dropped strategy names in the status line drill into the same pairs view.
+  // No snapshot stats here — they aren't in the table, so openPairs computes from
+  // the current period only.
+  const _snapStatusEl = document.getElementById('refinedSnapStatus');
+  if (_snapStatusEl) {
+    _snapStatusEl.addEventListener('click', e => {
+      const el = e.target.closest('.snap-strat-link');
+      if (!el) return;
+      openPairs('strategy', el.dataset.key);
     });
   }
 

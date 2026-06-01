@@ -1247,6 +1247,14 @@ def init_db():
         )
     """)
     conn.commit()
+    # Migration: add rank column to record where each strategy placed in its run.
+    # ALTER ADD COLUMN is supported in both SQLite and Postgres; the IF NOT EXISTS
+    # variant isn't portable, so swallow the "already exists" error.
+    try:
+        cur.execute("ALTER TABLE refined_history ADD COLUMN rank INTEGER")
+        conn.commit()
+    except Exception:
+        pass
 
     # User-saved backtesting strategies (converted from Pine Script)
     cur.execute("""
@@ -5333,12 +5341,16 @@ def _compute_strategy_stats(days=45, from_date=None):
 
     excluded = _load_excluded_strategies()
     strat_map = {}
+    last_trade_at = {}   # strategy -> most recent exit_time ISO string
     for c in closed_clean:
         if c["strategy"] in excluded:
             continue
         strat_map.setdefault(c["strategy"], []).append(
             (c["pnl"], float(c.get("qty") or 1))
         )
+        ex = c.get("exit_time") or ""
+        if ex and ex > last_trade_at.get(c["strategy"], ""):
+            last_trade_at[c["strategy"]] = ex
 
     stats_map = {}
     for strat, trade_pairs in strat_map.items():
@@ -5362,6 +5374,7 @@ def _compute_strategy_stats(days=45, from_date=None):
             "sharpe":         _sharpe_from_pnls(pnl_per_share),
             "consec_losses":  sum(1 for _ in __import__('itertools').takewhile(
                 lambda p: p <= 0, reversed(pnls))),
+            "last_trade_at":  last_trade_at.get(strat) or None,
         }
     return stats_map
 
@@ -5670,37 +5683,46 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     added_strategies   = []
     removed_strategies = []
     tenure_runs        = {}   # strategy_name -> days since first induction
+    rank_deltas        = {}   # strategy_name -> prev_rank - cur_rank (positive = moved up); None for new
     try:
         hconn = get_db(); hcur = hconn.cursor(); hp = placeholder()
-        hcur.execute("SELECT run_at, strategy_name FROM refined_history ORDER BY run_at DESC")
+        hcur.execute("SELECT run_at, strategy_name, rank FROM refined_history ORDER BY run_at DESC")
         hist_rows = hcur.fetchall()
-        runs = []   # [(run_at, set_of_strategies)] newest-first, pre-write snapshot
-        cur_at = None; cur_set = None
+        runs = []   # [(run_at, {name: rank})] newest-first, pre-write snapshot
+        cur_at = None; cur_map = None
         for r in hist_rows:
             rt = r[0] if DATABASE_URL else r["run_at"]
             nm = r[1] if DATABASE_URL else r["strategy_name"]
+            rk = r[2] if DATABASE_URL else r["rank"]
             if rt != cur_at:
-                if cur_set is not None: runs.append((cur_at, cur_set))
-                cur_at = rt; cur_set = set()
-            cur_set.add(nm)
-        if cur_set is not None: runs.append((cur_at, cur_set))
+                if cur_map is not None: runs.append((cur_at, cur_map))
+                cur_at = rt; cur_map = {}
+            cur_map[nm] = rk
+        if cur_map is not None: runs.append((cur_at, cur_map))
 
-        prev_top = runs[0][1] if runs else set()
-        new_top  = set(top)
+        prev_ranks = runs[0][1] if runs else {}
+        prev_top   = set(prev_ranks.keys())
+        new_top    = set(top)
         added_strategies   = sorted(new_top - prev_top)
         removed_strategies = sorted(prev_top - new_top)
 
-        for name in top:
+        # Rank deltas: prev_rank - cur_rank. Positive = moved up. None = new entry
+        # or prior run pre-dates the rank column (NULL rank in DB).
+        for i, name in enumerate(top):
+            pr = prev_ranks.get(name)
+            rank_deltas[name] = (pr - (i + 1)) if pr is not None else None
+
+        for i, name in enumerate(top):
             if DATABASE_URL:
                 hcur.execute(
-                    f"INSERT INTO refined_history (run_at, strategy_name) VALUES ({hp}, {hp}) "
+                    f"INSERT INTO refined_history (run_at, strategy_name, rank) VALUES ({hp}, {hp}, {hp}) "
                     "ON CONFLICT DO NOTHING",
-                    (_refined_last_run, name),
+                    (_refined_last_run, name, i + 1),
                 )
             else:
                 hcur.execute(
-                    f"INSERT OR IGNORE INTO refined_history (run_at, strategy_name) VALUES ({hp}, {hp})",
-                    (_refined_last_run, name),
+                    f"INSERT OR IGNORE INTO refined_history (run_at, strategy_name, rank) VALUES ({hp}, {hp}, {hp})",
+                    (_refined_last_run, name, i + 1),
                 )
         hconn.commit()
 
@@ -5735,6 +5757,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
         "added_strategies":   added_strategies,
         "removed_strategies": removed_strategies,
         "tenure_runs":        tenure_runs,
+        "rank_deltas":        rank_deltas,
         "top_scored": [
             {
                 "name":          name,
@@ -5748,6 +5771,8 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
                 "shares":        qty_by_strat.get(name, (None, 0, None))[0],
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
                 "last_price":    qty_by_strat.get(name, (None, 0, None))[2],
+                "last_trade_at": stats.get("last_trade_at"),
+                "rank_delta":    rank_deltas.get(name),
             }
             for name, stats, score in top_scored
         ],
