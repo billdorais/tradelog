@@ -305,13 +305,13 @@
     /* Open Positions table (mirrors Signal Router) */
     .open-pos-card { max-width: 1200px; margin: 0 auto 16px; background: #1c1f2e; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 16px; }
     .open-pos-card .open-pos-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 8px; }
-    .open-pos-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .open-pos-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 0.82rem; }
     .open-pos-table th { text-align: left; color: #555; font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 6px 0; border-bottom: 1px solid #1e2130; }
     .open-pos-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
     .open-pos-table tr:last-child td { border-bottom: none; }
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
-    .price-meter { width: 200px; user-select: none; }
+    .price-meter { width: 100%; user-select: none; }
     .price-meter-track { position: relative; height: 6px; background: #1a1d2e; border-radius: 3px; margin: 8px 0 0; }
     .price-meter-fill  { position: absolute; top: 0; height: 100%; border-radius: 3px; }
     .price-meter-zero  { position: absolute; left: 50%; top: -4px; width: 1px; height: 14px; background: #444; transform: translateX(-50%); }
@@ -612,13 +612,15 @@
   <!-- Open Positions table (mirrors Signal Router) -->
   <div id="openPositionsSection" class="open-pos-card" style="display:none">
     <div class="open-pos-label">Open Positions</div>
+    <div style="overflow-x:auto">
     <table class="open-pos-table">
       <thead><tr>
-        <th>Symbol</th><th>Broker</th><th>Strategy</th><th style="width:220px">Price Range</th><th>Qty</th>
+        <th>Symbol</th><th>Broker</th><th>Strategy</th><th style="width:420px">Price Range</th><th>Qty</th>
         <th>Unrealized P&amp;L</th><th style="width:60px">Held</th>
       </tr></thead>
       <tbody id="openPositionsTbody"></tbody>
     </table>
+    </div>
   </div>
 
   <!-- Equity curve -->
