@@ -650,6 +650,12 @@
 
   // ── Refined Snapshot ───────────────────────────────────────────────────────
   // Shows the result of the last /refresh_refined run (daily scheduler or manual).
+  // Cached so the row stats can be re-rendered when the active account tab changes
+  // (the snapshot's ranking stays Paper-All-based; the visible Trades/Win%/PF/PnL
+  // columns get overlayed with the active tab's per_strategy stats so they match
+  // what the user sees in the leaderboard below).
+  let _snapshotData = null;
+
   async function _loadRefinedSnapshot() {
     const meta   = document.getElementById('refinedSnapMeta');
     const status = document.getElementById('refinedSnapStatus');
@@ -661,12 +667,17 @@
         meta.textContent = 'never run · daily scheduler fires at 4:15 PM ET on weekdays';
         status.style.display = 'none';
         rows.innerHTML = '<tr><td colspan="11" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
+        _snapshotData = null;
         return;
       }
+      _snapshotData = d;
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
       const cnt = (d.top_strategies || []).length;
       const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
-      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}`;
+      const overlayNote = (activeSource === 'alpaca2')
+        ? ' · stats reflect Paper Refined account for current date range'
+        : '';
+      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}${overlayNote}`;
 
       // Status line: ✓ updated · removed · ⚠ not matched (with names if any).
       const updated   = d.updated || 0;
@@ -723,9 +734,19 @@
         const color = days > 10 ? '#e74c3c' : days > 5 ? '#F2E7AC' : '#888';
         return `<span style="color:${color}" title="Last closed trade ${iso}">${label}</span>`;
       };
+      // Overlay: when on Paper Refined tab, replace the Trades/Win%/PF/Total P&L
+      // columns with stats from analysisData.per_strategy so the rows reflect what
+      // the user actually sees in their Refined account (date-range scoped).
+      const useTabStats = activeSource === 'alpaca2' && analysisData && analysisData.per_strategy;
       rows.innerHTML = scored.map((r, i) => {
-        const pnlCls = (r.total_pnl || 0) >= 0 ? 'pos' : 'neg';
-        const wrCls  = (r.win_rate  || 0) >= 50  ? 'pos' : 'neg';
+        const ps = useTabStats ? analysisData.per_strategy[r.name] : null;
+        const trades  = useTabStats ? (ps ? ps.trades        : 0)    : r.trades;
+        const winRate = useTabStats ? (ps ? ps.win_rate      : 0)    : r.win_rate;
+        const pf      = useTabStats ? (ps ? ps.profit_factor : null) : r.profit_factor;
+        const total   = useTabStats ? (ps ? ps.total_pnl     : 0)    : r.total_pnl;
+        const noTabTrades = useTabStats && !ps;
+        const pnlCls = (total || 0) >= 0 ? 'pos' : 'neg';
+        const wrCls  = (winRate || 0) >= 50  ? 'pos' : 'neg';
         const scorePct = Math.round((r.score || 0) * 100);
         // Shares = band $ target ÷ last price. "—" if we couldn't fetch a price.
         const shares = (r.shares != null)
@@ -739,7 +760,13 @@
         const tenureCell = tn === 1
           ? `<span style="color:#7FE098;font-weight:600" title="Newly added in this run">NEW</span>`
           : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
-        return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${r.trades}" data-snap-wr="${r.win_rate}" data-snap-pnl="${r.total_pnl}" title="Click to see round-trip pairs (from current date range)">
+        // Dim the cells when overlay is active but this strategy hasn't traded in the current view.
+        const dim = noTabTrades ? 'color:#444' : '';
+        const tradesCell  = noTabTrades ? '<span style="color:#444">0</span>' : trades;
+        const winRateCell = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${wrCls}">${winRate}%</span>`;
+        const pfCell      = noTabTrades ? '<span style="color:#444">—</span>' : pfBadge(pf);
+        const totalCell   = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${pnlCls}">${fmt(total)}</span>`;
+        return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${trades}" data-snap-wr="${winRate}" data-snap-pnl="${total}" title="Click to see round-trip pairs (from current date range)">
           <td style="color:#666">${i + 1}${_rankChip(r.rank_delta)}</td>
           <td class="name"><span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
@@ -747,10 +774,10 @@
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
           <td style="text-align:right;color:#c4b5fd">${shares}</td>
           <td style="text-align:right;color:#888">${price}</td>
-          <td style="text-align:right">${r.trades}</td>
-          <td style="text-align:right" class="${wrCls}">${r.win_rate}%</td>
-          <td style="text-align:right">${pfBadge(r.profit_factor)}</td>
-          <td style="text-align:right" class="${pnlCls}">${fmt(r.total_pnl)}</td>
+          <td style="text-align:right;${dim}">${tradesCell}</td>
+          <td style="text-align:right">${winRateCell}</td>
+          <td style="text-align:right">${pfCell}</td>
+          <td style="text-align:right">${totalCell}</td>
         </tr>`;
       }).join('');
     } catch (e) {
