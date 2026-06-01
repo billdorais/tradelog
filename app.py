@@ -5701,6 +5701,16 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
         if cur_map is not None: runs.append((cur_at, cur_map))
 
         prev_ranks = runs[0][1] if runs else {}
+        # Backfill: rows inserted before the rank column existed have NULL rank.
+        # Use the persisted _refined_last_result["top_strategies"] (the prior run's
+        # ordered list) to recover ranks on the very first refresh after deploy.
+        if prev_ranks and all(v is None for v in prev_ranks.values()):
+            try:
+                prev_ordered = (_refined_last_result or {}).get("top_strategies") or []
+            except Exception:
+                prev_ordered = []
+            if prev_ordered:
+                prev_ranks = {nm: i + 1 for i, nm in enumerate(prev_ordered)}
         prev_top   = set(prev_ranks.keys())
         new_top    = set(top)
         added_strategies   = sorted(new_top - prev_top)
