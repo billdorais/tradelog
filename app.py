@@ -1249,12 +1249,15 @@ def init_db():
     conn.commit()
     # Migration: add rank column to record where each strategy placed in its run.
     # ALTER ADD COLUMN is supported in both SQLite and Postgres; the IF NOT EXISTS
-    # variant isn't portable, so swallow the "already exists" error.
+    # variant isn't portable, so swallow the "already exists" error. Must ROLLBACK
+    # on failure — Postgres aborts the whole transaction otherwise and every
+    # subsequent statement in init_db() fails with InFailedSqlTransaction.
     try:
         cur.execute("ALTER TABLE refined_history ADD COLUMN rank INTEGER")
         conn.commit()
     except Exception:
-        pass
+        try: conn.rollback()
+        except Exception: pass
 
     # User-saved backtesting strategies (converted from Pine Script)
     cur.execute("""
