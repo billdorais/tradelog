@@ -789,6 +789,34 @@
     </table>
   </div>
 
+  <!-- Performance Summary -->
+  <div class="section-label" style="display:flex;align-items:center;gap:10px;margin-top:28px">
+    <span>Performance Summary</span>
+    <span style="font-size:0.7rem;font-weight:400;color:#c4b5fd">Refined account</span>
+    <div style="display:flex;gap:4px;margin-left:auto">
+      <button id="dashTabBtnDaily"  onclick="dashShowTab('daily')"
+        style="padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;border:1px solid #7FE098;background:rgba(127,224,152,0.15);color:#7FE098;font-family:inherit">Daily</button>
+      <button id="dashTabBtnWeekly" onclick="dashShowTab('weekly')"
+        style="padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888;font-family:inherit">Weekly</button>
+    </div>
+  </div>
+  <div id="dashTabDaily" class="table-wrap" style="margin-top:8px">
+    <table>
+      <thead><tr id="dashDailyHead">
+        <th>Date</th><th>Trades</th><th>Day P&amp;L</th><th>Cumulative P&amp;L</th>
+      </tr></thead>
+      <tbody id="dashDailyBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div id="dashTabWeekly" class="table-wrap" style="display:none;margin-top:8px">
+    <table>
+      <thead><tr id="dashWeeklyHead">
+        <th>Week</th><th>Trades</th><th>Week P&amp;L</th><th>Cumulative P&amp;L</th>
+      </tr></thead>
+      <tbody id="dashWeeklyBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
   <script>
     let equityChartInstance    = null;
     let dailyChartInstance     = null;
@@ -3143,10 +3171,12 @@
     loadTrades();
     loadAccount();
     loadOpenPositionsTable();
+    loadDashPerfSummary();
     setInterval(loadTrades,            30000);
     setInterval(loadAccount,           30000);
     setInterval(loadOpenPositionsTable, 10000);
     setInterval(refreshLivePnl,        10000);
+    setInterval(loadDashPerfSummary,  300000); // refresh every 5 min
 
     // Sets used to star Open Positions chips. Both ticker- and strategy-level so
     // the chip can use exact strategy attribution when we have it (purple only if
@@ -3173,6 +3203,52 @@
         if (!best || (e.time || '') > (best.time || '')) best = e;
       }
       return best ? best.strategy : null;
+    }
+
+    // ── Performance Summary (Refined account) ───────────────────────────────
+    async function loadDashPerfSummary() {
+      try {
+        const data = await fetch('/api/alpaca/analysis?account=2').then(r => r.json());
+        dashRenderDaily(data.daily   || []);
+        dashRenderWeekly(data.weekly || []);
+      } catch(e) { /* silently skip if Alpaca not configured */ }
+    }
+
+    function dashRenderDaily(rows) {
+      const body = document.getElementById('dashDailyBody');
+      const head = document.getElementById('dashDailyHead');
+      if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
+      const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
+      const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
+      const avgFmt    = (avgPnl >= 0 ? '+' : '-') + '$' + Math.abs(avgPnl).toFixed(2);
+      const avgCls    = avgPnl >= 0 ? '#517356' : '#ef5350';
+      head.innerHTML  = `<th>Date</th><th>Trades <span style="color:#555;font-weight:400">(avg ${avgTrades})</span></th><th>Day P&amp;L <span style="color:${avgCls};font-weight:400">(avg ${avgFmt})</span></th><th>Cumulative P&amp;L</th>`;
+      body.innerHTML  = [...rows].reverse().map(r =>
+        `<tr><td>${r.date}</td><td>${r.trades}</td>${pnlCell(r.pnl)}${pnlCell(r.cumulative)}</tr>`
+      ).join('');
+    }
+
+    function dashRenderWeekly(rows) {
+      const body = document.getElementById('dashWeeklyBody');
+      const head = document.getElementById('dashWeeklyHead');
+      if (!rows.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No data.</td></tr>'; return; }
+      const avgTrades = (rows.reduce((s, r) => s + r.trades, 0) / rows.length).toFixed(1);
+      const avgPnl    = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
+      const avgFmt    = (avgPnl >= 0 ? '+' : '-') + '$' + Math.abs(avgPnl).toFixed(2);
+      const avgCls    = avgPnl >= 0 ? '#517356' : '#ef5350';
+      head.innerHTML  = `<th>Week</th><th>Trades <span style="color:#555;font-weight:400">(avg ${avgTrades})</span></th><th>Week P&amp;L <span style="color:${avgCls};font-weight:400">(avg ${avgFmt})</span></th><th>Cumulative P&amp;L</th>`;
+      body.innerHTML  = [...rows].reverse().map(r =>
+        `<tr><td>${r.week}</td><td>${r.trades}</td>${pnlCell(r.pnl)}${pnlCell(r.cumulative)}</tr>`
+      ).join('');
+    }
+
+    function dashShowTab(name) {
+      document.getElementById('dashTabDaily').style.display  = name === 'daily'  ? '' : 'none';
+      document.getElementById('dashTabWeekly').style.display = name === 'weekly' ? '' : 'none';
+      const activeStyle   = 'border:1px solid #7FE098;background:rgba(127,224,152,0.15);color:#7FE098';
+      const inactiveStyle = 'border:1px solid #2a2d3e;background:transparent;color:#888';
+      document.getElementById('dashTabBtnDaily').style.cssText  = (name === 'daily'  ? activeStyle : inactiveStyle) + ';padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;font-family:inherit';
+      document.getElementById('dashTabBtnWeekly').style.cssText = (name === 'weekly' ? activeStyle : inactiveStyle) + ';padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;font-family:inherit';
     }
 
     async function loadAccount() {
