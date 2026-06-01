@@ -311,15 +311,15 @@
     .open-pos-table tr:last-child td { border-bottom: none; }
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
-    .price-meter { width: 130px; user-select: none; }
-    .price-meter-track { position: relative; height: 4px; background: #1a1d2e; border-radius: 2px; margin: 6px 0 0; }
-    .price-meter-fill  { position: absolute; top: 0; height: 100%; border-radius: 2px; }
-    .price-meter-zero  { position: absolute; left: 50%; top: -3px; width: 1px; height: 10px; background: #444; transform: translateX(-50%); }
-    .price-meter-ticks { position: relative; height: 10px; }
+    .price-meter { width: 200px; user-select: none; }
+    .price-meter-track { position: relative; height: 6px; background: #1a1d2e; border-radius: 3px; margin: 8px 0 0; }
+    .price-meter-fill  { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+    .price-meter-zero  { position: absolute; left: 50%; top: -4px; width: 1px; height: 14px; background: #444; transform: translateX(-50%); }
+    .price-meter-ticks { position: relative; height: 12px; }
     .price-meter-tick  { position: absolute; transform: translateX(-50%); top: 2px; }
-    .price-meter-tick-cur  { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 7px solid #7FE098; }
-    .price-meter-tick-stop { width: 0; height: 0; border-left: 3px solid transparent; border-right: 3px solid transparent; border-bottom: 5px solid #F2E7AC; opacity: 0.85; }
-    .price-meter-labels { display: flex; justify-content: space-between; font-size: 0.6rem; color: #444; margin-top: 2px; }
+    .price-meter-tick-cur  { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid #7FE098; }
+    .price-meter-tick-stop { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 7px solid #F2E7AC; opacity: 0.9; }
+    .price-meter-labels { display: flex; justify-content: space-between; font-size: 0.65rem; color: #555; margin-top: 3px; }
 
     .table-wrap {
       max-width: 1200px;
@@ -614,8 +614,8 @@
     <div class="open-pos-label">Open Positions</div>
     <table class="open-pos-table">
       <thead><tr>
-        <th>Symbol</th><th>Broker</th><th>Strategy</th><th>Qty</th>
-        <th>Unrealized P&amp;L</th><th style="width:60px">Held</th><th style="width:140px">Price Range</th>
+        <th>Symbol</th><th>Broker</th><th>Strategy</th><th style="width:220px">Price Range</th><th>Qty</th>
+        <th>Unrealized P&amp;L</th><th style="width:60px">Held</th>
       </tr></thead>
       <tbody id="openPositionsTbody"></tbody>
     </table>
@@ -3456,10 +3456,10 @@
             <td style="font-weight:600;color:#ccc">${escHtml(p.symbol)}</td>
             <td style="color:#666;font-size:0.75rem">${escHtml(p.broker)}</td>
             <td>${stratCell}</td>
+            <td>${renderPriceMeter(p)}</td>
             <td style="color:#aaa">${escHtml(p.qty)}</td>
             <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
             <td>${heldCell}</td>
-            <td>${renderPriceMeter(p)}</td>
           </tr>`;
         }).join('');
       } catch (e) { /* risk endpoint not available */ }
