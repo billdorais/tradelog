@@ -762,14 +762,12 @@ def _check_position_stops():
         broker = pos["broker"]
         sym_u  = symbol.upper()
 
-        # Update peak tracker (always, so peak persists across polls when trailing is on).
-        peak = 0.0
-        if MAX_TRAILING_GIVEBACK > 0:
-            with _risk_lock:
-                prev = _position_peaks.get(sym_u, 0.0)
-                if upnl > prev:
-                    _position_peaks[sym_u] = upnl
-                peak = max(prev, upnl)
+        # Always track peak unrealized P&L — used for giveback stop and meter display.
+        with _risk_lock:
+            prev = _position_peaks.get(sym_u, 0.0)
+            if upnl > prev:
+                _position_peaks[sym_u] = upnl
+        peak = max(prev, upnl) if MAX_TRAILING_GIVEBACK > 0 else 0.0
 
         # Decide which (if any) stop to fire.
         # PCT stop applies to Refined (alpaca2) only — Paper All uses dollar stop or TV exits.
@@ -977,13 +975,15 @@ def _check_max_hold_exits():
             log.error("Max hold: close_position raised for %s [%s]: %s", symbol, broker_tag, _e)
 
 
-_exit_recovery_tick = 0
+_exit_recovery_tick     = 0
+_max_hold_recovery_tick = 0
 
 
 def _position_monitor_loop():
     """Background thread: poll positions every 3s, fire fixed-loss or trailing-giveback stops.
-    Every ~15s, also run the exit-params partial-fill recovery watchdog."""
-    global _exit_recovery_tick
+    Every ~15s runs exit-params recovery. Every ~2 min re-scans for untracked max-hold positions
+    (catches positions that opened during a deploy window or restart)."""
+    global _exit_recovery_tick, _max_hold_recovery_tick
     time.sleep(25)  # stagger from risk monitor; also gives brokers time to init before recovery
     try:
         _recover_max_hold_positions()
@@ -1007,6 +1007,13 @@ def _position_monitor_loop():
                 _check_exit_params_recovery()
             except Exception as _e:
                 log.warning("Exit-params recovery error: %s", _e)
+        _max_hold_recovery_tick += 1
+        if _max_hold_recovery_tick >= 40:  # every 40 ticks * 3s = 2 min
+            _max_hold_recovery_tick = 0
+            try:
+                _recover_max_hold_positions()
+            except Exception as _e:
+                log.warning("Max hold re-scan error: %s", _e)
         time.sleep(3)
 
 
