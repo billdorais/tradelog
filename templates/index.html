@@ -3443,7 +3443,8 @@
               if (timer) {
                 const overLimit = timer.elapsed_mins >= timer.max_hold_mins;
                 heldColor = overLimit ? '#ef5350' : (timer.elapsed_mins >= timer.max_hold_mins * 0.8 ? '#f59e0b' : '#888');
-                timerNote = `<br><span style="font-size:0.65rem;color:${overLimit ? '#ef5350' : '#555'}">⏱ ${timer.elapsed_mins}m / ${timer.max_hold_mins}m</span>`;
+                const elapsedFmt = timer.elapsed_mins < 1 ? `${Math.round(timer.elapsed_mins * 60)}s` : `${timer.elapsed_mins.toFixed(1)}m`;
+                timerNote = `<br><span style="font-size:0.65rem;color:${overLimit ? '#ef5350' : '#555'}">⏱ ${elapsedFmt} / ${timer.max_hold_mins}m</span>`;
               } else {
                 // No timer registered — warn if past a reasonable threshold
                 if (heldMins >= 15) timerNote = `<br><span style="font-size:0.65rem;color:#f59e0b" title="No max-hold timer registered for this position">⚠ no timer</span>`;
