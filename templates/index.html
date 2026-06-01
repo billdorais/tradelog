@@ -309,6 +309,7 @@
     .open-pos-table th { text-align: left; color: #555; font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 6px 0; border-bottom: 1px solid #1e2130; }
     .open-pos-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
     .open-pos-table tr:last-child td { border-bottom: none; }
+    .open-pos-table tr.refined-row td { background: rgba(96,165,250,0.06); }
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
     .price-meter { width: 100%; user-select: none; }
@@ -3463,7 +3464,8 @@
               heldCell = `<span style="color:${heldColor};font-size:0.78rem">${heldMins}m</span>${timerNote}`;
             }
           }
-          return `<tr>
+          const rowCls = p.broker === 'alpaca2' ? ' class="refined-row"' : '';
+          return `<tr${rowCls}>
             <td style="font-weight:600;color:#ccc">${escHtml(p.symbol)}</td>
             <td style="color:#666;font-size:0.75rem">${escHtml(p.broker)}</td>
             <td>${stratCell}</td>

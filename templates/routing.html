@@ -152,6 +152,7 @@
     .risk-positions-table th { text-align: left; color: #555; font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 6px 0; border-bottom: 1px solid #1e2130; }
     .risk-positions-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
     .risk-positions-table tr:last-child td { border-bottom: none; }
+    .risk-positions-table tr.refined-row td { background: rgba(96,165,250,0.06); }
     .pos-pnl-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .pos-pnl-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
   </style>
@@ -939,6 +940,7 @@
         barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#7FE098';
       }
       const tr = document.createElement('tr');
+      if (p.broker === 'alpaca2') tr.classList.add('refined-row');
       const stratCell = p.strategy
         ? `<span style="color:#aaa;font-family:monospace;font-size:0.72rem">${escHtml(p.strategy)}</span>`
         : '<span style="color:#444;font-size:0.72rem">—</span>';
