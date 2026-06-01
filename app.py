@@ -1938,10 +1938,12 @@ def _resolve_position_entry(symbol, broker):
 def risk_status():
     pnl = _compute_daily_pnl()
     with _risk_lock:
-        halted     = _risk_halted
-        blocked    = dict(_blocked_strategies)
-        positions  = [dict(p) for p in _latest_positions]  # copy for mutation
-        peaks_snap = dict(_position_peaks)
+        halted          = _risk_halted
+        blocked         = dict(_blocked_strategies)
+        positions       = [dict(p) for p in _latest_positions]  # copy for mutation
+        peaks_snap      = dict(_position_peaks)
+        max_hold_snap   = dict(_max_hold_positions)
+        auto_closed_snap = set(_auto_closed_symbols)
 
     # Load routing rule trail_pct per strategy for stop price estimation
     _rule_trails = {}
@@ -2011,6 +2013,16 @@ def risk_status():
         "afternoon_trail_pct":     AFTERNOON_TRAIL_PCT if AFTERNOON_TRAIL_PCT > 0 else None,
         "positions":            positions,
         "blocked_strategies":   blocked,
+        "max_hold_timers": [
+            {
+                "broker": k[0], "symbol": k[1],
+                "entry_time": v["entry_time"].isoformat(),
+                "max_hold_mins": v["max_hold_mins"],
+                "elapsed_mins": round((datetime.now(timezone.utc) - v["entry_time"]).total_seconds() / 60, 1),
+            }
+            for k, v in max_hold_snap.items()
+        ],
+        "auto_closed_symbols": [{"broker": k[0], "symbol": k[1]} for k in auto_closed_snap],
     })
 
 
