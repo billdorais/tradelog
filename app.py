@@ -3437,19 +3437,32 @@ def api_journal_entries():
 
 @app.route("/api/journal/summary", methods=["PUT"])
 def api_journal_summary():
-    """Persist the AI-generated summary and tags after streaming completes."""
-    data    = request.get_json(silent=True) or {}
-    week    = data.get("week", "").strip()
-    summary = data.get("ai_summary", "")
-    tags    = data.get("tags")
+    """Persist the AI-generated summary and tags after streaming completes.
+    Merges incoming tags with existing DB tags so a partial update (e.g.
+    labels-only) preserves the pre-computed grade already in the DB."""
+    data     = request.get_json(silent=True) or {}
+    week     = data.get("week", "").strip()
+    summary  = data.get("ai_summary", "")
+    new_tags = data.get("tags") or {}
     if not week:
         return jsonify({"error": "week required"}), 400
     p = placeholder()
     conn = get_db()
     cur  = conn.cursor()
+    # Read existing tags so we can merge (preserve grade if not re-sent)
+    cur.execute(f"SELECT tags FROM journal_entries WHERE week={p}", (week,))
+    row = cur.fetchone()
+    existing = {}
+    if row:
+        raw = (row[0] if DATABASE_URL else row["tags"]) or ""
+        try:
+            existing = json.loads(raw) if raw else {}
+        except Exception:
+            pass
+    merged = {**existing, **new_tags}
     cur.execute(
         f"UPDATE journal_entries SET ai_summary={p}, tags={p} WHERE week={p}",
-        (summary, json.dumps(tags) if tags is not None else None, week)
+        (summary, json.dumps(merged), week)
     )
     conn.commit()
     conn.close()

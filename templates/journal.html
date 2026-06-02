@@ -270,22 +270,41 @@
           } catch {}
         }
       }
-      // Persist summary + tags via a plain HTTP PUT — more reliable than the
-      // SSE generator tail. The initial INSERT already wrote the grade so the
-      // user sees the circle immediately; this adds the AI-generated labels.
-      if (donePayload && donePayload.grade) {
-        try {
-          await fetch('/api/journal/summary', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              week,
-              ai_summary: donePayload.summary || '',
-              tags: { grade: donePayload.grade, labels: donePayload.labels || [] },
-            }),
-          });
-        } catch {}
+
+      // Always persist after stream ends. Primary: use done payload (has pre-parsed
+      // grade + labels). Fallback: parse TAGS line from accumulated text ourselves.
+      // Grade is already in the DB from the initial INSERT; the PUT merges so we
+      // only need to send what we have.
+      let finalGrade   = donePayload?.grade  || null;
+      let finalLabels  = donePayload?.labels || null;
+      let finalSummary = donePayload?.summary ?? text;
+
+      if (finalLabels === null) {
+        // Parse TAGS from raw accumulated text
+        const tagMatch = text.match(/TAGS:\s*([^\n]+)/i);
+        if (tagMatch) {
+          finalLabels  = tagMatch[1].split(',')
+            .map(t => t.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
+            .filter(Boolean);
+          finalSummary = text.slice(0, text.search(/TAGS:\s/i)).trimEnd();
+        } else {
+          finalLabels  = [];
+          finalSummary = text;
+        }
       }
+
+      // Build tags object — include grade only if we have it (backend merges)
+      const putTags = finalGrade
+        ? { grade: finalGrade, labels: finalLabels }
+        : { labels: finalLabels };
+
+      try {
+        await fetch('/api/journal/summary', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ week, ai_summary: finalSummary, tags: putTags }),
+        });
+      } catch {}
     } catch(e) {
       const liveEl = document.getElementById('live-text');
       if (liveEl) liveEl.textContent = 'Error: ' + e.message;
