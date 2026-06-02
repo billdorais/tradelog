@@ -69,7 +69,7 @@ _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
 _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
 _auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed today; keyed per-account so same ticker on alpaca + alpaca2 trips independently
-_position_peaks       = {}      # {SYMBOL: peak_unrealized_pnl}; cleared on close
+_position_peaks       = {}      # {(broker, SYMBOL): peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
 _max_hold_fail_ticks  = {}      # {(broker_tag, SYMBOL): consecutive_fail_count}
@@ -744,9 +744,9 @@ def _check_position_stops():
     with _risk_lock:
         stale = {k for k in _auto_closed_symbols if k[0] in polled_brokers and k not in open_keys}
         _auto_closed_symbols.difference_update(stale)
-        stale_peaks = [s for s in _position_peaks if s not in open_symbols]
-        for s in stale_peaks:
-            _position_peaks.pop(s, None)
+        stale_peaks = [k for k in _position_peaks if k not in open_keys]
+        for k in stale_peaks:
+            _position_peaks.pop(k, None)
         stale_holds = [k for k in _max_hold_positions if k[0] in nonempty_brokers and k not in open_keys]
         for k in stale_holds:
             _max_hold_positions.pop(k, None)
@@ -762,11 +762,13 @@ def _check_position_stops():
         broker = pos["broker"]
         sym_u  = symbol.upper()
 
-        # Always track peak unrealized P&L — used for giveback stop and meter display.
+        # Always track peak unrealized P&L — keyed by (broker, symbol) so paired
+        # trades in different accounts track their peaks independently.
+        _peak_key = (broker, sym_u)
         with _risk_lock:
-            prev = _position_peaks.get(sym_u, 0.0)
+            prev = _position_peaks.get(_peak_key, 0.0)
             if upnl > prev:
-                _position_peaks[sym_u] = upnl
+                _position_peaks[_peak_key] = upnl
         peak = max(prev, upnl) if MAX_TRAILING_GIVEBACK > 0 else 0.0
 
         # Decide which (if any) stop to fire.
@@ -1996,7 +1998,7 @@ def risk_status():
         p["strategy"]   = strat
         p["entry_time"] = entry_t
         sym_u = (p.get("symbol") or "").upper()
-        p["peak_unrealized_pnl"] = round(peaks_snap.get(sym_u, p.get("unrealized_pnl") or 0), 2)
+        p["peak_unrealized_pnl"] = round(peaks_snap.get((p.get("broker",""), sym_u), p.get("unrealized_pnl") or 0), 2)
         # Estimate trailing stop price from route trail_pct and peak price
         trail_pct    = _trail_for(strat)
         entry_px     = p.get("avg_entry_price") or 0
