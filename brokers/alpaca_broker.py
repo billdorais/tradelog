@@ -71,6 +71,79 @@ class AlpacaBroker:
             time.sleep(0.25)
         return False
 
+    def _place_stops_when_filled(self, order_id, ticker, qty, action,
+                                  trail_offset, trail_trigger, stop_loss, trail_mode,
+                                  hard_stop_dollars, ref_price, strat_slug,
+                                  max_wait_secs=30):
+        """Background thread: wait for a delayed fill then place exit stops.
+        Called when the initial 5s fill-wait times out — ensures the trailing
+        stop is always placed even if Alpaca paper-fills slowly at the open."""
+        import time as _t
+        from alpaca.trading.requests import TrailingStopOrderRequest, StopOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        deadline = _t.time() + max_wait_secs
+        filled = False
+        while _t.time() < deadline:
+            _t.sleep(0.5)
+            try:
+                o = self._trading.get_order_by_id(order_id)
+                status = (o.status.value if hasattr(o.status, 'value') else str(o.status)).lower()
+                if status == 'filled':
+                    filled = True
+                    break
+                if status in ('canceled', 'expired', 'rejected', 'done_for_day'):
+                    log.info("Delayed stop: entry %s for %s reached terminal status %s — no stop needed",
+                             order_id, ticker, status)
+                    return
+            except Exception as _ge:
+                log.debug("Delayed stop: poll error for %s: %s", ticker, _ge)
+        if not filled:
+            log.warning("Delayed stop: entry %s for %s still not filled after %ds — giving up",
+                        order_id, ticker, max_wait_secs)
+            return
+        log.info("Delayed stop: entry %s for %s confirmed filled — placing exit stops now", order_id, ticker)
+        _exit_trail = trail_offset
+        is_long = action.upper() == "BUY"
+        _trail_side = OrderSide.SELL if is_long else OrderSide.BUY
+        # Immediate trail (trigger already reached or no trigger on this path)
+        if _exit_trail:
+            try:
+                _trail_val = round(float(_exit_trail), 4)
+                _trail_oid = f"kairos-trail-{strat_slug}-{int(_t.time())}"
+                if trail_mode == "percent":
+                    _req = TrailingStopOrderRequest(
+                        symbol=ticker, qty=qty, side=_trail_side,
+                        time_in_force=TimeInForce.GTC,
+                        trail_percent=_trail_val, client_order_id=_trail_oid,
+                    )
+                else:
+                    _req = TrailingStopOrderRequest(
+                        symbol=ticker, qty=qty, side=_trail_side,
+                        time_in_force=TimeInForce.GTC,
+                        trail_price=_trail_val, client_order_id=_trail_oid,
+                    )
+                self._trading.submit_order(_req)
+                log.info("Delayed stop: trailing stop placed for %s trail=%.4g%s",
+                         ticker, _trail_val, "%" if trail_mode == "percent" else "$")
+            except Exception as _te:
+                log.warning("Delayed stop: trailing stop submission failed for %s: %s", ticker, _te)
+        elif stop_loss:
+            try:
+                _ref = float(ref_price or 0)
+                _sl  = float(stop_loss)
+                if _ref > 0:
+                    _stop_px = round(_ref * (1 - _sl / 100), 2) if is_long else round(_ref * (1 + _sl / 100), 2) \
+                               if trail_mode == "percent" else \
+                               round(_ref - _sl, 2) if is_long else round(_ref + _sl, 2)
+                    _sl_req = StopOrderRequest(
+                        symbol=ticker, qty=qty, side=_trail_side,
+                        time_in_force=TimeInForce.GTC, stop_price=_stop_px,
+                    )
+                    self._trading.submit_order(_sl_req)
+                    log.info("Delayed stop: hard stop placed for %s @ %.2f", ticker, _stop_px)
+            except Exception as _se:
+                log.warning("Delayed stop: hard stop submission failed for %s: %s", ticker, _se)
+
     def _close_position_with_retry(self, ticker, max_retries=3, poll_secs=3):
         """Submit close_position, then poll for residual and re-submit if non-zero.
 
@@ -581,11 +654,19 @@ class AlpacaBroker:
                 _entry_filled = self._wait_for_order_filled(str(order.id), max_wait_secs=5)
                 if not _entry_filled:
                     log.warning(
-                        "Entry %s %s %s not filled within 5s — skipping broker-side stops "
-                        "(falls back to Kairos polling stop). order_id=%s",
+                        "Entry %s %s %s not filled within 5s — spawning delayed-stop thread. order_id=%s",
                         action, qty, ticker, order.id,
                     )
                     result["stops_skipped"] = "entry_not_filled_in_time"
+                    import threading as _thr_ds
+                    _thr_ds.Thread(
+                        target=self._place_stops_when_filled,
+                        args=(str(order.id), ticker, qty, action,
+                              trail_offset, trail_trigger, stop_loss, trail_mode,
+                              hard_stop_dollars, ref_price or (float(price) if price else 0.0),
+                              _strat_slug),
+                        daemon=True,
+                    ).start()
 
             # Option A — delayed trail activation: submit hard stop immediately, then swap
             # to a trailing stop once the position moves trail_trigger in our favour.
