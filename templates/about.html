@@ -257,6 +257,105 @@
       </tr>
     </table>
 
+    <h2>Stop System</h2>
+    <p>
+      Kairos uses a layered stop system — multiple independent guards can exit a position.
+      The first to trigger wins. Stops are visible per-position in the Open Positions panel
+      on the dashboard as a price range meter showing the current price (green ▲) and
+      estimated stop level (amber ▲) relative to entry.
+    </p>
+
+    <div class="flow">
+      Entry fills → Stop system arms in parallel:<br>
+      &nbsp;&nbsp;Layer 1 — Broker trailing stop &nbsp;&nbsp;&nbsp;&nbsp;(Alpaca-native, tightest, fastest fill)<br>
+      &nbsp;&nbsp;Layer 2 — Max hold timer &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(time-based forced exit, 15m default)<br>
+      &nbsp;&nbsp;Layer 3 — Kairos giveback stop &nbsp;&nbsp;&nbsp;&nbsp;(peak P&amp;L pullback threshold, optional)<br>
+      &nbsp;&nbsp;Layer 4 — Per-position hard stop &nbsp;&nbsp;(dollar/percent loss limit, optional)<br>
+      &nbsp;&nbsp;Layer 5 — TV EXIT signal &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(suppressed when broker trail is active)<br>
+      &nbsp;&nbsp;Layer 6 — Daily max loss halt &nbsp;&nbsp;&nbsp;&nbsp;(liquidates everything, blocks new entries)
+    </div>
+
+    <table>
+      <tr><th>Layer</th><th>Config</th><th>How it works</th></tr>
+      <tr>
+        <td>Broker Trailing Stop</td>
+        <td>Exit Params node<br><code style="font-size:0.82rem;color:#aaa">trail_offset</code> %</td>
+        <td>
+          An Alpaca-native trailing stop order is submitted immediately after the entry fill confirms.
+          The stop trails the price at the configured percentage (e.g. 0.13% for BREAKOUT R4S4,
+          0.38% for REVERSAL R3S3) and executes natively at Alpaca for the tightest fill.
+          <br><br>
+          <strong>Triggered trail</strong> (when <code style="font-size:0.82rem;color:#aaa">trail_trigger &gt; 0</code>):
+          a fixed hard stop is placed at entry, then a background thread waits until the position
+          moves <em>trigger %</em> in your favour before swapping the hard stop for a trailing stop.
+          This delays trail activation so a small adverse move at entry doesn't immediately stop you out.
+          <br><br>
+          If Alpaca's paper-fill takes longer than 5 seconds (common at the open), a background thread
+          continues waiting up to 30 seconds and places the stop once the fill confirms — so no entry
+          is left without a stop due to fill latency.
+          <br><br>
+          When a trailing stop is active, TradingView EXIT signals for that pipeline are suppressed —
+          the broker trail is the sole exit mechanism. This is shown in the Replay page as "SR Reason: trail".
+        </td>
+      </tr>
+      <tr>
+        <td>Max Hold Timer</td>
+        <td>Exit Params node<br><code style="font-size:0.82rem;color:#aaa">max_hold_mins</code></td>
+        <td>
+          A Kairos-side timer that fires a market close if a position is still open after the
+          configured number of minutes (default 15m). The timer is registered in the database
+          when the entry order is placed, so it survives app restarts and deployments.
+          A background thread checks every 3 seconds and submits <code style="font-size:0.82rem;color:#aaa">close_position()</code>
+          when the limit is reached. A re-scan runs every 2 minutes to pick up any positions
+          whose timers were lost during a deploy window.
+          The current elapsed / limit is shown in the dashboard Open Positions panel (e.g. ⏱ 8.3m / 15m).
+        </td>
+      </tr>
+      <tr>
+        <td>Kairos Giveback Stop</td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_TRAILING_GIVEBACK</code></td>
+        <td>
+          A Kairos-monitored trailing stop that acts as a backup to the broker trail. Tracks each
+          position's peak unrealized P&amp;L (keyed per broker + symbol so paired trades in different
+          accounts are independent). Once the peak reaches the giveback threshold, the stop arms;
+          if the position then gives back that amount from its peak, Kairos fires a market close.
+          Only triggers on profitable positions — losing positions are covered by the per-position stop.
+          Set to a positive dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">30</code>).
+        </td>
+      </tr>
+      <tr>
+        <td>Per-Position Hard Stop</td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code><br>
+            <code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code></td>
+        <td>
+          Fixed dollar or percent stop on individual positions, checked every 3 seconds.
+          The dollar stop (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code>) applies
+          to Paper All (alpaca) positions. The percent stop
+          (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code>) applies to Refined
+          (alpaca2) positions only. The strategy remains free to re-enter on the next signal.
+        </td>
+      </tr>
+      <tr>
+        <td>TV EXIT Signal</td>
+        <td>TradingView alert<br><code style="font-size:0.82rem;color:#aaa">sentiment=flat</code></td>
+        <td>
+          TradingView sends an EXIT alert when the strategy closes its position. Kairos routes this
+          to <code style="font-size:0.82rem;color:#aaa">close_position()</code> on the broker. If a
+          broker-side trailing stop is already active for that pipeline, the EXIT signal is suppressed —
+          the trail takes priority and fires at a tighter price than a market order would.
+        </td>
+      </tr>
+      <tr>
+        <td>Daily Max Loss Halt</td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_DAILY_LOSS</code></td>
+        <td>
+          Nuclear option — when today's total P&amp;L (realized + unrealized) hits the limit,
+          all open positions across all brokers are liquidated immediately and an account-wide halt
+          blocks all new entries until manually cleared from the Risk panel.
+        </td>
+      </tr>
+    </table>
+
     <h2>Signal Router — Pipeline Nodes</h2>
     <p>Each pipeline intercepts signals by strategy name and applies a chain of nodes before placing an order. Pipelines sort alphabetically and are colour-coded by prefix group (e.g. all <code style="font-size:0.82rem;color:#aaa">CAM_SPY_BREAKOUT</code> rules share one border colour). Duplicate via the ⧉ button.</p>
     <table>
