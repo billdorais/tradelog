@@ -77,6 +77,52 @@ _risk_lock            = threading.Lock()
 
 _IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
 
+# Cache of routing rule trail_pct per strategy — refreshed every 60s.
+# Used by the Kairos trail-price backup to fire when Alpaca stops fail to execute.
+_route_trail_cache    = {}   # strategy_upper → trail_pct (float, %)
+_route_trail_cache_ts = 0.0  # last refresh timestamp
+
+def _get_route_trail_pct(strategy_name: str):
+    """Return the configured trail_offset % for a strategy, or None if not found.
+    Refreshes the cache from routing_rules every 60 seconds."""
+    global _route_trail_cache, _route_trail_cache_ts
+    import time as _rt
+    now = _rt.time()
+    if now - _route_trail_cache_ts > 60:
+        try:
+            conn = get_db()
+            new_cache = {}
+            for row in conn.execute(
+                "SELECT name, nodes FROM routing_rules WHERE enabled=1"
+            ).fetchall():
+                rname = (row[0] if DATABASE_URL else row["name"] or "").upper()
+                try:
+                    nodes = json.loads(row[1] if DATABASE_URL else row["nodes"] or "[]")
+                except Exception:
+                    nodes = []
+                for nd in nodes:
+                    if nd.get("type") == "exit_params" and nd.get("trail_offset"):
+                        new_cache[rname] = float(nd["trail_offset"])
+                        break
+            conn.close()
+            _route_trail_cache    = new_cache
+            _route_trail_cache_ts = now
+        except Exception as _rte:
+            log.debug("Route trail cache refresh failed: %s", _rte)
+
+    if not strategy_name:
+        return None
+    su = strategy_name.upper()
+    if su in _route_trail_cache:
+        return _route_trail_cache[su]
+    # Fuzzy match on the CAM pattern (e.g. BREAKOUT_R4S4 in PLTR_CAM_BREAKOUT_R4S4_V02_5MIN)
+    for rk, rv in _route_trail_cache.items():
+        if "_CAM_" in rk:
+            pat = "_".join(rk.split("_CAM_")[1].split("_")[:2])
+            if pat and pat in su:
+                return rv
+    return None
+
 if _IB_ENABLED and os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
     from brokers.ib_broker import IBBroker
@@ -791,6 +837,38 @@ def _check_position_stops():
                 and (peak - upnl) >= MAX_TRAILING_GIVEBACK:
             triggered = ("trailing",
                          f"unrealized P&L ${upnl:.2f} gave back ${peak - upnl:.2f} from peak ${peak:.2f} (trail ${MAX_TRAILING_GIVEBACK:.2f})")
+
+        # ── Kairos trail-price backup ────────────────────────────────────────
+        # Fires when Alpaca's trailing stop order failed to execute (common in
+        # paper trading). Compares current_price against the estimated stop level
+        # derived from the routing rule trail_pct and the position's peak price.
+        if not triggered:
+            entry_px   = float(pos.get("avg_entry_price") or 0)
+            current_px = float(pos.get("current_price")   or 0)
+            qty_f      = float(pos.get("qty") or 0)
+            if entry_px and current_px and qty_f:
+                strat, _  = _resolve_position_entry(sym_u, broker)
+                trail_pct = _get_route_trail_pct(strat or "")
+                if trail_pct:
+                    is_long  = qty_f > 0
+                    qty_abs  = abs(qty_f)
+                    peak_pnl = _position_peaks.get(_peak_key, 0.0)
+                    # Reconstruct peak price from peak unrealized P&L
+                    peak_px  = entry_px + (
+                        (peak_pnl / qty_abs) if is_long else -(peak_pnl / qty_abs)
+                    )
+                    # Stop level: trail % below peak for long, above for short
+                    stop_px  = (peak_px * (1 - trail_pct / 100) if is_long
+                                else peak_px * (1 + trail_pct / 100))
+                    breached = (current_px <= stop_px if is_long
+                                else current_px >= stop_px)
+                    if breached:
+                        triggered = (
+                            "kairos_trail",
+                            f"current ${current_px:.4f} crossed trail stop ${stop_px:.4f} "
+                            f"(peak ${peak_px:.4f}, trail {trail_pct}%, "
+                            f"{'long' if is_long else 'short'})",
+                        )
 
         if not triggered:
             continue
