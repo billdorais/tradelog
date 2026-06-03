@@ -1128,11 +1128,13 @@
   function filterTickerTable() { renderTickerTable(_lastTickerMap); }
 
   // Composite ranking score — must stay in sync with _composite_score in app.py.
-  // Weights: PF 30% + Win 20% + Trades 20% + P&L 30%.
-  // Saturation: PF at 2.0, trades at 10. P&L normalized relative to cohort max.
+  // Weights: Sharpe 35% · PF 30% · Win 20% · Trades 15%.
+  // Saturation: Sharpe at 3.5, PF at 2.5, trades at 10.
+  // Note: server-side also blends a 10-day recency score (60/40); this client
+  // version uses only the loaded window stats for the leaderboard score column.
   function _refinedScore(s, maxPnl) {
     const sh     = s.sharpe;
-    const shNorm = (sh == null || sh < 0) ? 0 : Math.min(sh / 2.0, 1.0);
+    const shNorm = (sh == null || sh < 0) ? 0 : Math.min(sh / 3.5, 1.0);
     const pf     = s.profit_factor;
     const pfNorm = (pf == null) ? 1.0 : Math.max(Math.min(pf / 2.5, 1.0), 0);
     const winNorm = Math.max(Math.min((s.win_rate || 0) / 100, 1.0), 0);

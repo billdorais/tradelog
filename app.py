@@ -5417,7 +5417,7 @@ _REFINED_SCORE_WEIGHTS = {
     "trades":        0.15,   # sample-size confidence
 }
 # Saturation points — beyond these, additional gains stop contributing to score.
-_REFINED_SHARPE_SATURATION = 2.0   # Sharpe ≥ 2.0 is "great", no extra credit beyond
+_REFINED_SHARPE_SATURATION = 3.5   # raised from 2.0 — better separates elite from good
 _REFINED_PF_SATURATION     = 2.5   # PF >= 2.5 is "great"
 _REFINED_TRADES_SATURATION = 10    # 10+ trades counts as a full sample
 
@@ -5478,10 +5478,9 @@ _REFINED_MAX_SHARES_BY_PRICE = [
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# Filters out 1–2-trade flukes that would otherwise score highly on PF/Win.
-# Start lenient while the system is young; raise to 5 (then 10) as the cohort
-# accumulates samples.
-_REFINED_MIN_TRADES = 3
+# Raised to 5 — filters lucky short-sample strategies while still admitting
+# strategies with ~1 signal/day over a 5-day period.
+_REFINED_MIN_TRADES = 5
 
 
 def _band_target_dollars(score):
@@ -5559,17 +5558,21 @@ def _compute_refined_qty(score, last_price):
     return shares
 
 
-def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=None):
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
-    Ranking uses a weighted score over (profit_factor, win_rate, trades, total_pnl);
-    see _composite_score. Net-negative strategies are filtered out before scoring.
+    Ranking uses a weighted composite score (Sharpe 35% · PF 30% · Win 20% · Trades 15%)
+    blended with a 10-day recency score (60% primary + 40% recent) when the strategy
+    has at least 2 trades in the recent window. Net-negative strategies are filtered out.
 
     from_date (YYYY-MM-DD) anchors the ranking window; falls back to a rolling
-    `days`-day window when not provided."""
+    `days`-day window when not provided. Default reduced from 45 → 20 days to
+    weight recent regime performance more heavily."""
     global _refined_last_run, _refined_last_result
 
-    stats_map  = _compute_strategy_stats(days=days, from_date=from_date)
+    stats_map    = _compute_strategy_stats(days=days, from_date=from_date)
+    # 10-day recency window for the blended score
+    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date)
     # Eligibility: net-positive AND at least _REFINED_MIN_TRADES round-trips.
     # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
     # 100% win) out of the top-N — they need more sample evidence first.
@@ -5632,9 +5635,23 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
             log.info("Refined: %d strategies filtered out by routing-rule gate: %s",
                      len(_filtered_out), _filtered_out)
     max_pnl    = max((v["total_pnl"] for v in candidates.values()), default=0)
+    max_pnl_10d = max(
+        (v["total_pnl"] for v in stats_map_10d.values() if (v.get("total_pnl") or 0) > 0),
+        default=1,
+    )
+
+    def _blended_score(name, stats_20d):
+        """60% primary (20-day) + 40% recency (10-day) when recent data is available."""
+        score_20d  = _composite_score(stats_20d, max_pnl)
+        stats_10d  = stats_map_10d.get(name, {})
+        # Only apply recency bonus when the strategy has meaningful recent activity
+        if (stats_10d.get("trades") or 0) >= 2 and (stats_10d.get("total_pnl") or 0) > 0:
+            score_10d = _composite_score(stats_10d, max_pnl_10d)
+            return round(0.60 * score_20d + 0.40 * score_10d, 4)
+        return score_20d
 
     scored = sorted(
-        ((name, stats, _composite_score(stats, max_pnl))
+        ((name, stats, _blended_score(name, stats))
          for name, stats in candidates.items()),
         key=lambda x: x[2],
         reverse=True,
@@ -5851,7 +5868,7 @@ def _refined_scheduler_loop():
         if now.hour == 16 and now.minute == 15 and _ran_today != today:
             _ran_today = today
             try:
-                _do_refresh_refined(days=45)  # rolling 45-day window, no fixed anchor
+                _do_refresh_refined(days=20)  # rolling 20-day window with 10-day recency blend
                 log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
