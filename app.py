@@ -1602,6 +1602,16 @@ def _update_exec(cur, trade_id, exec_status, exec_detail):
 from routes.webhook import webhook_bp
 app.register_blueprint(webhook_bp)
 
+try:
+    from routes.crew import crew_bp
+    app.register_blueprint(crew_bp)
+except Exception as _crew_err:
+    log.warning("Crew blueprint not loaded: %s", _crew_err)
+
+    @app.route("/crew")
+    def crew_unavailable():
+        return "<h2 style='font-family:sans-serif;padding:40px'>Crew page unavailable — crewai package not installed on this deployment.</h2>", 503
+
 
 @app.route("/api/trades")
 def api_trades():
