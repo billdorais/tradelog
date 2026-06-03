@@ -1091,11 +1091,15 @@
         names = [...selected, ...rest];
       }
       list.innerHTML = names.map(s => {
-        const visible = selectedStrategies.size === 0 || selectedStrategies.has(s);
-        const esc = s.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const visible  = selectedStrategies.size === 0 || selectedStrategies.has(s);
+        const isTop    = _refinedStrategies && _refinedStrategies.has(s.toUpperCase());
+        const esc      = s.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const star     = isTop
+          ? `<span style="color:#c4b5fd;margin-right:4px;font-size:0.72rem" title="Top-20 Refined strategy">★</span>`
+          : `<span style="display:inline-block;width:16px;margin-right:4px"></span>`;
         return `<div class="strat-picker-row" onclick="toggleStratVis('${esc}', event)">
           <span class="strat-eye${visible ? '' : ' off'}">👁</span>
-          <span style="color:${visible ? '#e0e0e0' : '#444'}">${s}</span>
+          ${star}<span style="color:${visible ? '#e0e0e0' : '#444'}">${s}</span>
         </div>`;
       }).join('');
     }
@@ -1104,11 +1108,18 @@
       const lbl = document.getElementById('stratPickerLabel');
       if (!lbl) return;
       if (selectedStrategies.size === 0) {
-        lbl.textContent = 'All Strategies';
+        const topCount = _refinedStrategies
+          ? _allStrategyNames.filter(s => _refinedStrategies.has(s.toUpperCase())).length
+          : 0;
+        lbl.textContent = topCount > 0 ? `All Strategies · ★ ${topCount} top-20` : 'All Strategies';
       } else if (selectedStrategies.size === 1) {
         lbl.textContent = [...selectedStrategies][0];
       } else {
-        lbl.textContent = `${selectedStrategies.size} / ${_allStrategyNames.length} strategies`;
+        const topCount = _refinedStrategies
+          ? [...selectedStrategies].filter(s => _refinedStrategies.has(s.toUpperCase())).length
+          : 0;
+        const topNote  = topCount > 0 ? ` · ★ ${topCount}` : '';
+        lbl.textContent = `${selectedStrategies.size} / ${_allStrategyNames.length} strategies${topNote}`;
       }
     }
 
