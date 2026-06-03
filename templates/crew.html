@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crew — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body { font-family: 'DM Sans', sans-serif; background: #0b0d14; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+
+    /* ── Nav ── */
+    .nav { display: flex; align-items: center; justify-content: space-between; padding: 12px 24px; background: #13161f; border-bottom: 1px solid #1e2130; margin-bottom: 32px; }
+    .nav-left { display: flex; align-items: center; gap: 10px; }
+    .nav h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
+    .nav-back { color: #888; text-decoration: none; font-size: 0.85rem; border: 1px solid #2a2d3e; padding: 5px 12px; border-radius: 4px; }
+    .nav-back:hover { color: #ccc; border-color: #444; }
+
+    /* ── Page ── */
+    .page { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+    /* ── Header ── */
+    .page-title { font-size: 1.6rem; font-weight: 700; color: #fff; margin-bottom: 4px; letter-spacing: -0.02em; }
+    .page-sub   { font-size: 0.85rem; color: #555; margin-bottom: 28px; }
+
+    /* ── Input row ── */
+    .input-row { display: flex; gap: 10px; margin-bottom: 24px; }
+    .topic-input {
+      flex: 1; background: #13161f; border: 1px solid #2a2d3e; color: #e0e0e0;
+      border-radius: 8px; padding: 11px 14px; font-size: 0.9rem; font-family: inherit;
+    }
+    .topic-input:focus { outline: none; border-color: #7FE098; }
+    .run-btn {
+      background: rgba(127,224,152,0.12); border: 1px solid #7FE098; color: #7FE098;
+      border-radius: 8px; padding: 11px 24px; font-size: 0.9rem; font-family: inherit;
+      font-weight: 700; cursor: pointer; white-space: nowrap; transition: background 0.15s;
+    }
+    .run-btn:hover:not(:disabled) { background: rgba(127,224,152,0.22); }
+    .run-btn:disabled { opacity: 0.4; cursor: default; }
+
+    /* ── Agent cards ── */
+    .agents { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 24px; }
+    .agent-card {
+      background: #12141f; border: 1px solid #1e2130; border-radius: 12px;
+      padding: 16px 18px; transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    .agent-card.active { border-color: #7FE098; box-shadow: 0 0 20px rgba(127,224,152,0.10); }
+    .agent-card.done   { border-color: #2a4a35; }
+    .agent-icon  { font-size: 1.4rem; margin-bottom: 6px; }
+    .agent-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; color: #555; margin-bottom: 2px; }
+    .agent-name  { font-size: 0.95rem; font-weight: 700; color: #e0e0e0; margin-bottom: 8px; }
+    .badge { display: inline-block; font-size: 0.68rem; padding: 2px 10px; border-radius: 20px; font-weight: 600; }
+    .badge-wait  { background: rgba(80,80,100,0.2);  color: #666; }
+    .badge-think { background: rgba(127,224,152,0.15); color: #7FE098; }
+    .badge-done  { background: rgba(80,160,80,0.12);  color: #5a9e6a; }
+
+    /* ── Section label ── */
+    .section-label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; color: #444; margin: 18px 0 8px; }
+
+    /* ── Event feed ── */
+    #feed { display: flex; flex-direction: column; gap: 6px; }
+
+    .note {
+      background: #13161f; border-left: 3px solid #2a2d3e;
+      border-radius: 0 8px 8px 0; padding: 9px 14px;
+      font-size: 0.8rem; line-height: 1.55; color: #9a9ab0;
+      animation: fadein 0.25s ease;
+    }
+    .note.researcher { border-left-color: #5a8fa8; }
+    .note.summarizer { border-left-color: #c4b5fd; }
+    .note.system     { border-left-color: #7FE098; }
+    .note.tool       { border-left-color: #F2E7AC; background: #13130c; }
+    .note.task       { border-left-color: #517356; background: #0f140f; }
+    .note-head { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; margin-bottom: 4px; }
+    .note.researcher .note-head { color: #5a8fa8; }
+    .note.summarizer .note-head { color: #c4b5fd; }
+    .note.system     .note-head { color: #7FE098; }
+    .note.tool       .note-head { color: #F2E7AC; }
+    .note.task       .note-head { color: #7FE098; }
+
+    /* ── Final output ── */
+    .final-wrap { background: #0f1a14; border: 1px solid #2a4a35; border-radius: 12px; padding: 22px 26px; margin-top: 8px; }
+    .final-text { font-size: 0.88rem; line-height: 1.8; color: #c8dcc8; white-space: pre-wrap; }
+
+    /* ── Status bar ── */
+    .status-bar { font-size: 0.78rem; color: #555; margin-bottom: 8px; min-height: 20px; }
+    .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid #333; border-top-color: #7FE098; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
+
+    @keyframes fadein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes spin    { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-left">
+    <a href="/"><img src="/static/kariosLogo_128.png" alt="Home" style="height:34px;width:34px;image-rendering:pixelated"></a>
+    <h1>Kairos Crew</h1>
+  </div>
+  <a href="/" class="nav-back">← Dashboard</a>
+</nav>
+
+<div class="page">
+
+  <div class="page-title">✦ Research Crew</div>
+  <div class="page-sub">Two AI agents — Researcher + Summarizer — powered by Claude via CrewAI</div>
+
+  <!-- Input -->
+  <div class="input-row">
+    <input type="text" class="topic-input" id="topicInput"
+           placeholder="Enter any topic to research…"
+           value="Camarilla pivot points in trading">
+    <button class="run-btn" id="runBtn" onclick="runCrew()">Run Crew →</button>
+  </div>
+
+  <!-- Agent cards -->
+  <div class="agents">
+    <div class="agent-card" id="card-researcher">
+      <div class="agent-icon">🔍</div>
+      <div class="agent-label">Agent 1</div>
+      <div class="agent-name">Research Analyst</div>
+      <span class="badge badge-wait" id="badge-researcher">Waiting</span>
+    </div>
+    <div class="agent-card" id="card-summarizer">
+      <div class="agent-icon">✍️</div>
+      <div class="agent-label">Agent 2</div>
+      <div class="agent-name">Content Strategist</div>
+      <span class="badge badge-wait" id="badge-summarizer">Waiting</span>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="status-bar" id="statusBar"></div>
+
+  <!-- Event feed -->
+  <div class="section-label" id="feedLabel" style="display:none">Activity Feed</div>
+  <div id="feed"></div>
+
+  <!-- Final output -->
+  <div id="finalSection" style="display:none">
+    <div class="section-label">Summary</div>
+    <div class="final-wrap">
+      <div class="final-text" id="finalText"></div>
+    </div>
+    <div style="margin-top:10px">
+      <button onclick="downloadResult()" style="background:transparent;border:1px solid #2a4a35;color:#5a9e6a;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit">⬇ Download</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let _lastResult = '';
+  let _topic      = '';
+
+  function _ts(ts) { return `<span style="color:#444;margin-left:6px;font-size:0.62rem">${ts||''}</span>`; }
+
+  function _noteClass(agent) {
+    if (!agent) return 'system';
+    const a = agent.toLowerCase();
+    if (a.includes('research')) return 'researcher';
+    if (a.includes('content') || a.includes('summar') || a.includes('strategist')) return 'summarizer';
+    return 'system';
+  }
+
+  function _noteLabel(cls, agent) {
+    const m = { researcher:'🔍 Research Analyst', summarizer:'✍️ Content Strategist', system:'✦ System', tool:'🛠 Tool' };
+    return m[cls] || agent || 'System';
+  }
+
+  function appendNote(type, agent, text, ts) {
+    const feed = document.getElementById('feed');
+    const cls  = type === 'tool' ? 'tool' : type === 'task_done' ? 'task' : _noteClass(agent);
+    const label = type === 'task_done' ? '✓ Task Complete' : _noteLabel(cls, agent);
+    const div  = document.createElement('div');
+    div.className = `note ${cls}`;
+    div.innerHTML = `<div class="note-head">${label}${_ts(ts)}</div>${esc(text||'')}`;
+    feed.appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Cap feed at 80 notes
+    while (feed.children.length > 80) feed.removeChild(feed.firstChild);
+  }
+
+  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function setAgent(which, state) {
+    const card  = document.getElementById(`card-${which}`);
+    const badge = document.getElementById(`badge-${which}`);
+    card.className  = `agent-card ${state === 'active' ? 'active' : state === 'done' ? 'done' : ''}`;
+    badge.className = `badge ${state === 'active' ? 'badge-think' : state === 'done' ? 'badge-done' : 'badge-wait'}`;
+    badge.textContent = state === 'active' ? '⟳ Thinking…' : state === 'done' ? '✓ Done' : 'Waiting';
+  }
+
+  function setStatus(html) { document.getElementById('statusBar').innerHTML = html; }
+
+  async function runCrew() {
+    _topic = document.getElementById('topicInput').value.trim();
+    if (!_topic) return;
+
+    // Reset UI
+    document.getElementById('runBtn').disabled = true;
+    document.getElementById('feed').innerHTML  = '';
+    document.getElementById('finalSection').style.display = 'none';
+    document.getElementById('feedLabel').style.display = '';
+    setAgent('researcher', 'wait');
+    setAgent('summarizer', 'wait');
+    setStatus('<span class="spinner"></span>Starting crew…');
+
+    let activeAgent = 'researcher';
+
+    try {
+      const res = await fetch('/api/crew/run', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ topic: _topic }),
+      });
+      if (!res.ok) { setStatus('Error: ' + res.status); return; }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf     = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          let msg;
+          try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+          if (msg.type === 'heartbeat') continue;
+
+          if (msg.type === 'log' || msg.type === 'step') {
+            const cls = _noteClass(msg.agent || '');
+            if (cls === 'summarizer' && activeAgent !== 'summarizer') {
+              setAgent('researcher', 'done');
+              setAgent('summarizer', 'active');
+              activeAgent = 'summarizer';
+              setStatus('<span class="spinner"></span>Content Strategist writing summary…');
+            } else if (cls === 'researcher' && activeAgent === 'researcher') {
+              setAgent('researcher', 'active');
+              setStatus('<span class="spinner"></span>Research Analyst gathering information…');
+            }
+            appendNote(msg.type, msg.agent, msg.text, msg.ts);
+          }
+
+          if (msg.type === 'task_done') {
+            appendNote('task_done', msg.agent, 'Task complete — output passed to next agent.', msg.ts);
+          }
+
+          if (msg.type === 'done') {
+            setAgent('researcher', 'done');
+            setAgent('summarizer', 'done');
+            _lastResult = msg.result || '';
+            document.getElementById('finalText').textContent = _lastResult;
+            document.getElementById('finalSection').style.display = '';
+            setStatus('✓ Crew finished');
+          }
+
+          if (msg.type === 'error') {
+            setStatus('Error: ' + (msg.error || 'unknown'));
+            appendNote('system', '', 'Error: ' + (msg.error || ''), msg.ts);
+          }
+        }
+      }
+    } catch (e) {
+      setStatus('Network error: ' + e.message);
+    } finally {
+      document.getElementById('runBtn').disabled = false;
+    }
+  }
+
+  function downloadResult() {
+    const blob = new Blob([_lastResult], { type: 'text/plain' });
+    const a    = Object.assign(document.createElement('a'), {
+      href:     URL.createObjectURL(blob),
+      download: `summary_${_topic.slice(0,30).replace(/\s+/g,'_')}.txt`,
+    });
+    a.click();
+  }
+
+  // Enter key to run
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('topicInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') runCrew();
+    });
+  });
+</script>
+</body>
+</html>
