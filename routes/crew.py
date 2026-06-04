@@ -394,6 +394,53 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+@crew_bp.route("/api/crew/chat", methods=["POST"])
+def api_crew_chat():
+    """Streaming chat with the Systematic Trading Advisor using the crew report as context."""
+    data     = request.get_json(silent=True) or {}
+    report   = (data.get("report") or "").strip()
+    messages = data.get("messages") or []
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 503
+
+    system_prompt = (
+        "You are a Professional Systematic Trading Advisor specialising in "
+        "intraday Camarilla pivot strategies on US equities (5-min bars, Alpaca). "
+        "You have just completed a full analysis of the Kairos trading system. "
+        "Here is your advisory report:\n\n"
+        f"{report}\n\n"
+        "Answer follow-up questions directly and specifically. Reference the actual "
+        "strategy names and numbers from your report. Be concise — 100-200 words "
+        "unless the question warrants more. No filler phrases."
+    )
+
+    def generate():
+        try:
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=api_key)
+            full_text = ""
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=600,
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    full_text += text
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'full_text': full_text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
 @crew_bp.route("/crew")
 def crew_page():
     return render_template("crew.html")

@@ -89,6 +89,29 @@
 
     @keyframes fadein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
     @keyframes spin    { to { transform: rotate(360deg); } }
+
+    /* ── Chat panel ── */
+    .crew-chat { background: #12141f; border: 1px solid #1e2130; border-radius: 12px; margin-top: 20px; overflow: hidden; }
+    .crew-chat-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #1e2130; }
+    .crew-chat-title  { font-size: 0.8rem; font-weight: 600; color: #c4b5fd; letter-spacing: 0.04em; }
+    .crew-chat-msgs   { height: 320px; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .crew-msg { display: flex; flex-direction: column; max-width: 88%; }
+    .crew-msg.user      { align-self: flex-end;   align-items: flex-end; }
+    .crew-msg.assistant { align-self: flex-start; align-items: flex-start; }
+    .crew-bubble { padding: 10px 14px; border-radius: 10px; font-size: 0.83rem; line-height: 1.55; white-space: pre-wrap; }
+    .crew-msg.user      .crew-bubble { background: rgba(127,224,152,0.1); border:1px solid rgba(127,224,152,0.2); color:#cce8d4; border-radius:10px 10px 2px 10px; }
+    .crew-msg.assistant .crew-bubble { background: #0d0f1a; border:1px solid #1e2130; color:#c8c8d4; border-radius:10px 10px 10px 2px; }
+    .crew-typing { display:inline-flex; gap:4px; align-items:center; padding:10px 14px; }
+    .crew-typing span { width:6px; height:6px; border-radius:50%; background:#555; animation:chatblink 1.2s infinite; }
+    .crew-typing span:nth-child(2) { animation-delay:0.2s; }
+    .crew-typing span:nth-child(3) { animation-delay:0.4s; }
+    @keyframes chatblink { 0%,80%,100%{opacity:0.2} 40%{opacity:1} }
+    .crew-input-row { display:flex; gap:8px; padding:12px 16px; border-top:1px solid #1e2130; }
+    .crew-input { flex:1; background:#0f1117; border:1px solid #2a2d3e; color:#e0e0e0; border-radius:6px; padding:9px 12px; font-size:0.85rem; font-family:inherit; resize:none; line-height:1.4; }
+    .crew-input:focus { outline:none; border-color:#c4b5fd; }
+    .crew-send { background:rgba(196,181,253,0.1); border:1px solid #6d5fa8; color:#c4b5fd; border-radius:6px; padding:9px 18px; font-size:0.85rem; font-family:inherit; cursor:pointer; font-weight:600; align-self:flex-end; }
+    .crew-send:hover { background:rgba(196,181,253,0.2); }
+    .crew-send:disabled { opacity:0.4; cursor:default; }
   </style>
 </head>
 <body>
@@ -161,12 +184,26 @@
 
   <!-- Final output -->
   <div id="finalSection" style="display:none">
-    <div class="section-label">Summary</div>
+    <div class="section-label">Advisory Report</div>
     <div class="final-wrap">
       <div class="final-text" id="finalText"></div>
     </div>
-    <div style="margin-top:10px">
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
       <button onclick="downloadResult()" style="background:transparent;border:1px solid #2a4a35;color:#5a9e6a;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit">⬇ Download</button>
+      <button onclick="openCrewChat()" style="background:rgba(196,181,253,0.1);border:1px solid #6d5fa8;color:#c4b5fd;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✦ Chat with Advisor</button>
+    </div>
+
+    <!-- Chat panel -->
+    <div class="crew-chat" id="crewChat" style="display:none">
+      <div class="crew-chat-header">
+        <span class="crew-chat-title">✦ Chat with Systematic Trader</span>
+        <button onclick="document.getElementById('crewChat').style.display='none'" style="background:none;border:none;color:#555;font-size:1rem;cursor:pointer;padding:0 4px">✕</button>
+      </div>
+      <div class="crew-chat-msgs" id="crewChatMsgs"></div>
+      <div class="crew-input-row">
+        <textarea class="crew-input" id="crewChatInput" rows="2" placeholder="Ask a follow-up question…" onkeydown="crewChatKey(event)"></textarea>
+        <button class="crew-send" id="crewSendBtn" onclick="sendCrewChat()">Send</button>
+      </div>
     </div>
   </div>
 
@@ -248,6 +285,9 @@
     document.getElementById('runBtn').disabled = true;
     document.getElementById('feed').innerHTML  = '';
     document.getElementById('finalSection').style.display = 'none';
+    document.getElementById('crewChat').style.display = 'none';
+    document.getElementById('crewChatMsgs').innerHTML = '';
+    _chatHistory = [];
     document.getElementById('feedLabel').style.display = '';
     setAgent('researcher', 'wait');
     setAgent('summarizer', 'wait');
@@ -339,6 +379,101 @@
     setStatus('Cancelled. The server-side agent will finish its current Claude call then stop.');
     setAgent('researcher', 'wait');
     setAgent('summarizer', 'wait');
+  }
+
+  // ── Crew Chat ────────────────────────────────────────────────────────────
+  let _chatHistory  = [];
+  let _chatStreaming = false;
+
+  function openCrewChat() {
+    const panel = document.getElementById('crewChat');
+    panel.style.display = '';
+    if (_chatHistory.length === 0) _sendCrewMsg(null); // auto-open with greeting
+    document.getElementById('crewChatInput').focus();
+  }
+
+  function _appendCrewMsg(role, text) {
+    const wrap = document.getElementById('crewChatMsgs');
+    const d    = document.createElement('div');
+    d.className = `crew-msg ${role}`;
+    const b = document.createElement('div');
+    b.className = 'crew-bubble';
+    b.textContent = text;
+    d.appendChild(b);
+    wrap.appendChild(d);
+    wrap.scrollTop = wrap.scrollHeight;
+    return b;
+  }
+
+  function _appendTyping() {
+    const wrap = document.getElementById('crewChatMsgs');
+    const d    = document.createElement('div');
+    d.className = 'crew-msg assistant'; d.id = 'crewTyping';
+    d.innerHTML = '<div class="crew-typing"><span></span><span></span><span></span></div>';
+    wrap.appendChild(d); wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  async function _sendCrewMsg(userText) {
+    if (_chatStreaming) return;
+    _chatStreaming = true;
+    document.getElementById('crewSendBtn').disabled = true;
+
+    if (userText) {
+      _appendCrewMsg('user', userText);
+      _chatHistory.push({ role: 'user', content: userText });
+    } else {
+      // Auto-greeting on first open
+      _chatHistory.push({ role: 'user', content: 'I just read your report. What do you think is the single most important thing I should act on this week?' });
+    }
+
+    _appendTyping();
+    try {
+      const res = await fetch('/api/crew/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report: _lastResult, messages: _chatHistory }),
+      });
+      if (!res.ok) { document.getElementById('crewTyping')?.remove(); _appendCrewMsg('assistant', 'Error: ' + res.status); return; }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf = '', fullText = '';
+      document.getElementById('crewTyping')?.remove();
+      const bubble = _appendCrewMsg('assistant', '');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          try {
+            const msg = JSON.parse(line.slice(5).trim());
+            if (msg.text) { fullText += msg.text; bubble.textContent = fullText; document.getElementById('crewChatMsgs').scrollTop = 9999; }
+            if (msg.done) _chatHistory.push({ role: 'assistant', content: fullText });
+          } catch {}
+        }
+      }
+    } catch (e) {
+      document.getElementById('crewTyping')?.remove();
+      _appendCrewMsg('assistant', 'Network error: ' + e.message);
+    } finally {
+      _chatStreaming = false;
+      document.getElementById('crewSendBtn').disabled = false;
+    }
+  }
+
+  function sendCrewChat() {
+    const inp  = document.getElementById('crewChatInput');
+    const text = inp.value.trim();
+    if (!text || _chatStreaming) return;
+    inp.value = '';
+    _sendCrewMsg(text);
+  }
+
+  function crewChatKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCrewChat(); }
   }
 
   function downloadResult() {
