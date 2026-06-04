@@ -126,7 +126,15 @@
            placeholder="Enter any topic to research…"
            value="Camarilla pivot points in trading">
   </div>
-  <button class="run-btn" id="runBtn" onclick="runCrew()" style="margin-bottom:20px">Run Crew →</button>
+  <div style="display:flex;gap:10px;margin-bottom:20px;align-items:center">
+    <button class="run-btn" id="runBtn" onclick="runCrew()">Run Crew →</button>
+    <button id="stopBtn" onclick="stopCrew()"
+      style="display:none;background:rgba(231,76,60,0.1);border:1px solid #e74c3c;color:#e74c3c;
+             border-radius:8px;padding:11px 20px;font-size:0.9rem;font-family:inherit;
+             font-weight:600;cursor:pointer;white-space:nowrap">
+      ✕ Cancel
+    </button>
+  </div>
 
   <!-- Agent cards -->
   <div class="agents">
@@ -166,6 +174,7 @@
 
 <script>
   let _lastResult = '';
+  let _sseReader  = null;   // active SSE reader — cancelled by stopCrew()
   let _topic      = '';
 
   function _ts(ts) { return `<span style="color:#444;margin-left:6px;font-size:0.62rem">${ts||''}</span>`; }
@@ -253,7 +262,9 @@
       });
       if (!res.ok) { setStatus('Error: ' + res.status); return; }
 
-      const reader  = res.body.getReader();
+      _sseReader = res.body.getReader();
+      const reader = _sseReader;
+      document.getElementById('stopBtn').style.display = '';
       const decoder = new TextDecoder();
       let   buf     = '';
 
@@ -312,7 +323,21 @@
       setStatus('Network error: ' + e.message);
     } finally {
       document.getElementById('runBtn').disabled = false;
+      document.getElementById('stopBtn').style.display = 'none';
+      _sseReader = null;
     }
+  }
+
+  function stopCrew() {
+    if (_sseReader) {
+      try { _sseReader.cancel(); } catch {}
+      _sseReader = null;
+    }
+    document.getElementById('runBtn').disabled = false;
+    document.getElementById('stopBtn').style.display = 'none';
+    setStatus('Cancelled. The server-side agent will finish its current Claude call then stop.');
+    setAgent('researcher', 'wait');
+    setAgent('summarizer', 'wait');
   }
 
   function downloadResult() {
