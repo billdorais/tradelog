@@ -64,6 +64,12 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
         def flush(self):
             _orig.flush()
 
+        def isatty(self):
+            return False
+
+        def fileno(self):
+            return _orig.fileno()
+
     cap = _Cap()
     sys.stdout = cap
 
