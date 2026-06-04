@@ -79,6 +79,8 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
             q.put({"type": "error", "error": "ANTHROPIC_API_KEY is not set.", "ts": _ts()})
             return
 
+        import litellm as _litellm
+        _litellm.drop_params = True
         from crewai import Agent, Crew, LLM, Process, Task
         from crewai.tools import tool
         import wikipedia as _wiki
@@ -237,6 +239,8 @@ def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
             q.put({"type": "error", "error": "ANTHROPIC_API_KEY is not set.", "ts": _ts()})
             return
 
+        import litellm as _litellm
+        _litellm.drop_params = True   # prevents CrewAI appending assistant prefill Claude rejects
         import requests as _req
         from crewai import Agent, Crew, LLM, Process, Task
         from crewai.tools import tool
