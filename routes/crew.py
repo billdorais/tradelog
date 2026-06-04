@@ -105,7 +105,8 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
         # ── LLM ──────────────────────────────────────────────────────────────
         def _llm(temp=0.3):
-            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp)
+            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp,
+                       drop_params=True, modify_params=True)
 
         # ── Agents ───────────────────────────────────────────────────────────
         researcher = Agent(
@@ -246,7 +247,8 @@ def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
         from crewai.tools import tool
 
         def _llm(temp=0.2):
-            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048)
+            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048,
+                       drop_params=True, modify_params=True)
 
         # ── Tools ─────────────────────────────────────────────────────────────
 
