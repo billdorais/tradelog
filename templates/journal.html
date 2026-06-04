@@ -103,6 +103,17 @@
 
     /* AI summary */
     .ai-section { padding: 20px 24px; border-bottom: 1px solid #1e2130; }
+    /* Sweep snapshot */
+    .sweep-snap { padding: 14px 24px; border-bottom: 1px solid #1e2130; }
+    .sweep-snap-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+    .sweep-snap-label span { color: #444; }
+    .sweep-snap-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid #111418; font-size: 0.78rem; flex-wrap: wrap; }
+    .sweep-snap-row:last-child { border-bottom: none; }
+    .sweep-snap-strat { color: #888; font-family: monospace; font-size: 0.73rem; flex: 1; min-width: 120px; }
+    .sweep-snap-trail { color: #c4b5fd; font-weight: 600; }
+    .sweep-snap-trig  { color: #F2E7AC; font-size: 0.72rem; }
+    .sweep-snap-delta.pos { color: #7FE098; font-weight: 600; }
+    .sweep-snap-delta.neg { color: #e74c3c; font-weight: 600; }
     .ai-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
     .ai-badge { background: linear-gradient(135deg, rgba(108,63,199,0.2), rgba(136,191,139,0.2)); border: 1px solid rgba(136,191,139,0.3); color: #88BF8B; border-radius: 4px; padding: 2px 8px; font-size: 0.68rem; }
     .ai-text { font-size: 0.875rem; line-height: 1.75; color: #c0c0c0; }
@@ -528,6 +539,36 @@
       })()}
 
       ${stratRows ? `<div class="strat-section"><div class="section-label">Strategy Breakdown</div>${stratRows}</div>` : ''}
+
+      ${(() => {
+        const sw = e.sweep_results;
+        if (!sw || (!sw.per_strategy?.length && !sw.best)) return '';
+        const dr = sw.date_range ? `${sw.date_range.from || ''} – ${sw.date_range.to || ''}` : '';
+        const saved = sw.saved_at ? new Date(sw.saved_at).toLocaleDateString() : '';
+        const deltaFmt = d => d == null ? '' : `<span class="sweep-snap-delta ${d >= 0 ? 'pos' : 'neg'}">${d >= 0 ? '+' : '-'}$${Math.abs(d).toFixed(2)} vs SR</span>`;
+        let rows = '';
+        if (sw.mode === 'per_strategy' && sw.per_strategy?.length) {
+          rows = sw.per_strategy.map(s => `
+            <div class="sweep-snap-row">
+              <span class="sweep-snap-strat">${esc(s.strategy)}</span>
+              <span class="sweep-snap-trail">trail ${s.best_trail}%</span>
+              ${s.best_trigger ? `<span class="sweep-snap-trig">trig ${s.best_trigger}%</span>` : ''}
+              <span style="color:#555;font-size:0.72rem">${s.trades} trades</span>
+              ${deltaFmt(s.delta)}
+            </div>`).join('');
+        } else if (sw.best) {
+          rows = `<div class="sweep-snap-row">
+            <span class="sweep-snap-strat">Global best</span>
+            <span class="sweep-snap-trail">trail ${sw.best.trail}%</span>
+            <span class="sweep-snap-trig">trig ${sw.best.trigger}%</span>
+            ${deltaFmt(sw.best.delta_vs_sr)}
+          </div>`;
+        }
+        return `<div class="sweep-snap">
+          <div class="sweep-snap-label">⚡ Sweep Snapshot <span>${esc(dr)}${saved ? ` · saved ${esc(saved)}` : ''}</span></div>
+          ${rows}
+        </div>`;
+      })()}
 
       <div class="ai-section">
         <div class="ai-label"><span class="ai-badge">Claude AI</span> Weekly Analysis</div>

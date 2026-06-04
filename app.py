@@ -1276,6 +1276,13 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # Add sweep_results column to journal_entries if not present
+    try:
+        cur.execute("ALTER TABLE journal_entries ADD COLUMN sweep_results TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Migration: update trading_hours end time from 16:00 → 15:55 in all pipelines
     try:
         p = placeholder()
@@ -3515,7 +3522,7 @@ def api_journal_entries():
     entries = []
     for r in rows:
         e = dict(zip(cols, r)) if DATABASE_URL else dict(r)
-        for f in ("trade_stats", "market_data", "tags"):
+        for f in ("trade_stats", "market_data", "tags", "sweep_results"):
             try:
                 e[f] = json.loads(e[f]) if e[f] else {}
             except Exception:
@@ -3554,6 +3561,35 @@ def api_journal_summary():
         f"UPDATE journal_entries SET ai_summary={p}, tags={p} WHERE week={p}",
         (summary, json.dumps(merged), week)
     )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/journal/sweep", methods=["PUT"])
+def api_journal_sweep():
+    """Save a sweep snapshot to the journal entry for a given week."""
+    data  = request.get_json(silent=True) or {}
+    week  = data.get("week", "").strip()
+    sweep = data.get("sweep_results")
+    if not week:
+        return jsonify({"error": "week required"}), 400
+    p    = placeholder()
+    conn = get_db()
+    cur  = conn.cursor()
+    sweep_json = json.dumps(sweep)
+    if DATABASE_URL:
+        cur.execute(
+            f"INSERT INTO journal_entries (week, sweep_results) VALUES ({p},{p}) "
+            f"ON CONFLICT (week) DO UPDATE SET sweep_results={p}",
+            (week, sweep_json, sweep_json),
+        )
+    else:
+        cur.execute(f"SELECT id FROM journal_entries WHERE week={p}", (week,))
+        if cur.fetchone():
+            cur.execute(f"UPDATE journal_entries SET sweep_results={p} WHERE week={p}", (sweep_json, week))
+        else:
+            cur.execute(f"INSERT INTO journal_entries (week, sweep_results) VALUES ({p},{p})", (week, sweep_json))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

@@ -382,7 +382,15 @@
 
   <!-- Sweep results -->
   <div id="sweepResults" class="sweep-results" style="display:none">
-    <div class="section-title" id="sweepTitle" style="margin-bottom:12px"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="section-title" id="sweepTitle" style="margin-bottom:0"></div>
+      <button id="sweepSaveBtn" onclick="saveSweepToJournal()"
+        style="background:rgba(196,181,253,0.1);border:1px solid #6d5fa8;color:#c4b5fd;
+               border-radius:6px;padding:5px 14px;font-size:0.75rem;font-family:inherit;cursor:pointer;white-space:nowrap"
+        title="Save this sweep snapshot to the weekly journal for regime tracking">
+        Save to Journal
+      </button>
+    </div>
     <div id="sweepBody"></div>
   </div>
 
@@ -1374,7 +1382,10 @@
     }
   }
 
+  let _lastSweepData = null;
+
   function renderSweepResults(data) {
+    _lastSweepData = data;
     const el    = document.getElementById('sweepResults');
     const body  = document.getElementById('sweepBody');
     const title = document.getElementById('sweepTitle');
@@ -1456,6 +1467,60 @@
       document.querySelectorAll('.override-trigger-input').forEach(inp => {
         if (inp.dataset.strategy === label) inp.value = vals.trigger;
       });
+    }
+  }
+
+  async function saveSweepToJournal() {
+    if (!_lastSweepData) return;
+    const btn  = document.getElementById('sweepSaveBtn');
+    const from = document.getElementById('fromDate')?.value || '';
+    const to   = document.getElementById('toDate')?.value   || '';
+
+    // Derive ISO week from the "to" date (end of the sweep window)
+    const toDate  = to ? new Date(to) : new Date();
+    const isoWeek = (() => {
+      const d = new Date(toDate); d.setHours(0,0,0,0);
+      d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+      const w1 = new Date(d.getFullYear(), 0, 4);
+      const wn = 1 + Math.round(((d - w1) / 86400000 - 3 + ((w1.getDay() + 6) % 7)) / 7);
+      return `${d.getFullYear()}-W${String(wn).padStart(2,'0')}`;
+    })();
+
+    // Build compact sweep snapshot
+    const snapshot = { date_range: { from, to }, saved_at: new Date().toISOString() };
+    if (_lastSweepData.mode === 'per_strategy') {
+      snapshot.mode = 'per_strategy';
+      snapshot.sr_total      = _lastSweepData.sr_total;
+      snapshot.combined_pnl  = _lastSweepData.combined_pnl;
+      snapshot.delta         = _lastSweepData.delta;
+      snapshot.per_strategy  = (_lastSweepData.strategies || []).map(s => ({
+        strategy:     s.strategy,
+        trades:       s.trades,
+        best_trail:   s.best_trail,
+        best_trigger: s.best_trigger,
+        best_pnl:     s.best_pnl,
+        sr_pnl:       s.sr_pnl,
+        delta:        s.delta,
+      }));
+    } else {
+      snapshot.mode    = 'global';
+      snapshot.sr_total = _lastSweepData.sr_total;
+      const best = _lastSweepData.results?.[0];
+      if (best) snapshot.best = { trail: best.trail, trigger: best.trigger, total_pnl: best.total_pnl, delta_vs_sr: best.delta_vs_sr };
+    }
+
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/journal/sweep', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ week: isoWeek, sweep_results: snapshot }),
+      });
+      const data = await res.json();
+      btn.textContent = data.ok ? '✓ Saved' : 'Error';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Save to Journal'; }, 2000);
+    } catch {
+      btn.textContent = 'Error'; btn.disabled = false;
     }
   }
 </script>
