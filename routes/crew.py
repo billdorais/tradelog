@@ -278,12 +278,13 @@ def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
         # ── Tools ─────────────────────────────────────────────────────────────
 
         @tool("Get Strategy Performance")
-        def get_strategy_performance() -> str:
+        def get_strategy_performance(query: str = "") -> str:
             """
             Fetch the current Refined account strategy leaderboard from Kairos.
             Returns per-strategy P&L, win rate, profit factor, Sharpe ratio, and
             trade count for the last 20 days. Use this to understand which strategies
             are performing well and which are underperforming.
+            The query parameter is ignored — pass any string or leave empty.
             """
             try:
                 data = _get("/api/alpaca/analysis?account=2")
@@ -313,12 +314,13 @@ def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
                 return f"Error fetching strategy data: {e}"
 
         @tool("Get Journal History")
-        def get_journal_history() -> str:
+        def get_journal_history(query: str = "") -> str:
             """
             Fetch the last 4 weekly journal entries from Kairos. Each entry includes
             weekly P&L, trade stats, market regime (VIX, SPY performance, regime character),
             AI-generated analysis, and any saved sweep snapshots of optimal stop parameters.
             Use this to understand recent trends, regime context, and historical observations.
+            The query parameter is ignored — pass any string or leave empty.
             """
             try:
                 entries = (_get("/api/journal/entries") or [])[:4]
