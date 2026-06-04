@@ -73,8 +73,8 @@
     .note.tool       { border-left-color: #F2E7AC; background: #13130c; }
     .note.task       { border-left-color: #517356; background: #0f140f; }
     .note-head { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; margin-bottom: 4px; }
-    .note.researcher .note-head { color: #5a8fa8; }
-    .note.summarizer .note-head { color: #c4b5fd; }
+    .note.researcher .note-head { color: #5a8fa8; }  /* data analyst — blue */
+    .note.summarizer .note-head { color: #c4b5fd; }  /* advisor/strategist — purple */
     .note.system     .note-head { color: #7FE098; }
     .note.tool       .note-head { color: #F2E7AC; }
     .note.task       .note-head { color: #7FE098; }
@@ -103,29 +103,43 @@
 
 <div class="page">
 
-  <div class="page-title">✦ Research Crew</div>
-  <div class="page-sub">Two AI agents — Researcher + Summarizer — powered by Claude via CrewAI</div>
+  <!-- Mode selector -->
+  <div style="display:flex;gap:8px;margin-bottom:20px">
+    <button id="modeKairos" onclick="setMode('kairos')"
+      style="padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;
+             border:1px solid #7FE098;background:rgba(127,224,152,0.12);color:#7FE098;transition:all 0.15s">
+      📊 Trading Analysis
+    </button>
+    <button id="modeResearch" onclick="setMode('research')"
+      style="padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;
+             border:1px solid #2a2d3e;background:transparent;color:#666;transition:all 0.15s">
+      🔍 Research
+    </button>
+  </div>
 
-  <!-- Input -->
-  <div class="input-row">
+  <div class="page-title" id="pageTitle">✦ Trading Analysis Crew</div>
+  <div class="page-sub" id="pageSub">Fetches your live strategy leaderboard + journal — advises as a professional systematic trader</div>
+
+  <!-- Input (research mode only) -->
+  <div class="input-row" id="topicRow" style="display:none">
     <input type="text" class="topic-input" id="topicInput"
            placeholder="Enter any topic to research…"
            value="Camarilla pivot points in trading">
-    <button class="run-btn" id="runBtn" onclick="runCrew()">Run Crew →</button>
   </div>
+  <button class="run-btn" id="runBtn" onclick="runCrew()" style="margin-bottom:20px">Run Crew →</button>
 
   <!-- Agent cards -->
   <div class="agents">
     <div class="agent-card" id="card-researcher">
-      <div class="agent-icon">🔍</div>
+      <div class="agent-icon" id="icon-researcher">📊</div>
       <div class="agent-label">Agent 1</div>
-      <div class="agent-name">Research Analyst</div>
+      <div class="agent-name" id="name-researcher">Data Analyst</div>
       <span class="badge badge-wait" id="badge-researcher">Waiting</span>
     </div>
     <div class="agent-card" id="card-summarizer">
-      <div class="agent-icon">✍️</div>
+      <div class="agent-icon" id="icon-summarizer">🏦</div>
       <div class="agent-label">Agent 2</div>
-      <div class="agent-name">Content Strategist</div>
+      <div class="agent-name" id="name-summarizer">Systematic Trader</div>
       <span class="badge badge-wait" id="badge-summarizer">Waiting</span>
     </div>
   </div>
@@ -156,15 +170,37 @@
 
   function _ts(ts) { return `<span style="color:#444;margin-left:6px;font-size:0.62rem">${ts||''}</span>`; }
 
+  let _crewMode = 'kairos';
+
+  function setMode(mode) {
+    _crewMode = mode;
+    const isKairos = mode === 'kairos';
+    document.getElementById('modeKairos').style.cssText   = `padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;transition:all 0.15s;border:1px solid ${isKairos?'#7FE098':'#2a2d3e'};background:${isKairos?'rgba(127,224,152,0.12)':'transparent'};color:${isKairos?'#7FE098':'#666'}`;
+    document.getElementById('modeResearch').style.cssText = `padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;transition:all 0.15s;border:1px solid ${!isKairos?'#7FE098':'#2a2d3e'};background:${!isKairos?'rgba(127,224,152,0.12)':'transparent'};color:${!isKairos?'#7FE098':'#666'}`;
+    document.getElementById('topicRow').style.display = isKairos ? 'none' : '';
+    document.getElementById('pageTitle').textContent  = isKairos ? '✦ Trading Analysis Crew' : '✦ Research Crew';
+    document.getElementById('pageSub').textContent    = isKairos
+      ? 'Fetches your live strategy leaderboard + journal — advises as a professional systematic trader'
+      : 'Two AI agents — Researcher + Summarizer — powered by Claude via CrewAI';
+    document.getElementById('icon-researcher').textContent = isKairos ? '📊' : '🔍';
+    document.getElementById('name-researcher').textContent = isKairos ? 'Data Analyst' : 'Research Analyst';
+    document.getElementById('icon-summarizer').textContent = isKairos ? '🏦' : '✍️';
+    document.getElementById('name-summarizer').textContent = isKairos ? 'Systematic Trader' : 'Content Strategist';
+  }
+
   function _noteClass(agent) {
     if (!agent) return 'system';
     const a = agent.toLowerCase();
-    if (a.includes('research')) return 'researcher';
-    if (a.includes('content') || a.includes('summar') || a.includes('strategist')) return 'summarizer';
+    if (a.includes('research') || a.includes('data') || a.includes('analyst')) return 'researcher';
+    if (a.includes('content') || a.includes('summar') || a.includes('strategist') || a.includes('advisor') || a.includes('trader')) return 'summarizer';
     return 'system';
   }
 
   function _noteLabel(cls, agent) {
+    if (_crewMode === 'kairos') {
+      const m = { researcher:'📊 Data Analyst', summarizer:'🏦 Trading Advisor', system:'✦ System', tool:'🛠 Tool' };
+      return m[cls] || agent || 'System';
+    }
     const m = { researcher:'🔍 Research Analyst', summarizer:'✍️ Content Strategist', system:'✦ System', tool:'🛠 Tool' };
     return m[cls] || agent || 'System';
   }
@@ -195,7 +231,7 @@
   function setStatus(html) { document.getElementById('statusBar').innerHTML = html; }
 
   async function runCrew() {
-    _topic = document.getElementById('topicInput').value.trim();
+    _topic = _crewMode === 'kairos' ? 'kairos_analysis' : document.getElementById('topicInput').value.trim();
     if (!_topic) return;
 
     // Reset UI
@@ -213,7 +249,7 @@
       const res = await fetch('/api/crew/run', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ topic: _topic }),
+        body:    JSON.stringify({ topic: _topic, crew_type: _crewMode }),
       });
       if (!res.ok) { setStatus('Error: ' + res.status); return; }
 
@@ -241,10 +277,14 @@
               setAgent('researcher', 'done');
               setAgent('summarizer', 'active');
               activeAgent = 'summarizer';
-              setStatus('<span class="spinner"></span>Content Strategist writing summary…');
+              setStatus(_crewMode === 'kairos'
+                ? '<span class="spinner"></span>Systematic Trader analysing data…'
+                : '<span class="spinner"></span>Content Strategist writing summary…');
             } else if (cls === 'researcher' && activeAgent === 'researcher') {
               setAgent('researcher', 'active');
-              setStatus('<span class="spinner"></span>Research Analyst gathering information…');
+              setStatus(_crewMode === 'kairos'
+                ? '<span class="spinner"></span>Data Analyst fetching Kairos performance data…'
+                : '<span class="spinner"></span>Research Analyst gathering information…');
             }
             appendNote(msg.type, msg.agent, msg.text, msg.ts);
           }
