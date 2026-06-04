@@ -192,7 +192,8 @@
       ? 'Fetches your live strategy leaderboard + journal — advises as a professional systematic trader'
       : 'Two AI agents — Researcher + Summarizer — powered by Claude via CrewAI';
     document.getElementById('icon-researcher').textContent = isKairos ? '📊' : '🔍';
-    document.getElementById('name-researcher').textContent = isKairos ? 'Data Analyst' : 'Research Analyst';
+    document.getElementById('name-researcher').textContent = isKairos ? 'Data loaded' : 'Research Analyst';
+    document.getElementById('card-researcher').style.opacity = isKairos ? '0.4' : '1';
     document.getElementById('icon-summarizer').textContent = isKairos ? '🏦' : '✍️';
     document.getElementById('name-summarizer').textContent = isKairos ? 'Systematic Trader' : 'Content Strategist';
   }

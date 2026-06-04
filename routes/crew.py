@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -261,135 +261,71 @@ def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
         _litellm.completion = _safe_completion
 
         from crewai import Agent, Crew, LLM, Process, Task
-        from crewai.tools import tool
-
-        # Use Flask's test_client for in-process calls — avoids HTTP deadlock when
-        # the dev server is single-threaded, and is faster on Railway too.
-        import app as _kairos_app
-
-        def _get(path: str):
-            with _kairos_app.app.test_client() as c:
-                resp = c.get(path)
-                return resp.get_json() or {}
 
         def _llm(temp=0.2):
             return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048)
 
-        # ── Tools ─────────────────────────────────────────────────────────────
+        # ── Format pre-fetched data ───────────────────────────────────────────
+        # Data was fetched in the Flask route handler and passed in directly.
 
-        @tool("Get Strategy Performance")
-        def get_strategy_performance(query: str = "") -> str:
-            """
-            Fetch the current Refined account strategy leaderboard from Kairos.
-            Returns per-strategy P&L, win rate, profit factor, Sharpe ratio, and
-            trade count for the last 20 days. Use this to understand which strategies
-            are performing well and which are underperforming.
-            The query parameter is ignored — pass any string or leave empty.
-            """
-            try:
-                data = _get("/api/alpaca/analysis?account=2")
-                overall = data.get("overall", {})
-                per_strat = data.get("per_strategy", {})
-                lines = [
-                    "=== REFINED ACCOUNT — STRATEGY LEADERBOARD (last ~20 days) ===",
-                    f"Overall: {overall.get('trades',0)} trades | "
-                    f"Win Rate {overall.get('win_rate',0):.1f}% | "
-                    f"PF {overall.get('profit_factor') or '—'} | "
-                    f"Total P&L ${overall.get('total_pnl',0):.2f} | "
-                    f"Sharpe {overall.get('sharpe') or '—'}",
-                    "",
-                    "Per Strategy (sorted by P&L):",
-                ]
-                sorted_strats = sorted(per_strat.items(), key=lambda x: x[1].get("total_pnl", 0), reverse=True)
-                for name, s in sorted_strats:
-                    pf = f"{s.get('profit_factor'):.2f}" if s.get("profit_factor") else "—"
-                    sh = f"{s.get('sharpe'):.2f}" if s.get("sharpe") else "—"
-                    lines.append(
-                        f"  {name}: {s.get('trades',0)} trades | "
-                        f"{s.get('win_rate',0):.1f}% WR | PF {pf} | "
-                        f"Sharpe {sh} | P&L ${s.get('total_pnl',0):.2f}"
-                    )
-                return "\n".join(lines)
-            except Exception as e:
-                return f"Error fetching strategy data: {e}"
+        def _fmt_strategies(data: dict) -> str:
+            overall   = (data or {}).get("overall", {})
+            per_strat = (data or {}).get("per_strategy", {})
+            if not per_strat:
+                return "No strategy data available (Alpaca may not be configured)."
+            lines = [
+                "=== REFINED ACCOUNT — STRATEGY LEADERBOARD (last ~20 days) ===",
+                f"Overall: {overall.get('trades',0)} trades | "
+                f"Win Rate {overall.get('win_rate',0):.1f}% | "
+                f"PF {overall.get('profit_factor') or '—'} | "
+                f"Total P&L ${overall.get('total_pnl',0):.2f} | "
+                f"Sharpe {overall.get('sharpe') or '—'}",
+                "", "Per Strategy (sorted by P&L):",
+            ]
+            for name, s in sorted(per_strat.items(), key=lambda x: x[1].get("total_pnl", 0), reverse=True):
+                pf = f"{s['profit_factor']:.2f}" if s.get("profit_factor") else "—"
+                sh = f"{s['sharpe']:.2f}"        if s.get("sharpe")         else "—"
+                lines.append(
+                    f"  {name}: {s.get('trades',0)} trades | "
+                    f"{s.get('win_rate',0):.1f}% WR | PF {pf} | "
+                    f"Sharpe {sh} | P&L ${s.get('total_pnl',0):.2f}"
+                )
+            return "\n".join(lines)
 
-        @tool("Get Journal History")
-        def get_journal_history(query: str = "") -> str:
-            """
-            Fetch the last 4 weekly journal entries from Kairos. Each entry includes
-            weekly P&L, trade stats, market regime (VIX, SPY performance, regime character),
-            AI-generated analysis, and any saved sweep snapshots of optimal stop parameters.
-            Use this to understand recent trends, regime context, and historical observations.
-            The query parameter is ignored — pass any string or leave empty.
-            """
-            try:
-                entries = (_get("/api/journal/entries") or [])[:4]
-                if not entries:
-                    return "No journal entries found."
-                lines = ["=== WEEKLY JOURNAL — LAST 4 ENTRIES ===", ""]
-                for e in entries:
-                    ts   = e.get("trade_stats") or {}
-                    md   = e.get("market_data")  or {}
-                    tags = e.get("tags")          or {}
-                    sw   = e.get("sweep_results") or {}
-                    vix  = md.get("VIX", {}).get("close") or md.get("VIX", {}).get("weekly_return")
-                    spy  = md.get("SPY", {}).get("weekly_return")
-                    grade  = tags.get("grade", "")
-                    labels = ", ".join(tags.get("labels") or [])
-                    lines.append(f"Week {e.get('week')} — Grade {grade} — {labels}")
-                    lines.append(
-                        f"  P&L: ${ts.get('total_pnl',0):.2f} | "
-                        f"{ts.get('trades',0)} trades | "
-                        f"{ts.get('win_rate',0):.1f}% WR | "
-                        f"PF {ts.get('profit_factor') or '—'}"
-                    )
-                    if vix or spy is not None:
-                        lines.append(
-                            f"  Market: VIX {vix or '—'} | "
-                            f"SPY {f'+{spy:.2f}%' if spy and spy >= 0 else f'{spy:.2f}%' if spy else '—'} | "
-                            f"Regime: {md.get('regime','—')}"
-                        )
-                    if sw.get("per_strategy"):
-                        sweep_str = " | ".join(
-                            f"{s['strategy']}: trail {s['best_trail']}%"
-                            for s in sw["per_strategy"][:4]
-                        )
-                        lines.append(f"  Sweep: {sweep_str}")
-                    summary = (e.get("ai_summary") or "")[:300]
-                    if summary:
-                        lines.append(f"  AI Notes: \"{summary}...\"")
-                    lines.append("")
-                return "\n".join(lines)
-            except Exception as e:
-                return f"Error fetching journal: {e}"
+        def _fmt_journal(entries: list) -> str:
+            entries = (entries or [])[:4]
+            if not entries:
+                return "No journal entries found."
+            lines = ["=== WEEKLY JOURNAL — LAST 4 ENTRIES ===", ""]
+            for e in entries:
+                ts   = e.get("trade_stats") or {}
+                md   = e.get("market_data")  or {}
+                tags = e.get("tags")          or {}
+                sw   = e.get("sweep_results") or {}
+                vix  = md.get("VIX", {}).get("close") or md.get("VIX", {}).get("weekly_return")
+                spy  = md.get("SPY", {}).get("weekly_return")
+                lines.append(f"Week {e.get('week')} — Grade {tags.get('grade','')} — {', '.join(tags.get('labels') or [])}")
+                lines.append(f"  P&L: ${ts.get('total_pnl',0):.2f} | {ts.get('trades',0)} trades | {ts.get('win_rate',0):.1f}% WR | PF {ts.get('profit_factor') or '—'}")
+                if vix or spy is not None:
+                    spy_str = f"+{spy:.2f}%" if spy and spy >= 0 else f"{spy:.2f}%" if spy else "—"
+                    lines.append(f"  Market: VIX {vix or '—'} | SPY {spy_str} | Regime: {md.get('regime','—')}")
+                if sw.get("per_strategy"):
+                    lines.append("  Sweep: " + " | ".join(f"{s['strategy']}: trail {s['best_trail']}%" for s in sw["per_strategy"][:4]))
+                summary = (e.get("ai_summary") or "")[:300]
+                if summary:
+                    lines.append(f"  AI Notes: \"{summary}...\"")
+                lines.append("")
+            return "\n".join(lines)
 
-        # ── Agents ────────────────────────────────────────────────────────────
+        strategy_block = _fmt_strategies(strat_data)
+        journal_block  = _fmt_journal(journal_data)
 
-        data_agent = Agent(
-            role="Kairos Data Analyst",
-            goal=(
-                "Collect and organize all available trading performance data from the "
-                "Kairos system — strategy leaderboard, weekly journal entries, market "
-                "regime context, and any saved parameter sweep results."
-            ),
-            backstory=(
-                "You are a quantitative data specialist who extracts and organises "
-                "trading system performance data with precision. You present facts cleanly, "
-                "highlight patterns without editorialising, and flag anything that looks "
-                "anomalous. Your job is to give the advisor everything they need."
-            ),
-            llm=_llm(0.1),
-            tools=[get_strategy_performance, get_journal_history],
-            verbose=True,
-            allow_delegation=False,
-        )
+        # ── Agents — no tools; data is embedded in task descriptions ─────────
+        # Removes all tool-call complexity and token overhead.
 
         advisor = Agent(
             role="Professional Systematic Trading Advisor",
-            goal=(
-                "Analyse the Kairos trading system's performance data and deliver "
-                "specific, actionable recommendations to improve returns and manage risk."
-            ),
+            goal="Analyse the Kairos trading data and deliver specific, actionable recommendations.",
             backstory=(
                 "You are a seasoned systematic trading professional with 20 years of "
                 "experience managing algorithmic strategy portfolios on US equities. "
@@ -408,51 +344,30 @@ def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
             allow_delegation=False,
         )
 
-        # ── Tasks ─────────────────────────────────────────────────────────────
-
-        collection_task = Task(
-            description=(
-                "Fetch the Kairos trading system performance data:\n"
-                "1. Call 'Get Strategy Performance' for the full strategy leaderboard\n"
-                "2. Call 'Get Journal History' for the last 4 weekly entries\n"
-                "3. Identify: top 5 by P&L, bottom 5 by P&L, strategies with 0% win rate, "
-                "strategies with fewer than 5 trades\n"
-                "4. Note the last 2 weeks' regime tags and any sweep snapshots on file\n"
-                "5. Flag any strategies that appear in both best and worst lists across weeks"
-            ),
-            expected_output=(
-                "A structured data report with: overall performance summary, "
-                "ranked strategy list, 4-week journal summary with regime tags, "
-                "and any notable patterns or anomalies."
-            ),
-            agent=data_agent,
-        )
+        # ── Single task — data embedded directly ─────────────────────────────
 
         analysis_task = Task(
             description=(
-                "As a professional systematic trading advisor, analyse the data and deliver "
-                "a concise advisory report with these five sections:\n\n"
+                f"Here is the current Kairos trading system data:\n\n"
+                f"{strategy_block}\n\n"
+                f"{journal_block}\n\n"
+                "Based on this data, deliver a professional advisory report with five sections:\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
-                "What does the PF and Sharpe tell you about real edge vs. luck?\n\n"
-                "2. **Strategy Calls** — Name 2-3 strategies that deserve promotion "
-                "(more capital or addition to Refined) and 2-3 that should be paused or "
-                "demoted. Give specific reasons tied to the numbers.\n\n"
-                "3. **Stop & Parameter Check** — Given the recent regime (VIX, character "
-                "tags), are the current trailing stops appropriate? Reference any sweep "
-                "data if available. Should anything be tightened or loosened?\n\n"
-                "4. **Risk Observations** — Any concentration risk, drawdown pattern, "
-                "or ticker exposure worth flagging for a ~$25k live account?\n\n"
-                "5. **This Week's Focus** — One specific, testable thing to monitor or "
-                "experiment with next week. Be concrete.\n\n"
-                "Be direct. Cite strategy names and numbers. Don't hedge when the data "
-                "is clear. 'Hold steady' is a valid call when warranted."
+                "What does the PF and Sharpe say about real edge vs. luck?\n\n"
+                "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
+                "or demote. Give specific reasons tied to numbers.\n\n"
+                "3. **Stop & Parameter Check** — Given the recent regime (VIX, character tags), "
+                "are current trailing stops appropriate? Reference sweep data if available.\n\n"
+                "4. **Risk Observations** — Concentration, drawdown patterns, or ticker "
+                "exposure worth flagging for a ~$25k live account.\n\n"
+                "5. **This Week's Focus** — One specific, testable action item for next week.\n\n"
+                "Be direct. Cite strategy names and numbers. 'Hold steady' is valid when warranted."
             ),
             expected_output=(
                 "A professional 5-section advisory report with specific strategy names, "
                 "numbers-backed recommendations, and one concrete next-week action item."
             ),
             agent=advisor,
-            context=[collection_task],
         )
 
         # ── Callbacks & Kickoff ───────────────────────────────────────────────
@@ -461,8 +376,8 @@ def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
             q.put({"type": "task_done", "agent": cap.agent, "ts": _ts()})
 
         crew = Crew(
-            agents=[data_agent, advisor],
-            tasks=[collection_task, analysis_task],
+            agents=[advisor],
+            tasks=[analysis_task],
             process=Process.sequential,
             verbose=True,
             task_callback=on_task,
@@ -493,8 +408,22 @@ def api_crew_run():
     q = queue.Queue()
 
     if crew_type == "kairos":
-        # Use the app's own base URL for internal API calls
-        threading.Thread(target=_run_kairos_crew, args=(q,), daemon=True).start()
+        # Pre-fetch data while we have Flask request context — test_client
+        # doesn't work reliably in background threads.
+        from flask import current_app as _ca
+        strat_data   = {}
+        journal_data = []
+        try:
+            with _ca.test_client() as _c:
+                strat_data   = _c.get("/api/alpaca/analysis?account=2").get_json() or {}
+                journal_data = _c.get("/api/journal/entries").get_json()  or []
+        except Exception as _fe:
+            pass
+        threading.Thread(
+            target=_run_kairos_crew,
+            args=(q, strat_data, journal_data),
+            daemon=True,
+        ).start()
     else:
         if not topic:
             return jsonify({"error": "topic required"}), 400
