@@ -13,6 +13,126 @@ Add your own validated observations below. Be specific — cite weeks, strategie
 
 ---
 
+## Thor Young — "A Complete Day Trading System" Key Principles
+*(Source: "Spotting Optimal Trade Entry Opportunities" webinar, TradingTerminal.com)*
+
+### The Where, When, How Framework
+Every trading system needs three things:
+1. **Where** — where to look for the trade (Camarilla pivot levels)
+2. **When** — when to take the trade (volume confirmation, order book, value accepted)
+3. **How** — how to manage the trade (stops, targets, partials)
+
+Taking a trade with anything less than all three is, at best, gambling. Kairos currently
+has strong "Where" (pivot level entries) and "How" (trailing stops, max hold). The "When"
+is partly handled by the 5-min bar signal but volume confirmation is not assessed.
+
+### The Core Principle — Acceptance and Rejection of Value
+The market is made of participants (people or algos programmed by people) who inherently
+overreact to value. The Camarilla system quantifies this behavioural pattern.
+
+- **Value is accepted** when the price consolidates and volume drops — the market agrees
+  on a price. During acceptance, volume drops and the market becomes "untradable" (chop).
+- **Value is rejected** when price moves away — up or down. This rejection is where trades begin.
+- **The edge**: Wait for value to be accepted at a Camarilla level, then trade the rejection.
+  Do NOT trade during the acceptance phase (grey area).
+
+### The Grey Area — AVOID
+Between R1/R2/S1/S2 is where you get chopped. Playing near value means:
+- Lots of stops while waiting for direction
+- Coin-flip at best, worse in practice (price oscillates as it builds momentum)
+- Use Camarilla pivots to FIND the grey area, then wait for the extremes (R3/R4, S3/S4)
+
+**Application to Kairos:** Kairos correctly fires at R3/S3 and R4/S4 levels. Avoid adding
+strategies that fire at R1/R2/S1/S2 — these are grey zone entries.
+
+### Inside Day vs Outside Day — CRITICAL PRE-MARKET CLASSIFICATION
+This is the most important pre-session decision. Determines which strategy type to run.
+
+**How to identify:**
+- Compute today's Central Pivot Range (CPR) = R2 − S2 = (prior day H−L) × 1.1/3
+- Compare to yesterday's CPR width = (day-before-yesterday H−L) × 1.1/3
+
+| Day Type    | CPR Width vs Yesterday | Expected Behaviour | Strategy to favour |
+|-------------|------------------------|--------------------|--------------------|
+| Inside Day  | TODAY wider than yest. | Price stays in range, traverses between levels | REVERSAL R3S3 |
+| Outside Day | TODAY narrower than yest.| Price breaks out, new value search | BREAKOUT R4S4 |
+| Neutral     | Similar width, overlapping | Chop then big move | Wait for confirmation |
+
+**Inside Day rules:**
+- Do NOT enter breakout longs near R4 — already extended, probability is to the downside
+- Play traverses: short at R3, target S4; long at S3, target R4
+- The range gives plenty of room — be patient, these take time
+
+**Outside Day rules:**
+- Avoid the grey area entirely
+- Wait for extremes to be rejected, then play breakouts or extreme reversals at the 4th levels
+- On R4 break, expect a large move; ride with trailing stop, exit on trend average failure
+- On tight pivot range with gap open: look for R5/R6 or S5/S6 run before trend reversal
+
+**Neutral (no bias) day:**
+- Today's CPR sits between yesterday's CPR — chop likely, then big move
+- R4/S4 act as directional bias indicators
+- Open above CPR → long bias, buy R4 targeting R5/R6
+- Open below CPR → short bias, sell S4 targeting S5/S6
+
+**Application to Kairos gap:** The system currently fires BOTH breakout and reversal signals
+regardless of day type. On an Inside Day, suppressing BREAKOUT R4S4 signals and widening
+reversal trails would likely improve the win rate significantly. This is a known missing filter.
+
+### Forming a Daily Bias — 3-Step Pre-Market Process
+Before the open, complete this sequence:
+
+**Step 1 — Develop Bias from Pivot Ranges:**
+- **Bullish Bias**: Today's CPR is HIGHER than yesterday's CPR (not just wider — higher in price)
+  - Even overlapping CPRs are bullish, just weaker
+- **Bearish Bias**: Today's CPR is LOWER than yesterday's CPR
+- **No Bias**: Today's CPR is sandwiched inside yesterday's CPR
+
+**Step 2 — Confirm the Bias at the Open:**
+Where price opens relative to the levels is critical.
+- Opens ABOVE R4: Look for R4 retest long, or short R3 if rejected
+- Opens BELOW S4: Look for S4 retest short, or long S3 if rejected
+- Opens WITHIN the range: Look for traverses and outside day breakouts
+- Prior session closed ABOVE its CPR + today opens above pivots → Trend long bias
+
+**Step 3 — Judge Inside or Outside Day potential:**
+See the table above. Decide which strategy type dominates the session.
+
+**Application to Kairos:** The AI advisor can assess this with available data but the automated
+system has no pre-market bias filter. Adding a daily bias gate to the signal router would
+require daily OHLC data (available via Alpaca) and a new routing node.
+
+### Order Book Confirmation — "The When" (Manual Only)
+Thor combines pivots with BookMap/Level 2 order book to confirm entries:
+- Wait for large institutional orders to appear at the Camarilla level
+- "Price moves to Size" — large orders near the level confirm it as valid support/resistance
+- Iceberg orders (recycling size) at levels = strong institutional commitment
+- A bullish book (more bids below price) at S3 gives high-confidence long
+
+**Application to Kairos:** Order book data is not accessible via TradingView webhooks or
+Alpaca's REST API in real-time. This "When" confirmation is a manual filter that automated
+systems cannot replicate. However, using volume confirmation (relative volume at signal time)
+as a proxy is possible and would filter low-quality entries.
+
+### R5/R6 and S5/S6 — Extension Levels
+On outside breakout days, price frequently runs to the extension levels:
+- R5 = R4 + 1.168 × (R4 − R3)
+- R6 = (High/Low) × Close
+- S5 = S4 − 1.168 × (S3 − S4)
+- S6 = Close − (R6 − Close)
+
+These are meaningful profit targets on strong breakout days when R4/S4 is breached cleanly.
+
+### Key Quotes
+- "Every trading system needs three things. Where to look for a trade. When to take the
+  trade. How to manage the trade. Taking a trade with anything less is, at best, gambling."
+- "The market will inherently overreact to value. People by design overreact to almost everything."
+- "Like surfing, to make money in the market position is extremely important. You got to
+  know where to wait first."
+- "Once value is accepted the stock becomes untradable." (Enter after the rejection, not during acceptance.)
+
+---
+
 ## Camarilla Pivot System — Core Theory
 
 ### What They Are

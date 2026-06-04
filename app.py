@@ -4619,6 +4619,18 @@ def api_simulate_stops():
             except Exception:
                 day_bars[(tk, dt)] = []
 
+    # Batch day-classification (Inside/Outside/Neutral) — one daily-bar fetch per ticker/date
+    day_classifications = {}
+    with _cf.ThreadPoolExecutor(max_workers=4) as pool:
+        cls_futures = {pool.submit(_get_day_classification, tk, dt): (tk, dt)
+                       for tk, dt in ticker_dates}
+        for f in _cf.as_completed(cls_futures):
+            tk, dt = cls_futures[f]
+            try:
+                day_classifications[(tk, dt)] = f.result()
+            except Exception:
+                day_classifications[(tk, dt)] = {}
+
     def _pnl(exit_price, entry_px, qty, side):
         return round((exit_price - entry_px) * qty, 2) if side == "LONG" \
                else round((entry_px - exit_price) * qty, 2)
@@ -4743,6 +4755,8 @@ def api_simulate_stops():
             "peak_gain_pct":      peak_gain_pct,
             "new_capture_ratio":  new_capture,
             "new_giveback":       new_giveback,
+            # Inside/Outside Day classification
+            **{k: v for k, v in day_classifications.get((ticker, date), {}).items()},
         })
 
     results.sort(key=lambda r: (r["date"], r["entry_time"]))
@@ -4756,6 +4770,18 @@ def api_simulate_stops():
                     if r.get("new_capture_ratio") is not None and r.get("peak_gain_dollars", 0) > 0]
     avg_capture  = round(sum(_cap_vals) / len(_cap_vals), 3) if _cap_vals else None
 
+    # Inside/Outside Day breakdown
+    def _day_stats(dtype):
+        grp = [r for r in results if r.get("day_type") == dtype]
+        if not grp:
+            return None
+        wins = sum(1 for r in grp if (r.get("actual_pnl") or 0) > 0)
+        return {
+            "count":    len(grp),
+            "pnl":      round(sum(r.get("actual_pnl", 0) for r in grp), 2),
+            "win_rate": round(wins / len(grp) * 100, 1) if grp else 0,
+        }
+
     return jsonify({
         "trades":  results,
         "summary": {
@@ -4768,6 +4794,11 @@ def api_simulate_stops():
             "worse":             worse,
             "neutral":           len(results) - improved - worse,
             "avg_capture_ratio": avg_capture,
+            "by_day_type": {
+                "Inside":  _day_stats("Inside"),
+                "Outside": _day_stats("Outside"),
+                "Neutral": _day_stats("Neutral"),
+            },
         },
         "params": {
             "trail_pct":          trail_pct,
@@ -8699,6 +8730,120 @@ def _fetch_day_bars(ticker: str, date_str: str):
     except Exception as _de:
         log.debug("fetch_day_bars %s %s: %s", ticker, date_str, _de)
         return []
+
+
+def _fetch_daily_ohlc(ticker: str, date_str: str, n_days: int = 2):
+    """Fetch the last n_days of daily OHLC bars ending on (but not including) date_str.
+    Returns list of dicts [{date, open, high, low, close}] newest-first, or []."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        client = StockHistoricalDataClient(
+            api_key    = alpaca_broker._key,
+            secret_key = alpaca_broker._secret,
+        )
+        end_date   = _dt.date.fromisoformat(date_str)
+        start_date = end_date - _dt.timedelta(days=n_days * 2 + 5)  # buffer for weekends/holidays
+        req = StockBarsRequest(
+            symbol_or_symbols = ticker.upper(),
+            timeframe         = TimeFrame(1, TimeFrameUnit.Day),
+            start             = _dt.datetime(start_date.year, start_date.month, start_date.day,
+                                             tzinfo=_dt.timezone.utc),
+            end               = _dt.datetime(end_date.year, end_date.month, end_date.day,
+                                             tzinfo=_dt.timezone.utc),
+        )
+        bars_df = client.get_stock_bars(req)
+        bars    = list(bars_df[ticker.upper()])
+        result  = []
+        for b in reversed(bars[-n_days:]):   # newest first, last n_days
+            result.append({
+                "date":  str(b.timestamp)[:10],
+                "open":  float(b.open),
+                "high":  float(b.high),
+                "low":   float(b.low),
+                "close": float(b.close),
+            })
+        return result
+    except Exception as _de:
+        log.debug("fetch_daily_ohlc %s %s: %s", ticker, date_str, _de)
+        return []
+
+
+def _classify_day(ticker: str, trade_date: str) -> dict:
+    """Classify a trading day as Inside/Outside/Neutral using Camarilla pivot logic.
+
+    Fetches last 2 prior trading days' OHLC for the ticker.
+    Returns {day_type, bias, cpr_today, cpr_prev, r4, r3, s3, s4, mid_cpr} or empty dict.
+    """
+    bars = _fetch_daily_ohlc(ticker, trade_date, n_days=2)
+    if len(bars) < 2:
+        return {}
+    # bars[0] = prior day (D-1), bars[1] = day before (D-2)
+    prev  = bars[0]   # D-1: used to compute today's Camarilla levels
+    prev2 = bars[1]   # D-2: used to compute yesterday's Camarilla levels
+
+    def _cam(h, l, c):
+        rng = h - l
+        return {
+            "r4": round(c + rng * 1.1 / 2, 4),
+            "r3": round(c + rng * 1.1 / 4, 4),
+            "r2": round(c + rng * 1.1 / 6, 4),
+            "r1": round(c + rng * 1.1 / 12, 4),
+            "s1": round(c - rng * 1.1 / 12, 4),
+            "s2": round(c - rng * 1.1 / 6, 4),
+            "s3": round(c - rng * 1.1 / 4, 4),
+            "s4": round(c - rng * 1.1 / 2, 4),
+            "cpr_width": round(rng * 1.1 / 3, 4),  # R2 − S2
+            "mid_cpr":   round(c, 4),               # midpoint of CPR ≈ prev close
+        }
+
+    today  = _cam(prev["high"],  prev["low"],  prev["close"])
+    yest   = _cam(prev2["high"], prev2["low"], prev2["close"])
+
+    # Day type: wider CPR = Inside Day, narrower = Outside Day
+    ratio = today["cpr_width"] / yest["cpr_width"] if yest["cpr_width"] > 0 else 1.0
+    if ratio > 1.10:
+        day_type = "Inside"
+    elif ratio < 0.90:
+        day_type = "Outside"
+    else:
+        day_type = "Neutral"
+
+    # Bias: compare today's CPR mid (prev close) to yesterday's CPR range
+    if today["mid_cpr"] > yest["r2"]:
+        bias = "Bullish"
+    elif today["mid_cpr"] < yest["s2"]:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+
+    return {
+        "day_type":  day_type,
+        "bias":      bias,
+        "cpr_today": today["cpr_width"],
+        "cpr_prev":  yest["cpr_width"],
+        "ratio":     round(ratio, 3),
+        "r4":        today["r4"],
+        "r3":        today["r3"],
+        "s3":        today["s3"],
+        "s4":        today["s4"],
+        "mid_cpr":   today["mid_cpr"],
+    }
+
+
+_day_class_cache: dict = {}   # {(ticker, date): result} — cached per session
+
+
+def _get_day_classification(ticker: str, trade_date: str) -> dict:
+    """Cached wrapper around _classify_day."""
+    key = (ticker.upper(), trade_date)
+    if key not in _day_class_cache:
+        _day_class_cache[key] = _classify_day(ticker, trade_date)
+    return _day_class_cache[key]
 
 
 def _compute_peak(trade_bars, entry_price: float, side: str, cap_dt=None):

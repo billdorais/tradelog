@@ -436,6 +436,8 @@
             <th data-col="entry_price">Entry</th>
             <th data-col="actual_exit_price">Actual Exit</th>
             <th data-col="actual_pnl">Actual P&amp;L</th>
+            <th data-col="day_type"         title="Inside Day (wide range, favour reversals) / Outside Day (narrow range, favour breakouts)">Day Type</th>
+            <th data-col="bias"             title="Daily bias from pivot range relationship to prior session">Bias</th>
             <th data-col="peak_gain_pct"    title="Best favorable price move during the actual hold">Peak</th>
             <th data-col="new_giveback"     title="Dollars left on the table from peak to actual exit">Giveback</th>
             <th data-col="new_capture_ratio" title="Fraction of peak gain captured at actual exit (1.0 = exited at peak)">Capture</th>
@@ -775,6 +777,44 @@
   // ── Global trade store + sort state ─────────────────────────────────────
   let _simTrades = [];
   let _sortCol = 'date', _sortDir = 1;
+  let _dayTypeFilter = 'All';
+
+  function renderDayTypeCards(byType) {
+    if (!byType || !Object.values(byType).some(v => v)) return '';
+    const card = (label, color, d) => {
+      if (!d) return '';
+      const cls = d.pnl >= 0 ? 'pos' : 'neg';
+      const btn = _dayTypeFilter === label
+        ? `style="background:rgba(127,224,152,0.15);border-color:#7FE098;color:#7FE098"`
+        : `style="background:transparent;border-color:#2a2d3e;color:#666"`;
+      return `<div class="stat-card" style="cursor:pointer;border:1px solid #2a2d3e;border-radius:8px;padding:12px 14px"
+                   onclick="setDayTypeFilter('${label}')" title="Click to filter table to ${label} Days">
+        <div class="stat-label" style="color:${color}">${label} Days</div>
+        <div class="stat-value ${cls}">${d.pnl >= 0 ? '+' : ''}$${Math.abs(d.pnl).toFixed(2)}</div>
+        <div class="stat-sub">${d.count} trades · ${d.win_rate}% WR</div>
+      </div>`;
+    };
+    return `
+      <div style="grid-column:1/-1;margin-top:8px;padding-top:8px;border-top:1px solid #1e2130">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#444;margin-bottom:8px">
+          Inside / Outside Day Breakdown
+          <span style="margin-left:10px;color:#555;font-size:0.62rem">(Camarilla daily range classification)</span>
+          ${_dayTypeFilter !== 'All' ? `<button onclick="setDayTypeFilter('All')" style="margin-left:10px;background:transparent;border:1px solid #555;color:#888;border-radius:4px;padding:1px 8px;font-size:0.65rem;cursor:pointer">Show All</button>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px">
+          ${card('Inside',  '#5a8fa8', byType.Inside)}
+          ${card('Outside', '#F2E7AC', byType.Outside)}
+          ${card('Neutral', '#888',    byType.Neutral)}
+        </div>
+      </div>`;
+  }
+
+  function setDayTypeFilter(type) {
+    _dayTypeFilter = type;
+    renderTableBody();
+    // Re-render summary to update card highlights
+    if (window._lastRenderData) renderResults(window._lastRenderData);
+  }
   let _newParamsNote = '';
 
   function initSortHeaders() {
@@ -792,7 +832,10 @@
 
   function sortedTrades() {
     const col = _sortCol, dir = _sortDir;
-    return [..._simTrades].sort((a, b) => {
+    const filtered = _dayTypeFilter === 'All'
+      ? _simTrades
+      : _simTrades.filter(t => (t.day_type || 'Unknown') === _dayTypeFilter);
+    return [...filtered].sort((a, b) => {
       let av = a[col] ?? '', bv = b[col] ?? '';
       if (col === 'strategy') { av = shortStrategy(String(av)); bv = shortStrategy(String(bv)); }
       if (typeof av === 'number' || typeof bv === 'number') return (Number(av) - Number(bv)) * dir;
@@ -805,6 +848,20 @@
     const map = {trail:'trail', stop_loss:'stop', max_hold:'max hold', eod:'EOD', actual:'actual exit', take_profit:'TP'};
     const cls = {trail:'reason-trail', stop_loss:'reason-stop', max_hold:'reason-max_hold', eod:'reason-eod', actual:'reason-actual', take_profit:'reason-take_profit'};
     return `<span class="reason-badge ${cls[r] || ''}">${map[r] || r}</span>`;
+  }
+
+  function renderDayTypeCells(t) {
+    const dt = t.day_type;
+    const bias = t.bias;
+    if (!dt) return '<td colspan="2" style="color:#333">—</td>';
+    const dtColor  = dt === 'Inside'  ? '#5a8fa8' : dt === 'Outside' ? '#F2E7AC' : '#666';
+    const dtLabel  = dt || '—';
+    const biasColor = bias === 'Bullish' ? '#7FE098' : bias === 'Bearish' ? '#ef5350' : '#888';
+    const tooltip  = dt === 'Inside'  ? `Wide range (CPR ${t.cpr_today?.toFixed(3)}) — favour reversals` :
+                     dt === 'Outside' ? `Narrow range (CPR ${t.cpr_today?.toFixed(3)}) — favour breakouts` :
+                     `Neutral range (CPR ${t.cpr_today?.toFixed(3)})`;
+    return `<td style="font-size:0.72rem;font-weight:600;color:${dtColor}" title="${tooltip}">${dtLabel}</td>
+            <td style="font-size:0.72rem;color:${biasColor}">${bias || '—'}</td>`;
   }
 
   function renderCaptureCells(t) {
@@ -847,6 +904,7 @@
       <td class="mono">$${Number(t.entry_price).toFixed(2)}</td>
       <td class="mono">${actPx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.actual_exit_time)}</span></td>
       <td class="${actPnlCls}">${fmt(t.actual_pnl)}</td>
+      ${renderDayTypeCells(t)}
       ${renderCaptureCells(t)}
       <td class="mono" style="color:#5a8fa8">${ruleTrail}</td>
       <td class="mono">${basePx} <span style="color:#444;font-size:0.72rem">${fmtTime(t.base_exit_time)} ${baseHoldStr}</span></td>
@@ -1114,6 +1172,7 @@
   }
 
   function renderResults(data) {
+    window._lastRenderData = data;
     _chatSimData  = data;
     _chatHistory  = [];
     // Reset chat panel on new run
@@ -1146,6 +1205,7 @@
       <div class="stat-card"><div class="stat-label">Improved</div><div class="stat-value pos">${s.improved}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       ${s.avg_capture_ratio != null ? `<div class="stat-card"><div class="stat-label">Avg Capture</div><div class="stat-value ${s.avg_capture_ratio >= 0.7 ? 'pos' : s.avg_capture_ratio < 0.4 ? 'neg' : ''}">${s.avg_capture_ratio.toFixed(2)}</div><div class="stat-sub">of peak gain captured</div></div>` : ''}
+      ${renderDayTypeCards(s.by_day_type)}
     `;
     document.getElementById('summarySection').style.display = 'block';
 
