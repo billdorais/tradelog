@@ -445,6 +445,32 @@
             title="Remove max hold limit from matching pipelines">
       clear max hold
     </button>
+    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
+      <input id="bulkHoursStart" type="time" value="09:30"
+             style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                    padding:6px 4px;outline:none;font-family:inherit;text-align:center"
+             title="Session start time">
+      <span style="font-size:0.78rem;color:#555">–</span>
+      <input id="bulkHoursEnd" type="time" value="15:55"
+             style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                    padding:6px 4px;outline:none;font-family:inherit;text-align:center"
+             title="Session end time">
+      <select id="bulkHoursTz"
+              style="background:transparent;border:none;border-left:1px solid #2a4a35;color:#7FE098;
+                     font-size:0.78rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
+        <option value="America/New_York">ET</option>
+        <option value="America/Chicago">CT</option>
+        <option value="America/Denver">MT</option>
+        <option value="America/Los_Angeles">PT</option>
+        <option value="UTC">UTC</option>
+      </select>
+      <button onclick="bulkSetHours()"
+              style="background:transparent;border:none;border-left:1px solid #7FE098;color:#7FE098;
+                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Set trading hours on all matching pipelines (adds node if missing)">
+        hours to all
+      </button>
+    </div>
     <button onclick="bulkRemoveExitParams()"
             style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;
                    padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
@@ -1424,6 +1450,25 @@
     const data = await res.json();
     await load();
     alert(`Done — cleared max hold from ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkSetHours() {
+    const start = document.getElementById('bulkHoursStart')?.value || '09:30';
+    const end   = document.getElementById('bulkHoursEnd')?.value   || '15:55';
+    const tz    = document.getElementById('bulkHoursTz')?.value    || 'America/New_York';
+    const tzLabel = { 'America/New_York':'ET','America/Chicago':'CT','America/Denver':'MT','America/Los_Angeles':'PT','UTC':'UTC' }[tz] || tz;
+    const pat   = _bulkPattern();
+    if (!confirm(`Set trading hours ${start}–${end} ${tzLabel}${_patternLabel(pat)}?\n\nPipelines without a Trading Hours node will have one added.`)) return;
+    const body = { start, end, tz };
+    if (pat) body.name_contains = pat;
+    const res = await fetch('/api/routing/rules/bulk_update_hours', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — set hours ${start}–${end} ${tzLabel} on ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkRemoveExitParams() {

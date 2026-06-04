@@ -6222,6 +6222,58 @@ def bulk_remove_exit_params():
     return jsonify({"removed": removed, "skipped": skipped})
 
 
+@app.route("/api/routing/rules/bulk_update_hours", methods=["POST"])
+def bulk_update_hours():
+    """Bulk-set the trading_hours node on matching routing rules.
+
+    Body: { start, end, tz, name_contains? }
+    Updates the existing trading_hours node if present; appends one if not.
+    """
+    data          = request.get_json(silent=True) or {}
+    start         = (data.get("start") or "09:30").strip()
+    end           = (data.get("end")   or "15:55").strip()
+    tz            = (data.get("tz")    or "America/New_York").strip()
+    name_contains = (data.get("name_contains") or "").strip().lower()
+    p = placeholder()
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    updated = skipped = 0
+    for row in rows:
+        rid       = row[0] if DATABASE_URL else row["id"]
+        name      = ""
+        nodes_raw = row[1] if DATABASE_URL else row["nodes"]
+        nodes     = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        if name_contains:
+            # fetch rule name for filtering
+            _nc = get_db(); _ncc = _nc.cursor()
+            _ncc.execute(f"SELECT name FROM routing_rules WHERE id={p}", (rid,))
+            _nr = _ncc.fetchone()
+            _nc.close()
+            name = ((_nr[0] if DATABASE_URL else _nr["name"]) or "").lower() if _nr else ""
+            if name_contains not in name:
+                skipped += 1
+                continue
+        # Update existing trading_hours node or append a new one
+        found = False
+        for nd in nodes:
+            if nd.get("type") == "trading_hours":
+                nd["start"] = start
+                nd["end"]   = end
+                nd["tz"]    = tz
+                found = True
+                break
+        if not found:
+            nodes.append({"type": "trading_hours", "start": start, "end": end, "tz": tz})
+        cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}",
+                    (json.dumps(nodes), rid))
+        updated += 1
+    conn.commit(); conn.close()
+    log.info("bulk_update_hours: %d rules updated (start=%s end=%s tz=%s pattern=%r)",
+             updated, start, end, tz, name_contains)
+    return jsonify({"updated": updated, "skipped": skipped})
+
+
 @app.route("/api/progress/fix_strategy_mismatch", methods=["POST"])
 def progress_fix_strategy_mismatch():
     """One-shot cleanup: where a rule's name differs from its strategy node value, fix the node."""
