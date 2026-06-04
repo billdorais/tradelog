@@ -4059,13 +4059,14 @@ def api_journal_generate():
         f"**Next Week Watchlist**\n"
         f"One or two specific things to monitor. Which of the bottom 5 should be paused vs given another week?\n\n"
         f"Be direct and specific. No fluff. Keep each section to 2-3 sentences. Write in second person.\n\n"
-        f"After your four sections add one line in exactly this format:\n"
+        f"Start your response with exactly this line (before any other content):\n"
         f"TAGS: tag1, tag2, tag3\n"
         f"Choose exactly 2-3 tags from this fixed vocabulary only — do not invent new tags:\n"
         f"  Character (pick exactly 1): trending, choppy, ranging\n"
         f"  Volatility (pick exactly 1): high-vol, low-vol\n"
         f"  Context (pick 0 or 1 only if clearly applicable): fed-week, opex, earnings-heavy\n"
-        f"Example: TAGS: trending, high-vol, fed-week"
+        f"Example first line: TAGS: trending, high-vol, fed-week\n\n"
+        f"Then write your four sections."
     )
 
     def _stream():
@@ -4074,7 +4075,7 @@ def api_journal_generate():
         try:
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1100,
+                max_tokens=1500,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
                 for text in stream.text_stream:
