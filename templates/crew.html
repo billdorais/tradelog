@@ -87,6 +87,10 @@
     .status-bar { font-size: 0.78rem; color: #555; margin-bottom: 8px; min-height: 20px; }
     .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid #333; border-top-color: #7FE098; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
 
+    .range-btn { padding:5px 13px;border-radius:6px;font-size:0.78rem;font-family:inherit;cursor:pointer;font-weight:600;border:1px solid #2a2d3e;background:transparent;color:#666;transition:all 0.15s; }
+    .range-btn:hover { border-color:#7FE098;color:#7FE098; }
+    .range-btn.active { border-color:#7FE098;background:rgba(127,224,152,0.12);color:#7FE098; }
+
     @keyframes fadein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
     @keyframes spin    { to { transform: rotate(360deg); } }
 
@@ -142,6 +146,21 @@
 
   <div class="page-title" id="pageTitle">✦ Trading Analysis Crew</div>
   <div class="page-sub" id="pageSub">Fetches your live strategy leaderboard + journal — advises as a professional systematic trader</div>
+
+  <!-- Time range selector (kairos mode) -->
+  <div id="rangeRow" style="display:flex;gap:6px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:0.72rem;color:#555;margin-right:4px">Analyse:</span>
+    <button class="range-btn active" data-range="today"      onclick="setRange('today')">Today</button>
+    <button class="range-btn"        data-range="this_week"  onclick="setRange('this_week')">This Week</button>
+    <button class="range-btn"        data-range="this_month" onclick="setRange('this_month')">This Month</button>
+    <button class="range-btn"        data-range="last_month" onclick="setRange('last_month')">Last Month</button>
+    <button class="range-btn"        data-range="custom"     onclick="setRange('custom')">Custom</button>
+    <div id="customRangeInputs" style="display:none;gap:6px;align-items:center">
+      <input type="date" id="customFrom" style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.78rem;font-family:inherit">
+      <span style="color:#555;font-size:0.78rem">–</span>
+      <input type="date" id="customTo"   style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.78rem;font-family:inherit">
+    </div>
+  </div>
 
   <!-- Input (research mode only) -->
   <div class="input-row" id="topicRow" style="display:none">
@@ -216,14 +235,55 @@
 
   function _ts(ts) { return `<span style="color:#444;margin-left:6px;font-size:0.62rem">${ts||''}</span>`; }
 
-  let _crewMode = 'kairos';
+  let _crewMode    = 'kairos';
+  let _activeRange = 'today';
+
+  function _pad(n) { return String(n).padStart(2,'0'); }
+  function _fmt(d) { return `${d.getFullYear()}-${_pad(d.getMonth()+1)}-${_pad(d.getDate())}`; }
+
+  function _getDateRange() {
+    const today = new Date();
+    const fmt   = _fmt;
+    if (_activeRange === 'today') {
+      return { from: fmt(today), to: fmt(today), label: 'Today' };
+    }
+    if (_activeRange === 'this_week') {
+      const mon = new Date(today); mon.setDate(today.getDate() - ((today.getDay()+6)%7));
+      return { from: fmt(mon), to: fmt(today), label: 'This Week' };
+    }
+    if (_activeRange === 'this_month') {
+      const first = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { from: fmt(first), to: fmt(today), label: 'This Month' };
+    }
+    if (_activeRange === 'last_month') {
+      const first = new Date(today.getFullYear(), today.getMonth()-1, 1);
+      const last  = new Date(today.getFullYear(), today.getMonth(), 0);
+      return { from: fmt(first), to: fmt(last), label: 'Last Month' };
+    }
+    if (_activeRange === 'custom') {
+      return {
+        from:  document.getElementById('customFrom').value,
+        to:    document.getElementById('customTo').value,
+        label: `${document.getElementById('customFrom').value} – ${document.getElementById('customTo').value}`,
+      };
+    }
+    return { from: '', to: '', label: '' };
+  }
+
+  function setRange(range) {
+    _activeRange = range;
+    document.querySelectorAll('.range-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.range === range));
+    document.getElementById('customRangeInputs').style.display = range === 'custom' ? 'flex' : 'none';
+  }
 
   function setMode(mode) {
     _crewMode = mode;
     const isKairos = mode === 'kairos';
     document.getElementById('modeKairos').style.cssText   = `padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;transition:all 0.15s;border:1px solid ${isKairos?'#7FE098':'#2a2d3e'};background:${isKairos?'rgba(127,224,152,0.12)':'transparent'};color:${isKairos?'#7FE098':'#666'}`;
     document.getElementById('modeResearch').style.cssText = `padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;transition:all 0.15s;border:1px solid ${!isKairos?'#7FE098':'#2a2d3e'};background:${!isKairos?'rgba(127,224,152,0.12)':'transparent'};color:${!isKairos?'#7FE098':'#666'}`;
-    document.getElementById('topicRow').style.display = isKairos ? 'none' : '';
+    document.getElementById('topicRow').style.display  = isKairos ? 'none' : '';
+    document.getElementById('rangeRow').style.display  = isKairos ? '' : 'none';
     document.getElementById('pageTitle').textContent  = isKairos ? '✦ Trading Analysis Crew' : '✦ Research Crew';
     document.getElementById('pageSub').textContent    = isKairos
       ? 'Fetches your live strategy leaderboard + journal — advises as a professional systematic trader'
@@ -299,7 +359,7 @@
       const res = await fetch('/api/crew/run', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ topic: _topic, crew_type: _crewMode }),
+        body:    JSON.stringify({ topic: _topic, crew_type: _crewMode, ..._getDateRange() }),
       });
       if (!res.ok) { setStatus('Error: ' + res.status); return; }
 

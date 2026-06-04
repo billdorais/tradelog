@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "") -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -410,7 +410,8 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
         analysis_task = Task(
             description=(
-                f"Here is the current Kairos trading system data:\n\n"
+                f"Here is the Kairos Refined account data"
+                + (f" for: {period}" if period else "") + ":\n\n"
                 f"{strategy_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"For historical context, here are your previous advisory reports:\n\n{prev_block}\n\n" if prev_block else "")
@@ -540,13 +541,19 @@ def api_crew_run():
         # Pre-fetch all data while we have Flask request context.
         from flask import current_app as _ca
         import app as _kairos
+        from_date    = (data.get("from") or "").strip()
+        to_date      = (data.get("to")   or "").strip()
+        range_label  = (data.get("label") or "").strip()
         strat_data   = {}
         journal_data = []
         prev_reports = []
         try:
+            _qs = f"account=2"
+            if from_date: _qs += f"&from_date={from_date}"
+            if to_date:   _qs += f"&to_date={to_date}"
             with _ca.test_client() as _c:
-                strat_data   = _c.get("/api/alpaca/analysis?account=2").get_json() or {}
-                journal_data = _c.get("/api/journal/entries").get_json()            or []
+                strat_data   = _c.get(f"/api/alpaca/analysis?{_qs}").get_json() or {}
+                journal_data = _c.get("/api/journal/entries").get_json()         or []
         except Exception:
             pass
         try:
@@ -566,7 +573,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range"),
             daemon=True,
         ).start()
     else:
