@@ -137,6 +137,11 @@
              border:1px solid #7FE098;background:rgba(127,224,152,0.12);color:#7FE098;transition:all 0.15s">
       📊 Trading Analysis
     </button>
+    <button onclick="toggleKb()" id="kbBtn"
+      style="padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;
+             border:1px solid #2a2d3e;background:transparent;color:#666;transition:all 0.15s;margin-left:auto">
+      📖 Knowledge Base
+    </button>
     <button id="modeResearch" onclick="setMode('research')"
       style="padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;
              border:1px solid #2a2d3e;background:transparent;color:#666;transition:all 0.15s">
@@ -202,6 +207,24 @@
   <div id="feed"></div>
 
   <!-- Final output -->
+  <!-- Knowledge base editor -->
+  <div id="kbSection" style="margin-bottom:20px;display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span class="section-label" style="margin:0">📖 Knowledge Base</span>
+      <div style="display:flex;gap:8px">
+        <button onclick="saveKnowledge()" id="kbSaveBtn"
+          style="background:rgba(127,224,152,0.1);border:1px solid #7FE098;color:#7FE098;border-radius:6px;padding:4px 14px;font-size:0.75rem;cursor:pointer;font-family:inherit">Save</button>
+        <button onclick="toggleKb()" id="kbToggleBtn"
+          style="background:transparent;border:1px solid #2a2d3e;color:#666;border-radius:6px;padding:4px 14px;font-size:0.75rem;cursor:pointer;font-family:inherit">Hide</button>
+      </div>
+    </div>
+    <textarea id="kbEditor"
+      style="width:100%;height:280px;background:#0d0f1a;border:1px solid #1e2130;border-radius:8px;
+             color:#b0b0c0;padding:14px;font-size:0.78rem;font-family:monospace;line-height:1.55;resize:vertical;outline:none"
+      placeholder="Loading…"></textarea>
+    <div style="font-size:0.68rem;color:#444;margin-top:4px">Loaded into every crew run. Add your validated observations under "Your Validated Observations".</div>
+  </div>
+
   <div id="finalSection" style="display:none">
     <div class="section-label">Advisory Report</div>
     <div class="final-wrap">
@@ -534,6 +557,37 @@
 
   function crewChatKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCrewChat(); }
+  }
+
+  // ── Knowledge Base ───────────────────────────────────────────────────────
+  let _kbLoaded = false;
+
+  async function toggleKb() {
+    const sec = document.getElementById('kbSection');
+    const btn = document.getElementById('kbBtn');
+    const visible = sec.style.display !== 'none';
+    sec.style.display = visible ? 'none' : '';
+    btn.style.color = visible ? '#666' : '#c4b5fd';
+    btn.style.borderColor = visible ? '#2a2d3e' : '#6d5fa8';
+    if (!visible && !_kbLoaded) {
+      const r = await fetch('/api/crew/knowledge');
+      const d = await r.json();
+      document.getElementById('kbEditor').value = d.content || '';
+      _kbLoaded = true;
+    }
+  }
+
+  async function saveKnowledge() {
+    const btn = document.getElementById('kbSaveBtn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    const content = document.getElementById('kbEditor').value;
+    const r = await fetch('/api/crew/knowledge', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const d = await r.json();
+    btn.textContent = d.ok ? '✓ Saved' : 'Error';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Save'; }, 1500);
   }
 
   function downloadResult() {

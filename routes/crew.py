@@ -422,6 +422,16 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
 
+        # ── Load knowledge base ───────────────────────────────────────────────
+        knowledge_block = ""
+        try:
+            import pathlib
+            kb_path = pathlib.Path(__file__).parent.parent / "crew_knowledge.md"
+            if kb_path.exists():
+                knowledge_block = kb_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
         # ── Agents — no tools; data is embedded in task descriptions ─────────
         # Removes all tool-call complexity and token overhead.
 
@@ -510,6 +520,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 f"{strategy_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
+                + (f"KNOWLEDGE BASE — Camarilla theory and validated trading observations:\n\n{knowledge_block}\n\n" if knowledge_block else "")
                 + (f"For historical context, here are your previous advisory reports:\n\n{prev_block}\n\n" if prev_block else "")
                 + "Based on all of this, deliver a professional advisory report with five sections:\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
@@ -618,6 +629,29 @@ def api_crew_chat():
         mimetype="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+
+@crew_bp.route("/api/crew/knowledge", methods=["GET"])
+def api_crew_knowledge_get():
+    import pathlib
+    kb_path = pathlib.Path(__file__).parent.parent / "crew_knowledge.md"
+    try:
+        return jsonify({"content": kb_path.read_text(encoding="utf-8")})
+    except Exception as e:
+        return jsonify({"content": "", "error": str(e)})
+
+
+@crew_bp.route("/api/crew/knowledge", methods=["PUT"])
+def api_crew_knowledge_put():
+    import pathlib
+    data    = request.get_json(silent=True) or {}
+    content = data.get("content", "")
+    kb_path = pathlib.Path(__file__).parent.parent / "crew_knowledge.md"
+    try:
+        kb_path.write_text(content, encoding="utf-8")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @crew_bp.route("/crew")
