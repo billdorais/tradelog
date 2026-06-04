@@ -330,20 +330,65 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         # ── Agents — no tools; data is embedded in task descriptions ─────────
         # Removes all tool-call complexity and token overhead.
 
+        KAIROS_SYSTEM_KNOWLEDGE = """
+=== KAIROS AUTOMATA — SYSTEM OVERVIEW ===
+
+Kairos is an automated intraday trading system built by Bill Dorais.
+
+SIGNAL FLOW:
+TradingView (Pine Script alerts) → POST /webhook → Signal Router → Alpaca broker → fill logged
+
+STRATEGY NAMING CONVENTION:
+{TICKER}_CAM_{BREAKOUT|REVERSAL}_{R3S3|R4S4}_V02_5MIN
+Example: PLTR_CAM_BREAKOUT_R4S4_V02_5MIN
+- R3S3 / R4S4 = Camarilla level sets used for entry triggers
+- BREAKOUT = entry on level break with momentum
+- REVERSAL = entry on level rejection (mean-reversion)
+- V02 = strategy version; 5MIN = bar timeframe
+
+TWO ALPACA ACCOUNTS:
+1. Paper All (account 1): ALL strategies run here, ~100+ active pipelines.
+2. Refined (account 2, alpaca-paper-2): TOP-20 only. THIS IS THE ACCOUNT UNDER REVIEW.
+   - Daily 4:15 PM ET refresh selects top-20 by composite score:
+     Sharpe 35% + Profit Factor 30% + Win Rate 20% + Trades 15%
+   - 20-day rolling lookback with 10-day recency blend (60/40)
+   - Min 5 trades to be eligible; 3+ consecutive losses = auto-demoted
+   - Will transition to LIVE trading on ~$25k real capital
+
+STOP SYSTEM (6 layers, first to fire wins):
+1. Alpaca broker trailing stop — placed immediately after entry fill
+   - Configured per pipeline in Exit Params node (trail %, trigger %, max hold)
+   - REVERSAL strategies: trigger 0.1% (wait for profit before trail activates)
+   - BREAKOUT strategies: immediate trail (no trigger)
+2. Max Hold Timer — Kairos closes position after N minutes (default 15m) regardless of trail
+3. Kairos Trail-Price Backup — catches Alpaca paper stop execution failures (3s poll)
+4. Per-Position Hard Stop — MAX_POSITION_LOSS dollar/percent limit
+5. TV EXIT Signal — suppressed when broker trail is active
+6. Daily Max Loss Halt — closes everything if day P&L hits MAX_DAILY_LOSS
+
+REPLAY / SWEEP:
+The Replay page re-simulates exits on real fills using 1-min bars. Sweep mode
+grid-searches trail% and trigger% combinations per strategy type to find optimal
+parameters. Results are saved to the weekly journal as "sweep snapshots."
+
+SIZING:
+Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $500
+(pre-live target sizing for ~$25k equity)
+"""
+
         advisor = Agent(
             role="Professional Systematic Trading Advisor",
-            goal="Analyse the Kairos trading data and deliver specific, actionable recommendations.",
+            goal="Analyse the Kairos Refined account performance and deliver specific, actionable recommendations.",
             backstory=(
                 "You are a seasoned systematic trading professional with 20 years of "
-                "experience managing algorithmic strategy portfolios on US equities. "
-                "You specialise in intraday Camarilla pivot strategies on 5-minute bars. "
+                "experience managing algorithmic strategy portfolios on US equities.\n\n"
+                f"{KAIROS_SYSTEM_KNOWLEDGE}\n"
+                "Your analysis is ALWAYS focused on the Refined account (account 2). "
                 "You are rigorous about sample size — you don't change parameters based on "
-                "two trades. You understand regime effects: reversal strategies thrive in "
-                "ranging markets, breakouts in trending ones. You know that a 44% win rate "
-                "with a 2.18 profit factor is a GOOD system — the edge is in letting winners "
-                "run, not in win rate. You give direct, numbered recommendations. You name "
-                "specific strategies. You are not afraid to say 'hold steady' when the data "
-                "doesn't support a change. The account targets ~$25k live capital."
+                "two trades. You understand regime effects: reversals thrive in ranging "
+                "markets, breakouts in trending ones. A 44% win rate with PF > 2 is a GOOD "
+                "system. You give direct, numbered recommendations naming specific strategies. "
+                "'Hold steady' is valid when the data doesn't support a change."
             ),
             llm=_llm(0.4),
             tools=[],
