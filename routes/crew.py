@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
+def _run_kairos_crew(q: queue.Queue, base_url: str = "") -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -260,9 +260,17 @@ def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
             return _orig_completion(*args, **kwargs)
         _litellm.completion = _safe_completion
 
-        import requests as _req
         from crewai import Agent, Crew, LLM, Process, Task
         from crewai.tools import tool
+
+        # Use Flask's test_client for in-process calls — avoids HTTP deadlock when
+        # the dev server is single-threaded, and is faster on Railway too.
+        import app as _kairos_app
+
+        def _get(path: str):
+            with _kairos_app.app.test_client() as c:
+                resp = c.get(path)
+                return resp.get_json() or {}
 
         def _llm(temp=0.2):
             return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048)
@@ -278,8 +286,7 @@ def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
             are performing well and which are underperforming.
             """
             try:
-                r = _req.get(f"{base_url}/api/alpaca/analysis?account=2", timeout=30)
-                data = r.json()
+                data = _get("/api/alpaca/analysis?account=2")
                 overall = data.get("overall", {})
                 per_strat = data.get("per_strategy", {})
                 lines = [
@@ -314,8 +321,7 @@ def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
             Use this to understand recent trends, regime context, and historical observations.
             """
             try:
-                r = _req.get(f"{base_url}/api/journal/entries", timeout=30)
-                entries = r.json()[:4]
+                entries = (_get("/api/journal/entries") or [])[:4]
                 if not entries:
                     return "No journal entries found."
                 lines = ["=== WEEKLY JOURNAL — LAST 4 ENTRIES ===", ""]
@@ -486,9 +492,7 @@ def api_crew_run():
 
     if crew_type == "kairos":
         # Use the app's own base URL for internal API calls
-        port     = os.environ.get("PORT", "5000")
-        base_url = f"http://127.0.0.1:{port}"
-        threading.Thread(target=_run_kairos_crew, args=(q, base_url), daemon=True).start()
+        threading.Thread(target=_run_kairos_crew, args=(q,), daemon=True).start()
     else:
         if not topic:
             return jsonify({"error": "topic required"}), 400
