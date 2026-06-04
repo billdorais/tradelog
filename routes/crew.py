@@ -80,7 +80,14 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
             return
 
         import litellm as _litellm
-        _litellm.drop_params = True
+        _orig_comp = _litellm.completion
+        def _safe_comp(*args, **kwargs):
+            msgs = kwargs.get("messages") or []
+            while msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "assistant":
+                msgs = msgs[:-1]
+            kwargs["messages"] = msgs
+            return _orig_comp(*args, **kwargs)
+        _litellm.completion = _safe_comp
         from crewai import Agent, Crew, LLM, Process, Task
         from crewai.tools import tool
         import wikipedia as _wiki
@@ -105,8 +112,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
         # ── LLM ──────────────────────────────────────────────────────────────
         def _llm(temp=0.3):
-            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp,
-                       drop_params=True, modify_params=True)
+            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp)
 
         # ── Agents ───────────────────────────────────────────────────────────
         researcher = Agent(
@@ -241,14 +247,25 @@ def _run_kairos_crew(q: queue.Queue, base_url: str) -> None:
             return
 
         import litellm as _litellm
-        _litellm.drop_params = True   # prevents CrewAI appending assistant prefill Claude rejects
+
+        # CrewAI sometimes ends the message array with an assistant turn, which Claude
+        # rejects ("conversation must end with a user message"). Patch litellm.completion
+        # to strip any trailing assistant messages before they reach the API.
+        _orig_completion = _litellm.completion
+        def _safe_completion(*args, **kwargs):
+            msgs = kwargs.get("messages") or []
+            while msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "assistant":
+                msgs = msgs[:-1]
+            kwargs["messages"] = msgs
+            return _orig_completion(*args, **kwargs)
+        _litellm.completion = _safe_completion
+
         import requests as _req
         from crewai import Agent, Crew, LLM, Process, Task
         from crewai.tools import tool
 
         def _llm(temp=0.2):
-            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048,
-                       drop_params=True, modify_params=True)
+            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048)
 
         # ── Tools ─────────────────────────────────────────────────────────────
 
