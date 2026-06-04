@@ -263,7 +263,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         from crewai import Agent, Crew, LLM, Process, Task
 
         def _llm(temp=0.2):
-            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=2048)
+            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=4096)
 
         # ── Format pre-fetched data ───────────────────────────────────────────
         # Data was fetched in the Flask route handler and passed in directly.
