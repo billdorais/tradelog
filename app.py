@@ -1283,6 +1283,27 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # Crew advisory reports — one row per run, used as historical context
+    if DATABASE_URL:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crew_reports (
+                id         SERIAL PRIMARY KEY,
+                week       TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                report     TEXT NOT NULL
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crew_reports (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                week       TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                report     TEXT NOT NULL
+            )
+        """)
+    conn.commit()
+
     # Migration: update trading_hours end time from 16:00 → 15:55 in all pipelines
     try:
         p = placeholder()

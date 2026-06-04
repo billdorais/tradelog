@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -310,10 +310,17 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                     spy_str = f"+{spy:.2f}%" if spy and spy >= 0 else f"{spy:.2f}%" if spy else "—"
                     lines.append(f"  Market: VIX {vix or '—'} | SPY {spy_str} | Regime: {md.get('regime','—')}")
                 if sw.get("per_strategy"):
-                    lines.append("  Sweep: " + " | ".join(f"{s['strategy']}: trail {s['best_trail']}%" for s in sw["per_strategy"][:4]))
-                summary = (e.get("ai_summary") or "")[:300]
+                    lines.append("  Stop Sweep Results:")
+                    for s in sw["per_strategy"]:
+                        trig = f" trigger {s['best_trigger']}%" if s.get("best_trigger") else ""
+                        delta = f" Δ${s['delta']:.2f}" if s.get("delta") is not None else ""
+                        lines.append(f"    {s['strategy']}: best trail {s['best_trail']}%{trig}{delta} ({s.get('trades',0)} trades)")
+                summary = (e.get("ai_summary") or "")[:400]
                 if summary:
-                    lines.append(f"  AI Notes: \"{summary}...\"")
+                    lines.append(f"  AI Analysis: \"{summary}...\"")
+                notes = (e.get("user_notes") or "").strip()
+                if notes:
+                    lines.append(f"  Your Notes: \"{notes}\"")
                 lines.append("")
             return "\n".join(lines)
 
@@ -344,23 +351,36 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             allow_delegation=False,
         )
 
-        # ── Single task — data embedded directly ─────────────────────────────
+        # ── Previous reports block ────────────────────────────────────────────
+        prev_block = ""
+        if prev_reports:
+            lines = ["=== YOUR PREVIOUS ADVISORY REPORTS (most recent first) ===", ""]
+            for r in (prev_reports or [])[:3]:
+                lines.append(f"--- Report from {r.get('created_at','')[:10]} (Week {r.get('week','')}) ---")
+                lines.append(r.get("report", "")[:1200])  # cap each to stay within context
+                lines.append("")
+            prev_block = "\n".join(lines)
+
+        # ── Single task — all data embedded directly ──────────────────────────
 
         analysis_task = Task(
             description=(
                 f"Here is the current Kairos trading system data:\n\n"
                 f"{strategy_block}\n\n"
                 f"{journal_block}\n\n"
-                "Based on this data, deliver a professional advisory report with five sections:\n\n"
+                + (f"For historical context, here are your previous advisory reports:\n\n{prev_block}\n\n" if prev_block else "")
+                + "Based on all of this, deliver a professional advisory report with five sections:\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
                 "or demote. Give specific reasons tied to numbers.\n\n"
-                "3. **Stop & Parameter Check** — Given the recent regime (VIX, character tags), "
-                "are current trailing stops appropriate? Reference sweep data if available.\n\n"
+                "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
+                "the journal, are current trailing stops appropriate? Reference specific sweep "
+                "results and the trader's own notes if they offer relevant observations.\n\n"
                 "4. **Risk Observations** — Concentration, drawdown patterns, or ticker "
                 "exposure worth flagging for a ~$25k live account.\n\n"
-                "5. **This Week's Focus** — One specific, testable action item for next week.\n\n"
+                "5. **This Week's Focus** — One specific, testable action item. If you gave "
+                "advice last week, note whether it played out and whether it should continue.\n\n"
                 "Be direct. Cite strategy names and numbers. 'Hold steady' is valid when warranted."
             ),
             expected_output=(
@@ -383,8 +403,25 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             task_callback=on_task,
         )
 
-        result = crew.kickoff()
-        q.put({"type": "done", "result": str(result), "ts": _ts()})
+        result      = crew.kickoff()
+        report_text = str(result)
+        q.put({"type": "done", "result": report_text, "ts": _ts()})
+
+        # Persist report to DB so future runs have historical context
+        try:
+            import app as _app
+            import datetime as _dt2
+            _conn = _app.get_db(); _cur2 = _conn.cursor(); _p2 = _app.placeholder()
+            _iso  = _dt2.date.today().isocalendar()
+            _week = f"{_iso[0]}-W{_iso[1]:02d}"
+            _now  = _dt2.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            _cur2.execute(
+                f"INSERT INTO crew_reports (week, created_at, report) VALUES ({_p2},{_p2},{_p2})",
+                (_week, _now, report_text),
+            )
+            _conn.commit(); _conn.close()
+        except Exception:
+            pass  # non-fatal
 
     except Exception as exc:
         q.put({"type": "error", "error": str(exc), "ts": _ts()})
@@ -455,20 +492,36 @@ def api_crew_run():
     q = queue.Queue()
 
     if crew_type == "kairos":
-        # Pre-fetch data while we have Flask request context — test_client
-        # doesn't work reliably in background threads.
+        # Pre-fetch all data while we have Flask request context.
         from flask import current_app as _ca
+        import app as _kairos
         strat_data   = {}
         journal_data = []
+        prev_reports = []
         try:
             with _ca.test_client() as _c:
                 strat_data   = _c.get("/api/alpaca/analysis?account=2").get_json() or {}
-                journal_data = _c.get("/api/journal/entries").get_json()  or []
-        except Exception as _fe:
+                journal_data = _c.get("/api/journal/entries").get_json()            or []
+        except Exception:
+            pass
+        try:
+            _conn = _kairos.get_db(); _cur = _conn.cursor()
+            _cur.execute(
+                "SELECT week, created_at, report FROM crew_reports "
+                "ORDER BY created_at DESC LIMIT 3"
+            )
+            for _row in _cur.fetchall():
+                prev_reports.append({
+                    "week":       _row[0] if _kairos.DATABASE_URL else _row["week"],
+                    "created_at": _row[1] if _kairos.DATABASE_URL else _row["created_at"],
+                    "report":     _row[2] if _kairos.DATABASE_URL else _row["report"],
+                })
+            _conn.close()
+        except Exception:
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data),
+            args=(q, strat_data, journal_data, prev_reports),
             daemon=True,
         ).start()
     else:
