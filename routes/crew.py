@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "") -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -324,8 +324,103 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                 lines.append("")
             return "\n".join(lines)
 
+        def _fmt_stops_comparison(rules: list, journal_entries: list) -> str:
+            """Build a current SR stops vs best sweep results comparison table."""
+            from collections import defaultdict
+
+            # ── Current Signal Router stops grouped by type_level ────────────
+            sr = defaultdict(list)  # type_level → [{trail, trigger, max_hold}]
+            for rule in (rules or []):
+                if not rule.get("enabled"):
+                    continue
+                name  = (rule.get("name") or "").upper()
+                idx   = name.find("_CAM_")
+                if idx < 0:
+                    continue
+                parts = name[idx + 5:].split("_")
+                if len(parts) < 2:
+                    continue
+                tl = f"{parts[0]} {parts[1]}"  # e.g. "BREAKOUT R4S4"
+                for nd in (rule.get("nodes") or []):
+                    if nd.get("type") == "exit_params":
+                        sr[tl].append({
+                            "trail":   nd.get("trail_offset"),
+                            "trigger": nd.get("trail_trigger"),
+                            "hold":    nd.get("max_hold_mins"),
+                        })
+                        break
+
+            if not sr:
+                return ""
+
+            # ── Most recent sweep results from journal ───────────────────────
+            sweep_by_tl = {}   # type_level → {best_trail, best_trigger, delta, date}
+            for e in (journal_entries or []):
+                sw = e.get("sweep_results") or {}
+                if not sw.get("per_strategy"):
+                    continue
+                date = (e.get("week") or "")
+                for s in sw["per_strategy"]:
+                    raw  = (s.get("strategy") or "").upper()
+                    tidx = raw.find("_CAM_") if "_CAM_" in raw else -1
+                    if tidx < 0:
+                        tl_sw = raw
+                    else:
+                        pts   = raw[tidx + 5:].split("_")
+                        tl_sw = f"{pts[0]} {pts[1]}" if len(pts) >= 2 else raw
+                    # Keep most recent sweep entry per type_level
+                    if tl_sw not in sweep_by_tl:
+                        sweep_by_tl[tl_sw] = {
+                            "trail":   s.get("best_trail"),
+                            "trigger": s.get("best_trigger"),
+                            "delta":   s.get("delta"),
+                            "trades":  s.get("trades"),
+                            "date":    date,
+                        }
+
+            # ── Format comparison table ──────────────────────────────────────
+            lines = ["=== SIGNAL ROUTER STOPS vs SWEEP RESULTS ===", ""]
+            lines.append(f"{'Type':<18} {'SR Trail':>9} {'SR Trig':>9} {'SR Hold':>8} | "
+                         f"{'Sweep Trail':>11} {'Sweep Trig':>11} {'Δ vs SR':>9} {'Sweep Date'}")
+            lines.append("-" * 90)
+
+            for tl in sorted(sr.keys()):
+                stops = sr[tl]
+                # Representative values (use first non-null; flag if mixed)
+                trails   = [s["trail"]   for s in stops if s.get("trail")   is not None]
+                triggers = [s["trigger"] for s in stops if s.get("trigger") is not None]
+                holds    = [s["hold"]    for s in stops if s.get("hold")    is not None]
+                sr_trail   = f"{trails[0]}%"   if trails   else "—"
+                sr_trigger = f"{triggers[0]}%" if triggers else "none"
+                sr_hold    = f"{holds[0]}m"    if holds    else "—"
+
+                sw = sweep_by_tl.get(tl, {})
+                sw_trail   = f"{sw['trail']}%"   if sw.get("trail")   else "—"
+                sw_trigger = f"{sw['trigger']}%" if sw.get("trigger") else "—"
+                sw_date    = sw.get("date", "—")
+
+                # Gap analysis
+                gap = ""
+                if sw.get("trail") and trails:
+                    diff = float(sw["trail"]) - float(trails[0])
+                    if abs(diff) >= 0.01:
+                        gap = f"+{diff:.2f}%" if diff > 0 else f"{diff:.2f}%"
+                        gap += " (loosen)" if diff > 0 else " (tighten)"
+                    else:
+                        gap = "≈ aligned"
+                sw_delta = f"${sw['delta']:.2f}" if sw.get("delta") is not None else "—"
+
+                lines.append(f"{tl:<18} {sr_trail:>9} {sr_trigger:>9} {sr_hold:>8} | "
+                             f"{sw_trail:>11} {sw_trigger:>11} {sw_delta:>9}   {sw_date}  {gap}")
+
+            lines.append("")
+            lines.append("Note: Δ vs SR = sweep P&L improvement over current SR settings. "
+                         "Gap = difference between sweep-optimal trail and current configured trail.")
+            return "\n".join(lines)
+
         strategy_block = _fmt_strategies(strat_data)
         journal_block  = _fmt_journal(journal_data)
+        stops_block    = _fmt_stops_comparison(rules_data, journal_data)
 
         # ── Agents — no tools; data is embedded in task descriptions ─────────
         # Removes all tool-call complexity and token overhead.
@@ -414,6 +509,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 + (f" for: {period}" if period else "") + ":\n\n"
                 f"{strategy_block}\n\n"
                 f"{journal_block}\n\n"
+                + (f"{stops_block}\n\n" if stops_block else "")
                 + (f"For historical context, here are your previous advisory reports:\n\n{prev_block}\n\n" if prev_block else "")
                 + "Based on all of this, deliver a professional advisory report with five sections:\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
@@ -547,6 +643,7 @@ def api_crew_run():
         strat_data   = {}
         journal_data = []
         prev_reports = []
+        rules_data   = []
         try:
             _qs = f"account=2"
             if from_date: _qs += f"&from_date={from_date}"
@@ -554,6 +651,7 @@ def api_crew_run():
             with _ca.test_client() as _c:
                 strat_data   = _c.get(f"/api/alpaca/analysis?{_qs}").get_json() or {}
                 journal_data = _c.get("/api/journal/entries").get_json()         or []
+                rules_data   = _c.get("/api/routing/rules").get_json()           or []
         except Exception:
             pass
         try:
@@ -573,7 +671,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range"),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data),
             daemon=True,
         ).start()
     else:
