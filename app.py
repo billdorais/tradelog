@@ -4782,6 +4782,31 @@ def api_simulate_stops():
             "win_rate": round(wins / len(grp) * 100, 1) if grp else 0,
         }
 
+    # Strategy × Day Type cross-tab — shows whether theory plays out with real trades
+    from collections import defaultdict as _dd
+    _cross: dict = _dd(lambda: _dd(list))
+    for r in results:
+        tl = _strategy_type_level(r.get("strategy", ""))
+        dt = r.get("day_type") or "Unknown"
+        _cross[tl][dt].append(r)
+
+    def _cell(trades_list):
+        if not trades_list:
+            return None
+        wins  = sum(1 for t in trades_list if (t.get("actual_pnl") or 0) > 0)
+        total = len(trades_list)
+        return {
+            "count":    total,
+            "wins":     wins,
+            "win_rate": round(wins / total * 100, 1),
+            "pnl":      round(sum(t.get("actual_pnl", 0) for t in trades_list), 2),
+        }
+
+    cross_tab = {
+        strat: {dt: _cell(trades_list) for dt, trades_list in days.items()}
+        for strat, days in sorted(_cross.items())
+    }
+
     return jsonify({
         "trades":  results,
         "summary": {
@@ -4799,6 +4824,7 @@ def api_simulate_stops():
                 "Outside": _day_stats("Outside"),
                 "Neutral": _day_stats("Neutral"),
             },
+            "cross_tab": cross_tab,
         },
         "params": {
             "trail_pct":          trail_pct,
@@ -5396,6 +5422,17 @@ def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_i
         if len(parts) == 3 and parts[1]:
             return parts[1], ""
     return "Unknown", ""
+
+
+def _strategy_type_level(strategy: str) -> str:
+    """Extract 'BREAKOUT R4S4' / 'REVERSAL R3S3' etc. from a full strategy name."""
+    s = (strategy or "").upper()
+    idx = s.find("_CAM_")
+    if idx >= 0:
+        parts = s[idx + 5:].split("_")
+        if len(parts) >= 2:
+            return f"{parts[0]} {parts[1]}"
+    return s or "Unknown"
 
 
 def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None):

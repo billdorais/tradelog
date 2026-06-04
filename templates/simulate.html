@@ -809,6 +809,96 @@
       </div>`;
   }
 
+  function renderCrossTab(cross) {
+    if (!cross || !Object.keys(cross).length) return '';
+
+    // Determine which day types actually appear in data
+    const allDayTypes = ['Inside', 'Outside', 'Neutral'];
+    const usedTypes = allDayTypes.filter(dt =>
+      Object.values(cross).some(row => row[dt])
+    );
+    if (!usedTypes.length) return '';
+
+    const fmtPnl = v => v == null ? '' : `<span style="color:${v >= 0 ? '#7FE098' : '#ef5350'};font-weight:600">${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(2)}</span>`;
+    const fmtWr  = v => v == null ? '' : `<span style="color:${v >= 55 ? '#7FE098' : v <= 40 ? '#ef5350' : '#F2E7AC'}">${v}%</span>`;
+
+    const dtColor = { Inside: '#5a8fa8', Outside: '#F2E7AC', Neutral: '#666' };
+    const dtNote  = {
+      Inside:  'Wide range — favour reversals per Thor',
+      Outside: 'Narrow range — favour breakouts per Thor',
+      Neutral: 'Similar range to prior day',
+    };
+
+    const headerCols = usedTypes.map(dt =>
+      `<th colspan="3" style="text-align:center;color:${dtColor[dt]};border-bottom:2px solid ${dtColor[dt]}" title="${dtNote[dt]}">${dt} Day</th>`
+    ).join('');
+
+    const subHeader = usedTypes.map(() =>
+      `<th style="text-align:right">Trades</th><th style="text-align:right">WR</th><th style="text-align:right">P&L</th>`
+    ).join('');
+
+    // Determine if REVERSAL or BREAKOUT for row colouring
+    const rowType = name => name.includes('REVERSAL') ? 'reversal' : name.includes('BREAKOUT') ? 'breakout' : '';
+
+    const rows = Object.entries(cross).map(([strat, days]) => {
+      const rtype = rowType(strat);
+      const label = rtype === 'reversal'
+        ? `<span style="color:#c4b5fd">↩ ${strat}</span>`
+        : `<span style="color:#F2E7AC">↗ ${strat}</span>`;
+      const cells = usedTypes.map(dt => {
+        const d = days[dt];
+        if (!d) return `<td colspan="3" style="text-align:center;color:#333">—</td>`;
+        return `<td style="text-align:right;color:#888">${d.count}</td><td style="text-align:right">${fmtWr(d.win_rate)}</td><td style="text-align:right">${fmtPnl(d.pnl)}</td>`;
+      }).join('');
+      return `<tr style="border-bottom:1px solid #111418"><td style="font-size:0.72rem;white-space:nowrap;padding-right:16px">${label}</td>${cells}</tr>`;
+    }).join('');
+
+    // Theory check row: does Inside WR > Outside WR for reversals? Outside WR > Inside WR for breakouts?
+    const theory = (() => {
+      const rev = Object.entries(cross).filter(([k]) => k.includes('REVERSAL'));
+      const brk = Object.entries(cross).filter(([k]) => k.includes('BREAKOUT'));
+      const avg = (entries, dt) => {
+        const vals = entries.flatMap(([, d]) => d[dt] ? [d[dt].win_rate] : []);
+        return vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+      };
+      const revIn = avg(rev, 'Inside'), revOut = avg(rev, 'Outside');
+      const brkIn = avg(brk, 'Inside'), brkOut = avg(brk, 'Outside');
+      const checks = [];
+      if (revIn != null && revOut != null) {
+        const ok = revIn > revOut;
+        checks.push(`<span style="color:${ok ? '#7FE098' : '#ef5350'}">${ok ? '✓' : '✗'} Reversals: Inside ${revIn.toFixed(1)}% WR vs Outside ${revOut.toFixed(1)}% WR ${ok ? '— theory holds' : '— theory not supported'}</span>`);
+      }
+      if (brkIn != null && brkOut != null) {
+        const ok = brkOut > brkIn;
+        checks.push(`<span style="color:${ok ? '#7FE098' : '#ef5350'}">${ok ? '✓' : '✗'} Breakouts: Outside ${brkOut.toFixed(1)}% WR vs Inside ${brkIn.toFixed(1)}% WR ${ok ? '— theory holds' : '— theory not supported'}</span>`);
+      }
+      return checks.length ? `<div style="margin-top:10px;font-size:0.75rem;display:flex;flex-direction:column;gap:4px">${checks.join('')}</div>` : '';
+    })();
+
+    return `
+      <div style="grid-column:1/-1;margin-top:14px;padding-top:12px;border-top:1px solid #1e2130">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#444;margin-bottom:10px">
+          Strategy × Day Type — Inside / Outside Theory Test
+          <span style="color:#555;font-size:0.62rem;margin-left:8px">Does Inside Day favour reversals? Does Outside Day favour breakouts?</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+            <thead>
+              <tr>
+                <th style="text-align:left;color:#555;padding-bottom:6px">Strategy Type</th>
+                ${headerCols}
+              </tr>
+              <tr style="border-bottom:1px solid #2a2d3e">
+                <th></th>${subHeader}
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${theory}
+      </div>`;
+  }
+
   function setDayTypeFilter(type) {
     _dayTypeFilter = type;
     renderTableBody();
@@ -1206,6 +1296,7 @@
       <div class="stat-card"><div class="stat-label">Worse</div><div class="stat-value neg">${s.worse}</div><div class="stat-sub">of ${s.trade_count} trades</div></div>
       ${s.avg_capture_ratio != null ? `<div class="stat-card"><div class="stat-label">Avg Capture</div><div class="stat-value ${s.avg_capture_ratio >= 0.7 ? 'pos' : s.avg_capture_ratio < 0.4 ? 'neg' : ''}">${s.avg_capture_ratio.toFixed(2)}</div><div class="stat-sub">of peak gain captured</div></div>` : ''}
       ${renderDayTypeCards(s.by_day_type)}
+      ${renderCrossTab(s.cross_tab)}
     `;
     document.getElementById('summarySection').style.display = 'block';
 
