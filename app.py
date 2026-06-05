@@ -5703,9 +5703,11 @@ _REFINED_MAX_SHARES_BY_PRICE = [
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# Raised to 5 — filters lucky short-sample strategies while still admitting
-# strategies with ~1 signal/day over a 5-day period.
-_REFINED_MIN_TRADES = 5
+# Raised to 10 — aligns with the score's trades-component saturation, so a
+# strategy is only eligible once its trade count is at "full sample" weight.
+# Reduces promote/demote churn from short-stint strategies whose Sharpe/PF
+# swing wildly between runs.
+_REFINED_MIN_TRADES = 10
 
 
 def _band_target_dollars(score):

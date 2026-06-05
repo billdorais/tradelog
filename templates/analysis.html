@@ -1027,6 +1027,32 @@
     </tr>`;
   }
 
+  // Summary row used for "Others" (everything not in the displayed top-N+on-deck)
+  // and "All trades" (full per_strategy total). Distinguished from the Top-N rows
+  // by a top border; "All" is bold to mark the page total.
+  function _summaryRow(label, agg, isAll) {
+    if (!agg.trades && !isAll) return '';
+    const wrPct    = agg.trades ? agg.wins / agg.trades * 100 : 0;
+    const wrCls    = wrPct >= 50 ? 'pos' : 'neg';
+    const totalCls = agg.totalPnl >= 0 ? 'pos' : 'neg';
+    const avg      = agg.totalPnl / Math.max(1, agg.strats);
+    const pf       = agg.grossLoss > 0
+      ? (agg.grossWin / agg.grossLoss).toFixed(2)
+      : (agg.grossWin > 0 ? '∞' : '—');
+    const rowStyle = isAll
+      ? 'border-top:2px solid #2a2d3e;font-weight:600'
+      : 'border-top:1px solid #2a2d3e';
+    return `<tr style="${rowStyle}">
+      <td>${label}</td>
+      <td style="text-align:right;color:#aaa">${agg.strats}</td>
+      <td style="text-align:right;color:#aaa">${agg.trades}</td>
+      <td style="text-align:right" class="${wrCls}">${wrPct.toFixed(1)}%</td>
+      <td style="text-align:right" class="${totalCls}">${fmt(agg.totalPnl)}</td>
+      <td style="text-align:right;color:#888">${fmt(avg)}</td>
+      <td style="text-align:right;color:#aaa">${pf}</td>
+    </tr>`;
+  }
+
   function renderTopNBreakdown() {
     const section = document.getElementById('topNBreakdown');
     if (!section) return;
@@ -1051,13 +1077,30 @@
       const names = combined.slice(0, n);
       return _topNRow(`Top ${n}`, _aggregateStrats(names), n);
     }).join('');
-    document.getElementById('topNCumulativeTbody').innerHTML = cumRows;
 
     const tierRows = [[1, 5], [6, 10], [11, 15], [16, 20], [21, 25]].map(([lo, hi]) => {
       const names = combined.slice(lo - 1, hi);
       return _topNRow(`#${lo}–${hi}`, _aggregateStrats(names), hi - lo + 1);
     }).join('');
-    document.getElementById('topNTierTbody').innerHTML = tierRows;
+
+    // "Others" = strategies that traded in the date range but aren't in the
+    // displayed top-N+on-deck. Reveals dilution from rotation/demotion: a
+    // strategy can be ranked in past runs and contribute trades, then fall off
+    // the current top-25 and disappear from the per-bucket rows.
+    // "All trades" = full per_strategy aggregate — should match the page header.
+    const displaySet = new Set(combined);
+    const othersAgg  = _aggregateNotInSet(displaySet);
+    const allAgg     = _aggregateStrats(Object.keys(psMap));
+    const extra      = _summaryRow('Others (not in current top)', othersAgg, false)
+                     + _summaryRow('All trades',                   allAgg,    true);
+
+    document.getElementById('topNCumulativeTbody').innerHTML = cumRows + extra;
+    document.getElementById('topNTierTbody').innerHTML       = tierRows + extra;
+  }
+
+  function _aggregateNotInSet(excludeSet) {
+    const ps = (analysisData && analysisData.per_strategy) || {};
+    return _aggregateStrats(Object.keys(ps).filter(n => !excludeSet.has(n)));
   }
 
   function toggleRefinedSnap() {
