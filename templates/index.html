@@ -3471,8 +3471,11 @@
 
     async function loadAccount() {
       try {
+        // Fetch from the account that matches the active tab so the card
+        // reflects the correct positions (Refined tab → alpaca2, else alpaca).
+        const _acctParam = (activeTab === 'refined') ? '?account=2' : '';
         const [d, rules] = await Promise.all([
-          fetch('/api/alpaca/account').then(r => r.json()),
+          fetch(`/api/alpaca/account${_acctParam}`).then(r => r.json()),
           fetch('/api/routing/rules').then(r => r.json()).catch(() => null),
         ]);
         // Refined and routed are both derived from routing_rules (persisted in DB).
