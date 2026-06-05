@@ -9124,11 +9124,12 @@ def api_strategy_sweep():
     from_date    = data.get("from_date", "")
     to_date      = data.get("to_date",   "")
     use_acct2    = str(data.get("account", "2")) == "2"
-    trail_min    = float(data.get("trail_min",   0.10))
-    trail_max    = float(data.get("trail_max",   0.50))
-    trail_step   = float(data.get("trail_step",  0.05))
-    trigger_pct  = float(data.get("trigger_pct", 0.0))
-    skip_exits   = bool(data.get("skip_tv_exits", True))
+    trail_min     = float(data.get("trail_min",    0.10))
+    trail_max     = float(data.get("trail_max",    0.50))
+    trail_step    = float(data.get("trail_step",   0.05))
+    trigger_pct   = float(data.get("trigger_pct",  0.0))
+    max_hold_mins = int(data.get("max_hold_mins",  15))
+    skip_exits    = bool(data.get("skip_tv_exits", True))
 
     if not strategy:
         return jsonify({"error": "strategy required"}), 400
@@ -9200,7 +9201,7 @@ def api_strategy_sweep():
         cap_dt    = None if skip_exits else exit_dt
         cap_px    = None if skip_exits else float(t.get("exit_price") or 0)
         sr_sim    = _simulate_exit(trade_bars, entry_px, side,
-                                   sr_trail or 0.15, trigger_pct, 0.0, 15, entry_dt,
+                                   sr_trail or 0.15, trigger_pct, 0.0, max_hold_mins, entry_dt,
                                    cap_dt=cap_dt, cap_price=cap_px, qty=qty) if sr_trail else None
         prepared.append({
             "ticker":      ticker, "side": side, "entry_px": entry_px, "qty": qty,
@@ -9225,7 +9226,7 @@ def api_strategy_sweep():
         total = imp = worse = 0
         for p in prepared:
             sim = _simulate_exit(p["trade_bars"], p["entry_px"], p["side"],
-                                 trail, trigger_pct, 0.0, 15, p["entry_dt"],
+                                 trail, trigger_pct, 0.0, max_hold_mins, p["entry_dt"],
                                  cap_dt=p["cap_dt"], cap_price=p["cap_price"], qty=p["qty"])
             pnl = _pnl(sim["exit_price"], p["entry_px"], p["qty"], p["side"]) if sim else 0
             total += pnl

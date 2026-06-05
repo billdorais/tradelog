@@ -357,6 +357,11 @@
           <input type="number" id="ssTrigger" value="0.1" min="0" step="0.05" style="width:46px;background:transparent;border:none;color:#fbbf24;font-size:0.78rem;font-family:inherit;outline:none;text-align:center" title="Trigger: trail activates once position moves this % in your favour (0 = immediate trail)">
           <span style="color:#555;font-size:0.78rem">%</span>
         </div>
+        <span style="font-size:0.68rem;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-left:4px">Max Hold:</span>
+        <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #3a3a1a;border-radius:6px;overflow:hidden;padding:4px 8px">
+          <input type="number" id="ssMaxHold" value="15" min="1" step="1" style="width:40px;background:transparent;border:none;color:#fbbf24;font-size:0.78rem;font-family:inherit;outline:none;text-align:center" title="Max hold time in minutes before force-close">
+          <span style="color:#555;font-size:0.78rem">m</span>
+        </div>
         <button onclick="runStrategySweep()"
           style="background:rgba(250,204,21,0.12);border:1px solid #f59e0b;color:#fbbf24;border-radius:6px;
                  padding:5px 16px;font-size:0.78rem;font-family:inherit;cursor:pointer;font-weight:600">
@@ -1148,6 +1153,7 @@
     const max     = parseFloat(document.getElementById('ssMax').value)     || 0.50;
     const step    = parseFloat(document.getElementById('ssStep').value)    || 0.05;
     const trigger = parseFloat(document.getElementById('ssTrigger').value) || 0;
+    const maxHold = parseInt(document.getElementById('ssMaxHold').value)   || 15;
     const status = document.getElementById('ssStatus');
     status.textContent = 'Fetching bars and running sweep…';
     document.getElementById('ssResults').style.display = 'none';
@@ -1163,7 +1169,7 @@
           strategy: _sweepStrategy, account: _sweepAccount,
           from_date: fromDate, to_date: toDate,
           trail_min: min, trail_max: max, trail_step: step,
-          trigger_pct: trigger,
+          trigger_pct: trigger, max_hold_mins: maxHold,
           skip_tv_exits: true,
         }),
       });
@@ -1195,10 +1201,13 @@
 
   async function applyStrategyTrail(trail) {
     const trigger = parseFloat(document.getElementById('ssTrigger')?.value) || 0;
-    const trigNote = trigger > 0 ? ` · trigger ${trigger}%` : '';
-    if (!confirm(`Set trail to ${trail}%${trigNote} on "${_sweepStrategy}"?\n\nThis will update the Signal Router rule for this strategy.`)) return;
+    const maxHold = parseInt(document.getElementById('ssMaxHold')?.value)   || 15;
+    const trigNote  = trigger > 0 ? ` · trigger ${trigger}%` : '';
+    const holdNote  = maxHold !== 15 ? ` · ${maxHold}m hold` : '';
+    if (!confirm(`Set trail to ${trail}%${trigNote}${holdNote} on "${_sweepStrategy}"?\n\nThis will update the Signal Router rule for this strategy.`)) return;
     const body = { trail_offset: trail, mode: 'percent', name_contains: _sweepStrategy.toLowerCase() };
-    if (trigger > 0) body.trail_trigger = trigger;
+    if (trigger > 0) body.trail_trigger  = trigger;
+    if (maxHold)     body.max_hold_mins  = maxHold;
     const r = await fetch('/api/routing/rules/bulk_update_exit_params', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
