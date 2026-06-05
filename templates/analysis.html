@@ -33,6 +33,9 @@
 
     /* ── Tables ── */
     .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2130; }
+    .topn-table thead th { cursor: default; padding: 8px 10px; }
+    .topn-table td { padding: 8px 10px; }
+    .topn-tier-empty td { color: #444 !important; }
     table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     thead th { background: #13161f; color: #666; font-weight: 500; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.05em; padding: 10px 14px; text-align: left; border-bottom: 1px solid #1e2130; cursor: pointer; white-space: nowrap; user-select: none; }
     thead th:hover { color: #aaa; }
@@ -232,6 +235,56 @@
             </tr>
           </thead>
           <tbody id="refinedSnapRows"><tr><td colspan="11" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top-N performance breakdown: how much of the edge comes from the top ranks?
+       Both tables use the Refined Snapshot's ordered top_strategies as the ranking,
+       and aggregate stats from analysisData.per_strategy (current date range). -->
+  <div id="topNBreakdown" class="section" style="display:none">
+    <div class="section-title" style="display:flex;align-items:center;gap:10px">
+      <span>Top-N Performance Breakdown</span>
+      <span id="topNBreakdownNote" style="font-size:0.72rem;color:#666;font-weight:400"></span>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <!-- Cumulative top-N -->
+      <div style="flex:1;min-width:420px">
+        <div style="font-size:0.75rem;color:#888;margin-bottom:6px"
+             title="Aggregate stats if you only ran the top-N strategies (cumulative)">
+          Cumulative Top-N
+        </div>
+        <table class="topn-table" style="width:100%;border-collapse:collapse;font-size:0.82rem">
+          <thead><tr>
+            <th>Cutoff</th>
+            <th style="text-align:right">Strats</th>
+            <th style="text-align:right">Trades</th>
+            <th style="text-align:right">Win %</th>
+            <th style="text-align:right">Total P&amp;L</th>
+            <th style="text-align:right" title="Average P&L per included strategy">Avg/Strat</th>
+            <th style="text-align:right">PF</th>
+          </tr></thead>
+          <tbody id="topNCumulativeTbody"></tbody>
+        </table>
+      </div>
+      <!-- Tier breakdown -->
+      <div style="flex:1;min-width:420px">
+        <div style="font-size:0.75rem;color:#888;margin-bottom:6px"
+             title="Stats for each rank tier in isolation — which slice carries vs drags">
+          By Tier
+        </div>
+        <table class="topn-table" style="width:100%;border-collapse:collapse;font-size:0.82rem">
+          <thead><tr>
+            <th>Tier</th>
+            <th style="text-align:right">Strats</th>
+            <th style="text-align:right">Trades</th>
+            <th style="text-align:right">Win %</th>
+            <th style="text-align:right">Total P&amp;L</th>
+            <th style="text-align:right">Avg/Strat</th>
+            <th style="text-align:right">PF</th>
+          </tr></thead>
+          <tbody id="topNTierTbody"></tbody>
         </table>
       </div>
     </div>
@@ -736,6 +789,7 @@
         status.style.display = 'none';
         rows.innerHTML = '<tr><td colspan="11" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
         _snapshotData = null;
+        renderTopNBreakdown();
         return;
       }
       _snapshotData = d;
@@ -848,10 +902,90 @@
           <td style="text-align:right">${totalCell}</td>
         </tr>`;
       }).join('');
+      renderTopNBreakdown();
     } catch (e) {
       meta.textContent = 'error loading snapshot';
       rows.innerHTML = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Error.</td></tr>';
+      renderTopNBreakdown();
     }
+  }
+
+  // Aggregate stats across a set of strategy names (from analysisData.per_strategy).
+  // Skips strategies with no trades in the current view.
+  function _aggregateStrats(names) {
+    let strats = 0, trades = 0, wins = 0, totalPnl = 0, grossWin = 0, grossLoss = 0;
+    const ps = (analysisData && analysisData.per_strategy) || {};
+    for (const n of names) {
+      const s = ps[n];
+      if (!s || !s.trades) continue;
+      strats++;
+      trades   += s.trades   || 0;
+      wins     += s.wins     || 0;
+      totalPnl += s.total_pnl  || 0;
+      grossWin += s.gross_win  || 0;
+      grossLoss += s.gross_loss || 0;
+    }
+    return { strats, trades, wins, totalPnl, grossWin, grossLoss };
+  }
+
+  function _topNRow(label, a, expectedStrats) {
+    if (!a.trades) {
+      return `<tr class="topn-tier-empty">
+        <td>${label}</td>
+        <td style="text-align:right">${a.strats}/${expectedStrats}</td>
+        <td style="text-align:right">0</td>
+        <td style="text-align:right">—</td>
+        <td style="text-align:right">—</td>
+        <td style="text-align:right">—</td>
+        <td style="text-align:right">—</td>
+      </tr>`;
+    }
+    const wrPct = a.wins / a.trades * 100;
+    const wrCls = wrPct >= 50 ? 'pos' : 'neg';
+    const totalCls = a.totalPnl >= 0 ? 'pos' : 'neg';
+    const avg = a.totalPnl / Math.max(1, a.strats);
+    const pf  = a.grossLoss > 0
+      ? (a.grossWin / a.grossLoss).toFixed(2)
+      : (a.grossWin > 0 ? '∞' : '—');
+    return `<tr>
+      <td>${label}</td>
+      <td style="text-align:right;color:#aaa">${a.strats}/${expectedStrats}</td>
+      <td style="text-align:right;color:#aaa">${a.trades}</td>
+      <td style="text-align:right" class="${wrCls}">${wrPct.toFixed(1)}%</td>
+      <td style="text-align:right" class="${totalCls}">${fmt(a.totalPnl)}</td>
+      <td style="text-align:right;color:#888">${fmt(avg)}</td>
+      <td style="text-align:right;color:#aaa">${pf}</td>
+    </tr>`;
+  }
+
+  function renderTopNBreakdown() {
+    const section = document.getElementById('topNBreakdown');
+    if (!section) return;
+    const top = (_snapshotData && _snapshotData.top_strategies) || [];
+    const psMap = (analysisData && analysisData.per_strategy) || null;
+    if (!top.length || !psMap) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+
+    const accountLabel = activeSource === 'alpaca2' ? 'Paper Refined'
+                       : activeSource === 'alpaca'  ? 'Paper All'
+                       :                              'TV Signals';
+    document.getElementById('topNBreakdownNote').textContent =
+      `Top-N ranking from latest Refined snapshot · stats from ${accountLabel} · current date range`;
+
+    const cumRows = [5, 10, 15, 20].map(n => {
+      const names = top.slice(0, n);
+      return _topNRow(`Top ${n}`, _aggregateStrats(names), n);
+    }).join('');
+    document.getElementById('topNCumulativeTbody').innerHTML = cumRows;
+
+    const tierRows = [[1, 5], [6, 10], [11, 15], [16, 20]].map(([lo, hi]) => {
+      const names = top.slice(lo - 1, hi);
+      return _topNRow(`#${lo}–${hi}`, _aggregateStrats(names), hi - lo + 1);
+    }).join('');
+    document.getElementById('topNTierTbody').innerHTML = tierRows;
   }
 
   function toggleRefinedSnap() {
