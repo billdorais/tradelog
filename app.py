@@ -5426,13 +5426,10 @@ def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_i
 
 def _infer_exit_reason(sentiment: str, entry_time: str, exit_time: str,
                        max_hold_mins: float = 15.0) -> str:
-    """Infer exit reason from signal sentiment and hold duration.
-    - TV EXIT signal matched → 'TV Exit'
-    - Hold ≈ max_hold_mins   → 'Max Hold'
-    - Otherwise              → 'Trail'
+    """Infer exit reason from hold duration.
+    - Hold ≈ max_hold_mins → 'Max Hold'
+    - Otherwise            → 'Trail'
     """
-    if sentiment == "flat":
-        return "TV Exit"
     try:
         import datetime as _dt2
         def _parse(ts):
