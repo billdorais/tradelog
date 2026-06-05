@@ -5884,12 +5884,19 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=No
     top_scored = scored[:n]
     top        = [name for name, _, _ in top_scored]
 
+    # On-deck: next 5 strategies just outside the cut. Surfaced in the UI for
+    # visibility but NOT added to routing rules or persisted to refined_history.
+    on_deck_scored = scored[n:n + 5]
+    on_deck        = [name for name, _, _ in on_deck_scored]
+
     # Per-strategy share sizing: dollar target by band ÷ last price.
     # Stored on the broker node as qty_override so Paper sizing is untouched.
-    tickers     = {_strategy_to_ticker(name) for name, _, _ in top_scored}
+    # Include on-deck so the on-deck table can show "what shares if promoted".
+    _scored_for_qty = top_scored + on_deck_scored
+    tickers     = {_strategy_to_ticker(name) for name, _, _ in _scored_for_qty}
     last_prices = _fetch_alpaca_last_prices(tickers)
     qty_by_strat = {}    # strategy → (shares, target_dollars, price)
-    for name, stats, score in top_scored:
+    for name, stats, score in _scored_for_qty:
         ticker = _strategy_to_ticker(name)
         price  = last_prices.get(ticker)
         target = _band_target_dollars(score)
@@ -5987,10 +5994,15 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=No
         removed_strategies = sorted(prev_top - new_top)
 
         # Rank deltas: prev_rank - cur_rank. Positive = moved up. None = new entry
-        # or prior run pre-dates the rank column (NULL rank in DB).
+        # or prior run pre-dates the rank column (NULL rank in DB). Computed for
+        # both top (ranks 1..n) and on-deck (ranks n+1..n+5) so the UI can show
+        # demotion arrows on strategies that fell from the top into on-deck.
         for i, name in enumerate(top):
             pr = prev_ranks.get(name)
             rank_deltas[name] = (pr - (i + 1)) if pr is not None else None
+        for j, name in enumerate(on_deck):
+            pr = prev_ranks.get(name)
+            rank_deltas[name] = (pr - (n + j + 1)) if pr is not None else None
 
         for i, name in enumerate(top):
             if DATABASE_URL:
@@ -6055,6 +6067,25 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=No
                 "rank_delta":    rank_deltas.get(name),
             }
             for name, stats, score in top_scored
+        ],
+        "on_deck_strategies": on_deck,
+        "on_deck_scored": [
+            {
+                "name":          name,
+                "score":         score,
+                "trades":        stats.get("trades"),
+                "win_rate":      stats.get("win_rate"),
+                "profit_factor": stats.get("profit_factor"),
+                "total_pnl":     stats.get("total_pnl"),
+                "sharpe":        stats.get("sharpe"),
+                "consec_losses": stats.get("consec_losses", 0),
+                "shares":        qty_by_strat.get(name, (None, 0, None))[0],
+                "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
+                "last_price":    qty_by_strat.get(name, (None, 0, None))[2],
+                "last_trade_at": stats.get("last_trade_at"),
+                "rank_delta":    rank_deltas.get(name),
+            }
+            for name, stats, score in on_deck_scored
         ],
         "weights": _REFINED_SCORE_WEIGHTS,
         "size_bands": _REFINED_SIZE_BANDS,

@@ -236,6 +236,29 @@
           </thead>
           <tbody id="refinedSnapRows"><tr><td colspan="11" class="empty">Loading…</td></tr></tbody>
         </table>
+
+        <!-- On Deck: next 5 strategies just outside the cut — visibility only, not routed -->
+        <div id="onDeckWrap" style="margin-top:18px;display:none">
+          <div style="font-size:0.75rem;color:#888;margin-bottom:6px"
+               title="Strategies ranked just outside the top-N — NOT activated, just shown so you can watch them.">
+            On Deck <span style="color:#555;font-weight:400">(ranks 21–25 · not routed)</span>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+            <thead><tr>
+              <th style="width:48px">#</th>
+              <th>Strategy</th>
+              <th style="text-align:right">Last Trade</th>
+              <th style="text-align:right">Score</th>
+              <th style="text-align:right" title="Shares if promoted">Shares</th>
+              <th style="text-align:right">Price</th>
+              <th style="text-align:right">Trades</th>
+              <th style="text-align:right">Win %</th>
+              <th style="text-align:right">PF</th>
+              <th style="text-align:right">Total P&amp;L</th>
+            </tr></thead>
+            <tbody id="onDeckTbody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -902,6 +925,52 @@
           <td style="text-align:right">${totalCell}</td>
         </tr>`;
       }).join('');
+
+      // On Deck: ranks n+1..n+5. Reuses the overlay logic so when on Paper Refined
+      // tab the columns reflect that account's stats for the current date range.
+      const onDeck = d.on_deck_scored || [];
+      const onDeckWrap = document.getElementById('onDeckWrap');
+      if (onDeck.length === 0) {
+        onDeckWrap.style.display = 'none';
+      } else {
+        onDeckWrap.style.display = '';
+        const baseRank = (d.top_strategies || []).length;
+        document.getElementById('onDeckTbody').innerHTML = onDeck.map((r, j) => {
+          const ps = useTabStats ? analysisData.per_strategy[r.name] : null;
+          const trades  = useTabStats ? (ps ? ps.trades        : 0)    : r.trades;
+          const winRate = useTabStats ? (ps ? ps.win_rate      : 0)    : r.win_rate;
+          const pf      = useTabStats ? (ps ? ps.profit_factor : null) : r.profit_factor;
+          const total   = useTabStats ? (ps ? ps.total_pnl     : 0)    : r.total_pnl;
+          const noTabTrades = useTabStats && !ps;
+          const pnlCls = (total || 0) >= 0 ? 'pos' : 'neg';
+          const wrCls  = (winRate || 0) >= 50  ? 'pos' : 'neg';
+          const scorePct = Math.round((r.score || 0) * 100);
+          const shares = (r.shares != null)
+            ? `<span title="$${r.target_dollars || 0} target ÷ $${(r.last_price || 0).toFixed(2)}">${r.shares}</span>`
+            : `<span style="color:#666">—</span>`;
+          const price  = (r.last_price != null)
+            ? `$${Number(r.last_price).toFixed(2)}`
+            : '<span style="color:#666">—</span>';
+          const dim = noTabTrades ? 'color:#444' : '';
+          const tradesCell  = noTabTrades ? '<span style="color:#444">0</span>' : trades;
+          const winRateCell = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${wrCls}">${winRate}%</span>`;
+          const pfCell      = noTabTrades ? '<span style="color:#444">—</span>' : pfBadge(pf);
+          const totalCell   = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${pnlCls}">${fmt(total)}</span>`;
+          return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${trades}" data-snap-wr="${winRate}" data-snap-pnl="${total}" title="Click to see round-trip pairs (from current date range)">
+            <td style="color:#666">${baseRank + j + 1}${_rankChip(r.rank_delta)}</td>
+            <td class="name"><span style="color:#555;margin-right:6px">☆</span>${esc(r.name)}</td>
+            <td style="text-align:right">${_lastTradeCell(r.last_trade_at)}</td>
+            <td style="text-align:right;color:#888;font-weight:600">${scorePct}</td>
+            <td style="text-align:right;color:#888">${shares}</td>
+            <td style="text-align:right;color:#888">${price}</td>
+            <td style="text-align:right;${dim}">${tradesCell}</td>
+            <td style="text-align:right">${winRateCell}</td>
+            <td style="text-align:right">${pfCell}</td>
+            <td style="text-align:right">${totalCell}</td>
+          </tr>`;
+        }).join('');
+      }
+
       renderTopNBreakdown();
     } catch (e) {
       meta.textContent = 'error loading snapshot';
@@ -975,14 +1044,17 @@
     document.getElementById('topNBreakdownNote').textContent =
       `Top-N ranking from latest Refined snapshot · stats from ${accountLabel} · current date range`;
 
-    const cumRows = [5, 10, 15, 20].map(n => {
-      const names = top.slice(0, n);
+    // Combine top + on-deck so cutoffs/tiers can extend beyond the activated set.
+    const onDeck = (_snapshotData && _snapshotData.on_deck_strategies) || [];
+    const combined = top.concat(onDeck);
+    const cumRows = [5, 10, 15, 20, 25].map(n => {
+      const names = combined.slice(0, n);
       return _topNRow(`Top ${n}`, _aggregateStrats(names), n);
     }).join('');
     document.getElementById('topNCumulativeTbody').innerHTML = cumRows;
 
-    const tierRows = [[1, 5], [6, 10], [11, 15], [16, 20]].map(([lo, hi]) => {
-      const names = top.slice(lo - 1, hi);
+    const tierRows = [[1, 5], [6, 10], [11, 15], [16, 20], [21, 25]].map(([lo, hi]) => {
+      const names = combined.slice(lo - 1, hi);
       return _topNRow(`#${lo}–${hi}`, _aggregateStrats(names), hi - lo + 1);
     }).join('');
     document.getElementById('topNTierTbody').innerHTML = tierRows;
@@ -1485,10 +1557,12 @@
     });
   }
   // Refined snapshot rows pass their snapshot stats so openPairs can warn when
-  // the current-period data differs from the snapshot's 45-day window.
-  const _snapEl = document.getElementById('refinedSnapRows');
-  if (_snapEl) {
-    _snapEl.addEventListener('click', e => {
+  // the current-period data differs from the snapshot's 45-day window. Same
+  // delegated handler is bound to the on-deck tbody so those rows drill in too.
+  for (const id of ['refinedSnapRows', 'onDeckTbody']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.addEventListener('click', e => {
       const tr = e.target.closest('tr.drill');
       if (!tr) return;
       const snapStats = {
