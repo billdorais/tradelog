@@ -9076,6 +9076,179 @@ def _simulate_exit(bars, entry_price: float, side: str,
             "reason": "eod", "exit_mins": round(hold_mins, 1)}
 
 
+@app.route("/api/strategy/stops")
+def api_strategy_stops():
+    """Return the current Signal Router stop settings for a strategy.
+    GET ?strategy=PLTR_CAM_BREAKOUT_R4S4_V02_5MIN
+    """
+    strategy = request.args.get("strategy", "").strip().upper()
+    if not strategy:
+        return jsonify({"error": "strategy required"}), 400
+    try:
+        conn = get_db()
+        rows = conn.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall()
+        conn.close()
+    except Exception as _e:
+        return jsonify({"error": str(_e)}), 500
+
+    for row in rows:
+        rname = (row[0] if DATABASE_URL else row["name"] or "").upper()
+        if rname != strategy:
+            continue
+        try:
+            nodes = json.loads(row[1] if DATABASE_URL else row["nodes"] or "[]")
+        except Exception:
+            nodes = []
+        for nd in nodes:
+            if nd.get("type") == "exit_params":
+                return jsonify({
+                    "trail_pct":     nd.get("trail_offset"),
+                    "trigger_pct":   nd.get("trail_trigger"),
+                    "max_hold_mins": nd.get("max_hold_mins"),
+                    "rule_name":     rname,
+                })
+    return jsonify({"trail_pct": None, "trigger_pct": None, "max_hold_mins": None})
+
+
+@app.route("/api/strategy/sweep", methods=["POST"])
+def api_strategy_sweep():
+    """Sweep trail % values for a single strategy using its actual Alpaca fills.
+    Body: {strategy, from_date, to_date, account, trail_min, trail_max, trail_step}
+    Returns ranked trail values by total P&L.
+    """
+    import concurrent.futures as _cf2
+    import datetime as _dt2
+
+    data         = request.get_json(force=True) or {}
+    strategy     = data.get("strategy", "").strip()
+    from_date    = data.get("from_date", "")
+    to_date      = data.get("to_date",   "")
+    use_acct2    = str(data.get("account", "2")) == "2"
+    trail_min    = float(data.get("trail_min",  0.10))
+    trail_max    = float(data.get("trail_max",  0.50))
+    trail_step   = float(data.get("trail_step", 0.05))
+    skip_exits   = bool(data.get("skip_tv_exits", True))
+
+    if not strategy:
+        return jsonify({"error": "strategy required"}), 400
+    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    if broker is None:
+        return jsonify({"error": "Alpaca account not configured"}), 400
+
+    fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
+                                            signal_lookup=signal_lookup)
+    # Filter to just this strategy's trades
+    all_trades = paired["closed_clean"]
+    trades     = [t for t in all_trades if (t.get("strategy") or "").upper() == strategy.upper()]
+    if not trades:
+        return jsonify({"error": f"No completed round-trips for '{strategy}' in the selected period"}), 404
+
+    # Fetch 1-min bars for each trade day
+    ticker_dates = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
+                    for t in trades if t.get("ticker") and t.get("entry_time")}
+    day_bars = {}
+    with _cf2.ThreadPoolExecutor(max_workers=6) as pool:
+        futs = {pool.submit(_fetch_day_bars, tk, dt): (tk, dt) for tk, dt in ticker_dates}
+        for f in _cf2.as_completed(futs):
+            tk, dt = futs[f]
+            try:    day_bars[(tk, dt)] = f.result()
+            except: day_bars[(tk, dt)] = []
+
+    # Get current SR trail for baseline
+    try:
+        conn2 = get_db()
+        sr_trail = None
+        for row in conn2.execute("SELECT nodes FROM routing_rules WHERE name=? AND enabled=1",
+                                 (strategy,)).fetchall():
+            nodes = json.loads(row[0] if DATABASE_URL else row["nodes"] or "[]")
+            for nd in nodes:
+                if nd.get("type") == "exit_params" and nd.get("trail_offset"):
+                    sr_trail = float(nd["trail_offset"]); break
+            if sr_trail is not None: break
+        conn2.close()
+    except Exception:
+        sr_trail = None
+
+    def _pnl(ep, entry_px, qty, side):
+        return round((ep - entry_px) * qty, 2) if side == "LONG" \
+               else round((entry_px - ep) * qty, 2)
+
+    # Prepare trade data with bars
+    prepared = []
+    for t in trades:
+        ticker   = (t.get("ticker") or "").upper()
+        side     = (t.get("side")   or "").upper()
+        entry_px = float(t.get("entry_price") or 0)
+        qty      = float(t.get("qty") or 1)
+        entry_t  = t.get("entry_time") or ""
+        exit_t   = t.get("exit_time")  or ""
+        if not ticker or not entry_t or entry_px == 0:
+            continue
+        try:
+            entry_dt = _dt2.datetime.fromisoformat(entry_t.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        try:
+            exit_dt  = _dt2.datetime.fromisoformat(exit_t.replace("Z", "+00:00")) if exit_t else None
+        except Exception:
+            exit_dt = None
+        bars      = day_bars.get((ticker, entry_t[:10]), [])
+        trade_bars = [b for b in bars if b.timestamp >= entry_dt]
+        cap_dt    = None if skip_exits else exit_dt
+        cap_px    = None if skip_exits else float(t.get("exit_price") or 0)
+        sr_sim    = _simulate_exit(trade_bars, entry_px, side,
+                                   sr_trail or 0.15, 0.0, 0.0, 15, entry_dt,
+                                   cap_dt=cap_dt, cap_price=cap_px, qty=qty) if sr_trail else None
+        prepared.append({
+            "ticker":      ticker, "side": side, "entry_px": entry_px, "qty": qty,
+            "trade_bars":  trade_bars, "entry_dt": entry_dt, "cap_dt": cap_dt, "cap_price": cap_px,
+            "actual_pnl":  float(t.get("pnl") or 0),
+            "sr_pnl":      _pnl(sr_sim["exit_price"], entry_px, qty, side) if sr_sim else 0,
+        })
+
+    if not prepared:
+        return jsonify({"error": "No trades could be prepared"}), 404
+
+    sr_total = round(sum(p["sr_pnl"] for p in prepared), 2)
+
+    # Build trail grid and sweep
+    trail_values = []
+    v = trail_min
+    while v <= trail_max + 1e-9:
+        trail_values.append(round(v, 4)); v = round(v + trail_step, 4)
+
+    results = []
+    for trail in trail_values:
+        total = imp = worse = 0
+        for p in prepared:
+            sim = _simulate_exit(p["trade_bars"], p["entry_px"], p["side"],
+                                 trail, 0.0, 0.0, 15, p["entry_dt"],
+                                 cap_dt=p["cap_dt"], cap_price=p["cap_price"], qty=p["qty"])
+            pnl = _pnl(sim["exit_price"], p["entry_px"], p["qty"], p["side"]) if sim else 0
+            total += pnl
+            if pnl > p["sr_pnl"] + 0.01:  imp += 1
+            elif pnl < p["sr_pnl"] - 0.01: worse += 1
+        results.append({
+            "trail":        trail,
+            "total_pnl":   round(total, 2),
+            "delta_vs_sr": round(total - sr_total, 2),
+            "improved":    imp,
+            "worse":       worse,
+            "trades":      len(prepared),
+        })
+
+    results.sort(key=lambda r: r["total_pnl"], reverse=True)
+    return jsonify({
+        "strategy":   strategy,
+        "trades":     len(prepared),
+        "sr_trail":   sr_trail,
+        "sr_total":   sr_total,
+        "results":    results,
+    })
+
+
 @app.route("/api/alpaca/analysis")
 def api_alpaca_analysis():
     """Same analysis as /api/analysis but using Alpaca fills.

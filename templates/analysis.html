@@ -326,6 +326,55 @@
       <button class="modal-close" onclick="closePairs()">Close</button>
     </div>
     <div id="pairsSnapNote" style="display:none;padding:6px 16px;background:#2a2000;border-bottom:1px solid #5a4a00;font-size:0.82rem;color:#F2E7AC"></div>
+
+    <!-- Current stop settings + sweep panel -->
+    <div id="pairsStopStrip" style="display:none;padding:10px 16px;border-bottom:1px solid #1e2130;display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:#0d0f1a">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;flex:1">
+        <span style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;color:#555">Current SR Stops:</span>
+        <span id="pairsStopInfo" style="font-size:0.82rem;color:#c4b5fd;font-weight:600">—</span>
+      </div>
+      <button onclick="toggleStrategySweep()" id="strategySweepBtn"
+        style="background:rgba(250,204,21,0.08);border:1px solid #6b5a1a;color:#fbbf24;border-radius:6px;
+               padding:5px 14px;font-size:0.78rem;font-family:inherit;cursor:pointer;font-weight:600;white-space:nowrap">
+        ⚡ Sweep Stops
+      </button>
+    </div>
+
+    <!-- Sweep config + results -->
+    <div id="strategySweepPanel" style="display:none;padding:12px 16px;border-bottom:1px solid #1e2130;background:#0b0d14">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <span style="font-size:0.68rem;color:#555;text-transform:uppercase;letter-spacing:0.06em">Trail range:</span>
+        <div style="display:inline-flex;align-items:center;gap:6px;border:1px solid #3a3a1a;border-radius:6px;overflow:hidden;padding:4px 8px">
+          <input type="number" id="ssMin"  value="0.10" min="0.01" step="0.05" style="width:52px;background:transparent;border:none;color:#fbbf24;font-size:0.78rem;font-family:inherit;outline:none;text-align:center">
+          <span style="color:#555;font-size:0.78rem">–</span>
+          <input type="number" id="ssMax"  value="0.50" min="0.01" step="0.05" style="width:52px;background:transparent;border:none;color:#fbbf24;font-size:0.78rem;font-family:inherit;outline:none;text-align:center">
+          <span style="color:#555;font-size:0.78rem">%  step</span>
+          <input type="number" id="ssStep" value="0.05" min="0.01" step="0.01" style="width:46px;background:transparent;border:none;color:#fbbf24;font-size:0.78rem;font-family:inherit;outline:none;text-align:center">
+          <span style="color:#555;font-size:0.78rem">%</span>
+        </div>
+        <button onclick="runStrategySweep()"
+          style="background:rgba(250,204,21,0.12);border:1px solid #f59e0b;color:#fbbf24;border-radius:6px;
+                 padding:5px 16px;font-size:0.78rem;font-family:inherit;cursor:pointer;font-weight:600">
+          Run →
+        </button>
+        <span id="ssStatus" style="font-size:0.75rem;color:#555"></span>
+      </div>
+      <div id="ssResults" style="display:none">
+        <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+          <thead><tr style="border-bottom:1px solid #2a2d3e">
+            <th style="text-align:left;color:#555;font-weight:500;padding:4px 10px 4px 0">#</th>
+            <th style="text-align:right;color:#555;font-weight:500;padding:4px 10px">Trail %</th>
+            <th style="text-align:right;color:#555;font-weight:500;padding:4px 10px">P&amp;L</th>
+            <th style="text-align:right;color:#555;font-weight:500;padding:4px 10px">vs SR</th>
+            <th style="text-align:right;color:#555;font-weight:500;padding:4px 10px">↑ Better</th>
+            <th style="text-align:right;color:#555;font-weight:500;padding:4px 10px">↓ Worse</th>
+            <th style="padding:4px 0"></th>
+          </tr></thead>
+          <tbody id="ssResultsBody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="pair-tabs">
       <div class="pair-tab active" data-tab="clean" onclick="switchPairTab('clean')">Round-trips<span class="count" id="pairsCleanCount">0</span></div>
       <div class="pair-tab"        data-tab="orphans" onclick="switchPairTab('orphans')">Orphans<span class="count" id="pairsOrphanCount">0</span></div>
@@ -1060,6 +1109,95 @@
     }
   }
 
+  // ── Strategy stop sweep ─────────────────────────────────────────────────
+  let _sweepStrategy = '';
+  let _sweepAccount  = '2';
+
+  async function _loadStrategyStops(strategy, account) {
+    _sweepStrategy = strategy;
+    _sweepAccount  = account || '2';
+    const strip = document.getElementById('pairsStopStrip');
+    strip.style.display = 'flex';
+    document.getElementById('strategySweepPanel').style.display = 'none';
+    document.getElementById('ssResults').style.display = 'none';
+    document.getElementById('pairsStopInfo').textContent = 'Loading…';
+    try {
+      const r = await fetch(`/api/strategy/stops?strategy=${encodeURIComponent(strategy)}`);
+      const d = await r.json();
+      const trail    = d.trail_pct    != null ? `${d.trail_pct}% trail`     : '—';
+      const trigger  = d.trigger_pct  != null ? ` · ${d.trigger_pct}% trig` : '';
+      const maxHold  = d.max_hold_mins != null ? ` · ${d.max_hold_mins}m hold` : '';
+      document.getElementById('pairsStopInfo').textContent = trail + trigger + maxHold;
+    } catch {
+      document.getElementById('pairsStopInfo').textContent = 'Not found';
+    }
+  }
+
+  function toggleStrategySweep() {
+    const panel = document.getElementById('strategySweepPanel');
+    panel.style.display = panel.style.display === 'none' ? '' : 'none';
+  }
+
+  async function runStrategySweep() {
+    const min  = parseFloat(document.getElementById('ssMin').value)  || 0.10;
+    const max  = parseFloat(document.getElementById('ssMax').value)  || 0.50;
+    const step = parseFloat(document.getElementById('ssStep').value) || 0.05;
+    const status = document.getElementById('ssStatus');
+    status.textContent = 'Fetching bars and running sweep…';
+    document.getElementById('ssResults').style.display = 'none';
+
+    // Use current analysis date range
+    const fromDate = document.getElementById('alpacaFrom')?.value || '';
+    const toDate   = document.getElementById('alpacaTo')?.value   || '';
+
+    try {
+      const r = await fetch('/api/strategy/sweep', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategy: _sweepStrategy, account: _sweepAccount,
+          from_date: fromDate, to_date: toDate,
+          trail_min: min, trail_max: max, trail_step: step,
+          skip_tv_exits: true,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) { status.textContent = 'Error: ' + (d.error || r.status); return; }
+
+      status.textContent = `${d.trades} trades · SR baseline $${(d.sr_total || 0).toFixed(2)}`;
+      const fmtD = v => `<span style="color:${v >= 0 ? '#7FE098' : '#ef5350'}">${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(2)}</span>`;
+      const rows = (d.results || []).slice(0, 10).map((res, i) => `
+        <tr style="border-bottom:1px solid #111418;${i === 0 ? 'color:#fbbf24' : ''}">
+          <td style="padding:5px 10px 5px 0;color:#555">${i + 1}</td>
+          <td style="text-align:right;padding:5px 10px;font-weight:600">${res.trail}%</td>
+          <td style="text-align:right;padding:5px 10px">${fmtD(res.total_pnl)}</td>
+          <td style="text-align:right;padding:5px 10px">${fmtD(res.delta_vs_sr)}</td>
+          <td style="text-align:right;padding:5px 10px;color:#7FE098">${res.improved}</td>
+          <td style="text-align:right;padding:5px 10px;color:#ef5350">${res.worse}</td>
+          <td style="padding:5px 0">
+            <button onclick="applyStrategyTrail(${res.trail})"
+              style="background:transparent;border:1px solid #3a3a1a;color:#fbbf24;border-radius:4px;
+                     padding:2px 10px;font-size:0.7rem;cursor:pointer;font-family:inherit">Apply</button>
+          </td>
+        </tr>`).join('');
+      document.getElementById('ssResultsBody').innerHTML = rows;
+      document.getElementById('ssResults').style.display = '';
+    } catch (e) {
+      status.textContent = 'Error: ' + e.message;
+    }
+  }
+
+  async function applyStrategyTrail(trail) {
+    if (!confirm(`Set trail to ${trail}% on "${_sweepStrategy}"?\n\nThis will update the Signal Router rule for this strategy.`)) return;
+    const r = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trail_offset: trail, mode: 'percent', name_contains: _sweepStrategy.toLowerCase() }),
+    });
+    const d = await r.json();
+    if (!r.ok) { alert('Update failed: ' + (d.error || r.status)); return; }
+    alert(`✓ Set ${trail}% trail on ${d.updated} pipeline${d.updated !== 1 ? 's' : ''}.`);
+    await _loadStrategyStops(_sweepStrategy, _sweepAccount);
+  }
+
   function openPairs(kind, key, snapStats) {
     const closed  = (analysisData && analysisData.closed)  || [];
     const orphans = (analysisData && analysisData.orphans) || [];
@@ -1082,6 +1220,14 @@
     document.getElementById('pairsBackdrop').classList.add('open');
     document.getElementById('pairsModal').classList.add('open');
     _fetchPostExitMoves(clean);
+    // Load current stop settings for this strategy (only for strategy-level drills)
+    if (kind === 'strategy') {
+      const acct = (document.querySelector('.src-btn.active') || {}).dataset?.acct || '2';
+      _loadStrategyStops(key, acct);
+    } else {
+      document.getElementById('pairsStopStrip').style.display = 'none';
+      document.getElementById('strategySweepPanel').style.display = 'none';
+    }
   }
 
   function closePairs() {
