@@ -385,6 +385,14 @@
       </div>
     </div>
 
+    <!-- Time-of-day breakdown -->
+    <div id="pairsTodBreakdown" style="display:none;padding:10px 16px;border-bottom:1px solid #1e2130;background:#0d0f1a">
+      <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#444;margin-bottom:8px">
+        Time of Day — Pre vs Post 11:30 AM ET
+      </div>
+      <div id="pairsTodContent"></div>
+    </div>
+
     <div class="pair-tabs">
       <div class="pair-tab active" data-tab="clean" onclick="switchPairTab('clean')">Round-trips<span class="count" id="pairsCleanCount">0</span></div>
       <div class="pair-tab"        data-tab="orphans" onclick="switchPairTab('orphans')">Orphans<span class="count" id="pairsOrphanCount">0</span></div>
@@ -1119,6 +1127,76 @@
     }
   }
 
+  // ── Time-of-day breakdown ────────────────────────────────────────────────
+
+  function _isAfternoon(entry_time) {
+    // Returns true if the entry was at or after 11:30 AM ET (15:30 UTC, EDT)
+    if (!entry_time) return false;
+    try {
+      const d   = new Date(entry_time);
+      const utcH = d.getUTCHours(), utcM = d.getUTCMinutes();
+      // ET = UTC-4 (EDT, Mar–Nov). 11:30 ET = 15:30 UTC
+      const etMins = (utcH * 60 + utcM) - 4 * 60;  // minutes since midnight ET
+      return etMins >= 11 * 60 + 30;
+    } catch { return false; }
+  }
+
+  function _renderTimeOfDayBreakdown(pairs) {
+    const el = document.getElementById('pairsTodBreakdown');
+    const closed = pairs.filter(p => p.entry_time && p.exit_time);
+    if (!closed.length) { el.style.display = 'none'; return; }
+
+    const morning = closed.filter(p => !_isAfternoon(p.entry_time));
+    const afternoon = closed.filter(p =>  _isAfternoon(p.entry_time));
+
+    function _stats(grp) {
+      if (!grp.length) return null;
+      const wins = grp.filter(p => p.pnl > 0).length;
+      const pnl  = grp.reduce((s, p) => s + p.pnl, 0);
+      return { count: grp.length, wr: Math.round(wins / grp.length * 1000) / 10, pnl: Math.round(pnl * 100) / 100 };
+    }
+
+    const ms = _stats(morning), as_ = _stats(afternoon);
+
+    const row = (label, icon, color, s) => {
+      if (!s) return `<tr><td style="color:${color};font-weight:600;padding:5px 14px 5px 0;font-size:0.78rem">${icon} ${label}</td><td colspan="3" style="color:#444;padding:5px 10px">No trades</td></tr>`;
+      const wrCls = s.wr >= 55 ? '#7FE098' : s.wr <= 40 ? '#ef5350' : '#F2E7AC';
+      const pCls  = s.pnl >= 0 ? '#7FE098' : '#ef5350';
+      const pStr  = `${s.pnl >= 0 ? '+' : ''}$${Math.abs(s.pnl).toFixed(2)}`;
+      const avgPnl = Math.round(s.pnl / s.count * 100) / 100;
+      const avgStr = `${avgPnl >= 0 ? '+' : ''}$${Math.abs(avgPnl).toFixed(2)}`;
+      return `<tr>
+        <td style="color:${color};font-weight:600;padding:5px 14px 5px 0;font-size:0.78rem;white-space:nowrap">${icon} ${label}</td>
+        <td style="padding:5px 14px;color:#888;font-size:0.78rem">${s.count} trades</td>
+        <td style="padding:5px 14px;font-weight:700;font-size:0.82rem;color:${wrCls}">${s.wr}% WR</td>
+        <td style="padding:5px 14px;font-weight:700;font-size:0.82rem;color:${pCls}">${pStr}</td>
+        <td style="padding:5px 14px;color:#555;font-size:0.75rem">avg ${avgStr}/trade</td>
+      </tr>`;
+    };
+
+    // Verdict
+    let verdict = '';
+    if (ms && as_) {
+      const wrDiff  = ms.wr  - as_.wr;
+      const pnlDiff = (ms.pnl / ms.count) - (as_.pnl / as_.count);
+      if (wrDiff > 10 && pnlDiff > 0) {
+        verdict = `<div style="margin-top:8px;font-size:0.75rem;color:#7FE098">✓ Morning clearly outperforms afternoon — stopping at 11:30 would improve your stats</div>`;
+      } else if (wrDiff > 5 || pnlDiff > 0) {
+        verdict = `<div style="margin-top:8px;font-size:0.75rem;color:#F2E7AC">↗ Morning edges afternoon — worth testing a 11:30 cutoff</div>`;
+      } else if (wrDiff < -5) {
+        verdict = `<div style="margin-top:8px;font-size:0.75rem;color:#888">→ Afternoon matches or beats morning for this strategy</div>`;
+      }
+    }
+
+    document.getElementById('pairsTodContent').innerHTML = `
+      <table style="border-collapse:collapse">
+        ${row('Morning  (< 11:30 ET)', '🌅', '#7FE098', ms)}
+        ${row('Afternoon (≥ 11:30 ET)', '☕', '#F2E7AC', as_)}
+      </table>
+      ${verdict}`;
+    el.style.display = '';
+  }
+
   // ── Strategy stop sweep ─────────────────────────────────────────────────
   let _sweepStrategy = '';
   let _sweepAccount  = '2';
@@ -1240,6 +1318,7 @@
     document.getElementById('pairsBackdrop').classList.add('open');
     document.getElementById('pairsModal').classList.add('open');
     _fetchPostExitMoves(clean);
+    _renderTimeOfDayBreakdown(clean);
     // Load current stop settings for this strategy (only for strategy-level drills)
     if (kind === 'strategy') {
       const acct = (document.querySelector('.src-btn.active') || {}).dataset?.acct || '2';
@@ -1247,6 +1326,7 @@
     } else {
       document.getElementById('pairsStopStrip').style.display = 'none';
       document.getElementById('strategySweepPanel').style.display = 'none';
+      document.getElementById('pairsTodBreakdown').style.display = 'none';
     }
   }
 
