@@ -9158,11 +9158,11 @@ def api_strategy_sweep():
 
     # Get current SR trail for baseline
     try:
-        conn2 = get_db()
+        conn2 = get_db(); cur2 = conn2.cursor(); p2 = placeholder()
         sr_trail = None
-        for row in conn2.execute("SELECT nodes FROM routing_rules WHERE name=? AND enabled=1",
-                                 (strategy,)).fetchall():
-            nodes = json.loads(row[0] if DATABASE_URL else row["nodes"] or "[]")
+        cur2.execute(f"SELECT nodes FROM routing_rules WHERE name={p2} AND enabled=1", (strategy,))
+        for row in cur2.fetchall():
+            nodes = json.loads((row[0] if DATABASE_URL else row["nodes"]) or "[]")
             for nd in nodes:
                 if nd.get("type") == "exit_params" and nd.get("trail_offset"):
                     sr_trail = float(nd["trail_offset"]); break
