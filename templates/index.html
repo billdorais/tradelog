@@ -1354,16 +1354,19 @@
       // Alpaca's portfolio view exactly (equity-based, includes realized + unrealized
       // + open positions), unlike the JS FIFO pairing above which only sums closed
       // pairs and can miss orphans / partial fills. Works for both accounts.
+      // Also captured for the daily bar chart so today's bar matches Alpaca.
+      let _todayLivePnl = null;
       try {
         const _today = new Date().toISOString().slice(0, 10);
+        const _acctUrl = account === '2' ? '/api/alpaca/account?account=2' : '/api/alpaca/account';
+        const _acct    = await fetch(_acctUrl).then(r => r.json()).catch(() => ({}));
+        if (_acct && _acct.daily_pnl != null) _todayLivePnl = _acct.daily_pnl;
         if (fromDate === _today && (!toDate || toDate === _today)) {
-          const _acctUrl = account === '2' ? '/api/alpaca/account?account=2' : '/api/alpaca/account';
-          const _acct    = await fetch(_acctUrl).then(r => r.json()).catch(() => ({}));
-          if (_acct && _acct.daily_pnl != null) {
+          if (_todayLivePnl != null) {
             const _el = document.getElementById('perfTotalPnl');
             if (_el) {
-              _el.textContent = fmt(_acct.daily_pnl, '$');
-              _el.className   = 'pc-value ' + (_acct.daily_pnl >= 0 ? 'positive' : 'negative');
+              _el.textContent = fmt(_todayLivePnl, '$');
+              _el.className   = 'pc-value ' + (_todayLivePnl >= 0 ? 'positive' : 'negative');
             }
             const _cntEl = document.getElementById('perfClosedCount');
             if (_cntEl) _cntEl.textContent = "today's account P&L";
@@ -1371,8 +1374,10 @@
         }
       } catch (_e) { /* leave JS-paired number in place if fetch fails */ }
 
-      // Daily bar: sum per-trade pnl from equity curve by day
-      drawNetDailyChart(displayCurve.length ? displayCurve : closedTrades);
+      // Daily bar: sum per-trade pnl from equity curve by day. Today's bar is
+      // overridden with the live Alpaca daily P&L (equity-based) so it matches
+      // what Alpaca shows — closed-pair sums miss unrealized on open positions.
+      drawNetDailyChart(displayCurve.length ? displayCurve : closedTrades, _todayLivePnl);
       drawDailyChart(displayCurve, true);
 
       if (!displayCurve.length) {
@@ -2099,9 +2104,13 @@
       drawTimeScatter(stats.equity_curve || [], tradesForScatter);
     }
 
-    function drawNetDailyChart(equityCurveOrTrades) {
+    function drawNetDailyChart(equityCurveOrTrades, todayLivePnl) {
       // Accept either a closedTrades array [{time, pnl}] for direct summing,
       // or an equityCurve [{time, value}] for cumulative-diff approach.
+      // todayLivePnl (optional): Alpaca's authoritative equity-based daily P&L
+      // for today (matches the "Daily Change" in Alpaca's portfolio view —
+      // includes realized + unrealized on open positions + fees). When
+      // provided, overrides today's bar so the chart matches Alpaca.
       let labels, netValues;
       if (equityCurveOrTrades.length && 'pnl' in equityCurveOrTrades[0]) {
         // Direct sum: group pnl by close date
@@ -2122,6 +2131,19 @@
         labels = Object.keys(dayMap).sort();
         const cumValues = labels.map(d => dayMap[d]);
         netValues = cumValues.map((v, i) => i === 0 ? v : parseFloat((v - cumValues[i - 1]).toFixed(2)));
+      }
+
+      // Today override: replace today's bar with Alpaca's live daily P&L so the
+      // chart matches what Alpaca shows. Add a today bar if none exists yet.
+      if (todayLivePnl != null && !isNaN(todayLivePnl)) {
+        const today = new Date().toISOString().slice(0, 10);
+        const idx   = labels.indexOf(today);
+        if (idx >= 0) {
+          netValues[idx] = parseFloat(Number(todayLivePnl).toFixed(2));
+        } else {
+          labels.push(today);
+          netValues.push(parseFloat(Number(todayLivePnl).toFixed(2)));
+        }
       }
 
       if (netDailyChartInstance) { netDailyChartInstance.destroy(); netDailyChartInstance = null; }
