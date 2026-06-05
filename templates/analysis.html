@@ -960,8 +960,19 @@
   let _postExitData   = {};     // keyed "TICKER|exit_time_iso"
   let _postExitLoading = false;
 
+  function _exitReasonBadge(reason) {
+    if (!reason) return '<span style="color:#444">—</span>';
+    const cfg = {
+      'Trail':    { bg: 'rgba(196,181,253,0.15)', color: '#c4b5fd', label: 'Trail' },
+      'Max Hold': { bg: 'rgba(242,231,172,0.15)', color: '#F2E7AC', label: 'Max Hold' },
+      'TV Exit':  { bg: 'rgba(127,224,152,0.12)', color: '#7FE098', label: 'TV Exit' },
+    };
+    const s = cfg[reason] || { bg: 'rgba(100,100,120,0.15)', color: '#888', label: reason };
+    return `<span style="background:${s.bg};color:${s.color};border-radius:4px;padding:1px 8px;font-size:0.7rem;font-weight:600;white-space:nowrap">${s.label}</span>`;
+  }
+
   function _renderPairRows(pairs, includeReason, includePostExit) {
-    const span = 8 + (includeReason ? 1 : 0) + (includePostExit ? 1 : 0);
+    const span = 8 + (includeReason ? 1 : 0) + (includePostExit ? 2 : 0);
     if (!pairs.length) {
       return `<tr><td colspan="${span}" class="empty">None.</td></tr>`;
     }
@@ -998,6 +1009,7 @@
         <td class="mono">${esc(fmtTime(p.entry_time))}</td>
         <td class="mono">${esc(fmtTime(p.exit_time))}</td>
         <td class="${pnlCls}">${fmt(p.pnl)}</td>
+        ${includePostExit ? `<td style="text-align:center">${_exitReasonBadge(p.exit_reason)}</td>` : ''}
         ${reasonCell}
         ${postExitCell}
       </tr>`;
@@ -1017,7 +1029,7 @@
     const head = document.getElementById('pairsHead');
     head.innerHTML = isOrphan
       ? `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th>Reason</th></tr>`
-      : `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th style="white-space:nowrap" title="% price moved in trade direction in 30min after exit. ↗ amber = potential premature exit">After Exit</th></tr>`;
+      : `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th>Exit Reason</th><th style="white-space:nowrap" title="% price moved in trade direction in 30min after exit. ↗ amber = potential premature exit">After Exit</th></tr>`;
     document.getElementById('pairsBody').innerHTML =
       _renderPairRows(rows, isOrphan, !isOrphan);
   }

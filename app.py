@@ -5424,6 +5424,28 @@ def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_i
     return "Unknown", ""
 
 
+def _infer_exit_reason(sentiment: str, entry_time: str, exit_time: str,
+                       max_hold_mins: float = 15.0) -> str:
+    """Infer exit reason from signal sentiment and hold duration.
+    - TV EXIT signal matched → 'TV Exit'
+    - Hold ≈ max_hold_mins   → 'Max Hold'
+    - Otherwise              → 'Trail'
+    """
+    if sentiment == "flat":
+        return "TV Exit"
+    try:
+        import datetime as _dt2
+        def _parse(ts):
+            ts = (ts or "").replace("Z", "+00:00")
+            return _dt2.datetime.fromisoformat(ts)
+        hold = (_parse(exit_time) - _parse(entry_time)).total_seconds() / 60
+        if abs(hold - max_hold_mins) <= 1.5:
+            return "Max Hold"
+    except Exception:
+        pass
+    return "Trail"
+
+
 def _strategy_type_level(strategy: str) -> str:
     """Extract 'BREAKOUT R4S4' / 'REVERSAL R3S3' etc. from a full strategy name."""
     s = (strategy or "").upper()
@@ -5507,7 +5529,8 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                 closed.append({"pnl": round((ep - price) * m, 2), "strategy": pair_strat,
                                "ticker": sym, "date": date_str, "side": "SHORT",
                                "entry_price": ep, "exit_price": price, "qty": m,
-                               "entry_time": et, "exit_time": fill_ts})
+                               "entry_time": et, "exit_time": fill_ts,
+                               "exit_reason": _infer_exit_reason(sentiment, et, fill_ts)})
                 qty -= m
                 if eq > m:
                     q.append((ep, eq - m, et, es))
@@ -5525,7 +5548,8 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                 closed.append({"pnl": round((price - ep) * m, 2), "strategy": pair_strat,
                                "ticker": sym, "date": date_str, "side": "LONG",
                                "entry_price": ep, "exit_price": price, "qty": m,
-                               "entry_time": et, "exit_time": fill_ts})
+                               "entry_time": et, "exit_time": fill_ts,
+                               "exit_reason": _infer_exit_reason(sentiment, et, fill_ts)})
                 qty -= m
                 if eq > m:
                     q.append((ep, eq - m, et, es))
