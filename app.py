@@ -8443,6 +8443,131 @@ def analysis_page():
     return render_template("analysis.html")
 
 
+@app.route("/review")
+def review_page():
+    return render_template("review.html")
+
+
+@app.route("/api/review")
+def api_review():
+    """End-of-day chart review for the Refined (alpaca2) account.
+
+    Returns, for a single day, each round-trip grouped by ticker along with
+    5-minute OHLC bars and entry/exit markers ready for lightweight-charts.
+
+      ?date=YYYY-MM-DD   (defaults to today, US/Eastern)
+    """
+    import datetime as _dt
+    import concurrent.futures as _cf
+    from zoneinfo import ZoneInfo
+
+    date = (request.args.get("date") or "").strip()
+    if not date:
+        try:
+            date = _dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        except Exception:
+            # tzdata unavailable — approximate ET as UTC-4 so the default day is right
+            date = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
+
+    if alpaca_broker2 is None:
+        return jsonify({"error": "Refined account (alpaca2) is not configured."}), 503
+
+    def _ep(ts_iso):
+        """ISO fill timestamp (UTC) -> Unix seconds, floored to the 5-min bar grid."""
+        try:
+            t = _dt.datetime.fromisoformat((ts_iso or "").replace("Z", "+00:00"))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=_dt.timezone.utc)
+            sec = int(t.timestamp())
+            return sec - (sec % 300)
+        except Exception:
+            return None
+
+    fills         = _get_cached_fills_2()
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    paired        = _pair_alpaca_fills_lifo(fills, from_date=date, to_date=date,
+                                            signal_lookup=signal_lookup)
+    trades = sorted(paired["closed_clean"], key=lambda t: t.get("entry_time", ""))
+
+    # Group round-trips by ticker
+    by_ticker = {}
+    for t in trades:
+        by_ticker.setdefault((t.get("ticker") or "").upper(), []).append(t)
+
+    # Fetch 5-min bars per ticker concurrently
+    day_bars = {}
+    if by_ticker:
+        with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch_review_bars, tk, date): tk for tk in by_ticker}
+            for f in _cf.as_completed(futures):
+                tk = futures[f]
+                try:    day_bars[tk] = f.result()
+                except Exception: day_bars[tk] = []
+
+    tickers_out  = []
+    grand_total  = 0.0
+    for tk, tlist in sorted(by_ticker.items()):
+        markers   = []
+        rows      = []
+        tk_total  = 0.0
+        for t in tlist:
+            side    = (t.get("side") or "").upper()
+            is_long = side == "LONG"
+            pnl     = float(t.get("pnl") or 0)
+            tk_total += pnl
+            grand_total += pnl
+            en_ep = _ep(t.get("entry_time"))
+            ex_ep = _ep(t.get("exit_time"))
+            if en_ep is not None:
+                markers.append({
+                    "time":     en_ep,
+                    "position": "belowBar" if is_long else "aboveBar",
+                    "color":    "#7FE098" if is_long else "#ef5350",
+                    "shape":    "arrowUp" if is_long else "arrowDown",
+                    "text":     ("Buy" if is_long else "Short") + f" {t.get('entry_price')}",
+                })
+            if ex_ep is not None:
+                markers.append({
+                    "time":     ex_ep,
+                    "position": "aboveBar" if is_long else "belowBar",
+                    "color":    "#26a69a" if pnl >= 0 else "#ef5350",
+                    "shape":    "arrowDown" if is_long else "arrowUp",
+                    "text":     f"Exit {'+' if pnl >= 0 else ''}{round(pnl, 2)}",
+                })
+            rows.append({
+                "side":        side,
+                "strategy":    t.get("strategy") or "",
+                "qty":         t.get("qty"),
+                "entry_price": t.get("entry_price"),
+                "exit_price":  t.get("exit_price"),
+                "entry_time":  t.get("entry_time"),
+                "exit_time":   t.get("exit_time"),
+                "pnl":         round(pnl, 2),
+                "exit_reason": t.get("exit_reason") or "",
+            })
+        markers.sort(key=lambda m: m["time"])
+        tickers_out.append({
+            "ticker":    tk,
+            "total_pnl": round(tk_total, 2),
+            "n_trades":  len(tlist),
+            "ohlcv":     day_bars.get(tk, []),
+            "markers":   markers,
+            "trades":    rows,
+        })
+
+    # Most profitable / costly tickers first
+    tickers_out.sort(key=lambda x: x["total_pnl"], reverse=True)
+
+    return jsonify({
+        "date":        date,
+        "account":     "Refined",
+        "total_pnl":   round(grand_total, 2),
+        "n_trades":    len(trades),
+        "n_tickers":   len(tickers_out),
+        "tickers":     tickers_out,
+    })
+
+
 def _sharpe_from_pnls(pnls):
     """Trade-level Sharpe: mean(pnl) / sample_std(pnl). Returns None if < 2 trades."""
     import math as _math
@@ -8861,6 +8986,56 @@ def _fetch_daily_ohlc(ticker: str, date_str: str, n_days: int = 2):
         return result
     except Exception as _de:
         log.debug("fetch_daily_ohlc %s %s: %s", ticker, date_str, _de)
+        return []
+
+
+def _fetch_review_bars(ticker: str, date_str: str):
+    """Fetch 5-minute bars for a ticker on a single market day, formatted for
+    lightweight-charts. Returns list of {time, open, high, low, close} where
+    `time` is Unix seconds (UTC), sorted ascending, or [] on error.
+
+    Window is the regular session, 9:30–16:00 ET (DST-aware via ZoneInfo).
+    """
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        client = StockHistoricalDataClient(
+            api_key    = alpaca_broker._key,
+            secret_key = alpaca_broker._secret,
+        )
+        day = _dt.date.fromisoformat(date_str)
+        try:
+            _et   = ZoneInfo("America/New_York")
+            start = _dt.datetime(day.year, day.month, day.day,  9, 30, tzinfo=_et)
+            end   = _dt.datetime(day.year, day.month, day.day, 16,  0, tzinfo=_et)
+        except Exception:
+            # tzdata unavailable — assume EDT (UTC-4)
+            start = _dt.datetime(day.year, day.month, day.day, 13, 30, tzinfo=_dt.timezone.utc)
+            end   = _dt.datetime(day.year, day.month, day.day, 20,  0, tzinfo=_dt.timezone.utc)
+        req   = StockBarsRequest(
+            symbol_or_symbols = ticker.upper(),
+            timeframe         = TimeFrame(5, TimeFrameUnit.Minute),
+            start             = start,
+            end               = end,
+        )
+        bars_df = client.get_stock_bars(req)
+        out = []
+        for b in bars_df[ticker.upper()]:
+            out.append({
+                "time":  int(b.timestamp.timestamp()),
+                "open":  float(b.open),
+                "high":  float(b.high),
+                "low":   float(b.low),
+                "close": float(b.close),
+            })
+        out.sort(key=lambda x: x["time"])
+        return out
+    except Exception as _de:
+        log.debug("fetch_review_bars %s %s: %s", ticker, date_str, _de)
         return []
 
 
