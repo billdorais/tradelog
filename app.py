@@ -64,6 +64,10 @@ MORNING_TRAIL_PCT           = float(os.environ.get("MORNING_TRAIL_PCT", "0"))   
 AFTERNOON_TRAIL_PCT         = float(os.environ.get("AFTERNOON_TRAIL_PCT", "0"))     # caps trail_offset 12:00–close ET when > 0
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
 MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
+# N-strikes-per-level: after this many losing round-trips on the same
+# ticker+Camarilla-level in a day, block new entries on that level.
+STRIKES_ENABLED       = os.environ.get("STRIKES_ENABLED", "0") == "1"
+STRIKES_PER_LEVEL     = int(os.environ.get("STRIKES_PER_LEVEL", "2"))
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -2159,7 +2163,27 @@ def risk_status():
             for k, v in max_hold_snap.items()
         ],
         "auto_closed_symbols": [{"broker": k[0], "symbol": k[1]} for k in auto_closed_snap],
+        "strikes_enabled":     STRIKES_ENABLED,
+        "strikes_per_level":   STRIKES_PER_LEVEL,
+        "strikes":             _strikes_status_list(),
     })
+
+
+def _strikes_status_list():
+    """Today's per (account, ticker, level) loss tallies for the status panel.
+    Empty unless the strikes gate is enabled."""
+    if not STRIKES_ENABLED:
+        return []
+    try:
+        return sorted(
+            ({"account": a, "ticker": tk, "level": lvl, "losses": n,
+              "blocked": n >= STRIKES_PER_LEVEL}
+             for (a, tk, lvl), n in _get_strike_counts().items() if n > 0),
+            key=lambda x: (-x["losses"], x["ticker"]),
+        )
+    except Exception as _se:
+        log.debug("strikes status failed: %s", _se)
+        return []
 
 
 def _update_env_file(key, value):
@@ -2188,7 +2212,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL
     data = request.get_json(silent=True) or {}
     changed = []
     if "max_daily_loss" in data:
@@ -2263,12 +2287,29 @@ def risk_set_limit():
         _save_setting("AFTERNOON_TRAIL_PCT", f"{AFTERNOON_TRAIL_PCT:g}")
         log.info("AFTERNOON_TRAIL_PCT updated to %g", AFTERNOON_TRAIL_PCT)
         changed.append("afternoon_trail_pct")
+    if "strikes_enabled" in data:
+        STRIKES_ENABLED = bool(data["strikes_enabled"])
+        _update_env_file("STRIKES_ENABLED", "1" if STRIKES_ENABLED else "0")
+        _save_setting("STRIKES_ENABLED", "1" if STRIKES_ENABLED else "0")
+        log.info("STRIKES_ENABLED set to %s", STRIKES_ENABLED)
+        changed.append("strikes_enabled")
+    if "strikes_per_level" in data:
+        try:
+            STRIKES_PER_LEVEL = max(1, int(data["strikes_per_level"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "strikes_per_level must be an integer ≥ 1"}), 400
+        _update_env_file("STRIKES_PER_LEVEL", str(STRIKES_PER_LEVEL))
+        _save_setting("STRIKES_PER_LEVEL", str(STRIKES_PER_LEVEL))
+        log.info("STRIKES_PER_LEVEL set to %d", STRIKES_PER_LEVEL)
+        changed.append("strikes_per_level")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
         "max_trailing_giveback":  MAX_TRAILING_GIVEBACK,
         "morning_trail_pct":      MORNING_TRAIL_PCT,
         "afternoon_trail_pct":    AFTERNOON_TRAIL_PCT,
+        "strikes_enabled":        STRIKES_ENABLED,
+        "strikes_per_level":      STRIKES_PER_LEVEL,
         "changed":                changed,
     })
 
@@ -8454,6 +8495,52 @@ def _trade_level(strategy: str, side: str):
     return hi if (side or "").upper() == "LONG" else lo
 
 
+_strike_cache    = {"data": {}, "ts": 0.0}
+STRIKE_CACHE_TTL = 30   # seconds — bounded staleness for the live entry gate
+
+
+def _compute_strike_counts():
+    """Count today's LOSING round-trips per (account, ticker, level) across both
+    Alpaca accounts. Feeds the live N-strikes-per-level webhook gate.
+    Returns {(account, TICKER, level): n_losses} where account is 'alpaca'|'alpaca2'."""
+    import datetime as _dt
+    from collections import defaultdict
+    try:
+        today = _dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        today = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
+    out = defaultdict(int)
+    for acct, broker, fills_fn in (
+        ("alpaca",  alpaca_broker,  _get_cached_fills),
+        ("alpaca2", alpaca_broker2, _get_cached_fills_2),
+    ):
+        if broker is None:
+            continue
+        try:
+            fills  = fills_fn()
+            paired = _pair_alpaca_fills_lifo(fills, from_date=today, to_date=today)
+        except Exception as _pe:
+            log.warning("strike count failed for %s: %s", acct, _pe)
+            continue
+        for t in paired["closed_clean"]:
+            if float(t.get("pnl") or 0) < 0:
+                lvl = _trade_level(t.get("strategy"), t.get("side"))
+                if lvl:
+                    out[(acct, (t.get("ticker") or "").upper(), lvl)] += 1
+    return dict(out)
+
+
+def _get_strike_counts(force: bool = False):
+    """Cached wrapper around _compute_strike_counts (30s TTL)."""
+    global _strike_cache
+    import time as _t
+    now = _t.time()
+    if not force and now - _strike_cache["ts"] < STRIKE_CACHE_TTL:
+        return _strike_cache["data"]
+    _strike_cache = {"data": _compute_strike_counts(), "ts": now}
+    return _strike_cache["data"]
+
+
 def _apply_two_strikes(rows, strikes: int = 2):
     """Replay round-trips chronologically and apply a "N strikes per level"
     rule: once a (ticker-day) level has accumulated `strikes` losing trades,
@@ -10457,7 +10544,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -10505,6 +10592,17 @@ def _restore_risk_settings():
         try:
             AFTERNOON_TRAIL_PCT = float(stored)
             log.info("Restored AFTERNOON_TRAIL_PCT=%g from DB", AFTERNOON_TRAIL_PCT)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("STRIKES_ENABLED")
+    if stored is not None:
+        STRIKES_ENABLED = str(stored) == "1"
+        log.info("Restored STRIKES_ENABLED=%s from DB", STRIKES_ENABLED)
+    stored = _load_setting("STRIKES_PER_LEVEL")
+    if stored is not None:
+        try:
+            STRIKES_PER_LEVEL = max(1, int(stored))
+            log.info("Restored STRIKES_PER_LEVEL=%d from DB", STRIKES_PER_LEVEL)
         except (TypeError, ValueError):
             pass
 

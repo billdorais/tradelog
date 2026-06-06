@@ -356,6 +356,28 @@
       </div>
     </div>
 
+    <!-- Row 4: Strikes per level — both accounts -->
+    <div class="rg-card" style="margin-top:10px;border-color:#c86428">
+      <div class="rg-card-title" style="color:#F2C07A">&#9670; Strikes Per Level — block re-entries after N losses</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Strikes per level
+          <span style="color:#666;font-size:0.68rem">per ticker · per Camarilla level (R3/S3/R4/S4) · per day</span>
+          <span id="strikesBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="strikesDot"></span>
+            <span id="strikesText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="strikesInput" type="number" step="1" min="1" max="9" placeholder="e.g. 2" style="width:80px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveStrikes()">Enable</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearStrikes()">Off</button>
+        </div>
+        <div class="risk-hint">After this many losing round-trips on the same ticker+level in a day, new entries on that level are blocked until the next session. Applies to both accounts. Exits are never blocked.</div>
+        <div id="strikesActive" style="margin-top:8px;font-size:0.76rem;color:#888"></div>
+      </div>
+    </div>
+
     <!-- Blocked strategies + live positions (shown when there is data) -->
     <div class="risk-details" id="riskDetails" style="display:none">
       <div id="riskBlockedList"></div>
@@ -630,6 +652,32 @@
         trailInput.value = data.max_trailing_giveback;
       }
 
+      // Strikes per level
+      const stInput = document.getElementById('strikesInput');
+      if (document.activeElement !== stInput && data.strikes_per_level) {
+        stInput.value = data.strikes_per_level;
+      }
+      const stBadge = document.getElementById('strikesBadge');
+      const stDot   = document.getElementById('strikesDot');
+      const stText  = document.getElementById('strikesText');
+      const stActive = document.getElementById('strikesActive');
+      if (data.strikes_enabled) {
+        stBadge.className = 'risk-status-badge active';
+        stDot.className   = 'risk-dot green';
+        stText.textContent = 'Active (' + data.strikes_per_level + ')';
+        const rows = (data.strikes || []).map(s =>
+          `${s.ticker} ${s.level} ${s.losses}/${data.strikes_per_level}` +
+          (s.blocked ? ' ⛔' : '') + ` <span style="color:#555">(${s.account})</span>`);
+        stActive.innerHTML = rows.length
+          ? 'Today: ' + rows.join(' &nbsp;·&nbsp; ')
+          : 'Today: no losses recorded yet.';
+      } else {
+        stBadge.className = 'risk-status-badge disabled';
+        stDot.className   = 'risk-dot grey';
+        stText.textContent = 'Disabled';
+        stActive.textContent = '';
+      }
+
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
       const posDot   = document.getElementById('posStatusDot');
@@ -876,6 +924,20 @@
     document.getElementById('trailLimitInput').value = '';
     try { await _postLimit({max_trailing_giveback: 0}); }
     catch(e) { console.error('clearTrailLimit failed:', e); }
+  }
+
+  async function saveStrikes() {
+    const input = document.getElementById('strikesInput');
+    const val = parseInt(input.value, 10);
+    if (isNaN(val) || val < 1) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({strikes_enabled: true, strikes_per_level: val}); }
+    catch(e) { console.error('saveStrikes failed:', e); }
+  }
+
+  async function clearStrikes() {
+    try { await _postLimit({strikes_enabled: false}); }
+    catch(e) { console.error('clearStrikes failed:', e); }
   }
 
   async function saveMorningTrail() {

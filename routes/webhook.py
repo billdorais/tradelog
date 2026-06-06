@@ -499,6 +499,34 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 "detail":   _block_info,
             }), 200
 
+    # N-strikes-per-level gate — once a ticker+Camarilla-level has taken N losing
+    # round-trips today, block new entries on that level (exits always bypass).
+    if (getattr(app, "STRIKES_ENABLED", False) and strategy_name and ticker
+            and order_action in ("BUY", "SELL") and not _is_exit):
+        side  = "LONG" if order_action == "BUY" else "SHORT"
+        level = app._trade_level(strategy_name, side)
+        if level:
+            try:
+                limit  = max(1, int(getattr(app, "STRIKES_PER_LEVEL", 2)))
+                counts = app._get_strike_counts()
+                accts  = {_alpaca_broker_name(t) for (t, _o) in broker_targets
+                          if _broker_family(t) == "alpaca"}
+                hit = [a for a in accts
+                       if counts.get((a, ticker.upper(), level), 0) >= limit]
+                if hit:
+                    app.log.warning(
+                        "Strikes gate: %s %s (%s) blocked — %s+ losses at %s today on %s",
+                        order_action, ticker, strategy_name, limit, level, ",".join(hit))
+                    app._update_exec(cur, trade_id, "blocked",
+                        f"{limit}-strikes/level: {level} already took {limit} losses "
+                        f"today ({', '.join(hit)})")
+                    conn.commit()
+                    conn.close()
+                    return jsonify({"status": "blocked", "reason": "strikes_limit",
+                                    "level": level, "accounts": hit}), 200
+            except Exception as _se:
+                app.log.warning("Strikes gate check failed: %s — allowing order", _se)
+
     # If the matched pipeline has an exit_params node the broker-side trailing stop
     # manages the exit — suppress the TV exit signal so it doesn't close the position
     # before the stop has a chance to fire.
