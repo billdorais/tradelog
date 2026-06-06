@@ -8494,15 +8494,21 @@ def api_review():
     for t in trades:
         by_ticker.setdefault((t.get("ticker") or "").upper(), []).append(t)
 
-    # Fetch 5-min bars per ticker concurrently
-    day_bars = {}
+    # Fetch 5-min bars + Camarilla pivots per ticker concurrently
+    day_bars   = {}
+    day_levels = {}
     if by_ticker:
         with _cf.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch_review_bars, tk, date): tk for tk in by_ticker}
-            for f in _cf.as_completed(futures):
-                tk = futures[f]
+            bar_futs = {pool.submit(_fetch_review_bars, tk, date): tk for tk in by_ticker}
+            lvl_futs = {pool.submit(_camarilla_levels, tk, date): tk for tk in by_ticker}
+            for f in _cf.as_completed(bar_futs):
+                tk = bar_futs[f]
                 try:    day_bars[tk] = f.result()
                 except Exception: day_bars[tk] = []
+            for f in _cf.as_completed(lvl_futs):
+                tk = lvl_futs[f]
+                try:    day_levels[tk] = f.result()
+                except Exception: day_levels[tk] = {}
 
     tickers_out  = []
     grand_total  = 0.0
@@ -8546,17 +8552,43 @@ def api_review():
                 "exit_reason": t.get("exit_reason") or "",
             })
         markers.sort(key=lambda m: m["time"])
+
+        # Camarilla pivot lines — show only the level pair(s) the day's
+        # strategies actually traded (R3S3 → R3/S3, R4S4 → R4/S4), plus DP.
+        lv     = day_levels.get(tk) or {}
+        levels = []
+        if lv:
+            pairs = set()
+            for t in tlist:
+                s = (t.get("strategy") or "").upper()
+                if "R3S3" in s: pairs.add("R3S3")
+                if "R4S4" in s: pairs.add("R4S4")
+            if not pairs:                       # unknown strategy → show both
+                pairs = {"R3S3", "R4S4"}
+            levels.append({"title": "DP", "price": lv["dp"], "color": "#3fd0c9", "style": "dashed"})
+            if "R3S3" in pairs:
+                levels.append({"title": "R3", "price": lv["r3"], "color": "#ef5350", "style": "solid"})
+                levels.append({"title": "S3", "price": lv["s3"], "color": "#7FE098", "style": "solid"})
+            if "R4S4" in pairs:
+                levels.append({"title": "R4", "price": lv["r4"], "color": "#ef5350", "style": "solid"})
+                levels.append({"title": "S4", "price": lv["s4"], "color": "#7FE098", "style": "solid"})
+
+        # Earliest entry on this ticker — drives chronological ordering
+        first_entry = min((t.get("entry_time") or "" for t in tlist), default="")
+
         tickers_out.append({
-            "ticker":    tk,
-            "total_pnl": round(tk_total, 2),
-            "n_trades":  len(tlist),
-            "ohlcv":     day_bars.get(tk, []),
-            "markers":   markers,
-            "trades":    rows,
+            "ticker":      tk,
+            "total_pnl":   round(tk_total, 2),
+            "n_trades":    len(tlist),
+            "first_entry": first_entry,
+            "ohlcv":       day_bars.get(tk, []),
+            "markers":     markers,
+            "levels":      levels,
+            "trades":      rows,
         })
 
-    # Most profitable / costly tickers first
-    tickers_out.sort(key=lambda x: x["total_pnl"], reverse=True)
+    # Chronological: earliest trade of the day first
+    tickers_out.sort(key=lambda x: x["first_entry"])
 
     return jsonify({
         "date":        date,
@@ -8989,12 +9021,15 @@ def _fetch_daily_ohlc(ticker: str, date_str: str, n_days: int = 2):
         return []
 
 
-def _fetch_review_bars(ticker: str, date_str: str):
+def _fetch_review_bars(ticker: str, date_str: str, ema_period: int = 8):
     """Fetch 5-minute bars for a ticker on a single market day, formatted for
-    lightweight-charts. Returns list of {time, open, high, low, close} where
-    `time` is Unix seconds (UTC), sorted ascending, or [] on error.
+    lightweight-charts. Returns list of {time, open, high, low, close, ema}
+    where `time` is Unix seconds (UTC), sorted ascending, or [] on error.
 
-    Window is the regular session, 9:30–16:00 ET (DST-aware via ZoneInfo).
+    Only the target day's regular session (9:30–16:00 ET) is returned, but the
+    EMA is computed over an RTH-continuous series that includes prior sessions
+    so it is fully warmed up at the open — matching the live Pine's
+    ta.ema(close, 8), which carries across the RTH series.
     """
     try:
         from alpaca.data.historical import StockHistoricalDataClient
@@ -9009,30 +9044,42 @@ def _fetch_review_bars(ticker: str, date_str: str):
         )
         day = _dt.date.fromisoformat(date_str)
         try:
-            _et   = ZoneInfo("America/New_York")
-            start = _dt.datetime(day.year, day.month, day.day,  9, 30, tzinfo=_et)
-            end   = _dt.datetime(day.year, day.month, day.day, 16,  0, tzinfo=_et)
+            et = ZoneInfo("America/New_York")
         except Exception:
-            # tzdata unavailable — assume EDT (UTC-4)
-            start = _dt.datetime(day.year, day.month, day.day, 13, 30, tzinfo=_dt.timezone.utc)
-            end   = _dt.datetime(day.year, day.month, day.day, 20,  0, tzinfo=_dt.timezone.utc)
+            et = _dt.timezone(_dt.timedelta(hours=-4))   # tzdata missing → assume EDT
+
+        # Fetch back a few calendar days to guarantee ≥1 prior RTH session of
+        # EMA warm-up (covers weekends/holidays).
+        start = _dt.datetime(day.year, day.month, day.day, tzinfo=et) - _dt.timedelta(days=5)
+        end   = _dt.datetime(day.year, day.month, day.day, 16, 0, tzinfo=et)
         req   = StockBarsRequest(
             symbol_or_symbols = ticker.upper(),
             timeframe         = TimeFrame(5, TimeFrameUnit.Minute),
             start             = start,
             end               = end,
         )
-        bars_df = client.get_stock_bars(req)
+        bars = list(client.get_stock_bars(req)[ticker.upper()])
+
+        # Keep only RTH bars (09:30–16:00 ET), in order, then run a continuous EMA.
+        rth_open, rth_close = _dt.time(9, 30), _dt.time(16, 0)
+        k   = 2.0 / (ema_period + 1)
+        ema = None
         out = []
-        for b in bars_df[ticker.upper()]:
-            out.append({
-                "time":  int(b.timestamp.timestamp()),
-                "open":  float(b.open),
-                "high":  float(b.high),
-                "low":   float(b.low),
-                "close": float(b.close),
-            })
-        out.sort(key=lambda x: x["time"])
+        for b in sorted(bars, key=lambda x: x.timestamp):
+            t_et = b.timestamp.astimezone(et)
+            if not (rth_open <= t_et.time() < rth_close):
+                continue
+            c   = float(b.close)
+            ema = c if ema is None else (c - ema) * k + ema
+            if t_et.date() == day:   # only display the target session
+                out.append({
+                    "time":  int(b.timestamp.timestamp()),
+                    "open":  float(b.open),
+                    "high":  float(b.high),
+                    "low":   float(b.low),
+                    "close": c,
+                    "ema":   round(ema, 4),
+                })
         return out
     except Exception as _de:
         log.debug("fetch_review_bars %s %s: %s", ticker, date_str, _de)
@@ -9110,6 +9157,28 @@ def _get_day_classification(ticker: str, trade_date: str) -> dict:
     if key not in _day_class_cache:
         _day_class_cache[key] = _classify_day(ticker, trade_date)
     return _day_class_cache[key]
+
+
+def _camarilla_levels(ticker: str, trade_date: str) -> dict:
+    """Camarilla pivots for trade_date, computed from the prior RTH session's
+    H/L/C exactly as the live Pine strategies do (1.1 multiplier). Mirrors:
+        R3 = C + rng*1.1/4   S3 = C - rng*1.1/4
+        R4 = C + rng*1.1/2   S4 = C - rng*1.1/2
+        DP = (H + L + C) / 3
+    Returns {r3, r4, s3, s4, dp} or {} if prior-day OHLC is unavailable."""
+    bars = _fetch_daily_ohlc(ticker, trade_date, n_days=1)
+    if not bars:
+        return {}
+    p   = bars[0]   # prior trading day
+    h, l, c = p["high"], p["low"], p["close"]
+    rng = h - l
+    return {
+        "r4": round(c + rng * 1.1 / 2, 4),
+        "r3": round(c + rng * 1.1 / 4, 4),
+        "s3": round(c - rng * 1.1 / 4, 4),
+        "s4": round(c - rng * 1.1 / 2, 4),
+        "dp": round((h + l + c) / 3, 4),
+    }
 
 
 def _compute_peak(trade_bars, entry_price: float, side: str, cap_dt=None):

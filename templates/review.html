@@ -161,9 +161,13 @@
 
     const head = document.createElement('div');
     head.className = 'tk-head';
+    const firstET = tk.first_entry
+      ? _etTime.format(new Date((tk.first_entry).replace(' ', 'T'))) + ' ET'
+      : '';
     head.innerHTML =
       `<div><span class="tk-sym">${tk.ticker}</span> ` +
-      `<span class="tk-meta">&nbsp;${tk.n_trades} trade${tk.n_trades === 1 ? '' : 's'}</span></div>` +
+      `<span class="tk-meta">&nbsp;${tk.n_trades} trade${tk.n_trades === 1 ? '' : 's'}` +
+      (firstET ? ` &middot; first ${firstET}` : '') + `</span></div>` +
       `<div class="tk-pnl ${pnlClass(tk.total_pnl)}">${fmtMoney(tk.total_pnl)}</div>`;
     card.appendChild(head);
 
@@ -229,6 +233,33 @@
     });
     candles.setData(tk.ohlcv);
     if (tk.markers && tk.markers.length) candles.setMarkers(tk.markers);
+
+    // 8-EMA overlay (the strategies' trend filter)
+    const emaData = tk.ohlcv.filter(b => b.ema != null)
+                            .map(b => ({ time: b.time, value: b.ema }));
+    if (emaData.length) {
+      const emaSeries = chart.addLineSeries({
+        color: '#e0e0e0', lineWidth: 2, priceLineVisible: false,
+        lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      emaSeries.setData(emaData);
+    }
+
+    // Camarilla pivot levels (R3/S3, R4/S4, DP) as horizontal price lines
+    if (tk.levels && tk.levels.length) {
+      for (const L of tk.levels) {
+        candles.createPriceLine({
+          price:            L.price,
+          color:            L.color,
+          lineWidth:        1,
+          lineStyle:        L.style === 'dashed' ? LightweightCharts.LineStyle.Dashed
+                                                  : LightweightCharts.LineStyle.Solid,
+          axisLabelVisible: true,
+          title:            L.title,
+        });
+      }
+    }
+
     chart.timeScale().fitContent();
     _charts.push(chart);
   }
