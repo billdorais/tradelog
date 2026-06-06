@@ -63,6 +63,20 @@
                vertical-align: middle; margin-right: 6px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .empty { text-align: center; padding: 50px 20px; color: #444; font-size: 0.9rem; }
+
+    /* Data-driven read */
+    .read { padding: 11px 18px; border-bottom: 1px solid #2a2d3e; background: #181b29; }
+    .read-verdict { font-size: 0.85rem; font-weight: 700; color: #e8c46b; margin-bottom: 5px; }
+    .read ul { margin: 0; padding-left: 17px; }
+    .read li { font-size: 0.8rem; color: #b9bdc9; margin: 2px 0; line-height: 1.45; }
+
+    /* Two-strikes week panel */
+    .ts-card { background: #1c1f2e; border: 1px solid #517356; border-radius: 10px;
+               padding: 16px 20px; margin-bottom: 22px; }
+    .ts-card h3 { font-size: 0.95rem; margin-bottom: 4px; }
+    .ts-sub { color: #777; font-size: 0.78rem; margin-bottom: 14px; }
+    .ts-head { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr));
+               gap: 10px; margin-bottom: 14px; }
   </style>
 </head>
 <body>
@@ -102,10 +116,16 @@
     </div>
     <button class="nudge" onclick="nudgeDay(1)" title="Next day">&#8594;</button>
     <button class="run-btn" id="loadBtn" onclick="load()">Load</button>
+    <div class="field" style="margin-left:18px">
+      <label for="strikesInput">Strikes / level</label>
+      <input type="number" id="strikesInput" value="2" min="1" max="9" style="width:70px" onchange="load()">
+    </div>
+    <button class="run-btn" id="weekBtn" onclick="analyzeWeek()" style="background:#517356">Two-strikes: analyze week</button>
   </div>
 
   <div id="status" class="status"></div>
   <div id="summary" class="stats-grid" style="display:none"></div>
+  <div id="tsResult"></div>
   <div id="charts"></div>
 </div>
 
@@ -170,6 +190,17 @@
       (firstET ? ` &middot; first ${firstET}` : '') + `</span></div>` +
       `<div class="tk-pnl ${pnlClass(tk.total_pnl)}">${fmtMoney(tk.total_pnl)}</div>`;
     card.appendChild(head);
+
+    // Data-driven read
+    if (tk.read && (tk.read.verdict || (tk.read.notes && tk.read.notes.length))) {
+      const rd = document.createElement('div');
+      rd.className = 'read';
+      const notes = (tk.read.notes || []).map(n => `<li>${n}</li>`).join('');
+      rd.innerHTML =
+        (tk.read.verdict ? `<div class="read-verdict">📋 ${tk.read.verdict}</div>` : '') +
+        (notes ? `<ul>${notes}</ul>` : '');
+      card.appendChild(rd);
+    }
 
     const chartDiv = document.createElement('div');
     chartDiv.className = 'chart-container';
@@ -264,17 +295,23 @@
     _charts.push(chart);
   }
 
+  function strikesVal() {
+    return Math.max(1, parseInt(document.getElementById('strikesInput').value, 10) || 2);
+  }
+
   async function load() {
-    const date = document.getElementById('dateInput').value;
-    const btn  = document.getElementById('loadBtn');
+    const date    = document.getElementById('dateInput').value;
+    const strikes = strikesVal();
+    const btn     = document.getElementById('loadBtn');
     btn.disabled = true;
     destroyCharts();
     document.getElementById('charts').innerHTML = '';
     document.getElementById('summary').style.display = 'none';
+    document.getElementById('tsResult').innerHTML = '';
     setStatus('<span class="spinner"></span>Loading Refined trades & bars…', 'info');
 
     try {
-      const r = await fetch('/api/review?date=' + encodeURIComponent(date));
+      const r = await fetch(`/api/review?date=${encodeURIComponent(date)}&strikes=${strikes}`);
       const data = await r.json();
       if (!r.ok) { setStatus(data.error || 'Failed to load.', 'error'); btn.disabled = false; return; }
 
@@ -287,17 +324,57 @@
       }
 
       clearStatus();
+      const saved = data.two_strikes_saved || 0;
       const s = document.getElementById('summary');
       s.style.display = 'grid';
       s.innerHTML =
         `<div class="stat-card"><div class="stat-lbl">Date</div><div class="stat-val">${data.date}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Day P&amp;L</div><div class="stat-val ${pnlClass(data.total_pnl)}">${fmtMoney(data.total_pnl)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Round-trips</div><div class="stat-val">${data.n_trades}</div></div>` +
-        `<div class="stat-card"><div class="stat-lbl">Tickers</div><div class="stat-val">${data.n_tickers}</div></div>`;
+        `<div class="stat-card"><div class="stat-lbl">Tickers</div><div class="stat-val">${data.n_tickers}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">${data.strikes}-strikes saves</div>` +
+        `<div class="stat-val ${saved >= 0 ? 'pos' : 'neg'}">${fmtMoney(saved)}</div></div>`;
 
       for (const tk of data.tickers) renderTickerCard(tk);
     } catch (e) {
       setStatus('Error: ' + e.message, 'error');
+    }
+    btn.disabled = false;
+  }
+
+  async function analyzeWeek() {
+    const strikes = strikesVal();
+    const btn = document.getElementById('weekBtn');
+    btn.disabled = true;
+    const out = document.getElementById('tsResult');
+    out.innerHTML = `<div class="ts-card"><span class="spinner"></span>Replaying the week…</div>`;
+    try {
+      const r = await fetch(`/api/review/two_strikes?strikes=${strikes}`);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<div class="ts-card neg">${d.error || 'Failed.'}</div>`; btn.disabled = false; return; }
+
+      const rows = (d.by_level || []).map(b =>
+        `<tr><td>${b.key}</td><td>${b.blocked}</td>` +
+        `<td class="${b.saved >= 0 ? 'pos' : 'neg'}" style="font-weight:600">${fmtMoney(b.saved)}</td></tr>`).join('');
+      const days = (d.per_day || []).map(p =>
+        `<tr><td>${p.date}</td><td class="${p.saved >= 0 ? 'pos' : 'neg'}" style="font-weight:600">${fmtMoney(p.saved)}</td></tr>`).join('');
+
+      out.innerHTML =
+        `<div class="ts-card">` +
+        `<h3>${d.strikes}-strikes-per-level rule — ${d.from} → ${d.to}</h3>` +
+        `<div class="ts-sub">Refined account · blocks trades on a ticker-level after ${d.strikes} losses that day</div>` +
+        `<div class="ts-head">` +
+          `<div class="stat-card"><div class="stat-lbl">Actual P&amp;L</div><div class="stat-val ${pnlClass(d.actual_pnl)}">${fmtMoney(d.actual_pnl)}</div></div>` +
+          `<div class="stat-card"><div class="stat-lbl">Would have saved</div><div class="stat-val ${d.saved >= 0 ? 'pos' : 'neg'}">${fmtMoney(d.saved)}</div></div>` +
+          `<div class="stat-card"><div class="stat-lbl">Adjusted P&amp;L</div><div class="stat-val ${pnlClass(d.adjusted_pnl)}">${fmtMoney(d.adjusted_pnl)}</div></div>` +
+          `<div class="stat-card"><div class="stat-lbl">Trades skipped</div><div class="stat-val">${d.trades_blocked} / ${d.n_trades}</div></div>` +
+        `</div>` +
+        (days ? `<div style="overflow-x:auto;margin-bottom:14px"><table><thead><tr><th>Day</th><th>Saved</th></tr></thead><tbody>${days}</tbody></table></div>` : '') +
+        (rows ? `<div style="overflow-x:auto"><table><thead><tr><th>Ticker · Level</th><th>Trades skipped</th><th>Saved</th></tr></thead><tbody>${rows}</tbody></table></div>`
+              : `<div class="ts-sub">No level hit ${d.strikes} losses in this range — nothing would have been blocked.</div>`) +
+        `</div>`;
+    } catch (e) {
+      out.innerHTML = `<div class="ts-card neg">Error: ${e.message}</div>`;
     }
     btn.disabled = false;
   }

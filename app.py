@@ -8443,6 +8443,102 @@ def analysis_page():
     return render_template("analysis.html")
 
 
+def _trade_level(strategy: str, side: str):
+    """Which Camarilla level a trade is associated with, from its strategy +
+    direction: R3S3 strategies trade R3 (long) / S3 (short); R4S4 → R4/S4.
+    Returns 'R3'|'S3'|'R4'|'S4' or None."""
+    s = (strategy or "").upper()
+    if   "R4S4" in s: hi, lo = "R4", "S4"
+    elif "R3S3" in s: hi, lo = "R3", "S3"
+    else:             return None
+    return hi if (side or "").upper() == "LONG" else lo
+
+
+def _apply_two_strikes(rows, strikes: int = 2):
+    """Replay round-trips chronologically and apply a "N strikes per level"
+    rule: once a (ticker-day) level has accumulated `strikes` losing trades,
+    every later trade on that level is blocked.
+
+    `rows` must be one ticker-day's trades, each a dict with 'pnl' and 'level',
+    sorted by entry time. Returns (blocked_rows, saved) where saved is the P&L
+    swing from skipping them (positive = you'd have kept money)."""
+    from collections import defaultdict
+    losses  = defaultdict(int)
+    out     = set()
+    blocked = []
+    for r in rows:
+        lvl = r.get("level")
+        if lvl is None:
+            continue
+        if lvl in out:
+            blocked.append(r)
+            continue
+        if float(r.get("pnl") or 0) < 0:
+            losses[lvl] += 1
+            if losses[lvl] >= strikes:
+                out.add(lvl)
+    saved = -sum(float(r.get("pnl") or 0) for r in blocked)
+    return blocked, round(saved, 2)
+
+
+def _ticker_read(rows, lv, strikes: int = 2):
+    """Build a short, data-driven 'read' for one ticker-day. `rows` are the
+    ticker's round-trips (with side/strategy/pnl/entry_price/entry_time),
+    `lv` the Camarilla levels dict. Returns {verdict, notes[], saved}."""
+    rows = sorted(rows, key=lambda r: r.get("entry_time") or "")
+    for r in rows:
+        r["level"] = _trade_level(r.get("strategy"), r.get("side"))
+
+    n      = len(rows)
+    wins   = [r for r in rows if float(r.get("pnl") or 0) > 0]
+    losses = [r for r in rows if float(r.get("pnl") or 0) < 0]
+    notes  = []
+
+    # Level clustering — entries piled onto one level
+    by_level = {}
+    for r in rows:
+        by_level.setdefault(r.get("level"), []).append(r)
+    dominant = None
+    for lvl, grp in by_level.items():
+        if lvl and len(grp) >= 3:
+            prices = [float(g.get("entry_price") or 0) for g in grp]
+            spread = max(prices) - min(prices)
+            nl     = sum(1 for g in grp if float(g.get("pnl") or 0) < 0)
+            side   = (grp[0].get("side") or "").lower()
+            notes.append(
+                f"{len(grp)} {side}s clustered at {lvl} "
+                f"(entries {min(prices):.2f}–{max(prices):.2f}, ${spread:.2f} spread, "
+                f"{nl} losing) — re-fading a level that held.")
+            dominant = lvl
+
+    # Risk/reward shape
+    if wins and losses:
+        avg_w = sum(float(r['pnl']) for r in wins) / len(wins)
+        avg_l = sum(float(r['pnl']) for r in losses) / len(losses)
+        if abs(avg_l) > avg_w:
+            notes.append(f"Avg loss ${avg_l:.2f} vs avg win +${avg_w:.2f} — "
+                         f"risk/reward upside-down.")
+
+    # Two-strikes impact for this ticker-day
+    blocked, saved = _apply_two_strikes(rows, strikes)
+    if blocked:
+        notes.append(f"{strikes}-strikes/level would've skipped {len(blocked)} trade(s), "
+                     f"net {'+' if saved >= 0 else ''}${saved:.2f}.")
+
+    # Verdict
+    net = sum(float(r.get("pnl") or 0) for r in rows)
+    if dominant and net < 0:
+        verdict = f"Range-bound — repeatedly faded {dominant}."
+    elif n >= 3 and len(losses) >= len(wins) and net < 0:
+        verdict = "Choppy / negative expectancy."
+    elif net > 0:
+        verdict = "Net positive."
+    else:
+        verdict = "Mixed."
+
+    return {"verdict": verdict, "notes": notes, "saved": saved, "blocked": len(blocked)}
+
+
 @app.route("/review")
 def review_page():
     return render_template("review.html")
@@ -8471,6 +8567,9 @@ def api_review():
 
     if alpaca_broker2 is None:
         return jsonify({"error": "Refined account (alpaca2) is not configured."}), 503
+
+    try:    strikes = max(1, int(request.args.get("strikes", 2)))
+    except Exception: strikes = 2
 
     def _ep(ts_iso):
         """ISO fill timestamp (UTC) -> Unix seconds, floored to the 5-min bar grid."""
@@ -8576,6 +8675,9 @@ def api_review():
         # Earliest entry on this ticker — drives chronological ordering
         first_entry = min((t.get("entry_time") or "" for t in tlist), default="")
 
+        # Data-driven read + two-strikes impact for this ticker-day
+        read = _ticker_read(rows, lv, strikes=strikes)
+
         tickers_out.append({
             "ticker":      tk,
             "total_pnl":   round(tk_total, 2),
@@ -8585,18 +8687,94 @@ def api_review():
             "markers":     markers,
             "levels":      levels,
             "trades":      rows,
+            "read":        read,
         })
 
     # Chronological: earliest trade of the day first
     tickers_out.sort(key=lambda x: x["first_entry"])
 
+    day_saved = round(sum(t["read"]["saved"] for t in tickers_out), 2)
+
     return jsonify({
-        "date":        date,
-        "account":     "Refined",
-        "total_pnl":   round(grand_total, 2),
-        "n_trades":    len(trades),
-        "n_tickers":   len(tickers_out),
-        "tickers":     tickers_out,
+        "date":         date,
+        "account":      "Refined",
+        "total_pnl":    round(grand_total, 2),
+        "n_trades":     len(trades),
+        "n_tickers":    len(tickers_out),
+        "strikes":      strikes,
+        "two_strikes_saved": day_saved,
+        "tickers":      tickers_out,
+    })
+
+
+@app.route("/api/review/two_strikes")
+def api_review_two_strikes():
+    """How much an N-strikes-per-level rule would have changed Refined P&L over
+    a date range. Each ticker-day-level is replayed; once a level takes `strikes`
+    losses, later trades on it are blocked.
+
+      ?from=YYYY-MM-DD&to=YYYY-MM-DD&strikes=2   (defaults to current week, ET)
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from collections import defaultdict
+
+    if alpaca_broker2 is None:
+        return jsonify({"error": "Refined account (alpaca2) is not configured."}), 503
+
+    try:    strikes = max(1, int(request.args.get("strikes", 2)))
+    except Exception: strikes = 2
+    try:
+        today = _dt.datetime.now(ZoneInfo("America/New_York")).date()
+    except Exception:
+        today = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date()
+    to_date   = (request.args.get("to")   or today.isoformat()).strip()
+    from_date = (request.args.get("from")
+                 or (today - _dt.timedelta(days=today.weekday())).isoformat()).strip()
+
+    fills  = _get_cached_fills_2()
+    paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+    trades = paired["closed_clean"]
+
+    groups = defaultdict(list)
+    for t in trades:
+        groups[((t.get("entry_time") or "")[:10], (t.get("ticker") or "").upper())].append(t)
+
+    total_actual = round(sum(float(t.get("pnl") or 0) for t in trades), 2)
+    total_saved  = 0.0
+    n_blocked    = 0
+    by_level     = defaultdict(lambda: {"blocked": 0, "saved": 0.0})
+    per_day      = defaultdict(float)
+
+    for (d, tk), grp in groups.items():
+        rows = sorted(grp, key=lambda r: r.get("entry_time") or "")
+        for r in rows:
+            r["level"] = _trade_level(r.get("strategy"), r.get("side"))
+        blocked, saved = _apply_two_strikes(rows, strikes)
+        if blocked:
+            total_saved += saved
+            n_blocked   += len(blocked)
+            per_day[d]  += saved
+            for b in blocked:
+                key = f"{tk} {b.get('level') or '?'}"
+                by_level[key]["blocked"] += 1
+                by_level[key]["saved"]   += -float(b.get("pnl") or 0)
+
+    total_saved = round(total_saved, 2)
+    breakdown = sorted(
+        [{"key": k, "blocked": v["blocked"], "saved": round(v["saved"], 2)}
+         for k, v in by_level.items()],
+        key=lambda x: x["saved"], reverse=True)
+
+    return jsonify({
+        "from": from_date, "to": to_date, "strikes": strikes,
+        "n_trades":       len(trades),
+        "trades_blocked": n_blocked,
+        "actual_pnl":     total_actual,
+        "saved":          total_saved,
+        "adjusted_pnl":   round(total_actual + total_saved, 2),
+        "by_level":       breakdown,
+        "per_day":        [{"date": k, "saved": round(per_day[k], 2)} for k in sorted(per_day)],
     })
 
 
