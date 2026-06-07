@@ -5773,6 +5773,10 @@ _REFINED_CONSEC_LOSS_GATE = 3
 # Reduces promote/demote churn from short-stint strategies whose Sharpe/PF
 # swing wildly between runs.
 _REFINED_MIN_TRADES = 10
+# Looser threshold for the On-Deck watchlist only (display, never routed) — lets
+# ranks beyond the routed set still surface up-and-comers when fewer than `n`
+# strategies clear the strict routing bar above.
+_REFINED_ONDECK_MIN_TRADES = 5
 
 
 def _band_target_dollars(score):
@@ -5950,10 +5954,25 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=No
     )
     top_scored = scored[:n]
     top        = [name for name, _, _ in top_scored]
+    _top_names = {name for name, _, _ in top_scored}
 
-    # On-deck: next 5 strategies just outside the cut. Surfaced in the UI for
-    # visibility but NOT added to routing rules or persisted to refined_history.
-    on_deck_scored = scored[n:n + 5]
+    # On-deck: the next best up-and-comers, for UI visibility only — NOT added to
+    # routing rules or persisted. Uses a looser trade threshold than routing so the
+    # watchlist still populates when fewer than `n` strategies clear the strict bar.
+    ondeck_candidates = {
+        k: v for k, v in stats_map.items()
+        if (v.get("total_pnl") or 0) > 0
+        and (v.get("trades") or 0) >= _REFINED_ONDECK_MIN_TRADES
+        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and _strategy_has_enabled_rule(k)
+        and k not in _top_names
+    }
+    on_deck_scored = sorted(
+        ((name, stats, _blended_score(name, stats))
+         for name, stats in ondeck_candidates.items()),
+        key=lambda x: x[2],
+        reverse=True,
+    )[:5]
     on_deck        = [name for name, _, _ in on_deck_scored]
 
     # Per-strategy share sizing: dollar target by band ÷ last price.
