@@ -558,6 +558,23 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     alpaca_targets   = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "alpaca"]
     ib_targets       = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "ib"]
 
+    # Per-account trading-hours gate (entries only) — drop the Alpaca targets whose
+    # account is outside its configured window, while letting in-window accounts
+    # through. Lets Paper trade all day while Refined only trades the open, etc.
+    if not _is_exit and alpaca_targets:
+        _in_hours = [(t, o) for (t, o) in alpaca_targets
+                     if app._account_hours_ok(_alpaca_broker_name(t))]
+        if len(_in_hours) != len(alpaca_targets):
+            _dropped = {_alpaca_broker_name(t) for (t, o) in alpaca_targets} \
+                       - {_alpaca_broker_name(t) for (t, o) in _in_hours}
+            app.log.info("Account-hours gate: %s %s — skipped %s (outside trading window)",
+                         order_action, ticker, ",".join(sorted(_dropped)))
+            if not _in_hours and conn:
+                app._update_exec(cur, trade_id, "skipped",
+                                 f"Outside trading hours for {', '.join(sorted(_dropped))}")
+                conn.commit()
+        alpaca_targets = _in_hours
+
     # --- Coinbase (sync-only; typically sub-second) ---
     for target, qty_override in coinbase_targets:
         _qty = qty_override if qty_override is not None else quantity

@@ -68,6 +68,12 @@ MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block 
 # ticker+Camarilla-level in a day, block new entries on that level.
 STRIKES_ENABLED       = os.environ.get("STRIKES_ENABLED", "0") == "1"
 STRIKES_PER_LEVEL     = int(os.environ.get("STRIKES_PER_LEVEL", "2"))
+# Per-account trading-hours windows (ET "HH:MM"). Empty = no restriction (all day).
+# Entries outside the window are dropped for that account only; exits always pass.
+PAPER_HOURS_START     = os.environ.get("PAPER_HOURS_START", "")     # Paper All  (alpaca)
+PAPER_HOURS_END       = os.environ.get("PAPER_HOURS_END", "")
+REFINED_HOURS_START   = os.environ.get("REFINED_HOURS_START", "")   # Refined    (alpaca2)
+REFINED_HOURS_END     = os.environ.get("REFINED_HOURS_END", "")
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -2166,6 +2172,8 @@ def risk_status():
         "strikes_enabled":     STRIKES_ENABLED,
         "strikes_per_level":   STRIKES_PER_LEVEL,
         "strikes":             _strikes_status_list(),
+        "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
+        "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
     })
 
 
@@ -2212,9 +2220,21 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END
     data = request.get_json(silent=True) or {}
     changed = []
+
+    def _set_hours(payload_key, start_var, end_var):
+        """Persist a {start,end} hours payload to the two named globals + store."""
+        h = data.get(payload_key) or {}
+        s = (h.get("start") or "").strip()
+        e = (h.get("end")   or "").strip()
+        globals()[start_var] = s
+        globals()[end_var]   = e
+        _update_env_file(start_var, s); _save_setting(start_var, s)
+        _update_env_file(end_var,   e); _save_setting(end_var,   e)
+        log.info("%s set to %s–%s", payload_key, s or "·", e or "·")
+        changed.append(payload_key)
     if "max_daily_loss" in data:
         try:
             MAX_DAILY_LOSS = float(data["max_daily_loss"])
@@ -2302,6 +2322,10 @@ def risk_set_limit():
         _save_setting("STRIKES_PER_LEVEL", str(STRIKES_PER_LEVEL))
         log.info("STRIKES_PER_LEVEL set to %d", STRIKES_PER_LEVEL)
         changed.append("strikes_per_level")
+    if "paper_hours" in data:
+        _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END")
+    if "refined_hours" in data:
+        _set_hours("refined_hours", "REFINED_HOURS_START", "REFINED_HOURS_END")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
@@ -8541,6 +8565,27 @@ def _get_strike_counts(force: bool = False):
     return _strike_cache["data"]
 
 
+def _account_hours_ok(account: str, now_et=None) -> bool:
+    """True if `account` ('alpaca'=Paper All, 'alpaca2'=Refined) is inside its
+    configured trading-hours window (ET). Empty config = always allowed."""
+    import datetime as _dt
+    if account == "alpaca2":
+        start, end = REFINED_HOURS_START, REFINED_HOURS_END
+    else:
+        start, end = PAPER_HOURS_START, PAPER_HOURS_END
+    if not start or not end:
+        return True
+    try:
+        if now_et is None:
+            now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
+        now_s = now_et.strftime("%H:%M")
+        if start <= end:
+            return start <= now_s < end
+        return now_s >= start or now_s < end   # window wraps past midnight
+    except Exception:
+        return True
+
+
 def _apply_two_strikes(rows, strikes: int = 2):
     """Replay round-trips chronologically and apply a "N strikes per level"
     rule: once a (ticker-day) level has accumulated `strikes` losing trades,
@@ -10544,7 +10589,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -10605,6 +10650,11 @@ def _restore_risk_settings():
             log.info("Restored STRIKES_PER_LEVEL=%d from DB", STRIKES_PER_LEVEL)
         except (TypeError, ValueError):
             pass
+    for _k in ("PAPER_HOURS_START", "PAPER_HOURS_END", "REFINED_HOURS_START", "REFINED_HOURS_END"):
+        _v = _load_setting(_k)
+        if _v is not None:
+            globals()[_k] = _v
+            log.info("Restored %s=%s from DB", _k, _v or "·")
 
 _restore_risk_settings()
 

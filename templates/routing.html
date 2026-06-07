@@ -273,6 +273,25 @@
           </div>
           <div class="risk-hint" id="refinedDollarHint">Fires alongside the % stop — whichever hits first. Caps large-position $ damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
         </div>
+
+        <!-- Refined trading hours -->
+        <div class="risk-section" style="margin-top:10px">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Trading Hours (ET)
+            <span id="refinedHoursBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="refinedHoursDot"></span>
+              <span id="refinedHoursText">All day</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="refinedHoursStart" type="time" style="width:auto">
+            <span style="color:#666">–</span>
+            <input class="risk-input" id="refinedHoursEnd" type="time" style="width:auto">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
+          </div>
+          <div class="risk-hint">New entries are blocked outside this window (ET). Exits always go through. Empty = all day. (e.g. 09:30–11:00 to trade only the open.)</div>
+        </div>
       </div>
 
       <!-- Paper All Account -->
@@ -294,27 +313,49 @@
           </div>
           <div class="risk-hint" id="paperPosStatusHint">Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.</div>
         </div>
-      </div>
 
-      <!-- Trailing Stop — both accounts -->
-      <div class="rg-card rg-card-trail">
-        <div class="rg-card-title" style="color:#7bb3d6">&#9670; Trailing Stop — Both Accounts</div>
-
-        <div class="risk-section">
+        <!-- Paper trading hours -->
+        <div class="risk-section" style="margin-top:10px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-            Giveback Stop ($)
-            <span id="trailStatusBadge" class="risk-status-badge disabled">
-              <span class="risk-dot grey" id="trailStatusDot"></span>
-              <span id="trailStatusText">Disabled</span>
+            Trading Hours (ET)
+            <span id="paperHoursBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="paperHoursDot"></span>
+              <span id="paperHoursText">All day</span>
             </span>
           </div>
           <div class="risk-input-row">
-            <input class="risk-input" id="trailLimitInput" type="number" step="1" min="0" placeholder="e.g. 30">
-            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTrailLimit()">Set</button>
-            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTrailLimit()">Off</button>
+            <input class="risk-input" id="paperHoursStart" type="time" style="width:auto">
+            <span style="color:#666">–</span>
+            <input class="risk-input" id="paperHoursEnd" type="time" style="width:auto">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperHours()">Set</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperHours()">Off</button>
           </div>
-          <div class="risk-hint" id="trailStatusHint">Arms once a position is up by this amount ($), then closes if it gives the gain back. Strategy stays active.</div>
+          <div class="risk-hint">New entries are blocked outside this window (ET). Exits always go through. Empty = all day.</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Both-accounts controls: trailing stop, session trail overrides, strikes -->
+    <div class="rg-card-title" style="color:#7bb3d6;margin-top:16px">&#9670; Both Accounts</div>
+
+    <!-- Trailing Stop — both accounts -->
+    <div class="rg-card rg-card-trail">
+      <div class="rg-card-title" style="color:#7bb3d6">&#9670; Trailing Stop</div>
+
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Giveback Stop ($)
+          <span id="trailStatusBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="trailStatusDot"></span>
+            <span id="trailStatusText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="trailLimitInput" type="number" step="1" min="0" placeholder="e.g. 30">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTrailLimit()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTrailLimit()">Off</button>
+        </div>
+        <div class="risk-hint" id="trailStatusHint">Arms once a position is up by this amount ($), then closes if it gives the gain back. Strategy stays active.</div>
       </div>
     </div>
 
@@ -625,6 +666,27 @@
     row.classList.toggle('state-off', !isOn);
   }
 
+  // Sync a per-account trading-hours row (prefix = 'paper' | 'refined').
+  function _setHoursUI(prefix, h) {
+    const startEl = document.getElementById(prefix + 'HoursStart');
+    const endEl   = document.getElementById(prefix + 'HoursEnd');
+    const badge   = document.getElementById(prefix + 'HoursBadge');
+    const dot     = document.getElementById(prefix + 'HoursDot');
+    const text    = document.getElementById(prefix + 'HoursText');
+    if (!startEl) return;
+    const on = !!(h.start && h.end);
+    if (document.activeElement !== startEl) startEl.value = h.start || '';
+    if (document.activeElement !== endEl)   endEl.value   = h.end   || '';
+    if (on) {
+      badge.className = 'risk-status-badge active'; dot.className = 'risk-dot green';
+      text.textContent = h.start + '–' + h.end;
+    } else {
+      badge.className = 'risk-status-badge disabled'; dot.className = 'risk-dot grey';
+      text.textContent = 'All day';
+    }
+    setRowState(prefix + 'HoursStart', on);
+  }
+
   async function loadRisk() {
     try {
       const res  = await fetch('/api/risk/status');
@@ -701,6 +763,10 @@
       setRowState('morningTrailInput',   data.morning_trail_pct != null && data.morning_trail_pct > 0);
       setRowState('afternoonTrailInput', data.afternoon_trail_pct != null && data.afternoon_trail_pct > 0);
       setRowState('strikesInput',        !!data.strikes_enabled);
+
+      // Per-account trading hours
+      _setHoursUI('paper',   data.paper_hours   || {});
+      _setHoursUI('refined', data.refined_hours || {});
 
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
@@ -962,6 +1028,33 @@
   async function clearStrikes() {
     try { await _postLimit({strikes_enabled: false}); }
     catch(e) { console.error('clearStrikes failed:', e); }
+  }
+
+  async function saveRefinedHours() {
+    const s = document.getElementById('refinedHoursStart').value;
+    const e = document.getElementById('refinedHoursEnd').value;
+    if (!s || !e) { alert('Set both start and end times (ET).'); return; }
+    try { await _postLimit({refined_hours: {start: s, end: e}}); }
+    catch(err) { console.error('saveRefinedHours failed:', err); }
+  }
+  async function clearRefinedHours() {
+    document.getElementById('refinedHoursStart').value = '';
+    document.getElementById('refinedHoursEnd').value = '';
+    try { await _postLimit({refined_hours: {start: '', end: ''}}); }
+    catch(err) { console.error('clearRefinedHours failed:', err); }
+  }
+  async function savePaperHours() {
+    const s = document.getElementById('paperHoursStart').value;
+    const e = document.getElementById('paperHoursEnd').value;
+    if (!s || !e) { alert('Set both start and end times (ET).'); return; }
+    try { await _postLimit({paper_hours: {start: s, end: e}}); }
+    catch(err) { console.error('savePaperHours failed:', err); }
+  }
+  async function clearPaperHours() {
+    document.getElementById('paperHoursStart').value = '';
+    document.getElementById('paperHoursEnd').value = '';
+    try { await _postLimit({paper_hours: {start: '', end: ''}}); }
+    catch(err) { console.error('clearPaperHours failed:', err); }
   }
 
   async function saveMorningTrail() {
