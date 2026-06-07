@@ -311,13 +311,6 @@
     .open-pos-table tr:last-child td { border-bottom: none; }
     .open-pos-table tr.refined-row td { background: rgba(96,165,250,0.06); }
 
-    /* Trade time analysis */
-    .time-bucket-table th { text-align:left; color:#555; font-weight:500; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; padding:0 8px 6px 0; border-bottom:1px solid #1e2130; }
-    .time-bucket-table td { padding:6px 8px 6px 0; border-bottom:1px solid #16192a; vertical-align:middle; }
-    .time-bucket-table tr:last-child td { border-bottom:none; }
-    .time-heatmap { border-collapse:separate; border-spacing:1px; font-size:0.72rem; background:#0f1117; }
-    .time-heatmap th { padding:4px 8px; color:#555; font-weight:500; }
-    .time-heatmap td.heat-cell { padding:4px 6px; text-align:right; font-family:monospace; min-width:54px; }
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
     .price-meter { width: 100%; user-select: none; }
@@ -728,42 +721,6 @@
       <div class="chart-title" style="margin-bottom:0">Trade Time Performance</div>
     </div>
     <canvas id="timeScatterChart" height="120"></canvas>
-  </div>
-
-  <!-- Trade time analysis: bucket stats, cumulative-if-stopped curve, ticker×time heatmap -->
-  <div id="timeAnalysisSection" class="chart-wrap" style="display:none">
-    <div class="chart-title" style="margin-bottom:14px">Trade Time Analysis</div>
-
-    <!-- Panel 1: 30-min bucket breakdown -->
-    <div style="margin-bottom:24px">
-      <div style="font-size:0.75rem;color:#888;margin-bottom:6px">By 30-min Bucket</div>
-      <div style="overflow-x:auto">
-        <table class="time-bucket-table" style="width:100%;border-collapse:collapse;font-size:0.82rem">
-          <thead><tr>
-            <th>Bucket</th>
-            <th style="text-align:right">Trades</th>
-            <th style="text-align:right">Win %</th>
-            <th style="text-align:right">Total P&amp;L</th>
-            <th style="text-align:right">Avg P&amp;L</th>
-            <th style="text-align:right">PF</th>
-          </tr></thead>
-          <tbody id="timeBucketTbody"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Panel 2: Cumulative P&L if stopped at HH:MM -->
-    <div style="margin-bottom:24px">
-      <div style="font-size:0.75rem;color:#888;margin-bottom:6px">Cumulative P&amp;L if You Stopped Trading at HH:MM</div>
-      <div id="cumStopBest" style="font-size:0.78rem;color:#aaa;margin-bottom:8px"></div>
-      <canvas id="cumStopChart" height="80"></canvas>
-    </div>
-
-    <!-- Panel 3: Ticker × time bucket heatmap -->
-    <div>
-      <div style="font-size:0.75rem;color:#888;margin-bottom:6px">Ticker &times; Time Bucket (P&amp;L heatmap)</div>
-      <div id="timeHeatmapWrap" style="overflow-x:auto"></div>
-    </div>
   </div>
 
   <!-- Trade detail modal (scatter click) -->
@@ -2278,10 +2235,6 @@
       }
 
       if (timeScatterInstance) { timeScatterInstance.destroy(); timeScatterInstance = null; }
-      // Side panels: bucket stats, cumulative-if-stopped curve, ticker×time heatmap.
-      // Same `points` array so the panels stay in sync with whatever filters built
-      // the scatter (strategy selection, tab, date range).
-      renderTimeAnalysis(points);
       if (!points.length) return;
 
       const winPoints  = points.filter(p =>  p.win);
@@ -2359,152 +2312,6 @@
           },
         },
       });
-    }
-
-    // Compute and render the three Trade Time Analysis panels from the same
-    // points array the scatter uses. All math is client-side.
-    let _cumStopChart = null;
-    function renderTimeAnalysis(points) {
-      const section = document.getElementById('timeAnalysisSection');
-      if (!section) return;
-      if (!points || !points.length) { section.style.display = 'none'; return; }
-      section.style.display = '';
-
-      const BUCKET = 30;
-      const ET_OPEN = 9 * 60 + 30;
-      const fmtTime = (min) => {
-        const h = Math.floor(min / 60), m = min % 60;
-        return `${h}:${String(m).padStart(2,'0')}`;
-      };
-      const bucketOf = (xMin) => Math.floor((xMin - ET_OPEN) / BUCKET) * BUCKET + ET_OPEN;
-
-      // Group points by bucket
-      const buckets = {};
-      for (const p of points) {
-        const b = bucketOf(p.x);
-        (buckets[b] = buckets[b] || []).push(p);
-      }
-      const sortedB = Object.keys(buckets).map(Number).sort((a, b) => a - b);
-
-      // ── Panel 1: bucket stats table ───────────────────────────────────────
-      const rows = sortedB.map(b => {
-        const pts = buckets[b];
-        const wins   = pts.filter(p => p.win);
-        const losses = pts.filter(p => !p.win);
-        const total  = pts.reduce((s, p) => s + p.y, 0);
-        const grossW = wins.reduce((s, p) => s + p.y, 0);
-        const grossL = Math.abs(losses.reduce((s, p) => s + p.y, 0));
-        const wr     = pts.length ? wins.length / pts.length * 100 : 0;
-        const pf     = grossL > 0 ? grossW / grossL : (grossW > 0 ? null : 0);
-        const totalColor = total >= 0 ? '#7FE098' : '#ef5350';
-        const wrColor    = wr >= 50 ? '#7FE098' : '#ef5350';
-        const pfStr      = pf == null ? '∞' : pf === 0 ? '—' : pf.toFixed(2);
-        const avg        = total / pts.length;
-        return `<tr>
-          <td style="color:#ccc">${fmtTime(b)}–${fmtTime(b + BUCKET)}</td>
-          <td style="text-align:right;color:#aaa">${pts.length}</td>
-          <td style="text-align:right;color:${wrColor}">${wr.toFixed(1)}%</td>
-          <td style="text-align:right;color:${totalColor};font-weight:600">${total >= 0 ? '+' : '-'}$${Math.abs(total).toFixed(2)}</td>
-          <td style="text-align:right;color:#888">${avg >= 0 ? '+' : '-'}$${Math.abs(avg).toFixed(2)}</td>
-          <td style="text-align:right;color:#aaa">${pfStr}</td>
-        </tr>`;
-      }).join('');
-      document.getElementById('timeBucketTbody').innerHTML = rows;
-
-      // ── Panel 2: cumulative P&L if stopped at end of each bucket ──────────
-      const labels = sortedB.map(b => fmtTime(b + BUCKET));
-      let cum = 0;
-      const values = sortedB.map(b => {
-        cum += buckets[b].reduce((s, p) => s + p.y, 0);
-        return parseFloat(cum.toFixed(2));
-      });
-      let bestIdx = 0;
-      for (let i = 1; i < values.length; i++) if (values[i] > values[bestIdx]) bestIdx = i;
-      const bestVal  = values[bestIdx];
-      const bestLbl  = labels[bestIdx];
-      const finalVal = values[values.length - 1];
-      const lift     = bestVal - finalVal;
-      const fmtD = (v) => (v >= 0 ? '+' : '-') + '$' + Math.abs(v).toFixed(2);
-      const note = document.getElementById('cumStopBest');
-      if (lift > 0.01) {
-        note.innerHTML = `<span style="color:#F2C76B">⚑ Stopping at <strong>${bestLbl}</strong> would have yielded <strong>${fmtD(bestVal)}</strong> vs all-day <strong>${fmtD(finalVal)}</strong> (<strong>+$${lift.toFixed(2)}</strong> better — afternoon trades cost you).</span>`;
-      } else {
-        note.innerHTML = `<span style="color:#7FE098">Trading all day was optimal — final <strong>${fmtD(finalVal)}</strong> ≥ any earlier stop.</span>`;
-      }
-      if (_cumStopChart) { _cumStopChart.destroy(); _cumStopChart = null; }
-      const cumCtx = document.getElementById('cumStopChart').getContext('2d');
-      _cumStopChart = new Chart(cumCtx, {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [{
-            data: values,
-            borderColor: '#7FE098',
-            backgroundColor: 'rgba(127,224,152,0.08)',
-            borderWidth: 2,
-            pointRadius:           values.map((_, i) => i === bestIdx ? 6 : 3),
-            pointBackgroundColor:  values.map((_, i) => i === bestIdx ? '#F2C76B' : '#7FE098'),
-            pointBorderColor:      values.map((_, i) => i === bestIdx ? '#F2C76B' : '#7FE098'),
-            tension: 0.2,
-            fill: true,
-          }],
-        },
-        options: {
-          animation: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: ctx => fmtD(ctx.parsed.y),
-                title: ctx => 'Stop trading at ' + ctx[0].label,
-              },
-            },
-          },
-          scales: {
-            x: { ticks: { color: '#666', maxTicksLimit: 10 }, grid: { color: '#1a1d2a' } },
-            y: { ticks: { color: '#666', callback: v => '$' + v.toLocaleString() }, grid: { color: '#1a1d2a', borderDash: [4,4] } },
-          },
-        },
-      });
-
-      // ── Panel 3: ticker × time bucket P&L heatmap ─────────────────────────
-      const matrix = {};
-      for (const p of points) {
-        const t = p.ticker || '?';
-        const b = bucketOf(p.x);
-        matrix[t] = matrix[t] || {};
-        matrix[t][b] = (matrix[t][b] || 0) + p.y;
-      }
-      // Sort tickers by total P&L descending so the table reads top-down
-      const tickerTotals = Object.entries(matrix).map(([t, m]) => [t, Object.values(m).reduce((s, v) => s + v, 0)]);
-      tickerTotals.sort((a, b) => b[1] - a[1]);
-      const tickers = tickerTotals.map(([t]) => t);
-      const maxAbs = Math.max(1, ...Object.values(matrix).flatMap(m => Object.values(m).map(Math.abs)));
-      const colorFor = (v) => {
-        if (!v) return 'transparent';
-        const intensity = Math.min(Math.abs(v) / maxAbs, 1);
-        const a = 0.15 + intensity * 0.55;
-        return (v > 0 ? 'rgba(127,224,152,' : 'rgba(239,83,80,') + a.toFixed(2) + ')';
-      };
-      let html = '<table class="time-heatmap"><thead><tr><th style="text-align:left">Ticker</th>';
-      for (const b of sortedB) html += `<th style="text-align:right">${fmtTime(b)}</th>`;
-      html += '<th style="text-align:right">Total</th></tr></thead><tbody>';
-      for (let i = 0; i < tickers.length; i++) {
-        const t = tickers[i];
-        const total = tickerTotals[i][1];
-        const tColor = total >= 0 ? '#7FE098' : '#ef5350';
-        html += `<tr><td style="padding:4px 8px;color:#ccc;font-weight:600">${t}</td>`;
-        for (const b of sortedB) {
-          const v = matrix[t][b] || 0;
-          const cell = v === 0
-            ? '<span style="color:#333">·</span>'
-            : `<span style="color:${v > 0 ? '#7FE098' : '#ef5350'}">${v > 0 ? '+' : '-'}$${Math.abs(v).toFixed(0)}</span>`;
-          html += `<td class="heat-cell" style="background:${colorFor(v)}">${cell}</td>`;
-        }
-        html += `<td style="padding:4px 8px;text-align:right;color:${tColor};font-weight:600">${fmtD(total)}</td></tr>`;
-      }
-      html += '</tbody></table>';
-      document.getElementById('timeHeatmapWrap').innerHTML = html;
     }
 
     function openTradeDetail(pt) {
