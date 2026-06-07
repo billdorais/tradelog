@@ -23,6 +23,11 @@
     .btn-ghost:hover { border-color: #7FE098; color: #7FE098; }
     .btn-danger { background: transparent; border: 1px solid #e74c3c; color: #e74c3c; }
     .btn-danger:hover { background: rgba(231,76,60,0.1); }
+    /* Highlight the button matching the current state: Set when on, Off when off */
+    .risk-input-row.state-on  .btn-primary { background: #88BF8B; border-color: #88BF8B; color: #0f1117; font-weight: 700; }
+    .risk-input-row.state-off .btn-primary { background: transparent; border-color: #2a2d3e; color: #888; font-weight: 500; }
+    .risk-input-row.state-off .btn-ghost   { background: #3a3d4e; border-color: #5a5d6e; color: #fff; font-weight: 700; }
+    .risk-input-row.state-on  .btn-ghost   { color: #888; }
 
     /* Pipeline rows */
     .pipelines { display: flex; flex-direction: column; gap: 16px; }
@@ -611,6 +616,15 @@
   // -----------------------------------------------------------------------
   // Risk panel
   // -----------------------------------------------------------------------
+  // Highlight the Set/Off button matching a feature's current on/off state.
+  function setRowState(inputId, isOn) {
+    const el  = document.getElementById(inputId);
+    const row = el && el.closest('.risk-input-row');
+    if (!row) return;
+    row.classList.toggle('state-on',  !!isOn);
+    row.classList.toggle('state-off', !isOn);
+  }
+
   async function loadRisk() {
     try {
       const res  = await fetch('/api/risk/status');
@@ -677,6 +691,16 @@
         stText.textContent = 'Disabled';
         stActive.textContent = '';
       }
+
+      // Highlight the active (Set/Off) button per feature, from the same flags
+      setRowState('riskLimitInput',      !!data.enabled);
+      setRowState('posLimitInput',       data.max_position_loss_pct != null && data.max_position_loss_pct < 0);
+      setRowState('refinedDollarInput',  data.max_position_loss_refined != null && data.max_position_loss_refined < 0);
+      setRowState('paperPosLimitInput',  data.max_position_loss != null && data.max_position_loss < 0);
+      setRowState('trailLimitInput',     !!data.trailing_stop_enabled);
+      setRowState('morningTrailInput',   data.morning_trail_pct != null && data.morning_trail_pct > 0);
+      setRowState('afternoonTrailInput', data.afternoon_trail_pct != null && data.afternoon_trail_pct > 0);
+      setRowState('strikesInput',        !!data.strikes_enabled);
 
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
