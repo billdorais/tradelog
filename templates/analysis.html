@@ -830,13 +830,16 @@
     renderOverall(data.overall || {});
     renderStratTable(data.per_strategy || {});
     renderTickerTable(data.per_ticker  || {});
-    renderTradeTimeAnalysis();
     // Performance Summary always shows Refined account so you can track the curated portfolio
     const perfData = isAlpaca2 ? data : (refinedPerfRes ? await refinedPerfRes.json().catch(() => ({})) : {});
     renderDaily(perfData.daily   || []);
     renderWeekly(perfData.weekly || []);
     if (isAlpaca || isAlpaca2) loadReconciliation(isAlpaca2 ? '2' : '');
     _loadRefinedSnapshot();
+    // Isolated: a Trade Time Analysis error must never abort the load flow
+    // (it runs last so the snapshot / On Deck always render first).
+    try { renderTradeTimeAnalysis(); }
+    catch (e) { console.error('Trade Time Analysis failed:', e); }
   }
 
   // ── Refined Snapshot ───────────────────────────────────────────────────────
@@ -1521,41 +1524,45 @@
     } else {
       note.innerHTML = `<span style="color:#7FE098">Trading all day was optimal — final <strong>${fmtD(finalVal)}</strong> ≥ any earlier stop.</span>`;
     }
-    if (_cumStopChart) { _cumStopChart.destroy(); _cumStopChart = null; }
-    const cumCtx = document.getElementById('cumStopChart').getContext('2d');
-    _cumStopChart = new Chart(cumCtx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          data: values,
-          borderColor: '#7FE098',
-          backgroundColor: 'rgba(127,224,152,0.08)',
-          borderWidth: 2,
-          pointRadius:           values.map((_, i) => i === bestIdx ? 6 : 3),
-          pointBackgroundColor:  values.map((_, i) => i === bestIdx ? '#F2C76B' : '#7FE098'),
-          pointBorderColor:      values.map((_, i) => i === bestIdx ? '#F2C76B' : '#7FE098'),
-          tension: 0.2,
-          fill: true,
-        }],
-      },
-      options: {
-        animation: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: ctx => fmtD(ctx.parsed.y),
-              title: ctx => 'Stop trading at ' + ctx[0].label,
+    // Panel 2 chart — isolated so a Chart.js hiccup still leaves the table+heatmap.
+    try {
+      if (typeof Chart === 'undefined') throw new Error('Chart.js not loaded');
+      if (_cumStopChart) { _cumStopChart.destroy(); _cumStopChart = null; }
+      const cumCtx = document.getElementById('cumStopChart').getContext('2d');
+      _cumStopChart = new Chart(cumCtx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: '#7FE098',
+            backgroundColor: 'rgba(127,224,152,0.08)',
+            borderWidth: 2,
+            pointRadius:           values.map((_, i) => i === bestIdx ? 6 : 3),
+            pointBackgroundColor:  values.map((_, i) => i === bestIdx ? '#F2C76B' : '#7FE098'),
+            pointBorderColor:      values.map((_, i) => i === bestIdx ? '#F2C76B' : '#7FE098'),
+            tension: 0.2,
+            fill: true,
+          }],
+        },
+        options: {
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => fmtD(ctx.parsed.y),
+                title: ctx => 'Stop trading at ' + ctx[0].label,
+              },
             },
           },
+          scales: {
+            x: { ticks: { color: '#666', maxTicksLimit: 10 }, grid: { color: '#1a1d2a' } },
+            y: { ticks: { color: '#666', callback: v => '$' + v.toLocaleString() }, grid: { color: '#1a1d2a', borderDash: [4,4] } },
+          },
         },
-        scales: {
-          x: { ticks: { color: '#666', maxTicksLimit: 10 }, grid: { color: '#1a1d2a' } },
-          y: { ticks: { color: '#666', callback: v => '$' + v.toLocaleString() }, grid: { color: '#1a1d2a', borderDash: [4,4] } },
-        },
-      },
-    });
+      });
+    } catch (e) { console.error('cumulative-stop chart failed:', e); }
 
     // ── Panel 3: ticker × time bucket P&L heatmap ─────────────────────────
     const matrix = {};
