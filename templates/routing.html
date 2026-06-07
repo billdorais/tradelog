@@ -284,9 +284,9 @@
             </span>
           </div>
           <div class="risk-input-row">
-            <input class="risk-input" id="refinedHoursStart" type="time" style="width:auto">
+            <input class="risk-input" id="refinedHoursStart" type="time" style="width:auto" oninput="_hoursDirty.refined = true">
             <span style="color:#666">–</span>
-            <input class="risk-input" id="refinedHoursEnd" type="time" style="width:auto">
+            <input class="risk-input" id="refinedHoursEnd" type="time" style="width:auto" oninput="_hoursDirty.refined = true">
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
           </div>
@@ -324,9 +324,9 @@
             </span>
           </div>
           <div class="risk-input-row">
-            <input class="risk-input" id="paperHoursStart" type="time" style="width:auto">
+            <input class="risk-input" id="paperHoursStart" type="time" style="width:auto" oninput="_hoursDirty.paper = true">
             <span style="color:#666">–</span>
-            <input class="risk-input" id="paperHoursEnd" type="time" style="width:auto">
+            <input class="risk-input" id="paperHoursEnd" type="time" style="width:auto" oninput="_hoursDirty.paper = true">
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperHours()">Off</button>
           </div>
@@ -666,6 +666,10 @@
     row.classList.toggle('state-off', !isOn);
   }
 
+  // True while the user is mid-entry on an hours pair — suppresses the periodic
+  // refresh from blanking the fields before they click Set. Cleared on Set/Off.
+  const _hoursDirty = { paper: false, refined: false };
+
   // Sync a per-account trading-hours row (prefix = 'paper' | 'refined').
   function _setHoursUI(prefix, h) {
     const startEl = document.getElementById(prefix + 'HoursStart');
@@ -674,9 +678,12 @@
     const dot     = document.getElementById(prefix + 'HoursDot');
     const text    = document.getElementById(prefix + 'HoursText');
     if (!startEl) return;
+    // Don't clobber inputs the user is editing (focused or typed-but-unsaved).
+    if (_hoursDirty[prefix] || document.activeElement === startEl
+        || document.activeElement === endEl) return;
     const on = !!(h.start && h.end);
-    if (document.activeElement !== startEl) startEl.value = h.start || '';
-    if (document.activeElement !== endEl)   endEl.value   = h.end   || '';
+    startEl.value = h.start || '';
+    endEl.value   = h.end   || '';
     if (on) {
       badge.className = 'risk-status-badge active'; dot.className = 'risk-dot green';
       text.textContent = h.start + '–' + h.end;
@@ -1034,10 +1041,12 @@
     const s = document.getElementById('refinedHoursStart').value;
     const e = document.getElementById('refinedHoursEnd').value;
     if (!s || !e) { alert('Set both start and end times (ET).'); return; }
+    _hoursDirty.refined = false;
     try { await _postLimit({refined_hours: {start: s, end: e}}); }
     catch(err) { console.error('saveRefinedHours failed:', err); }
   }
   async function clearRefinedHours() {
+    _hoursDirty.refined = false;
     document.getElementById('refinedHoursStart').value = '';
     document.getElementById('refinedHoursEnd').value = '';
     try { await _postLimit({refined_hours: {start: '', end: ''}}); }
@@ -1047,10 +1056,12 @@
     const s = document.getElementById('paperHoursStart').value;
     const e = document.getElementById('paperHoursEnd').value;
     if (!s || !e) { alert('Set both start and end times (ET).'); return; }
+    _hoursDirty.paper = false;
     try { await _postLimit({paper_hours: {start: s, end: e}}); }
     catch(err) { console.error('savePaperHours failed:', err); }
   }
   async function clearPaperHours() {
+    _hoursDirty.paper = false;
     document.getElementById('paperHoursStart').value = '';
     document.getElementById('paperHoursEnd').value = '';
     try { await _postLimit({paper_hours: {start: '', end: ''}}); }
