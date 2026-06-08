@@ -1080,11 +1080,15 @@ def _position_monitor_loop():
     except Exception as _e:
         log.warning("Max hold recovery error on startup: %s", _e)
     while True:
-        if MAX_POSITION_LOSS < 0 or MAX_POSITION_LOSS_PCT < 0 or MAX_POSITION_LOSS_REFINED < 0 or MAX_TRAILING_GIVEBACK > 0:
-            try:
-                _check_position_stops()
-            except Exception as _e:
-                log.warning("Position monitor error: %s", _e)
+        # Always run _check_position_stops so _latest_positions stays fresh for
+        # the UI (Open Positions panel polls /api/risk/status). The per-position
+        # stop logic is already self-gating — each branch checks its own limit,
+        # so unconfigured limits are no-ops while the position fetch + state
+        # tracking (peaks, auto-close guard, max-hold sync) still runs.
+        try:
+            _check_position_stops()
+        except Exception as _e:
+            log.warning("Position monitor error: %s", _e)
         if _max_hold_positions:
             try:
                 _check_max_hold_exits()
