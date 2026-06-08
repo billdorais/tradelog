@@ -185,6 +185,21 @@
         <button onclick="setLastMonth()"   title="Last month" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Month</button>
         <button onclick="clearDates()"     title="Show all"   style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
       </div>
+      <!-- Time-of-day filter: scope stats / rankings to a trading window (e.g., 09:30-11:30 for morning-only Refined eval) -->
+      <div style="display:flex;align-items:center;gap:6px" title="Filter trades by ENTRY time-of-day (ET). Lets you score strategies on the window your account actually trades.">
+        <span style="font-size:0.75rem;color:#555;white-space:nowrap">Window</span>
+        <input type="time" id="analysisFromTime" step="60"
+          style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
+                 padding:5px 8px;font-size:0.8rem;cursor:pointer;outline:none;width:96px"
+          onchange="saveTimes();load()">
+        <span style="color:#555;font-size:0.8rem">→</span>
+        <input type="time" id="analysisToTime" step="60"
+          style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
+                 padding:5px 8px;font-size:0.8rem;cursor:pointer;outline:none;width:96px"
+          onchange="saveTimes();load()">
+        <button onclick="setMorningWindow()" title="9:30 to 11:30 ET" style="background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">AM</button>
+        <button onclick="clearTimes()" title="Show all hours" style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
+      </div>
       <!-- Source toggle -->
       <div style="display:flex;gap:4px;background:#0d0f16;border:1px solid #1e2130;border-radius:8px;padding:3px">
         <button id="srcSignals" onclick="switchSource('signals')"
@@ -690,8 +705,10 @@
   }
 
   // ── Date persistence (shared with dashboard via localStorage) ─────────────
-  const LS_FROM = 'kairos_date_from';
-  const LS_TO   = 'kairos_date_to';
+  const LS_FROM      = 'kairos_date_from';
+  const LS_TO        = 'kairos_date_to';
+  const LS_FROM_TIME = 'kairos_time_from';
+  const LS_TO_TIME   = 'kairos_time_to';
 
   function saveDates() {
     const f = document.getElementById('analysisFrom').value;
@@ -759,6 +776,32 @@
     document.getElementById('analysisTo').value   = t;
   }
 
+  // Time-of-day window persistence (shared with the analysis page filters).
+  function saveTimes() {
+    const f = document.getElementById('analysisFromTime').value;
+    const t = document.getElementById('analysisToTime').value;
+    if (f) localStorage.setItem(LS_FROM_TIME, f); else localStorage.removeItem(LS_FROM_TIME);
+    if (t) localStorage.setItem(LS_TO_TIME,   t); else localStorage.removeItem(LS_TO_TIME);
+  }
+  function clearTimes() {
+    document.getElementById('analysisFromTime').value = '';
+    document.getElementById('analysisToTime').value   = '';
+    localStorage.removeItem(LS_FROM_TIME);
+    localStorage.removeItem(LS_TO_TIME);
+    load();
+  }
+  function setMorningWindow() {
+    document.getElementById('analysisFromTime').value = '09:30';
+    document.getElementById('analysisToTime').value   = '11:30';
+    saveTimes(); load();
+  }
+  function restoreTimes() {
+    const f = localStorage.getItem(LS_FROM_TIME) || '';
+    const t = localStorage.getItem(LS_TO_TIME)   || '';
+    document.getElementById('analysisFromTime').value = f;
+    document.getElementById('analysisToTime').value   = t;
+  }
+
   // Set of strategy names (upper-case) that have an enabled routing rule.
   // Populated each time load() runs so renderStratTable can star "live" strategies.
   // Map value: 'refined' if rule routes to alpaca-paper-2, otherwise 'paper'.
@@ -789,12 +832,16 @@
     renderExcludedPanel();
     const fromDate = document.getElementById('analysisFrom').value;
     const toDate   = document.getElementById('analysisTo').value;
+    const fromTime = document.getElementById('analysisFromTime').value;
+    const toTime   = document.getElementById('analysisToTime').value;
     const isAlpaca  = activeSource === 'alpaca';
     const isAlpaca2 = activeSource === 'alpaca2';
     let endpoint = (isAlpaca || isAlpaca2) ? '/api/alpaca/analysis' : '/api/analysis';
     const params = new URLSearchParams();
     if (fromDate) params.set('from_date', fromDate);
     if (toDate)   params.set('to_date',   toDate);
+    if (fromTime) params.set('from_time', fromTime);
+    if (toTime)   params.set('to_time',   toTime);
     if (isAlpaca2) params.set('account', '2');
     if (isAlpaca) {
       try {
@@ -809,6 +856,8 @@
     const refinedPerfParams = new URLSearchParams({account: '2'});
     if (fromDate) refinedPerfParams.set('from_date', fromDate);
     if (toDate)   refinedPerfParams.set('to_date',   toDate);
+    if (fromTime) refinedPerfParams.set('from_time', fromTime);
+    if (toTime)   refinedPerfParams.set('to_time',   toTime);
     const refinedPerfEndpoint = '/api/alpaca/analysis?' + refinedPerfParams.toString();
     const [res, refinedPerfRes] = await Promise.all([
       fetch(endpoint),
@@ -2331,6 +2380,7 @@
   }
 
   restoreDates();
+  restoreTimes();
   load();
 
   function toggleNavMenu() {

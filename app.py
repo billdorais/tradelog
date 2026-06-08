@@ -9882,8 +9882,13 @@ def api_alpaca_analysis():
         to_date      = request.args.get("to_date",      "")
         signals_only = request.args.get("signals_only", "0")
         exclude      = request.args.get("exclude",      "")
+        # Time-of-day filter (ET) — scopes analysis to a trading window.
+        # Useful when an account only trades part of the day (e.g., Refined =
+        # 9:30-11:30) and you want stats / rankings to reflect that window.
+        from_time    = (request.args.get("from_time") or "").strip()
+        to_time      = (request.args.get("to_time")   or "").strip()
 
-        _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}"
+        _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}|{from_time}|{to_time}"
         _acache     = _alpaca2_analysis_cache if use_acct2 else _alpaca_analysis_cache
         _cached     = _acache.get(_cache_key)
         if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
@@ -10028,6 +10033,35 @@ def api_alpaca_analysis():
             closed       = [c for c in closed       if _kept(c)]
             orphans      = [c for c in orphans      if _kept(c)]
             daily_closed = [c for c in daily_closed if _kept(c)]
+
+        # Trading-window filter (ET): keep only trades whose ENTRY time-of-day is
+        # in [from_time, to_time). Lets the user scope the analysis to the actual
+        # window an account trades (e.g., 09:30-11:30 for morning-only Refined).
+        def _parse_hhmm(s):
+            try:
+                h, m = s.split(":")
+                return int(h) * 60 + int(m)
+            except Exception:
+                return None
+        from_mins = _parse_hhmm(from_time)
+        to_mins   = _parse_hhmm(to_time)
+        if from_mins is not None or to_mins is not None:
+            from zoneinfo import ZoneInfo as _ZI
+            _et = _ZI("America/New_York")
+            def _in_window(iso_ts):
+                if not iso_ts:
+                    return True
+                try:
+                    dt = _dt.fromisoformat(iso_ts.replace("Z", "+00:00")).astimezone(_et)
+                    mod = dt.hour * 60 + dt.minute
+                    if from_mins is not None and mod < from_mins: return False
+                    if to_mins   is not None and mod >= to_mins:  return False
+                    return True
+                except Exception:
+                    return True
+            closed       = [c for c in closed       if _in_window(c.get("entry_time"))]
+            orphans      = [c for c in orphans      if _in_window(c.get("entry_time") or c.get("time"))]
+            daily_closed = [c for c in daily_closed if _in_window(c.get("entry_time"))]
 
         # Classify per-day orphans (global orphans were already separated by the helper).
         daily_orphans, daily_clean = [], []
