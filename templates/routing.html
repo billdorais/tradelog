@@ -769,12 +769,27 @@
         stBadge.className = 'risk-status-badge active';
         stDot.className   = 'risk-dot green';
         stText.textContent = 'Active (' + data.strikes_per_level + ')';
-        const rows = (data.strikes || []).map(s =>
-          `${s.ticker} ${s.level} ${s.losses}/${data.strikes_per_level}` +
-          (s.blocked ? ' ⛔' : '') + ` <span style="color:#555">(${s.account})</span>`);
-        stActive.innerHTML = rows.length
-          ? 'Today: ' + rows.join(' &nbsp;·&nbsp; ')
-          : 'Today: no losses recorded yet.';
+        const _limit = data.strikes_per_level;
+        const _all   = data.strikes || [];
+        // One chip per ticker+level, red ⛔ if blocked, yellow if partial.
+        const _chip = s => {
+          const col = s.blocked ? '#ef5350' : '#F2E7AC';
+          return `<span style="color:${col}">${s.ticker} ${s.level} ${s.losses}/${_limit}${s.blocked ? ' ⛔' : ''}</span>`;
+        };
+        // One section per account: blocked first, then by loss count.
+        const _section = (label, color, acct) => {
+          const arr = _all.filter(s => s.account === acct).sort((a, b) =>
+            (b.blocked - a.blocked) || (b.losses - a.losses) || a.ticker.localeCompare(b.ticker));
+          if (!arr.length) return '';
+          const nb = arr.filter(s => s.blocked).length;
+          return `<div style="margin-top:8px">`
+            + `<span style="color:${color};font-weight:600">&#9670; ${label}</span> `
+            + `<span style="color:#666">— ${nb} blocked · ${arr.length} with losses</span><br>`
+            + arr.map(_chip).join(' &nbsp;·&nbsp; ') + `</div>`;
+        };
+        const _sections = _section('Refined', '#a78bfa', 'alpaca2')
+                        + _section('Paper All', '#7FE098', 'alpaca');
+        stActive.innerHTML = _sections || 'Today: no losses recorded yet.';
       } else {
         stBadge.className = 'risk-status-badge disabled';
         stDot.className   = 'risk-dot grey';
