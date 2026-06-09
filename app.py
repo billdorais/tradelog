@@ -8931,6 +8931,106 @@ def api_review_two_strikes():
     })
 
 
+def _refined_strategy_set():
+    """Upper-case strategy names routed to the Refined account — i.e. any enabled
+    rule with an alpaca-paper-2 / alpaca-live-2 broker node. These are the
+    strategies a Refined trading-hours gate would apply to."""
+    out = set()
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        for row in cur.fetchall():
+            nodes_raw = row[0] if DATABASE_URL else row["nodes"]
+            nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+            if not any(n.get("type") == "broker"
+                       and n.get("value") in ("alpaca-paper-2", "alpaca-live-2") for n in nodes):
+                continue
+            for n in nodes:
+                if n.get("type") == "strategy" and n.get("value"):
+                    out.add(str(n["value"]).upper())
+        conn.close()
+    except Exception as _e:
+        log.warning("refined strategy set lookup failed: %s", _e)
+    return out
+
+
+@app.route("/api/refined_cutoff_impact")
+def api_refined_cutoff_impact():
+    """What the Refined-eligible strategies did on the Paper All account AFTER a
+    cutoff time — i.e. the entries a Refined trading-hours gate would skip. Paper
+    All trades all day, so it's the control group for the gated Refined account.
+
+      ?cutoff=HH:MM (ET, default 11:30) &from_date= &to_date=
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from collections import defaultdict
+
+    if alpaca_broker is None:
+        return jsonify({"error": "Paper All account (alpaca) is not configured."}), 503
+
+    cutoff    = (request.args.get("cutoff") or "11:30").strip()
+    from_date = (request.args.get("from_date") or "").strip()
+    to_date   = (request.args.get("to_date") or "").strip()
+
+    refined = _refined_strategy_set()
+    if not refined:
+        return jsonify({"error": "No strategies route to the Refined account."}), 404
+
+    paired = _pair_alpaca_fills_lifo(_get_cached_fills(), from_date=from_date, to_date=to_date)
+    trades = paired["closed_clean"]
+
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+
+    def _entry_hhmm(t):
+        s = (t.get("entry_time") or "").replace(" ", "T")
+        try:
+            d = _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_dt.timezone.utc)
+            return d.astimezone(et).strftime("%H:%M")
+        except Exception:
+            return None
+
+    before, after = [], []
+    for t in trades:
+        if (t.get("strategy") or "").upper() not in refined:
+            continue
+        hhmm = _entry_hhmm(t)
+        if hhmm is None:
+            continue
+        (after if hhmm >= cutoff else before).append(t)
+
+    def _summ(arr):
+        n    = len(arr)
+        wins = sum(1 for t in arr if float(t.get("pnl") or 0) > 0)
+        pnl  = round(sum(float(t.get("pnl") or 0) for t in arr), 2)
+        return {"trades": n, "wins": wins,
+                "win_rate": round(wins / n * 100, 1) if n else 0.0, "total_pnl": pnl}
+
+    by_strat = defaultdict(list)
+    for t in after:
+        by_strat[t.get("strategy") or "?"].append(t)
+    per_strategy = sorted(
+        ({"strategy": s, **_summ(arr)} for s, arr in by_strat.items()),
+        key=lambda x: x["total_pnl"])
+
+    rows = [{
+        "ticker": t.get("ticker"), "strategy": t.get("strategy"), "side": t.get("side"),
+        "entry_time": t.get("entry_time"), "exit_time": t.get("exit_time"),
+        "pnl": round(float(t.get("pnl") or 0), 2),
+    } for t in sorted(after, key=lambda t: t.get("entry_time") or "")]
+
+    return jsonify({
+        "cutoff": cutoff, "account": "Paper All",
+        "from": from_date, "to": to_date,
+        "n_refined_strategies": len(refined),
+        "after": _summ(after), "before": _summ(before),
+        "per_strategy": per_strategy, "trades": rows,
+    })
+
+
 def _sharpe_from_pnls(pnls):
     """Trade-level Sharpe: mean(pnl) / sample_std(pnl). Returns None if < 2 trades."""
     import math as _math

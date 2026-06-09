@@ -462,6 +462,20 @@
     </div>
   </div>
 
+  <!-- Refined cutoff impact: how Refined-eligible strategies did on Paper All after a cutoff -->
+  <div class="section">
+    <div class="section-title">Refined Cutoff Impact <span>what a Refined trading-hours cutoff would skip — measured on Paper All (all-day control)</span></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+      <label style="font-size:0.78rem;color:#888">Entries after (ET)</label>
+      <input type="time" id="cutoffTime" value="11:30"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.82rem;outline:none">
+      <button onclick="loadCutoffImpact()"
+              style="background:#517356;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:0.82rem;font-weight:600;cursor:pointer;font-family:inherit">Analyze</button>
+      <span style="font-size:0.72rem;color:#666">Refined-routed strategies entered after this time, on the all-day Paper account = what the Refined gate skips.</span>
+    </div>
+    <div id="cutoffImpactResult"></div>
+  </div>
+
   <!-- Drill-down modal -->
   <div class="modal-backdrop" id="pairsBackdrop" onclick="closePairs()"></div>
   <div class="modal" id="pairsModal" role="dialog" aria-hidden="true">
@@ -1660,6 +1674,59 @@
     }
     html += '</tbody></table>';
     document.getElementById('timeHeatmapWrap').innerHTML = html;
+  }
+
+  // Refined cutoff impact — how Refined-routed strategies did on Paper All after a cutoff.
+  async function loadCutoffImpact() {
+    const out    = document.getElementById('cutoffImpactResult');
+    const cutoff = document.getElementById('cutoffTime').value || '11:30';
+    const fromD  = document.getElementById('analysisFrom').value;
+    const toD    = document.getElementById('analysisTo').value;
+    const params = new URLSearchParams({ cutoff });
+    if (fromD) params.set('from_date', fromD);
+    if (toD)   params.set('to_date',   toD);
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Computing…</div>';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    try {
+      const r = await fetch('/api/refined_cutoff_impact?' + params);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<div style="color:#e74c3c">${d.error || 'Failed.'}</div>`; return; }
+      const a = d.after, b = d.before;
+      if (!a.trades) {
+        out.innerHTML = `<div style="color:#888;font-size:0.85rem">No Refined-routed trades entered after ${d.cutoff} on Paper All in this range (${d.n_refined_strategies} Refined strategies checked).</div>`;
+        return;
+      }
+      const pnl = a.total_pnl;
+      const verdict = pnl < 0
+        ? `<span style="color:#7FE098">✓ A ${d.cutoff} Refined cutoff would have <strong>saved ${money(Math.abs(pnl))}</strong> — these after-cutoff trades net lost on Paper All.</span>`
+        : pnl > 0
+        ? `<span style="color:#F2C76B">⚠ A ${d.cutoff} Refined cutoff would have <strong>cost ${money(pnl)}</strong> — these after-cutoff trades net made money on Paper All.</span>`
+        : `<span style="color:#888">Break-even after the cutoff.</span>`;
+      const card = (lbl, val, color) =>
+        `<div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:8px;padding:10px 14px;min-width:130px">`
+        + `<div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">${lbl}</div>`
+        + `<div style="font-size:1.05rem;font-weight:700;color:${color || '#e0e0e0'}">${val}</div></div>`;
+      const cards =
+        `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">`
+        + card(`Skipped after ${d.cutoff}`, a.trades + ' trades')
+        + card('Win rate', a.win_rate + '%', a.win_rate >= 50 ? '#7FE098' : '#ef5350')
+        + card('P&L skipped', money(pnl), pnl >= 0 ? '#7FE098' : '#ef5350')
+        + card(`Kept (before ${d.cutoff})`, `${b.trades} · ${money(b.total_pnl)}`, b.total_pnl >= 0 ? '#7FE098' : '#ef5350')
+        + `</div>`;
+      const ps = (d.per_strategy || []).map(s =>
+        `<tr><td style="padding:6px 10px 6px 0;color:#ccc;font-family:monospace;font-size:0.78rem">${esc(s.strategy)}</td>`
+        + `<td style="text-align:right;color:#aaa">${s.trades}</td>`
+        + `<td style="text-align:right" class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>`
+        + `<td style="text-align:right;font-weight:600" class="${s.total_pnl >= 0 ? 'pos' : 'neg'}">${money(s.total_pnl)}</td></tr>`).join('');
+      out.innerHTML = cards
+        + `<div style="font-size:0.85rem;margin-bottom:12px">${verdict}</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem">`
+        + `<thead><tr><th style="text-align:left;color:#555;font-size:0.7rem;text-transform:uppercase;padding-bottom:6px">Strategy (entered after ${d.cutoff})</th>`
+        + `<th style="text-align:right;color:#555;font-size:0.7rem">Trades</th><th style="text-align:right;color:#555;font-size:0.7rem">Win %</th><th style="text-align:right;color:#555;font-size:0.7rem">P&amp;L</th></tr></thead>`
+        + `<tbody>${ps}</tbody></table></div>`;
+    } catch (e) {
+      out.innerHTML = `<div style="color:#e74c3c">Error: ${e.message}</div>`;
+    }
   }
 
   function _isAfternoon(entry_time) {
