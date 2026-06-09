@@ -8993,6 +8993,27 @@ def api_refined_cutoff_impact():
         except Exception:
             return None
 
+    # Per-strategy composite score from the latest snapshot → Refined share sizing.
+    score_by_strat = {}
+    for _key in ("top_scored", "on_deck_scored"):
+        for item in (_refined_last_result or {}).get(_key, []):
+            nm = (item.get("name") or "").upper()
+            if nm:
+                score_by_strat[nm] = item.get("score")
+
+    def _refined_pnl(t):
+        """Re-scale a trade's realized per-share P&L to what the Refined account
+        would have sized it at (score band ÷ entry price). Falls back to the
+        Paper size when the strategy has no snapshot score or price."""
+        qty = float(t.get("qty") or 0)
+        pnl = float(t.get("pnl") or 0)
+        if qty <= 0:
+            return pnl
+        score = score_by_strat.get((t.get("strategy") or "").upper())
+        entry = float(t.get("entry_price") or 0)
+        rq = _compute_refined_qty(score, entry) if (score is not None and entry > 0) else None
+        return round(pnl / qty * rq, 2) if rq else pnl
+
     before, after = [], []
     for t in trades:
         if (t.get("strategy") or "").upper() not in refined:
@@ -9006,26 +9027,30 @@ def api_refined_cutoff_impact():
         n    = len(arr)
         wins = sum(1 for t in arr if float(t.get("pnl") or 0) > 0)
         pnl  = round(sum(float(t.get("pnl") or 0) for t in arr), 2)
+        rpnl = round(sum(_refined_pnl(t) for t in arr), 2)
         return {"trades": n, "wins": wins,
-                "win_rate": round(wins / n * 100, 1) if n else 0.0, "total_pnl": pnl}
+                "win_rate": round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl": pnl, "refined_pnl": rpnl}
 
     by_strat = defaultdict(list)
     for t in after:
         by_strat[t.get("strategy") or "?"].append(t)
     per_strategy = sorted(
         ({"strategy": s, **_summ(arr)} for s, arr in by_strat.items()),
-        key=lambda x: x["total_pnl"])
+        key=lambda x: x["refined_pnl"])
 
     rows = [{
         "ticker": t.get("ticker"), "strategy": t.get("strategy"), "side": t.get("side"),
         "entry_time": t.get("entry_time"), "exit_time": t.get("exit_time"),
         "pnl": round(float(t.get("pnl") or 0), 2),
+        "refined_pnl": _refined_pnl(t),
     } for t in sorted(after, key=lambda t: t.get("entry_time") or "")]
 
     return jsonify({
         "cutoff": cutoff, "account": "Paper All",
         "from": from_date, "to": to_date,
         "n_refined_strategies": len(refined),
+        "n_scored": len(score_by_strat),
         "after": _summ(after), "before": _summ(before),
         "per_strategy": per_strategy, "trades": rows,
     })
