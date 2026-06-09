@@ -3514,6 +3514,7 @@
           const stratCell = p.strategy
             ? `<span style="color:#aaa;font-family:monospace;font-size:0.72rem">${escHtml(p.strategy)}</span>`
             : '<span style="color:#444;font-size:0.72rem">—</span>';
+          const animal = _rankEmoji((p.strategy || '').toUpperCase());
 
           const sym = (p.symbol || '').toUpperCase();
           const timer = timerBySymbol[sym];
@@ -3538,7 +3539,7 @@
           }
           const rowCls = p.broker === 'alpaca2' ? ' class="refined-row"' : '';
           return `<tr${rowCls}>
-            <td style="font-weight:600;color:#ccc">${escHtml(p.symbol)}</td>
+            <td style="font-weight:600;color:#ccc">${animal}${escHtml(p.symbol)}</td>
             <td style="color:#666;font-size:0.75rem">${escHtml(p.broker)}</td>
             <td>${stratCell}</td>
             <td>${renderPriceMeter(p)}</td>
