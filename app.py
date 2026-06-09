@@ -5745,13 +5745,16 @@ def _composite_score(stats, max_pnl):
 # Refined sizing: per-strategy dollar target by composite-score band.
 # Score is 0..1 from _composite_score; bands are score-percent thresholds.
 # First matching band wins (highest score-floor first).
-# Sized for ~$27k equity using 4× day-trade margin: worst-case 5 concurrent
-# band-A fires = $100k, within the $108k DTBP. Strategies are intraday so no
-# overnight 2× exposure. Reduce if concurrency creeps above 5 fires/day.
+# Calibrated to the realized score distribution (~0.46–0.68) so the bands
+# actually span the field — the old 0.80 top floor was never reached, bunching
+# everything into $6k. Sized for ~$27k equity on 4× day-trade margin: worst-case
+# ~4 concurrent band-A (≥0.60) fires = $100k, within the $108k DTBP. Strategies
+# are intraday so no overnight 2× exposure. Reduce floors if concurrency creeps
+# above ~4–5 top-band fires/day or scores drift higher.
 _REFINED_SIZE_BANDS = [
-    (80, 25_000),   # score ≥ 0.80 → $25k per trade
-    (65, 12_000),   # score ≥ 0.65 → $12k
-    (50,  6_000),   # score ≥ 0.50 → $6k
+    (60, 25_000),   # score ≥ 0.60 → $25k per trade  (~top 4)
+    (52, 12_000),   # score ≥ 0.52 → $12k
+    (46,  6_000),   # score ≥ 0.46 → $6k
     ( 0,  2_500),   # else         → $2.5k floor
 ]
 
