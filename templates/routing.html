@@ -424,6 +424,27 @@
       </div>
     </div>
 
+    <!-- Row 5: Buying-power pause — both accounts -->
+    <div class="rg-card" style="margin-top:10px;border-color:#7bb3d6">
+      <div class="rg-card-title" style="color:#7bb3d6">&#9670; Buying-Power Pause — stop new entries at high utilization</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Pause at utilization (%)
+          <span style="color:#666;font-size:0.68rem">per account · exposure ÷ total buying power</span>
+          <span id="bpPauseBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="bpPauseDot"></span>
+            <span id="bpPauseText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="bpPauseInput" type="number" step="5" min="1" max="100" placeholder="e.g. 75" style="width:90px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveBpPause()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearBpPause()">Off</button>
+        </div>
+        <div class="risk-hint">Blocks new entries once deployed exposure reaches this % of an account's buying power, leaving the rest as a buffer (e.g. 75% = stop at 75% used, keep 25% free). Checked per account. Exits always go through.</div>
+      </div>
+    </div>
+
     <!-- Blocked strategies + live positions (shown when there is data) -->
     <div class="risk-details" id="riskDetails" style="display:none">
       <div id="riskBlockedList"></div>
@@ -775,6 +796,24 @@
       _setHoursUI('paper',   data.paper_hours   || {});
       _setHoursUI('refined', data.refined_hours || {});
 
+      // Buying-power pause
+      const bpInput = document.getElementById('bpPauseInput');
+      if (document.activeElement !== bpInput && data.bp_pause_pct != null) {
+        bpInput.value = data.bp_pause_pct;
+      }
+      const bpOn = data.bp_pause_pct != null && data.bp_pause_pct > 0;
+      const bpBadge = document.getElementById('bpPauseBadge');
+      const bpDot   = document.getElementById('bpPauseDot');
+      const bpText  = document.getElementById('bpPauseText');
+      if (bpOn) {
+        bpBadge.className = 'risk-status-badge active'; bpDot.className = 'risk-dot green';
+        bpText.textContent = 'Pause at ' + data.bp_pause_pct + '%';
+      } else {
+        bpBadge.className = 'risk-status-badge disabled'; bpDot.className = 'risk-dot grey';
+        bpText.textContent = 'Disabled';
+      }
+      setRowState('bpPauseInput', bpOn);
+
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
       const posDot   = document.getElementById('posStatusDot');
@@ -1066,6 +1105,20 @@
     document.getElementById('paperHoursEnd').value = '';
     try { await _postLimit({paper_hours: {start: '', end: ''}}); }
     catch(err) { console.error('clearPaperHours failed:', err); }
+  }
+
+  async function saveBpPause() {
+    const input = document.getElementById('bpPauseInput');
+    const v = parseFloat(input.value);
+    if (isNaN(v) || v < 1 || v > 100) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({bp_pause_pct: v}); }
+    catch(e) { console.error('saveBpPause failed:', e); }
+  }
+  async function clearBpPause() {
+    document.getElementById('bpPauseInput').value = '';
+    try { await _postLimit({bp_pause_pct: 0}); }
+    catch(e) { console.error('clearBpPause failed:', e); }
   }
 
   async function saveMorningTrail() {

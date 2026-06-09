@@ -682,13 +682,17 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             ):
                 _exec_status = _exec_detail = None
                 try:
-                    # Buying power gate — block entries when available capital is too low.
-                    if action == "BUY" and is_entry and app.MIN_BUYING_POWER > 0:
+                    # Capital gates — block new entries on low available buying power
+                    # (fixed $) or high buying-power utilization (%). One account
+                    # fetch covers both.
+                    if (is_entry and action in ("BUY", "SELL")
+                            and (app.MIN_BUYING_POWER > 0 or app.BP_PAUSE_PCT > 0)):
                         try:
                             broker._ensure_client()
                             acct = broker._trading.get_account()
-                            bp   = float(acct.buying_power)
-                            if bp < app.MIN_BUYING_POWER:
+                            bp   = float(acct.buying_power or 0)
+                            # (a) Minimum available buying power — long entries only.
+                            if action == "BUY" and app.MIN_BUYING_POWER > 0 and bp < app.MIN_BUYING_POWER:
                                 app.log.warning(
                                     "Buying power gate: BUY %s blocked — $%.2f available, need $%.2f (%s)",
                                     ticker, bp, app.MIN_BUYING_POWER, strategy,
@@ -699,9 +703,28 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                     f"minimum ${app.MIN_BUYING_POWER:,.2f} required"
                                 )
                                 return
+                            # (b) Utilization pause — any entry once gross exposure
+                            #     consumes >= BP_PAUSE_PCT of total capacity.
+                            if app.BP_PAUSE_PCT > 0:
+                                long_mv  = float(getattr(acct, "long_market_value", 0) or 0)
+                                short_mv = abs(float(getattr(acct, "short_market_value", 0) or 0))
+                                gross    = long_mv + short_mv
+                                denom    = gross + bp
+                                util     = (gross / denom * 100) if denom > 0 else 0.0
+                                if util >= app.BP_PAUSE_PCT:
+                                    app.log.warning(
+                                        "Buying-power pause: %s %s blocked — %.0f%% utilized (>= %.0f%%, $%.0f deployed / $%.0f free)",
+                                        action, ticker, util, app.BP_PAUSE_PCT, gross, bp,
+                                    )
+                                    _exec_status = "blocked"
+                                    _exec_detail = (
+                                        f"Buying-power pause: {util:.0f}% utilized "
+                                        f"(limit {app.BP_PAUSE_PCT:.0f}%)"
+                                    )
+                                    return
                         except Exception as _bpe:
                             app.log.warning(
-                                "Buying power check failed for %s: %s — proceeding with order",
+                                "Capital gate check failed for %s: %s — proceeding with order",
                                 ticker, _bpe,
                             )
 

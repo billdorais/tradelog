@@ -64,6 +64,9 @@ MORNING_TRAIL_PCT           = float(os.environ.get("MORNING_TRAIL_PCT", "0"))   
 AFTERNOON_TRAIL_PCT         = float(os.environ.get("AFTERNOON_TRAIL_PCT", "0"))     # caps trail_offset 12:00–close ET when > 0
 SIGNAL_COOLDOWN_SECS  = int(os.environ.get("SIGNAL_COOLDOWN_SECS", "10"))
 MIN_BUYING_POWER      = float(os.environ.get("MIN_BUYING_POWER", "0"))  # block new entries below this
+# Pause new entries once this % of an account's buying power is deployed
+# (utilization = gross position exposure / (exposure + available BP)). 0 = off.
+BP_PAUSE_PCT          = float(os.environ.get("BP_PAUSE_PCT", "0"))
 # N-strikes-per-level: after this many losing round-trips on the same
 # ticker+Camarilla-level in a day, block new entries on that level.
 STRIKES_ENABLED       = os.environ.get("STRIKES_ENABLED", "0") == "1"
@@ -2178,6 +2181,7 @@ def risk_status():
         "strikes":             _strikes_status_list(),
         "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
+        "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
     })
 
 
@@ -2224,7 +2228,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -2330,6 +2334,15 @@ def risk_set_limit():
         _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END")
     if "refined_hours" in data:
         _set_hours("refined_hours", "REFINED_HOURS_START", "REFINED_HOURS_END")
+    if "bp_pause_pct" in data:
+        try:
+            BP_PAUSE_PCT = max(0.0, min(100.0, float(data["bp_pause_pct"] or 0)))
+        except (TypeError, ValueError):
+            return jsonify({"error": "bp_pause_pct must be a number 0–100"}), 400
+        _update_env_file("BP_PAUSE_PCT", f"{BP_PAUSE_PCT:g}")
+        _save_setting("BP_PAUSE_PCT", f"{BP_PAUSE_PCT:g}")
+        log.info("BP_PAUSE_PCT set to %g", BP_PAUSE_PCT)
+        changed.append("bp_pause_pct")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
@@ -10631,7 +10644,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -10697,6 +10710,13 @@ def _restore_risk_settings():
         if _v is not None:
             globals()[_k] = _v
             log.info("Restored %s=%s from DB", _k, _v or "·")
+    stored = _load_setting("BP_PAUSE_PCT")
+    if stored is not None:
+        try:
+            BP_PAUSE_PCT = float(stored)
+            log.info("Restored BP_PAUSE_PCT=%g from DB", BP_PAUSE_PCT)
+        except (TypeError, ValueError):
+            pass
 
 _restore_risk_settings()
 
