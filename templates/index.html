@@ -302,6 +302,16 @@
       color: #888;
     }
 
+    /* Busy-bee badge (Refined ranks 11–20) */
+    .bee-buzz { display:inline-block; animation: bee-buzz 0.4s infinite linear; }
+    @keyframes bee-buzz {
+      0%,100% { transform: translate(0,0) rotate(0); }
+      25%     { transform: translate(0.6px,-0.6px) rotate(-6deg); }
+      50%     { transform: translate(-0.6px,0.4px) rotate(5deg); }
+      75%     { transform: translate(0.5px,0.6px) rotate(-4deg); }
+    }
+    @media (prefers-reduced-motion: reduce) { .bee-buzz { animation: none; } }
+
     /* Open Positions table (mirrors Signal Router) */
     .open-pos-card { max-width: 1200px; margin: 0 auto 16px; background: #1c1f2e; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 16px; }
     .open-pos-card .open-pos-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin-bottom: 8px; }
@@ -3235,6 +3245,17 @@
     let _refinedTickers    = new Set();   // ticker has any refined strategy
     let _routedTickers     = new Set();   // ticker has any routing rule
     let _refinedStrategies = new Set();   // upper-case strategy names with alpaca-paper-2/-live-2 broker
+    let _refinedRank       = {};          // upper-case strategy name → Refined leaderboard rank (1-based)
+
+    // Leaderboard animal badge for an open position's strategy, by Refined rank.
+    function _rankEmoji(stratU) {
+      const r = stratU && _refinedRank[stratU];
+      if (!r) return '';
+      if (r <= 5)  return '<span title="GOAT — Refined top 5" style="margin-right:3px">🐐</span>';
+      if (r <= 10) return '<span title="Workhorse — Refined 6–10" style="margin-right:3px">🐎</span>';
+      if (r <= 20) return '<span class="bee-buzz" title="Busy Bee — Refined 11–20" style="margin-right:3px">🐝</span>';
+      return '';
+    }
     let _routedStrategies  = new Set();   // upper-case strategy names with any enabled rule
 
     // Find the source strategy for an open position by looking at the most recent
@@ -3306,10 +3327,19 @@
         // Fetch from the account that matches the active tab so the card
         // reflects the correct positions (Refined tab → alpaca2, else alpaca).
         const _acctParam = (activeTab === 'refined') ? '?account=2' : '';
-        const [d, rules] = await Promise.all([
+        const [d, rules, snap] = await Promise.all([
           fetch(`/api/alpaca/account${_acctParam}`).then(r => r.json()),
           fetch('/api/routing/rules').then(r => r.json()).catch(() => null),
+          fetch('/api/routing/rules/refresh_refined').then(r => r.json()).catch(() => null),
         ]);
+        // Build a strategy→rank map (1-based) from the Refined snapshot so open
+        // positions can show their leaderboard badge (🐐 1–5, 🐎 6–10, 🐝 11–20).
+        if (snap && (snap.top_strategies || snap.on_deck_strategies)) {
+          const ranked = (snap.top_strategies || []).concat(snap.on_deck_strategies || []);
+          const rankMap = {};
+          ranked.forEach((name, i) => { rankMap[String(name).toUpperCase()] = i + 1; });
+          _refinedRank = rankMap;
+        }
         // Refined and routed are both derived from routing_rules (persisted in DB).
         // The refresh_refined snapshot is an in-memory per-worker cache and is
         // unreliable under --workers 2 — a rule is "refined" iff it has a broker
@@ -3388,6 +3418,7 @@
           const sym    = (p.symbol || '').toUpperCase();
           const strat  = _strategyForPosition(p);
           const stratU = strat ? strat.toUpperCase() : null;
+          const animal = _rankEmoji(stratU);
           let star = '';
           if (stratU && _refinedStrategies.has(stratU)) {
             star = `<span style="color:#60a5fa;margin-right:4px" title="${strat} is in the Refined top-N">★</span>`;
@@ -3404,7 +3435,7 @@
             const heldMins = Math.round(heldMs / 60000);
             heldStr = ` · ${heldMins}m`;
           }
-          return `${star}<span style="color:${color}" title="${p.side} · unrealized ${upnl>=0?'+':'-'}$${Math.abs(upnl).toFixed(2)}${heldStr}">${p.symbol}</span> $${Math.abs(p.market_value).toLocaleString('en-US',{maximumFractionDigits:0})}`;
+          return `${animal}${star}<span style="color:${color}" title="${p.side} · unrealized ${upnl>=0?'+':'-'}$${Math.abs(upnl).toFixed(2)}${heldStr}">${p.symbol}</span> $${Math.abs(p.market_value).toLocaleString('en-US',{maximumFractionDigits:0})}`;
         }).join(' &nbsp;·&nbsp; ');
         document.getElementById('acctPositionTickers').innerHTML = tickers || '<span style="color:#333">No open positions</span>';
       } catch(e) { /* Alpaca not configured or unreachable */ }
