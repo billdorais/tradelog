@@ -40,6 +40,16 @@
     .time-heatmap th { padding:4px 8px; color:#555; font-weight:500; }
     .time-heatmap td.heat-cell { padding:4px 6px; text-align:right; font-family:monospace; min-width:54px; }
 
+    /* Busy-bee badge (Refined ranks 11–20) */
+    .bee-buzz { display:inline-block; animation: bee-buzz 0.4s infinite linear; }
+    @keyframes bee-buzz {
+      0%,100% { transform: translate(0,0) rotate(0); }
+      25%     { transform: translate(0.6px,-0.6px) rotate(-6deg); }
+      50%     { transform: translate(-0.6px,0.4px) rotate(5deg); }
+      75%     { transform: translate(0.5px,0.6px) rotate(-4deg); }
+    }
+    @media (prefers-reduced-motion: reduce) { .bee-buzz { animation: none; } }
+
     /* ── Tables ── */
     .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2130; }
     .topn-table thead th { cursor: default; padding: 8px 10px; }
@@ -1012,7 +1022,7 @@
         const totalCell   = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${pnlCls}">${fmt(total)}</span>`;
         return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${trades}" data-snap-wr="${winRate}" data-snap-pnl="${total}" title="Click to see round-trip pairs (from current date range)">
           <td style="color:#666">${i + 1}${_rankChip(r.rank_delta)}</td>
-          <td class="name">${i < 5 ? '<span title="Top 5 Refined — GOAT" style="margin-right:4px">🐐</span>' : i < 10 ? '<span title="Ranks 6–10 — Workhorse" style="margin-right:4px">🐎</span>' : ''}<span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
+          <td class="name">${i < 5 ? '<span title="Top 5 Refined — GOAT" style="margin-right:4px">🐐</span>' : i < 10 ? '<span title="Ranks 6–10 — Workhorse" style="margin-right:4px">🐎</span>' : i < 20 ? '<span class="bee-buzz" title="Ranks 11–20 — Busy Bee" style="margin-right:4px">🐝</span>' : ''}<span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
           <td style="text-align:right">${_lastTradeCell(r.last_trade_at)}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
