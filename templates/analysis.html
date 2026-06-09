@@ -1012,7 +1012,7 @@
         const totalCell   = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${pnlCls}">${fmt(total)}</span>`;
         return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${trades}" data-snap-wr="${winRate}" data-snap-pnl="${total}" title="Click to see round-trip pairs (from current date range)">
           <td style="color:#666">${i + 1}${_rankChip(r.rank_delta)}</td>
-          <td class="name"><span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
+          <td class="name">${i < 5 ? '<span title="Top 5 Refined — GOAT" style="margin-right:4px">🐐</span>' : ''}<span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
           <td style="text-align:right">${_lastTradeCell(r.last_trade_at)}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
