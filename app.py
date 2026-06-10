@@ -9098,11 +9098,13 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
         return []
 
 
-def _find_entry(bars, level, side, rule, buffer, ema_filter=True):
-    """First entry (bar_index, entry_price) for an entry rule on a breakout of
-    `level`, or None. LONG = break up through level, SHORT = break down. When
-    ema_filter is on, the trigger bar must close on the trend side of its 8-EMA
-    (close > ema for LONG, close < ema for SHORT) — matching the live strategy."""
+def _find_entry(bars, level, side, rule, buffer, ema_filter=True, start=1):
+    """First entry (bar_index, entry_price) at or after `start` on a FRESH breakout
+    of `level` (prior bar on the other side of it), or None. LONG = break up, SHORT
+    = break down. The fresh-cross requirement makes the rule re-entrant: after an
+    exit it won't re-fire until price dips back and crosses the level again — which
+    is how the live strategy (close vs close[1]) re-enters. EMA gate: Confirmed uses
+    the trigger bar's close; intrabar rules use the prior bar (no look-ahead)."""
     n = len(bars)
     if n < 2 or not level:
         return None
@@ -9115,17 +9117,18 @@ def _find_entry(bars, level, side, rule, buffer, ema_filter=True):
         return (b.close > e) if is_long else (b.close < e)
 
     if rule in ("confirmed", "immediate", "buffered"):
-        for i in range(1, n):
-            b, pcl = bars[i], float(bars[i - 1].close)
+        for i in range(max(1, start), n):
+            b, prev = bars[i], bars[i - 1]
+            pcl = float(prev.close)
+            crossed = (pcl <= level) if is_long else (pcl >= level)  # prior bar on the other side
+            if not crossed:
+                continue
             hi, lo, cl = float(b.high), float(b.low), float(b.close)
-            # EMA gate: Confirmed waits for the close, so it legitimately uses this
-            # bar's close. Immediate/Buffered enter intrabar, so they can only know
-            # the PRIOR completed bar's EMA (no look-ahead).
-            if not _ema_ok(b if rule == "confirmed" else bars[i - 1]):
+            if not _ema_ok(b if rule == "confirmed" else prev):
                 continue
             if rule == "confirmed":
-                if is_long and cl > level and pcl <= level: return (i, cl)
-                if not is_long and cl < level and pcl >= level: return (i, cl)
+                if is_long and cl > level: return (i, cl)
+                if not is_long and cl < level: return (i, cl)
             elif rule == "immediate":
                 if is_long and hi >= level: return (i, level)
                 if not is_long and lo <= level: return (i, level)
@@ -9133,13 +9136,14 @@ def _find_entry(bars, level, side, rule, buffer, ema_filter=True):
                 if is_long and hi >= level + buffer: return (i, level + buffer)
                 if not is_long and lo <= level - buffer: return (i, level - buffer)
         return None
-    # retest: first confirmed (EMA-gated) break, then first pullback to the level
+    # retest: fresh confirmed break, then first pullback to the level
     brk = None
-    for i in range(1, n):
-        cl, pcl = float(bars[i].close), float(bars[i - 1].close)
-        if not _ema_ok(bars[i]):
+    for i in range(max(1, start), n):
+        pcl, cl = float(bars[i - 1].close), float(bars[i].close)
+        crossed = (pcl <= level) if is_long else (pcl >= level)
+        if not crossed or not _ema_ok(bars[i]):
             continue
-        if (is_long and cl > level and pcl <= level) or (not is_long and cl < level and pcl >= level):
+        if (is_long and cl > level) or (not is_long and cl < level):
             brk = i
             break
     if brk is None:
@@ -9148,6 +9152,44 @@ def _find_entry(bars, level, side, rule, buffer, ema_filter=True):
         if is_long and float(bars[k].low) <= level:  return (k, level)
         if not is_long and float(bars[k].high) >= level: return (k, level)
     return None
+
+
+def _replay_entries(bars, level, side, rule, buffer, trail0, trigger, max_hold,
+                    ema_filter, multi):
+    """Replay a rule over one day. Returns a list of (pnl_per_share, offset). When
+    multi is True, re-enters on the next fresh cross after each exit (captures
+    re-fades); otherwise just the first entry of the day."""
+    import datetime as _dt2
+    out, n, start, guard = [], len(bars), 1, 0
+    while start < n and guard < 40:
+        guard += 1
+        hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter, start=start)
+        if not hit:
+            break
+        idx, entry_px = hit
+        eff_trail = _apply_session_trail(trail0, bars[idx].timestamp)
+        ex = _simulate_exit(bars[idx:], entry_px, side, eff_trail, trigger, 0.0, max_hold,
+                            entry_dt=bars[idx].timestamp, stop_loss_dollars=0.0, qty=1.0)
+        if not ex:
+            break
+        exit_px = ex["exit_price"]
+        pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
+        offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
+        out.append((round(pnl, 4), round(offset, 4)))
+        if not multi:
+            break
+        # resume at the first bar strictly after the exit
+        try:    exit_dt = _dt2.datetime.fromisoformat(ex["exit_time"])
+        except Exception: exit_dt = None
+        nxt = idx + 1
+        if exit_dt is not None:
+            nxt = n
+            for k in range(idx, n):
+                if bars[k].timestamp > exit_dt:
+                    nxt = k
+                    break
+        start = max(nxt, idx + 1)
+    return out
 
 
 @app.route("/api/simulate/entry_test")
@@ -9169,6 +9211,7 @@ def api_simulate_entry_test():
     try:    buffer = float(request.args.get("buffer", 0.05))
     except Exception: buffer = 0.05
     ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
+    multi      = (request.args.get("multi", "1") or "1").strip() not in ("0", "false", "")
     from_date  = (request.args.get("from") or "").strip()
     to_date    = (request.args.get("to")   or "").strip()
     # Optional buffer sweep: test the Buffered rule at several buffers in one pass
@@ -9254,21 +9297,10 @@ def api_simulate_entry_test():
     n_setups   = 0
 
     def _run(bars, level, side, rule, buf, trail0, trigger, max_hold, bucket):
-        hit = _find_entry(bars, level, side, rule, buf, ema_filter=ema_filter)
-        if not hit:
-            return
-        idx, entry_px = hit
-        eff_trail = _apply_session_trail(trail0, bars[idx].timestamp)
-        ex = _simulate_exit(bars[idx:], entry_px, side, eff_trail, trigger, 0.0,
-                            max_hold, entry_dt=bars[idx].timestamp,
-                            stop_loss_dollars=0.0, qty=1.0)
-        if not ex:
-            return
-        exit_px = ex["exit_price"]
-        pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
-        offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
-        bucket["pnls"].append(round(pnl, 4))
-        bucket["offsets"].append(round(offset, 4))
+        for pnl, offset in _replay_entries(bars, level, side, rule, buf, trail0,
+                                           trigger, max_hold, ema_filter, multi):
+            bucket["pnls"].append(pnl)
+            bucket["offsets"].append(offset)
 
     for (tk, date, strat, side, lvl) in setups:
         bars  = bars_map.get((tk, date)) or []
@@ -9304,7 +9336,7 @@ def api_simulate_entry_test():
         "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
         "skipped_reversal": skipped_reversal, "buffer": buffers[0], "ema_filter": ema_filter,
-        "exits": "Signal Router per strategy", "rules": out, "sweep": sweep,
+        "multi": multi, "exits": "Signal Router per strategy", "rules": out, "sweep": sweep,
     })
 
 

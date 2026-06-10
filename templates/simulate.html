@@ -473,6 +473,10 @@
       <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px">
         <input type="checkbox" id="etEma" checked> 8-EMA filter
       </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px"
+             title="Re-enter on every fresh cross of the level, like your live account — captures the chop re-fades. Off = first entry of the day only.">
+        <input type="checkbox" id="etMulti" checked> All entries (re-fades)
+      </label>
       <button class="run-btn" onclick="runEntryTest()" style="padding:8px 18px">&#9654; Test Entries</button>
       <button class="run-btn" onclick="runBufferSweep()" style="padding:8px 18px;background:#517356">&#8644; Buffer Sweep</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Exits = each strategy's Signal Router trail / trigger / max-hold (+ session overrides).</span>
@@ -720,6 +724,7 @@
       from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
       buffer: document.getElementById('etBuffer').value,
       ema: document.getElementById('etEma').checked ? '1' : '0',
+      multi: document.getElementById('etMulti').checked ? '1' : '0',
     });
     out.innerHTML = '<span style="color:#888">Replaying every breakout setup with your Signal Router exits…</span>';
     const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
@@ -744,9 +749,10 @@
           + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
       }).join('');
       const skipNote = d.skipped_reversal ? ` · ${d.skipped_reversal} reversal trades excluded` : '';
-      const emaNote  = d.ema_filter ? ' · 8-EMA filter ON' : ' · 8-EMA filter OFF';
+      const emaNote  = d.ema_filter ? ' · 8-EMA ON' : ' · 8-EMA OFF';
+      const multiNote = d.multi ? ' · all entries (re-fades)' : ' · first entry/day';
       out.innerHTML =
-        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout setups across ${d.n_tickers} tickers · ${d.from || '—'} → ${d.to || '—'} · exits: ${d.exits}${emaNote} · per-share P&amp;L${skipNote}</div>`
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout setups across ${d.n_tickers} tickers · ${d.from || '—'} → ${d.to || '—'} · exits: ${d.exits}${emaNote}${multiNote} · per-share P&amp;L${skipNote}</div>`
         + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
         + `<thead><tr>`
         + `<th style="text-align:left;padding:6px 12px;color:#555;font-size:0.7rem;text-transform:uppercase">Entry rule</th>`
@@ -766,6 +772,7 @@
       from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
       buffers: '0.05,0.10,0.15,0.20',
       ema: document.getElementById('etEma').checked ? '1' : '0',
+      multi: document.getElementById('etMulti').checked ? '1' : '0',
     });
     out.innerHTML = '<span style="color:#888">Sweeping buffers 5¢ → 20¢…</span>';
     const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
@@ -787,7 +794,7 @@
           + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${delta >= 0 ? '#7FE098' : '#ef5350'}">${delta >= 0 ? '+' : ''}${money(delta)}${beats ? ' ★' : ''}</td></tr>`;
       }).join('');
       out.innerHTML =
-        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout setups · ${d.from || '—'} → ${d.to || '—'} · 8-EMA ${d.ema_filter ? 'ON' : 'OFF'} · per-share P&amp;L</div>`
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout setups · ${d.from || '—'} → ${d.to || '—'} · 8-EMA ${d.ema_filter ? 'ON' : 'OFF'} · ${d.multi ? 'all entries (re-fades)' : 'first entry/day'} · per-share P&amp;L</div>`
         + `<div style="font-size:0.82rem;margin-bottom:10px">Baseline — <strong>Confirmed (bar close)</strong>: ${conf.win_rate}% win · <strong style="color:${cTot >= 0 ? '#7FE098' : '#ef5350'}">${money(cTot)}/sh</strong>. Each buffer is a slippage proxy — if Buffered still beats this at 15–20¢, the edge is real.</div>`
         + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
         + `<thead><tr>`
