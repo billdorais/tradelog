@@ -9118,7 +9118,10 @@ def _find_entry(bars, level, side, rule, buffer, ema_filter=True):
         for i in range(1, n):
             b, pcl = bars[i], float(bars[i - 1].close)
             hi, lo, cl = float(b.high), float(b.low), float(b.close)
-            if not _ema_ok(b):
+            # EMA gate: Confirmed waits for the close, so it legitimately uses this
+            # bar's close. Immediate/Buffered enter intrabar, so they can only know
+            # the PRIOR completed bar's EMA (no look-ahead).
+            if not _ema_ok(b if rule == "confirmed" else bars[i - 1]):
                 continue
             if rule == "confirmed":
                 if is_long and cl > level and pcl <= level: return (i, cl)
