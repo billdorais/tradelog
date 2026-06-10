@@ -9123,24 +9123,19 @@ def _find_entry(bars, level, side, rule, buffer):
 
 @app.route("/api/simulate/entry_test")
 def api_simulate_entry_test():
-    """Compare entry-timing rules on one ticker's Camarilla breakouts over a date
-    range. The same exit is applied to each entry, so entry timing is the only
-    variable. Per-share P&L (qty=1). One entry per side per day per rule.
+    """Compare entry-timing rules across ALL of an account's traded setups over a
+    date range. Each round-trip's (ticker, date, Camarilla level, side) becomes a
+    setup; the same exit is applied to each entry rule, so entry timing is the
+    only variable. Per-share P&L (qty=1), first entry of the day per setup.
 
-      ?ticker=TSLA &level=R3S3|R4S4 &from=&to=
+      ?account=1|2 &from=&to=
       &buffer=0.05 &trail_pct=0.1 &trigger_pct=0.1 &stop=0.40 &max_hold=0
     """
-    import datetime as _dt
     import concurrent.futures as _cf
-    from zoneinfo import ZoneInfo
 
     if alpaca_broker is None:
         return jsonify({"error": "Alpaca data is not configured."}), 503
-    ticker = (request.args.get("ticker") or "").strip().upper()
-    if not ticker:
-        return jsonify({"error": "ticker is required"}), 400
-    pair = (request.args.get("level") or "R3S3").strip().upper()
-    hi_key, lo_key = ("r4", "s4") if pair == "R4S4" else ("r3", "s3")
+    use2 = (request.args.get("account") or "2").strip() == "2"
 
     def _f(name, default):
         try:    return float(request.args.get(name, default))
@@ -9150,50 +9145,63 @@ def api_simulate_entry_test():
     trigger_pct = _f("trigger_pct", 0.1)
     stop        = _f("stop", 0.40)
     max_hold    = int(_f("max_hold", 0))
+    from_date   = (request.args.get("from") or "").strip()
+    to_date     = (request.args.get("to")   or "").strip()
 
-    try:    et = ZoneInfo("America/New_York")
-    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
-    today     = _dt.datetime.now(et).date()
-    to_date   = (request.args.get("to")   or today.isoformat()).strip()
-    from_date = (request.args.get("from") or (today - _dt.timedelta(days=10)).isoformat()).strip()
-    d0 = _dt.date.fromisoformat(from_date); d1 = _dt.date.fromisoformat(to_date)
-    days, cur = [], d0
-    while cur <= d1 and len(days) < 40:
-        if cur.weekday() < 5:
-            days.append(cur.isoformat())
-        cur += _dt.timedelta(days=1)
+    fills  = _get_cached_fills_2() if use2 else _get_cached_fills()
+    paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No round-trips for that account / date range."}), 404
 
-    rules = ["confirmed", "immediate", "buffered", "retest"]
+    # Unique (ticker, date, level, side) setups from the actual round-trips.
+    setups, ticker_dates = set(), set()
+    for t in trades:
+        side = (t.get("side") or "").upper()
+        lvl  = _trade_level(t.get("strategy"), side)
+        tk   = (t.get("ticker") or "").upper()
+        date = (t.get("entry_time") or "")[:10]
+        if lvl and tk and date:
+            setups.add((tk, date, lvl, side))
+            ticker_dates.add((tk, date))
 
-    def _process_day(date_str):
-        bars = _fetch_5m_rth_objs(ticker, date_str)
-        lv   = _camarilla_levels(ticker, date_str)
-        if not bars or not lv:
-            return []
-        res = []
-        for side, level in (("LONG", lv.get(hi_key)), ("SHORT", lv.get(lo_key))):
-            for rule in rules:
-                hit = _find_entry(bars, level, side, rule, buffer)
-                if not hit:
-                    continue
-                idx, entry_px = hit
-                ex = _simulate_exit(bars[idx:], entry_px, side, trail_pct, trigger_pct,
-                                    0.0, max_hold, entry_dt=bars[idx].timestamp,
-                                    stop_loss_dollars=stop, qty=1.0)
-                if not ex:
-                    continue
-                exit_px = ex["exit_price"]
-                pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
-                offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
-                res.append((rule, round(pnl, 4), round(offset, 4)))
-        return res
-
-    agg = {r: {"pnls": [], "offsets": []} for r in rules}
+    # Fetch 5-min bars + Camarilla levels once per (ticker, date).
+    bars_map, lv_map = {}, {}
     with _cf.ThreadPoolExecutor(max_workers=8) as pool:
-        for day_res in pool.map(_process_day, days):
-            for rule, pnl, offset in day_res:
-                agg[rule]["pnls"].append(pnl)
-                agg[rule]["offsets"].append(offset)
+        bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        lfut = {pool.submit(_camarilla_levels,  tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        for f in _cf.as_completed(bfut):
+            try:    bars_map[bfut[f]] = f.result()
+            except Exception: bars_map[bfut[f]] = []
+        for f in _cf.as_completed(lfut):
+            try:    lv_map[lfut[f]] = f.result()
+            except Exception: lv_map[lfut[f]] = {}
+
+    lkey  = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    rules = ["confirmed", "immediate", "buffered", "retest"]
+    agg   = {r: {"pnls": [], "offsets": []} for r in rules}
+    n_setups = 0
+    for (tk, date, lvl, side) in setups:
+        bars  = bars_map.get((tk, date)) or []
+        level = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl))
+        if not bars or not level:
+            continue
+        n_setups += 1
+        for rule in rules:
+            hit = _find_entry(bars, level, side, rule, buffer)
+            if not hit:
+                continue
+            idx, entry_px = hit
+            ex = _simulate_exit(bars[idx:], entry_px, side, trail_pct, trigger_pct,
+                                0.0, max_hold, entry_dt=bars[idx].timestamp,
+                                stop_loss_dollars=stop, qty=1.0)
+            if not ex:
+                continue
+            exit_px = ex["exit_price"]
+            pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
+            offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
+            agg[rule]["pnls"].append(round(pnl, 4))
+            agg[rule]["offsets"].append(round(offset, 4))
 
     out = []
     for r in rules:
@@ -9208,10 +9216,11 @@ def api_simulate_entry_test():
         })
 
     return jsonify({
-        "ticker": ticker, "level": pair, "from": from_date, "to": to_date,
-        "days": len(days), "buffer": buffer, "trail_pct": trail_pct,
-        "trigger_pct": trigger_pct, "stop": stop, "max_hold": max_hold,
-        "rules": out,
+        "account": "Refined" if use2 else "Paper All",
+        "from": from_date, "to": to_date,
+        "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
+        "buffer": buffer, "trail_pct": trail_pct, "trigger_pct": trigger_pct,
+        "stop": stop, "max_hold": max_hold, "rules": out,
     })
 
 
