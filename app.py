@@ -9056,46 +9056,70 @@ def api_refined_cutoff_impact():
     })
 
 
-def _fetch_5m_rth_objs(ticker: str, date_str: str):
-    """5-min Alpaca bar objects for a ticker's RTH session (09:30–16:00 ET).
-    Returns bar objects (with .timestamp/.high/.low/.close) so _simulate_exit
-    can walk them; [] on error."""
+def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
+    """5-min RTH bars (09:30–16:00 ET) for a ticker as lightweight objects with
+    .timestamp/.open/.high/.low/.close/.ema. The EMA is warmed up over prior
+    sessions (RTH-continuous) so it matches the live ta.ema(close, 8). The objects
+    expose .timestamp/.high/.low/.close so _simulate_exit can walk them. [] on error."""
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from types import SimpleNamespace
         import datetime as _dt
         if alpaca_broker is None:
             return []
         client = StockHistoricalDataClient(api_key=alpaca_broker._key,
                                            secret_key=alpaca_broker._secret)
-        day   = _dt.date.fromisoformat(date_str)
-        start = _dt.datetime(day.year, day.month, day.day, 13, 0, tzinfo=_dt.timezone.utc)
-        end   = _dt.datetime(day.year, day.month, day.day, 21, 0, tzinfo=_dt.timezone.utc)
+        day = _dt.date.fromisoformat(date_str)
+        try:    et = ZoneInfo("America/New_York")
+        except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+        # ~5 calendar days back for EMA warm-up (covers weekends/holidays).
+        start = _dt.datetime(day.year, day.month, day.day, tzinfo=et) - _dt.timedelta(days=5)
+        end   = _dt.datetime(day.year, day.month, day.day, 16, 0, tzinfo=et)
         req   = StockBarsRequest(symbol_or_symbols=ticker.upper(),
                                  timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                                  start=start, end=end)
         bars = list(client.get_stock_bars(req)[ticker.upper()])
-        try:    et = ZoneInfo("America/New_York")
-        except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
-        return [b for b in bars
-                if _dt.time(9, 30) <= b.timestamp.astimezone(et).time() < _dt.time(16, 0)]
+        k, ema, out = 2.0 / (ema_period + 1), None, []
+        for b in sorted(bars, key=lambda x: x.timestamp):
+            t_et = b.timestamp.astimezone(et)
+            if not (_dt.time(9, 30) <= t_et.time() < _dt.time(16, 0)):
+                continue
+            c   = float(b.close)
+            ema = c if ema is None else (c - ema) * k + ema
+            if t_et.date() == day:
+                out.append(SimpleNamespace(
+                    timestamp=b.timestamp, open=float(b.open), high=float(b.high),
+                    low=float(b.low), close=c, ema=round(ema, 4)))
+        return out
     except Exception as _e:
         log.debug("fetch_5m_rth %s %s: %s", ticker, date_str, _e)
         return []
 
 
-def _find_entry(bars, level, side, rule, buffer):
+def _find_entry(bars, level, side, rule, buffer, ema_filter=True):
     """First entry (bar_index, entry_price) for an entry rule on a breakout of
-    `level`, or None. LONG = break up through level, SHORT = break down."""
+    `level`, or None. LONG = break up through level, SHORT = break down. When
+    ema_filter is on, the trigger bar must close on the trend side of its 8-EMA
+    (close > ema for LONG, close < ema for SHORT) — matching the live strategy."""
     n = len(bars)
     if n < 2 or not level:
         return None
     is_long = side == "LONG"
+
+    def _ema_ok(b):
+        e = getattr(b, "ema", None)
+        if not ema_filter or e is None:
+            return True
+        return (b.close > e) if is_long else (b.close < e)
+
     if rule in ("confirmed", "immediate", "buffered"):
         for i in range(1, n):
             b, pcl = bars[i], float(bars[i - 1].close)
             hi, lo, cl = float(b.high), float(b.low), float(b.close)
+            if not _ema_ok(b):
+                continue
             if rule == "confirmed":
                 if is_long and cl > level and pcl <= level: return (i, cl)
                 if not is_long and cl < level and pcl >= level: return (i, cl)
@@ -9106,10 +9130,12 @@ def _find_entry(bars, level, side, rule, buffer):
                 if is_long and hi >= level + buffer: return (i, level + buffer)
                 if not is_long and lo <= level - buffer: return (i, level - buffer)
         return None
-    # retest: first confirmed break, then first pullback to the level
+    # retest: first confirmed (EMA-gated) break, then first pullback to the level
     brk = None
     for i in range(1, n):
         cl, pcl = float(bars[i].close), float(bars[i - 1].close)
+        if not _ema_ok(bars[i]):
+            continue
         if (is_long and cl > level and pcl <= level) or (not is_long and cl < level and pcl >= level):
             brk = i
             break
@@ -9139,8 +9165,9 @@ def api_simulate_entry_test():
     use2 = (request.args.get("account") or "2").strip() == "2"
     try:    buffer = float(request.args.get("buffer", 0.05))
     except Exception: buffer = 0.05
-    from_date = (request.args.get("from") or "").strip()
-    to_date   = (request.args.get("to")   or "").strip()
+    ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
+    from_date  = (request.args.get("from") or "").strip()
+    to_date    = (request.args.get("to")   or "").strip()
 
     # Per-strategy exit params from the live Signal Router (same source as the
     # stops Replay baseline): rule name → {trail_pct, trigger_pct, max_hold_mins}.
@@ -9224,7 +9251,7 @@ def api_simulate_entry_test():
         max_hold = ex_set["max_hold_mins"] or 0
         n_setups += 1
         for rule in rules:
-            hit = _find_entry(bars, level, side, rule, buffer)
+            hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter)
             if not hit:
                 continue
             idx, entry_px = hit
@@ -9256,7 +9283,7 @@ def api_simulate_entry_test():
         "account": "Refined" if use2 else "Paper All",
         "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
-        "skipped_reversal": skipped_reversal, "buffer": buffer,
+        "skipped_reversal": skipped_reversal, "buffer": buffer, "ema_filter": ema_filter,
         "exits": "Signal Router per strategy", "rules": out,
     })
 
