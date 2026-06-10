@@ -9123,30 +9123,58 @@ def _find_entry(bars, level, side, rule, buffer):
 
 @app.route("/api/simulate/entry_test")
 def api_simulate_entry_test():
-    """Compare entry-timing rules across ALL of an account's traded setups over a
-    date range. Each round-trip's (ticker, date, Camarilla level, side) becomes a
-    setup; the same exit is applied to each entry rule, so entry timing is the
-    only variable. Per-share P&L (qty=1), first entry of the day per setup.
+    """Compare entry-timing rules across ALL of an account's BREAKOUT setups over
+    a date range, using each strategy's live Signal Router exit params (trail /
+    trigger / max-hold + session overrides) — so only entry timing varies and the
+    exits match how you've been trading. Per-share P&L (qty=1), first entry of the
+    day per setup. Reversal strategies are excluded (they enter on rejection, not
+    a breakout, so these rules don't model them).
 
-      ?account=1|2 &from=&to=
-      &buffer=0.05 &trail_pct=0.1 &trigger_pct=0.1 &stop=0.40 &max_hold=0
+      ?account=1|2 &from=&to= &buffer=0.05
     """
     import concurrent.futures as _cf
 
     if alpaca_broker is None:
         return jsonify({"error": "Alpaca data is not configured."}), 503
     use2 = (request.args.get("account") or "2").strip() == "2"
+    try:    buffer = float(request.args.get("buffer", 0.05))
+    except Exception: buffer = 0.05
+    from_date = (request.args.get("from") or "").strip()
+    to_date   = (request.args.get("to")   or "").strip()
 
-    def _f(name, default):
-        try:    return float(request.args.get(name, default))
-        except Exception: return default
-    buffer      = _f("buffer", 0.05)
-    trail_pct   = _f("trail_pct", 0.1)
-    trigger_pct = _f("trigger_pct", 0.1)
-    stop        = _f("stop", 0.40)
-    max_hold    = int(_f("max_hold", 0))
-    from_date   = (request.args.get("from") or "").strip()
-    to_date     = (request.args.get("to")   or "").strip()
+    # Per-strategy exit params from the live Signal Router (same source as the
+    # stops Replay baseline): rule name → {trail_pct, trigger_pct, max_hold_mins}.
+    rule_settings = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname  = (_row[0] or "").upper()
+            _rnodes = json.loads(_row[1] or "[]")
+            _trail = _trigger = _mhm = None
+            for _nd in _rnodes:
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mraw    = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mraw)) if _mraw else None
+            if _trail is not None:
+                rule_settings[_rname] = {"trail_pct": _trail, "trigger_pct": _trigger or 0.0,
+                                         "max_hold_mins": _mhm}
+        _rc.close()
+    except Exception as _re:
+        log.warning("entry_test rule settings failed: %s", _re)
+
+    def _match_exit(strategy):
+        """Exact name, else BREAKOUT_R3S3-style substring (mirrors stops Replay)."""
+        r = rule_settings.get((strategy or "").upper())
+        if r is None:
+            sname = (strategy or "").upper().replace(" ", "_")
+            for rkey, rval in rule_settings.items():
+                pat = "_".join(rkey.split("_CAM_")[1].split("_")[:2]) if "_CAM_" in rkey else rkey
+                if pat and pat in sname:
+                    r = rval
+                    break
+        return r or {"trail_pct": 0.3, "trigger_pct": 0.1, "max_hold_mins": None}
 
     fills  = _get_cached_fills_2() if use2 else _get_cached_fills()
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
@@ -9154,18 +9182,22 @@ def api_simulate_entry_test():
     if not trades:
         return jsonify({"error": "No round-trips for that account / date range."}), 404
 
-    # Unique (ticker, date, level, side) setups from the actual round-trips.
-    setups, ticker_dates = set(), set()
+    # Unique (ticker, date, strategy, side, level) BREAKOUT setups.
+    setups, ticker_dates, skipped_reversal = set(), set(), 0
     for t in trades:
-        side = (t.get("side") or "").upper()
-        lvl  = _trade_level(t.get("strategy"), side)
-        tk   = (t.get("ticker") or "").upper()
-        date = (t.get("entry_time") or "")[:10]
-        if lvl and tk and date:
-            setups.add((tk, date, lvl, side))
-            ticker_dates.add((tk, date))
+        strat = t.get("strategy") or ""
+        side  = (t.get("side") or "").upper()
+        tk    = (t.get("ticker") or "").upper()
+        date  = (t.get("entry_time") or "")[:10]
+        lvl   = _trade_level(strat, side)
+        if not (lvl and tk and date):
+            continue
+        if "BREAKOUT" not in strat.upper():
+            skipped_reversal += 1
+            continue
+        setups.add((tk, date, strat, side, lvl))
+        ticker_dates.add((tk, date))
 
-    # Fetch 5-min bars + Camarilla levels once per (ticker, date).
     bars_map, lv_map = {}, {}
     with _cf.ThreadPoolExecutor(max_workers=8) as pool:
         bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
@@ -9181,20 +9213,25 @@ def api_simulate_entry_test():
     rules = ["confirmed", "immediate", "buffered", "retest"]
     agg   = {r: {"pnls": [], "offsets": []} for r in rules}
     n_setups = 0
-    for (tk, date, lvl, side) in setups:
+    for (tk, date, strat, side, lvl) in setups:
         bars  = bars_map.get((tk, date)) or []
         level = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl))
         if not bars or not level:
             continue
+        ex_set = _match_exit(strat)
+        trail0   = ex_set["trail_pct"]
+        trigger  = ex_set["trigger_pct"]
+        max_hold = ex_set["max_hold_mins"] or 0
         n_setups += 1
         for rule in rules:
             hit = _find_entry(bars, level, side, rule, buffer)
             if not hit:
                 continue
             idx, entry_px = hit
-            ex = _simulate_exit(bars[idx:], entry_px, side, trail_pct, trigger_pct,
+            eff_trail = _apply_session_trail(trail0, bars[idx].timestamp)
+            ex = _simulate_exit(bars[idx:], entry_px, side, eff_trail, trigger,
                                 0.0, max_hold, entry_dt=bars[idx].timestamp,
-                                stop_loss_dollars=stop, qty=1.0)
+                                stop_loss_dollars=0.0, qty=1.0)
             if not ex:
                 continue
             exit_px = ex["exit_price"]
@@ -9219,8 +9256,8 @@ def api_simulate_entry_test():
         "account": "Refined" if use2 else "Paper All",
         "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
-        "buffer": buffer, "trail_pct": trail_pct, "trigger_pct": trigger_pct,
-        "stop": stop, "max_hold": max_hold, "rules": out,
+        "skipped_reversal": skipped_reversal, "buffer": buffer,
+        "exits": "Signal Router per strategy", "rules": out,
     })
 
 
