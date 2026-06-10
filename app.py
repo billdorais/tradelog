@@ -9056,6 +9056,165 @@ def api_refined_cutoff_impact():
     })
 
 
+def _fetch_5m_rth_objs(ticker: str, date_str: str):
+    """5-min Alpaca bar objects for a ticker's RTH session (09:30–16:00 ET).
+    Returns bar objects (with .timestamp/.high/.low/.close) so _simulate_exit
+    can walk them; [] on error."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        client = StockHistoricalDataClient(api_key=alpaca_broker._key,
+                                           secret_key=alpaca_broker._secret)
+        day   = _dt.date.fromisoformat(date_str)
+        start = _dt.datetime(day.year, day.month, day.day, 13, 0, tzinfo=_dt.timezone.utc)
+        end   = _dt.datetime(day.year, day.month, day.day, 21, 0, tzinfo=_dt.timezone.utc)
+        req   = StockBarsRequest(symbol_or_symbols=ticker.upper(),
+                                 timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+                                 start=start, end=end)
+        bars = list(client.get_stock_bars(req)[ticker.upper()])
+        try:    et = ZoneInfo("America/New_York")
+        except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+        return [b for b in bars
+                if _dt.time(9, 30) <= b.timestamp.astimezone(et).time() < _dt.time(16, 0)]
+    except Exception as _e:
+        log.debug("fetch_5m_rth %s %s: %s", ticker, date_str, _e)
+        return []
+
+
+def _find_entry(bars, level, side, rule, buffer):
+    """First entry (bar_index, entry_price) for an entry rule on a breakout of
+    `level`, or None. LONG = break up through level, SHORT = break down."""
+    n = len(bars)
+    if n < 2 or not level:
+        return None
+    is_long = side == "LONG"
+    if rule in ("confirmed", "immediate", "buffered"):
+        for i in range(1, n):
+            b, pcl = bars[i], float(bars[i - 1].close)
+            hi, lo, cl = float(b.high), float(b.low), float(b.close)
+            if rule == "confirmed":
+                if is_long and cl > level and pcl <= level: return (i, cl)
+                if not is_long and cl < level and pcl >= level: return (i, cl)
+            elif rule == "immediate":
+                if is_long and hi >= level: return (i, level)
+                if not is_long and lo <= level: return (i, level)
+            else:  # buffered
+                if is_long and hi >= level + buffer: return (i, level + buffer)
+                if not is_long and lo <= level - buffer: return (i, level - buffer)
+        return None
+    # retest: first confirmed break, then first pullback to the level
+    brk = None
+    for i in range(1, n):
+        cl, pcl = float(bars[i].close), float(bars[i - 1].close)
+        if (is_long and cl > level and pcl <= level) or (not is_long and cl < level and pcl >= level):
+            brk = i
+            break
+    if brk is None:
+        return None
+    for k in range(brk + 1, n):
+        if is_long and float(bars[k].low) <= level:  return (k, level)
+        if not is_long and float(bars[k].high) >= level: return (k, level)
+    return None
+
+
+@app.route("/api/simulate/entry_test")
+def api_simulate_entry_test():
+    """Compare entry-timing rules on one ticker's Camarilla breakouts over a date
+    range. The same exit is applied to each entry, so entry timing is the only
+    variable. Per-share P&L (qty=1). One entry per side per day per rule.
+
+      ?ticker=TSLA &level=R3S3|R4S4 &from=&to=
+      &buffer=0.05 &trail_pct=0.1 &trigger_pct=0.1 &stop=0.40 &max_hold=0
+    """
+    import datetime as _dt
+    import concurrent.futures as _cf
+    from zoneinfo import ZoneInfo
+
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca data is not configured."}), 503
+    ticker = (request.args.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"error": "ticker is required"}), 400
+    pair = (request.args.get("level") or "R3S3").strip().upper()
+    hi_key, lo_key = ("r4", "s4") if pair == "R4S4" else ("r3", "s3")
+
+    def _f(name, default):
+        try:    return float(request.args.get(name, default))
+        except Exception: return default
+    buffer      = _f("buffer", 0.05)
+    trail_pct   = _f("trail_pct", 0.1)
+    trigger_pct = _f("trigger_pct", 0.1)
+    stop        = _f("stop", 0.40)
+    max_hold    = int(_f("max_hold", 0))
+
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    today     = _dt.datetime.now(et).date()
+    to_date   = (request.args.get("to")   or today.isoformat()).strip()
+    from_date = (request.args.get("from") or (today - _dt.timedelta(days=10)).isoformat()).strip()
+    d0 = _dt.date.fromisoformat(from_date); d1 = _dt.date.fromisoformat(to_date)
+    days, cur = [], d0
+    while cur <= d1 and len(days) < 40:
+        if cur.weekday() < 5:
+            days.append(cur.isoformat())
+        cur += _dt.timedelta(days=1)
+
+    rules = ["confirmed", "immediate", "buffered", "retest"]
+
+    def _process_day(date_str):
+        bars = _fetch_5m_rth_objs(ticker, date_str)
+        lv   = _camarilla_levels(ticker, date_str)
+        if not bars or not lv:
+            return []
+        res = []
+        for side, level in (("LONG", lv.get(hi_key)), ("SHORT", lv.get(lo_key))):
+            for rule in rules:
+                hit = _find_entry(bars, level, side, rule, buffer)
+                if not hit:
+                    continue
+                idx, entry_px = hit
+                ex = _simulate_exit(bars[idx:], entry_px, side, trail_pct, trigger_pct,
+                                    0.0, max_hold, entry_dt=bars[idx].timestamp,
+                                    stop_loss_dollars=stop, qty=1.0)
+                if not ex:
+                    continue
+                exit_px = ex["exit_price"]
+                pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
+                offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
+                res.append((rule, round(pnl, 4), round(offset, 4)))
+        return res
+
+    agg = {r: {"pnls": [], "offsets": []} for r in rules}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        for day_res in pool.map(_process_day, days):
+            for rule, pnl, offset in day_res:
+                agg[rule]["pnls"].append(pnl)
+                agg[rule]["offsets"].append(offset)
+
+    out = []
+    for r in rules:
+        pnls, offs = agg[r]["pnls"], agg[r]["offsets"]
+        n, wins = len(pnls), sum(1 for p in pnls if p > 0)
+        out.append({
+            "rule": r, "trades": n, "wins": wins,
+            "win_rate":   round(wins / n * 100, 1) if n else 0.0,
+            "total_pnl":  round(sum(pnls), 4),
+            "avg_pnl":    round(sum(pnls) / n, 4) if n else 0.0,
+            "avg_offset": round(sum(offs) / n, 4) if n else 0.0,
+        })
+
+    return jsonify({
+        "ticker": ticker, "level": pair, "from": from_date, "to": to_date,
+        "days": len(days), "buffer": buffer, "trail_pct": trail_pct,
+        "trigger_pct": trigger_pct, "stop": stop, "max_hold": max_hold,
+        "rules": out,
+    })
+
+
 def _sharpe_from_pnls(pnls):
     """Trade-level Sharpe: mean(pnl) / sample_std(pnl). Returns None if < 2 trades."""
     import math as _math

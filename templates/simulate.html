@@ -464,6 +464,24 @@
     <div id="breakdownBody"></div>
   </div>
 
+  <!-- Entry-timing test -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Entry Test
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— bar-close confirmation vs immediate / buffered / retest, same exit on each</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="field"><label>Ticker</label><input type="text" id="etTicker" placeholder="TSLA" style="width:90px;text-transform:uppercase"></div>
+      <div class="field"><label>Level</label><select id="etLevel"><option value="R3S3">R3 / S3</option><option value="R4S4">R4 / S4</option></select></div>
+      <div class="param-group"><label>Buffer</label><div class="input-wrap"><input type="number" id="etBuffer" value="0.05" step="0.01" min="0"><span class="unit">$</span></div></div>
+      <div class="param-group"><label>Trail</label><div class="input-wrap"><input type="number" id="etTrail" value="0.10" step="0.05" min="0"><span class="unit">%</span></div></div>
+      <div class="param-group"><label>Trigger</label><div class="input-wrap"><input type="number" id="etTrigger" value="0.10" step="0.05" min="0"><span class="unit">%</span></div></div>
+      <div class="param-group"><label>Stop</label><div class="input-wrap"><input type="number" id="etStop" value="0.40" step="0.05" min="0"><span class="unit">$</span></div></div>
+      <div class="param-group"><label>Max Hold</label><div class="input-wrap"><input type="number" id="etMaxHold" value="0" step="5" min="0"><span class="unit">m</span></div></div>
+      <button class="run-btn" onclick="runEntryTest()" style="padding:8px 18px">&#9654; Test Entries</button>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the From/To dates above. Per-share P&amp;L (qty 1), one entry per side per day per rule. Immediate / buffered / retest assume a fill at the level price; exits modeled on 5-min bars.</div>
+    <div id="entryTestResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- AI Chat panel -->
   <div id="chatPanel" class="chat-panel" style="display:none">
     <div class="chat-header">
@@ -694,6 +712,55 @@
 
   function esc(s) {
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function runEntryTest() {
+    const out    = document.getElementById('entryTestResult');
+    const ticker = (document.getElementById('etTicker').value || '').trim().toUpperCase();
+    if (!ticker) { out.innerHTML = '<span style="color:#e74c3c">Enter a ticker.</span>'; return; }
+    const p = new URLSearchParams({
+      ticker, level: document.getElementById('etLevel').value,
+      from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
+      buffer: document.getElementById('etBuffer').value,
+      trail_pct: document.getElementById('etTrail').value,
+      trigger_pct: document.getElementById('etTrigger').value,
+      stop: document.getElementById('etStop').value,
+      max_hold: document.getElementById('etMaxHold').value,
+    });
+    out.innerHTML = '<span style="color:#888">Replaying bars…</span>';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    try {
+      const r = await fetch('/api/simulate/entry_test?' + p);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+      const label = {
+        confirmed: 'Confirmed (bar close)', immediate: 'Immediate (level touch)',
+        buffered:  'Buffered (level ± $' + d.buffer + ')', retest: 'Retest pullback',
+      };
+      const totals = d.rules.filter(x => x.trades > 0).map(x => x.total_pnl);
+      const best   = totals.length ? Math.max(...totals) : null;
+      const rows = d.rules.map(x => {
+        const isBest = x.trades > 0 && x.total_pnl === best;
+        return `<tr style="${isBest ? 'background:rgba(127,224,152,0.08)' : ''}">`
+          + `<td style="padding:7px 12px;color:#ccc">${label[x.rule] || x.rule}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#aaa">${x.trades}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_offset)}</td>`
+          + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
+      }).join('');
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.ticker} · ${d.level} · ${d.days} sessions · ${d.from} → ${d.to} · per-share P&amp;L</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
+        + `<thead><tr>`
+        + `<th style="text-align:left;padding:6px 12px;color:#555;font-size:0.7rem;text-transform:uppercase">Entry rule</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Trades</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Win %</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem" title="Average entry price minus the level — how far past the level you entered">Avg offset</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg/trade</th>`
+        + `</tr></thead><tbody>${rows}</tbody></table></div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 
   async function runSimulation() {
