@@ -474,6 +474,7 @@
         <input type="checkbox" id="etEma" checked> 8-EMA filter
       </label>
       <button class="run-btn" onclick="runEntryTest()" style="padding:8px 18px">&#9654; Test Entries</button>
+      <button class="run-btn" onclick="runBufferSweep()" style="padding:8px 18px;background:#517356">&#8644; Buffer Sweep</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Exits = each strategy's Signal Router trail / trigger / max-hold (+ session overrides).</span>
     </div>
     <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Breakout strategies only (reversals enter on rejection, not modeled). Per-share P&amp;L (qty 1), first entry of the day per setup; immediate / buffered / retest assume a fill at the level price; exits modeled on 5-min bars.</div>
@@ -754,6 +755,48 @@
         + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem" title="Average entry price minus the level — how far past the level you entered">Avg offset</th>`
         + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
         + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg/trade</th>`
+        + `</tr></thead><tbody>${rows}</tbody></table></div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  async function runBufferSweep() {
+    const out = document.getElementById('entryTestResult');
+    const p = new URLSearchParams({
+      account: document.getElementById('account').value,
+      from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
+      buffers: '0.05,0.10,0.15,0.20',
+      ema: document.getElementById('etEma').checked ? '1' : '0',
+    });
+    out.innerHTML = '<span style="color:#888">Sweeping buffers 5¢ → 20¢…</span>';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    try {
+      const r = await fetch('/api/simulate/entry_test?' + p);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+      const conf = (d.rules || []).find(x => x.rule === 'confirmed') || {total_pnl: 0, win_rate: 0};
+      const cTot = conf.total_pnl;
+      const rows = (d.sweep || []).map(s => {
+        const beats = s.total_pnl > cTot;
+        const delta = s.total_pnl - cTot;
+        return `<tr style="${beats ? 'background:rgba(127,224,152,0.08)' : ''}">`
+          + `<td style="padding:7px 12px;color:#ccc">$${s.buffer.toFixed(2)} (${Math.round(s.buffer*100)}¢)</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#aaa">${s.trades}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:${s.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${s.win_rate}%</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(s.avg_offset)}</td>`
+          + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${s.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(s.total_pnl)}</td>`
+          + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${delta >= 0 ? '#7FE098' : '#ef5350'}">${delta >= 0 ? '+' : ''}${money(delta)}${beats ? ' ★' : ''}</td></tr>`;
+      }).join('');
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout setups · ${d.from || '—'} → ${d.to || '—'} · 8-EMA ${d.ema_filter ? 'ON' : 'OFF'} · per-share P&amp;L</div>`
+        + `<div style="font-size:0.82rem;margin-bottom:10px">Baseline — <strong>Confirmed (bar close)</strong>: ${conf.win_rate}% win · <strong style="color:${cTot >= 0 ? '#7FE098' : '#ef5350'}">${money(cTot)}/sh</strong>. Each buffer is a slippage proxy — if Buffered still beats this at 15–20¢, the edge is real.</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
+        + `<thead><tr>`
+        + `<th style="text-align:left;padding:6px 12px;color:#555;font-size:0.7rem;text-transform:uppercase">Buffered entry</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Trades</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Win %</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg offset</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">vs Confirmed</th>`
         + `</tr></thead><tbody>${rows}</tbody></table></div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }

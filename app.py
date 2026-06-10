@@ -9171,6 +9171,14 @@ def api_simulate_entry_test():
     ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
     from_date  = (request.args.get("from") or "").strip()
     to_date    = (request.args.get("to")   or "").strip()
+    # Optional buffer sweep: test the Buffered rule at several buffers in one pass
+    # (reuses the fetched bars). Falls back to the single `buffer`.
+    buffers = []
+    for _x in (request.args.get("buffers") or "").split(","):
+        try:    buffers.append(round(float(_x), 4))
+        except Exception: pass
+    if not buffers:
+        buffers = [buffer]
 
     # Per-strategy exit params from the live Signal Router (same source as the
     # stops Replay baseline): rule name → {trail_pct, trigger_pct, max_hold_mins}.
@@ -9239,55 +9247,64 @@ def api_simulate_entry_test():
             try:    lv_map[lfut[f]] = f.result()
             except Exception: lv_map[lfut[f]] = {}
 
-    lkey  = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
-    rules = ["confirmed", "immediate", "buffered", "retest"]
-    agg   = {r: {"pnls": [], "offsets": []} for r in rules}
-    n_setups = 0
+    lkey       = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    fixed_rules = ["confirmed", "immediate", "retest"]   # buffer-independent
+    agg_fixed  = {r: {"pnls": [], "offsets": []} for r in fixed_rules}
+    agg_buf    = {b: {"pnls": [], "offsets": []} for b in buffers}
+    n_setups   = 0
+
+    def _run(bars, level, side, rule, buf, trail0, trigger, max_hold, bucket):
+        hit = _find_entry(bars, level, side, rule, buf, ema_filter=ema_filter)
+        if not hit:
+            return
+        idx, entry_px = hit
+        eff_trail = _apply_session_trail(trail0, bars[idx].timestamp)
+        ex = _simulate_exit(bars[idx:], entry_px, side, eff_trail, trigger, 0.0,
+                            max_hold, entry_dt=bars[idx].timestamp,
+                            stop_loss_dollars=0.0, qty=1.0)
+        if not ex:
+            return
+        exit_px = ex["exit_price"]
+        pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
+        offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
+        bucket["pnls"].append(round(pnl, 4))
+        bucket["offsets"].append(round(offset, 4))
+
     for (tk, date, strat, side, lvl) in setups:
         bars  = bars_map.get((tk, date)) or []
         level = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl))
         if not bars or not level:
             continue
         ex_set = _match_exit(strat)
-        trail0   = ex_set["trail_pct"]
-        trigger  = ex_set["trigger_pct"]
+        trail0, trigger = ex_set["trail_pct"], ex_set["trigger_pct"]
         max_hold = ex_set["max_hold_mins"] or 0
         n_setups += 1
-        for rule in rules:
-            hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter)
-            if not hit:
-                continue
-            idx, entry_px = hit
-            eff_trail = _apply_session_trail(trail0, bars[idx].timestamp)
-            ex = _simulate_exit(bars[idx:], entry_px, side, eff_trail, trigger,
-                                0.0, max_hold, entry_dt=bars[idx].timestamp,
-                                stop_loss_dollars=0.0, qty=1.0)
-            if not ex:
-                continue
-            exit_px = ex["exit_price"]
-            pnl    = (exit_px - entry_px) if side == "LONG" else (entry_px - exit_px)
-            offset = (entry_px - level)   if side == "LONG" else (level - entry_px)
-            agg[rule]["pnls"].append(round(pnl, 4))
-            agg[rule]["offsets"].append(round(offset, 4))
+        for rule in fixed_rules:
+            _run(bars, level, side, rule, 0.0, trail0, trigger, max_hold, agg_fixed[rule])
+        for b in buffers:
+            _run(bars, level, side, "buffered", b, trail0, trigger, max_hold, agg_buf[b])
 
-    out = []
-    for r in rules:
-        pnls, offs = agg[r]["pnls"], agg[r]["offsets"]
+    def _summ(bucket):
+        pnls, offs = bucket["pnls"], bucket["offsets"]
         n, wins = len(pnls), sum(1 for p in pnls if p > 0)
-        out.append({
-            "rule": r, "trades": n, "wins": wins,
-            "win_rate":   round(wins / n * 100, 1) if n else 0.0,
-            "total_pnl":  round(sum(pnls), 4),
-            "avg_pnl":    round(sum(pnls) / n, 4) if n else 0.0,
-            "avg_offset": round(sum(offs) / n, 4) if n else 0.0,
-        })
+        return {"trades": n, "wins": wins,
+                "win_rate":   round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl":  round(sum(pnls), 4),
+                "avg_pnl":    round(sum(pnls) / n, 4) if n else 0.0,
+                "avg_offset": round(sum(offs) / n, 4) if n else 0.0}
+
+    out = [{"rule": "confirmed", **_summ(agg_fixed["confirmed"])},
+           {"rule": "immediate", **_summ(agg_fixed["immediate"])},
+           {"rule": "buffered",  **_summ(agg_buf[buffers[0]])},
+           {"rule": "retest",    **_summ(agg_fixed["retest"])}]
+    sweep = [{"buffer": b, **_summ(agg_buf[b])} for b in buffers]
 
     return jsonify({
         "account": "Refined" if use2 else "Paper All",
         "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
-        "skipped_reversal": skipped_reversal, "buffer": buffer, "ema_filter": ema_filter,
-        "exits": "Signal Router per strategy", "rules": out,
+        "skipped_reversal": skipped_reversal, "buffer": buffers[0], "ema_filter": ema_filter,
+        "exits": "Signal Router per strategy", "rules": out, "sweep": sweep,
     })
 
 
