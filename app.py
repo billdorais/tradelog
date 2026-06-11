@@ -71,6 +71,10 @@ BP_PAUSE_PCT          = float(os.environ.get("BP_PAUSE_PCT", "0"))
 # ticker+Camarilla-level in a day, block new entries on that level.
 STRIKES_ENABLED       = os.environ.get("STRIKES_ENABLED", "0") == "1"
 STRIKES_PER_LEVEL     = int(os.environ.get("STRIKES_PER_LEVEL", "2"))
+# Global max-hold backstop (minutes). Any open position without a per-rule
+# max-hold timer gets capped at this. 0 = disabled. A safety net so a routing
+# rule missing max_hold_mins can't let a trade run forever.
+MAX_HOLD_MINS         = float(os.environ.get("MAX_HOLD_MINS", "0"))
 # Per-account trading-hours windows (ET "HH:MM"). Empty = no restriction (all day).
 # Entries outside the window are dropped for that account only; exits always pass.
 PAPER_HOURS_START     = os.environ.get("PAPER_HOURS_START", "")     # Paper All  (alpaca)
@@ -1596,13 +1600,13 @@ def _recover_max_hold_positions():
     except Exception as _e:
         log.warning("Max hold recovery: routing rules query failed: %s", _e)
 
-    if not rule_max_hold:
+    if not rule_max_hold and MAX_HOLD_MINS <= 0:
         if recovered:
             log.info("Max hold recovery: %d position(s) restored", recovered)
         return
 
     for (broker_tag, symbol) in untracked:
-        # Find the most recent filled entry trade for this symbol today
+        # Find the most recent filled entry trade for this symbol (entry time + strategy)
         try:
             conn = get_db()
             cur  = conn.cursor()
@@ -1619,10 +1623,18 @@ def _recover_max_hold_positions():
             log.warning("Max hold recovery: trades query failed for %s: %s", symbol, _e)
             continue
 
+        entry_time, mhm, src = None, None, None
         for trow in trade_rows:
-            strategy   = (trow[0] or "").upper()
+            strategy    = (trow[0] or "").upper()
             received_at = trow[1] or ""
-            # Match strategy against rule_max_hold
+            try:
+                _et = datetime.fromisoformat(received_at.replace(" ", "T"))
+                if _et.tzinfo is None:
+                    _et = _et.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if entry_time is None:          # anchor on the most recent valid entry
+                entry_time = _et
             mhm = rule_max_hold.get(strategy)
             if mhm is None:
                 sname = strategy.replace(" ", "_")
@@ -1635,22 +1647,25 @@ def _recover_max_hold_positions():
                     if pattern and pattern in sname:
                         mhm = rval
                         break
-            if mhm is None:
+            if mhm is not None:             # per-rule match wins; use its entry time
+                entry_time, src = _et, "rule"
+                break
+
+        if entry_time is None:
+            continue
+        if mhm is None:                     # no per-rule timer → global backstop
+            if MAX_HOLD_MINS > 0:
+                mhm, src = float(MAX_HOLD_MINS), "global backstop"
+            else:
                 continue
-            try:
-                entry_time = datetime.fromisoformat(received_at.replace(" ", "T"))
-                if entry_time.tzinfo is None:
-                    entry_time = entry_time.replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-            key = (broker_tag, symbol)
-            with _risk_lock:
-                _max_hold_positions[key] = {"entry_time": entry_time, "max_hold_mins": mhm}
-            _persist_max_hold(broker_tag, symbol, entry_time, mhm)
-            recovered += 1
-            log.info("Max hold recovered (open pos): %s [%s] — entry %s, limit %.0f min",
-                     symbol, broker_tag, received_at, mhm)
-            break  # found match for this symbol
+
+        key = (broker_tag, symbol)
+        with _risk_lock:
+            _max_hold_positions[key] = {"entry_time": entry_time, "max_hold_mins": mhm}
+        _persist_max_hold(broker_tag, symbol, entry_time, mhm)
+        recovered += 1
+        log.info("Max hold recovered (open pos): %s [%s] — entry %s, limit %.0f min (%s)",
+                 symbol, broker_tag, entry_time.isoformat(), mhm, src)
 
     if recovered:
         log.info("Max hold recovery: %d position(s) restored total", recovered)
@@ -2182,6 +2197,7 @@ def risk_status():
         "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
         "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
+        "max_hold_mins":       MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None,
     })
 
 
@@ -2228,7 +2244,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -2343,6 +2359,15 @@ def risk_set_limit():
         _save_setting("BP_PAUSE_PCT", f"{BP_PAUSE_PCT:g}")
         log.info("BP_PAUSE_PCT set to %g", BP_PAUSE_PCT)
         changed.append("bp_pause_pct")
+    if "max_hold_mins" in data:
+        try:
+            MAX_HOLD_MINS = max(0.0, float(data["max_hold_mins"] or 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_hold_mins must be a number ≥ 0"}), 400
+        _update_env_file("MAX_HOLD_MINS", f"{MAX_HOLD_MINS:g}")
+        _save_setting("MAX_HOLD_MINS", f"{MAX_HOLD_MINS:g}")
+        log.info("MAX_HOLD_MINS set to %g", MAX_HOLD_MINS)
+        changed.append("max_hold_mins")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
@@ -11543,7 +11568,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -11614,6 +11639,13 @@ def _restore_risk_settings():
         try:
             BP_PAUSE_PCT = float(stored)
             log.info("Restored BP_PAUSE_PCT=%g from DB", BP_PAUSE_PCT)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("MAX_HOLD_MINS")
+    if stored is not None:
+        try:
+            MAX_HOLD_MINS = float(stored)
+            log.info("Restored MAX_HOLD_MINS=%g from DB", MAX_HOLD_MINS)
         except (TypeError, ValueError):
             pass
 

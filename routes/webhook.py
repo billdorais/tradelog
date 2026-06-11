@@ -807,14 +807,16 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     _exec_status = "ok" if result.get("success") else "error"
                     _exec_detail = json.dumps(result)
                     app.log.info("Alpaca order %s %s %s: %s", action, qty, ticker, result)
-                    # Register max-hold timer if this entry has a max_hold_mins constraint
-                    if is_entry and result.get("success") and ep_max_hold_mins:
+                    # Register the max-hold timer: per-rule value if set, else the
+                    # global MAX_HOLD_MINS backstop so no entry can run uncapped.
+                    _eff_mhm = ep_max_hold_mins or (app.MAX_HOLD_MINS if app.MAX_HOLD_MINS > 0 else None)
+                    if is_entry and result.get("success") and _eff_mhm:
                         _broker_tag = "alpaca2" if broker is app.alpaca_broker2 else "alpaca"
                         _entry_ts   = datetime.now(timezone.utc)
                         with app._risk_lock:
                             app._max_hold_positions[(_broker_tag, ticker.upper())] = {
                                 "entry_time":    _entry_ts,
-                                "max_hold_mins": ep_max_hold_mins,
+                                "max_hold_mins": _eff_mhm,
                             }
                             # Clear stale auto-closed marker so the new position is
                             # protected. _auto_closed_symbols is only scrubbed inside
@@ -822,8 +824,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                             # are disabled — without this discard, every second-and-later
                             # trade in the same ticker is silently skipped by max hold.
                             app._auto_closed_symbols.discard((_broker_tag, ticker.upper()))
-                        app._persist_max_hold(_broker_tag, ticker.upper(), _entry_ts, ep_max_hold_mins)
-                        app.log.info("Max hold registered: %s [%s] — %.0f min", ticker, _broker_tag, ep_max_hold_mins)
+                        app._persist_max_hold(_broker_tag, ticker.upper(), _entry_ts, _eff_mhm)
+                        app.log.info("Max hold registered: %s [%s] — %.0f min%s", ticker, _broker_tag,
+                                     _eff_mhm, "" if ep_max_hold_mins else " (global backstop)")
                     # If we cancelled a pending BUY, mark the original BUY trade record
                     # as "cancelled" so it doesn't appear as an orphaned/open trade.
                     if result.get("cancelled_buy") and result.get("cancelled_order_ids"):

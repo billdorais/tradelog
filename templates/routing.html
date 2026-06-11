@@ -445,6 +445,27 @@
       </div>
     </div>
 
+    <!-- Row 6: Max-hold backstop — both accounts -->
+    <div class="rg-card" style="margin-top:10px;border-color:#c86428">
+      <div class="rg-card-title" style="color:#F2C07A">&#9670; Max-Hold Backstop — force-close stale positions</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Max hold (min)
+          <span style="color:#666;font-size:0.68rem">safety net for any position without a per-rule timer</span>
+          <span id="maxHoldBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="maxHoldDot"></span>
+            <span id="maxHoldText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="maxHoldInput" type="number" step="1" min="1" placeholder="e.g. 15" style="width:90px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveMaxHold()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearMaxHold()">Off</button>
+        </div>
+        <div class="risk-hint">Force-closes any open position held longer than this, <strong>unless</strong> its routing rule already sets a (tighter) max-hold. A backstop so a rule missing max_hold_mins can't let a trade run forever. Applies to both accounts.</div>
+      </div>
+    </div>
+
     <!-- Blocked strategies + live positions (shown when there is data) -->
     <div class="risk-details" id="riskDetails" style="display:none">
       <div id="riskBlockedList"></div>
@@ -829,6 +850,24 @@
       }
       setRowState('bpPauseInput', bpOn);
 
+      // Max-hold backstop
+      const mhInput = document.getElementById('maxHoldInput');
+      if (document.activeElement !== mhInput && data.max_hold_mins != null) {
+        mhInput.value = data.max_hold_mins;
+      }
+      const mhOn = data.max_hold_mins != null && data.max_hold_mins > 0;
+      const mhBadge = document.getElementById('maxHoldBadge');
+      const mhDot   = document.getElementById('maxHoldDot');
+      const mhText  = document.getElementById('maxHoldText');
+      if (mhOn) {
+        mhBadge.className = 'risk-status-badge active'; mhDot.className = 'risk-dot green';
+        mhText.textContent = data.max_hold_mins + ' min';
+      } else {
+        mhBadge.className = 'risk-status-badge disabled'; mhDot.className = 'risk-dot grey';
+        mhText.textContent = 'Disabled';
+      }
+      setRowState('maxHoldInput', mhOn);
+
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
       const posDot   = document.getElementById('posStatusDot');
@@ -1134,6 +1173,20 @@
     document.getElementById('bpPauseInput').value = '';
     try { await _postLimit({bp_pause_pct: 0}); }
     catch(e) { console.error('clearBpPause failed:', e); }
+  }
+
+  async function saveMaxHold() {
+    const input = document.getElementById('maxHoldInput');
+    const v = parseFloat(input.value);
+    if (isNaN(v) || v < 1) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({max_hold_mins: v}); }
+    catch(e) { console.error('saveMaxHold failed:', e); }
+  }
+  async function clearMaxHold() {
+    document.getElementById('maxHoldInput').value = '';
+    try { await _postLimit({max_hold_mins: 0}); }
+    catch(e) { console.error('clearMaxHold failed:', e); }
   }
 
   async function saveMorningTrail() {
