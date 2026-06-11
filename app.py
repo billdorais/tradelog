@@ -9351,39 +9351,48 @@ def api_simulate_entry_test():
 # nothing is sent to a broker. Run it alongside TradingView and diff.
 
 def _entry_engine_setups():
-    """Active Refined breakout setups from routing rules. Each breakout strategy
-    trades both directions, so it yields a LONG setup at its R level and a SHORT
-    setup at its S level. Returns [{strategy, ticker, levelpair, side, level_name}]."""
-    out, seen = [], set()
+    """Active Refined breakout setups, keyed off the FULL per-ticker strategy
+    names (e.g. AAPL_CAM_BREAKOUT_R4S4_..). Routing-rule strategy nodes are
+    ticker-agnostic patterns, so we source names from the Refined snapshot's
+    routed top strategies plus anything that's actually traded on Refined. Each
+    breakout strategy yields a LONG setup at its R level and a SHORT at its S
+    level. Returns [{strategy, ticker, levelpair, side, level_name}]."""
+    names = set()
+    # 1) routed top strategies from the snapshot (in-memory, else DB-persisted)
+    snap = _refined_last_result or {}
+    if not snap.get("top_strategies"):
+        try:
+            stored = _load_setting("REFINED_LAST_RESULT")
+            if stored:
+                snap = json.loads(stored)
+        except Exception:
+            snap = {}
+    for nm in (snap.get("top_strategies") or []):
+        names.add(str(nm).upper())
+    # 2) plus any strategy that has actually traded on the Refined account
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1")
-        for row in cur.fetchall():
-            nodes_raw = row[0] if DATABASE_URL else row["nodes"]
-            nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
-            if not any(n.get("type") == "broker"
-                       and n.get("value") in ("alpaca-paper-2", "alpaca-live-2") for n in nodes):
-                continue
-            for n in nodes:
-                if n.get("type") != "strategy" or not n.get("value"):
-                    continue
-                s = str(n["value"]).upper()
-                if "BREAKOUT" not in s:
-                    continue
-                tk   = s.split("_", 1)[0]
-                pair = "R4S4" if "R4S4" in s else ("R3S3" if "R3S3" in s else None)
-                if not pair:
-                    continue
-                for side, lvl in (("LONG", pair[:2]), ("SHORT", pair[2:])):
-                    key = (tk, lvl, side)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    out.append({"strategy": s, "ticker": tk, "levelpair": pair,
-                                "side": side, "level_name": lvl})
-        conn.close()
+        paired = _pair_alpaca_fills_lifo(_get_cached_fills_2())
+        for t in paired["closed_clean"]:
+            if t.get("strategy"):
+                names.add(str(t["strategy"]).upper())
     except Exception as _e:
-        log.warning("entry engine setups failed: %s", _e)
+        log.debug("entry engine fills source: %s", _e)
+
+    out, seen = [], set()
+    for s in names:
+        if "BREAKOUT" not in s:
+            continue
+        tk   = s.split("_", 1)[0]
+        pair = "R4S4" if "R4S4" in s else ("R3S3" if "R3S3" in s else None)
+        if not pair or not tk or len(tk) > 6:   # guard against pattern-only names
+            continue
+        for side, lvl in (("LONG", pair[:2]), ("SHORT", pair[2:])):
+            key = (tk, lvl, side)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"strategy": s, "ticker": tk, "levelpair": pair,
+                        "side": side, "level_name": lvl})
     return out
 
 
