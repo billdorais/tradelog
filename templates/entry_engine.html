@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Entry Engine (Dry Run) — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
+    .nav { display: flex; align-items: center; justify-content: space-between;
+           padding: 12px 24px; background: #13161f; border-bottom: 1px solid #1e2130; }
+    .page { max-width: 1300px; margin: 0 auto; padding: 24px; }
+    h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 0.85rem; margin-bottom: 16px; }
+
+    .banner { background: rgba(242,192,122,0.12); border: 1px solid #c86428; color: #F2C07A;
+              border-radius: 8px; padding: 10px 16px; font-size: 0.85rem; margin-bottom: 18px; }
+
+    .controls { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
+    .field label { display: block; font-size: 0.72rem; color: #888; margin-bottom: 4px; }
+    .field input { background: #13152a; border: 1px solid #2a2d3e; border-radius: 6px;
+                   color: #e0e0e0; padding: 7px 10px; font-size: 0.88rem; font-family: inherit; }
+    .run-btn { background: #88BF8B; color: #fff; border: none; border-radius: 6px;
+               padding: 8px 20px; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .run-btn:hover { background: #357abd; }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                  gap: 10px; margin-bottom: 20px; }
+    .stat-card { background: #1c1f2e; border: 1px solid #2a2d3e; border-radius: 8px; padding: 12px 15px; }
+    .stat-lbl { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+    .stat-val { font-size: 1.15rem; font-weight: 700; }
+    .pos { color: #7FE098; } .neg { color: #ef5350; } .warn { color: #F2C07A; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+    th { padding: 8px 12px; text-align: left; color: #666; font-weight: 600; font-size: 0.7rem;
+         text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #2a2d3e; white-space: nowrap; }
+    td { padding: 7px 12px; border-bottom: 1px solid #1a1d2e; white-space: nowrap; }
+    tr.armed td { background: rgba(127,224,152,0.05); }
+    .badge { padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+    .b-armed   { background: rgba(81,115,86,0.2);  color: #7FE098; }
+    .b-blocked { background: rgba(120,120,120,0.15); color: #888; }
+    .long  { color: #7FE098; } .short { color: #ef5350; }
+    .empty { text-align: center; padding: 40px; color: #444; }
+    .status { padding: 10px 14px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 14px; display: none; }
+    .status.info { background: rgba(136,191,139,0.12); color: #7FE098; display: block; }
+    .status.error { background: rgba(239,83,80,0.12); color: #ef5350; display: block; }
+    .spin { display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;
+            border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<nav class="nav">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+    <span style="font-size:1.1rem;font-weight:600;color:#e0e0e0">Kairos Automata — Entry Engine</span>
+  </div>
+</nav>
+
+<div class="page">
+  <h2>Entry Engine — Dry Run</h2>
+  <div class="sub">What stop-entry orders Kairos <em>would</em> arm for the Refined breakout setups, with live gates. Read-only.</div>
+
+  <div class="banner">⚠ <strong>DRY RUN</strong> — this places <strong>no orders</strong>. It only shows what the server-side engine would do, so you can diff it against what TradingView actually traded before any live wiring.</div>
+
+  <div class="controls">
+    <div class="field">
+      <label for="dateInput">Date</label>
+      <input type="date" id="dateInput">
+    </div>
+    <div class="field">
+      <label for="bufferInput">Buffer ($)</label>
+      <input type="number" id="bufferInput" value="0.05" step="0.01" min="0" style="width:90px">
+    </div>
+    <button class="run-btn" id="runBtn" onclick="run()">Run Dry Run</button>
+  </div>
+
+  <div id="status" class="status"></div>
+  <div id="summary" class="stats-grid" style="display:none"></div>
+  <div id="tableWrap"></div>
+</div>
+
+<script>
+  function setStatus(msg, kind) {
+    const el = document.getElementById('status');
+    el.className = 'status ' + (kind || 'info'); el.innerHTML = msg;
+  }
+  function clearStatus() { document.getElementById('status').className = 'status'; }
+  const yn = v => v === true ? '<span class="pos">✓</span>' : v === false ? '<span class="neg">✗</span>' : '<span style="color:#555">—</span>';
+
+  async function run() {
+    const date = document.getElementById('dateInput').value;
+    const buf  = document.getElementById('bufferInput').value;
+    document.getElementById('runBtn').disabled = true;
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('tableWrap').innerHTML = '';
+    setStatus('<span class="spin"></span>Evaluating setups…', 'info');
+    try {
+      const r = await fetch(`/api/entry_engine/dryrun?date=${encodeURIComponent(date)}&buffer=${encodeURIComponent(buf)}`);
+      const d = await r.json();
+      if (!r.ok) { setStatus(d.error || 'Failed.', 'error'); document.getElementById('runBtn').disabled = false; return; }
+      clearStatus();
+
+      const s = d.summary;
+      const sum = document.getElementById('summary');
+      sum.style.display = 'grid';
+      sum.innerHTML =
+        `<div class="stat-card"><div class="stat-lbl">Date</div><div class="stat-val">${d.date}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Setups</div><div class="stat-val">${s.setups}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Would arm</div><div class="stat-val pos">${s.armed}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Blocked</div><div class="stat-val warn">${s.blocked}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Actually traded</div><div class="stat-val">${s.traded}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Refined hours</div><div class="stat-val ${d.hours_ok ? 'pos' : 'neg'}">${d.hours_ok ? 'open' : 'closed'}</div></div>`;
+
+      if (!d.rows.length) { document.getElementById('tableWrap').innerHTML = '<div class="empty">No setups.</div>'; document.getElementById('runBtn').disabled = false; return; }
+
+      const rows = d.rows.map(x => {
+        const blocked = (x.blocked || []).join(', ');
+        const dec = x.decision === 'armed'
+          ? '<span class="badge b-armed">ARM</span>'
+          : `<span class="badge b-blocked">${blocked || 'blocked'}</span>`;
+        return `<tr class="${x.decision === 'armed' ? 'armed' : ''}">` +
+          `<td style="font-weight:600">${x.ticker}</td>` +
+          `<td class="${x.side === 'LONG' ? 'long' : 'short'}">${x.side}</td>` +
+          `<td>${x.level_name}</td>` +
+          `<td>${x.level != null ? '$' + x.level.toFixed(2) : '—'}</td>` +
+          `<td style="font-weight:600">${x.stop_price != null ? '$' + x.stop_price.toFixed(2) : '—'}</td>` +
+          `<td>${x.qty != null ? x.qty : '—'}</td>` +
+          `<td style="color:#c4b5fd">${x.score != null ? x.score : '—'}</td>` +
+          `<td>${yn(x.ema_ok)}</td>` +
+          `<td style="color:#888">${x.triggered_at || '—'}</td>` +
+          `<td>${dec}</td>` +
+          `<td>${x.traded_today ? '<span class="pos">✓ traded</span>' : '<span style="color:#444">—</span>'}</td>` +
+          `</tr>`;
+      }).join('');
+      document.getElementById('tableWrap').innerHTML =
+        `<div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:10px;overflow:hidden">` +
+        `<div style="overflow-x:auto"><table><thead><tr>` +
+        `<th>Ticker</th><th>Side</th><th>Level</th><th>Level $</th><th>Stop @</th><th>Qty</th><th>Score</th>` +
+        `<th title="Prior-bar 8-EMA on the trend side">EMA</th><th title="Did price reach the stop today">Triggered</th>` +
+        `<th>Engine</th><th title="Did TradingView actually trade this setup today">Reality</th>` +
+        `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    } catch (e) {
+      setStatus('Error: ' + e.message, 'error');
+    }
+    document.getElementById('runBtn').disabled = false;
+  }
+
+  (function init() {
+    const etToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+    document.getElementById('dateInput').value = etToday;
+    run();
+  })();
+</script>
+</body>
+</html>

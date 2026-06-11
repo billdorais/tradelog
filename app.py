@@ -8697,6 +8697,11 @@ def review_page():
     return render_template("review.html")
 
 
+@app.route("/entry-engine")
+def entry_engine_page():
+    return render_template("entry_engine.html")
+
+
 @app.route("/api/review")
 def api_review():
     """End-of-day chart review for the Refined (alpaca2) account.
@@ -9337,6 +9342,157 @@ def api_simulate_entry_test():
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
         "skipped_reversal": skipped_reversal, "buffer": buffers[0], "ema_filter": ema_filter,
         "multi": multi, "exits": "Signal Router per strategy", "rules": out, "sweep": sweep,
+    })
+
+
+# ── Server-side entry engine — Phase 1: DRY RUN ONLY (places no orders) ──────
+# Computes what stop-entry orders Kairos *would* arm right now for the Refined
+# breakout strategies, with the same gates the live engine would use. Read-only:
+# nothing is sent to a broker. Run it alongside TradingView and diff.
+
+def _entry_engine_setups():
+    """Active Refined breakout setups from routing rules. Each breakout strategy
+    trades both directions, so it yields a LONG setup at its R level and a SHORT
+    setup at its S level. Returns [{strategy, ticker, levelpair, side, level_name}]."""
+    out, seen = [], set()
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1")
+        for row in cur.fetchall():
+            nodes_raw = row[0] if DATABASE_URL else row["nodes"]
+            nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+            if not any(n.get("type") == "broker"
+                       and n.get("value") in ("alpaca-paper-2", "alpaca-live-2") for n in nodes):
+                continue
+            for n in nodes:
+                if n.get("type") != "strategy" or not n.get("value"):
+                    continue
+                s = str(n["value"]).upper()
+                if "BREAKOUT" not in s:
+                    continue
+                tk   = s.split("_", 1)[0]
+                pair = "R4S4" if "R4S4" in s else ("R3S3" if "R3S3" in s else None)
+                if not pair:
+                    continue
+                for side, lvl in (("LONG", pair[:2]), ("SHORT", pair[2:])):
+                    key = (tk, lvl, side)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append({"strategy": s, "ticker": tk, "levelpair": pair,
+                                "side": side, "level_name": lvl})
+        conn.close()
+    except Exception as _e:
+        log.warning("entry engine setups failed: %s", _e)
+    return out
+
+
+@app.route("/api/entry_engine/dryrun")
+def api_entry_engine_dryrun():
+    """DRY RUN: what stop-entry orders Kairos would arm for the Refined breakout
+    setups today, with gates evaluated. Places no orders.  ?buffer=0.05&date="""
+    import datetime as _dt
+    import concurrent.futures as _cf
+    from zoneinfo import ZoneInfo
+
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca data is not configured."}), 503
+    try:    buffer = float(request.args.get("buffer", 0.05))
+    except Exception: buffer = 0.05
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    date = (request.args.get("date") or _dt.datetime.now(et).date().isoformat()).strip()
+
+    setups = _entry_engine_setups()
+    if not setups:
+        return jsonify({"error": "No Refined breakout strategies are routed."}), 404
+
+    score_by_strat = {}
+    for _key in ("top_scored", "on_deck_scored"):
+        for item in (_refined_last_result or {}).get(_key, []):
+            nm = (item.get("name") or "").upper()
+            if nm:
+                score_by_strat[nm] = item.get("score")
+
+    tickers = sorted({s["ticker"] for s in setups})
+    bars_map, lv_map = {}, {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        bfut = {pool.submit(_fetch_5m_rth_objs, tk, date): tk for tk in tickers}
+        lfut = {pool.submit(_camarilla_levels,  tk, date): tk for tk in tickers}
+        for f in _cf.as_completed(bfut):
+            try:    bars_map[bfut[f]] = f.result()
+            except Exception: bars_map[bfut[f]] = []
+        for f in _cf.as_completed(lfut):
+            try:    lv_map[lfut[f]] = f.result()
+            except Exception: lv_map[lfut[f]] = {}
+
+    strikes  = _get_strike_counts() if STRIKES_ENABLED else {}
+    hours_ok = _account_hours_ok("alpaca2")
+
+    # What actually traded today on Refined (for the dry-run vs reality diff).
+    traded = set()
+    try:
+        paired = _pair_alpaca_fills_lifo(_get_cached_fills_2(), from_date=date, to_date=date)
+        for t in paired["closed_clean"]:
+            traded.add(((t.get("ticker") or "").upper(),
+                        _trade_level(t.get("strategy"), (t.get("side") or "").upper()),
+                        (t.get("side") or "").upper()))
+    except Exception as _te:
+        log.debug("entry engine traded lookup: %s", _te)
+
+    lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    rows = []
+    for s in setups:
+        tk, side, lvl, strat = s["ticker"], s["side"], s["level_name"], s["strategy"]
+        is_long = side == "LONG"
+        bars    = bars_map.get(tk) or []
+        level   = (lv_map.get(tk) or {}).get(lkey.get(lvl))
+        last    = bars[-1] if bars else None
+        last_px = float(last.close) if last else None
+        score   = score_by_strat.get(strat)
+        qty     = _compute_refined_qty(score, last_px) if (score is not None and last_px) else None
+        stop_px = (level + buffer) if (level and is_long) else ((level - buffer) if level else None)
+
+        ema_ok = None
+        if last is not None and getattr(last, "ema", None) is not None:
+            ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
+
+        triggered_at = None
+        if level and bars and stop_px:
+            for b in bars:
+                if (is_long and float(b.high) >= stop_px) or (not is_long and float(b.low) <= stop_px):
+                    triggered_at = b.timestamp.astimezone(et).strftime("%H:%M")
+                    break
+
+        blocked = []
+        if not level:        blocked.append("no level")
+        if not hours_ok:     blocked.append("trading hours")
+        if STRIKES_ENABLED and strikes.get(("alpaca2", tk, lvl), 0) >= STRIKES_PER_LEVEL:
+            blocked.append("two-strikes")
+        if ema_ok is False:  blocked.append("EMA")
+        decision = "blocked" if blocked else "armed"
+
+        rows.append({
+            "ticker": tk, "strategy": strat, "side": side, "level_name": lvl,
+            "level": round(level, 4) if level else None,
+            "stop_price": round(stop_px, 4) if stop_px else None,
+            "qty": qty, "score": round((score or 0) * 100) if score is not None else None,
+            "ema_ok": ema_ok, "triggered_at": triggered_at,
+            "decision": decision, "blocked": blocked,
+            "traded_today": (tk, lvl, side) in traded,
+        })
+
+    rows.sort(key=lambda r: (r["decision"] != "armed", r["ticker"], r["side"]))
+    summary = {
+        "setups":  len(rows),
+        "armed":   sum(1 for r in rows if r["decision"] == "armed"),
+        "blocked": sum(1 for r in rows if r["decision"] == "blocked"),
+        "traded":  sum(1 for r in rows if r["traded_today"]),
+    }
+    return jsonify({
+        "date": date, "buffer": buffer, "hours_ok": hours_ok,
+        "strikes_enabled": STRIKES_ENABLED, "summary": summary, "rows": rows,
+        "note": "DRY RUN — no orders placed.",
     })
 
 
