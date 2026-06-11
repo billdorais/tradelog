@@ -149,6 +149,7 @@
         `<div class="stat-card"><div class="stat-lbl">TV traded</div><div class="stat-val">${s.traded}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Match</div><div class="stat-val pos">${s.match}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl" title="TV traded but engine wouldn't arm — a gate/level gap to check">TV-only gap</div><div class="stat-val ${s.reality_only > 0 ? 'neg' : ''}">${s.reality_only}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl" title="Per-share P&L edge from the engine's earlier entry on matched trades (same exit)">Entry edge $/sh</div><div class="stat-val ${s.edge >= 0 ? 'pos' : 'neg'}">${(s.edge < 0 ? '-$' : '$') + Math.abs(s.edge).toFixed(2)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Refined hours</div><div class="stat-val ${d.hours_ok ? 'pos' : 'neg'}">${d.hours_ok ? 'open' : 'closed'}</div></div>`;
 
       if (!d.rows.length) { document.getElementById('tableWrap').innerHTML = '<div class="empty">No setups.</div>'; document.getElementById('runBtn').disabled = false; return; }
@@ -178,6 +179,7 @@
           `<td style="color:#888">${x.triggered_at || '—'}</td>` +
           `<td>${dec}</td>` +
           `<td>${x.traded_today ? '<span class="pos">✓ traded</span>' : '<span style="color:#444">—</span>'}</td>` +
+          `<td style="text-align:right;${x.edge != null ? (x.edge >= 0 ? 'color:#7FE098;font-weight:600' : 'color:#ef5350;font-weight:600') : 'color:#444'}">${x.edge != null ? ((x.edge < 0 ? '-$' : '$') + Math.abs(x.edge).toFixed(2)) : '—'}</td>` +
           `</tr>`;
       }).join('');
       document.getElementById('tableWrap').innerHTML =
@@ -187,6 +189,7 @@
         `<th title="Stop beyond the level (breakout) or limit at the level (reversal)">Order @</th><th>Qty</th><th>Score</th>` +
         `<th title="Trend-side 8-EMA (breakout: close; reversal: close + slope)">EMA</th><th title="Did price reach the order today">Triggered</th>` +
         `<th>Engine</th><th title="Did TradingView actually trade this setup today">Reality</th>` +
+        `<th title="Per-share P&L edge vs TV's entry on matched trades (same exit)">Edge $/sh</th>` +
         `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
     } catch (e) {
       setStatus('Error: ' + e.message, 'error');
@@ -227,6 +230,7 @@
           `<td style="text-align:right;color:#7FE098;font-weight:600">${e.match}</td>` +
           `<td style="text-align:right;color:#888">${e.engine_only}</td>` +
           `<td style="text-align:right;${gap ? 'color:#ef5350;font-weight:600' : 'color:#444'}">${e.reality_only}</td>` +
+          `<td style="text-align:right;${(e.edge || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600">${e.edge != null ? ((e.edge < 0 ? '-$' : '$') + Math.abs(e.edge).toFixed(2)) : '—'}</td>` +
           `<td style="text-align:right;color:#555;font-size:0.72rem">${e.saved_at || ''}</td>` +
           `</tr>`;
       }).join('');
@@ -239,6 +243,7 @@
         `<th style="text-align:right" title="Both engine and TV">Match</th>` +
         `<th style="text-align:right" title="Engine would fill, TV didn't">Eng-only</th>` +
         `<th style="text-align:right" title="TV traded, engine wouldn't arm — gate/level gap">TV-only</th>` +
+        `<th style="text-align:right" title="Per-share P&L edge from the engine's earlier entry (same exit)">Edge $/sh</th>` +
         `<th style="text-align:right">Saved</th>` +
         `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
     } catch (e) { wrap.innerHTML = `<div class="empty" style="color:#ef5350">Log error: ${e.message}</div>`; }

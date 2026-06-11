@@ -9651,14 +9651,20 @@ def _entry_engine_compute(date=None, buffer=0.05):
             lvl = pair[2:] if side == "LONG" else pair[:2]
         return (lvl, kind)
 
-    traded = set()
+    traded = {}   # (ticker, level, side, kind) -> [round-trips with entry/exit/pnl/qty]
     try:
         paired = _pair_alpaca_fills_lifo(_get_cached_fills_2(), from_date=date, to_date=date)
         for t in paired["closed_clean"]:
             _sd = (t.get("side") or "").upper()
             _lvl, _kind = _kind_level(t.get("strategy"), _sd)
             if _lvl:
-                traded.add(((t.get("ticker") or "").upper(), _lvl, _sd, _kind))
+                key = ((t.get("ticker") or "").upper(), _lvl, _sd, _kind)
+                traded.setdefault(key, []).append({
+                    "entry": float(t.get("entry_price") or 0),
+                    "exit":  float(t.get("exit_price")  or 0),
+                    "pnl":   float(t.get("pnl")         or 0),
+                    "qty":   float(t.get("qty")         or 1),
+                })
     except Exception as _te:
         log.debug("entry engine traded lookup: %s", _te)
 
@@ -9712,6 +9718,21 @@ def _entry_engine_compute(date=None, buffer=0.05):
         if ema_ok is False:  blocked.append("EMA")
         decision = "blocked" if blocked else "armed"
 
+        rt_list = traded.get((tk, lvl, side, kind), [])
+        # Edge: the engine enters at order_px; TV entered at rt.entry. With the same
+        # exit, the per-share P&L difference == the entry-price improvement.
+        edge = tv_ps = eng_ps = None
+        if decision == "armed" and triggered_at and rt_list and order_px:
+            edge = tv_ps = eng_ps = 0.0
+            for rt in rt_list:
+                q   = rt["qty"] or 1
+                _tv = rt["pnl"] / q
+                _ed = (rt["entry"] - order_px) if is_long else (order_px - rt["entry"])
+                edge   += _ed
+                tv_ps  += _tv
+                eng_ps += _tv + _ed
+            edge, tv_ps, eng_ps = round(edge, 4), round(tv_ps, 4), round(eng_ps, 4)
+
         rows.append({
             "ticker": tk, "strategy": strat, "side": side, "level_name": lvl, "kind": kind,
             "level": round(level, 4) if level else None,
@@ -9719,7 +9740,8 @@ def _entry_engine_compute(date=None, buffer=0.05):
             "qty": qty, "score": round((score or 0) * 100) if score is not None else None,
             "ema_ok": ema_ok, "triggered_at": triggered_at,
             "decision": decision, "blocked": blocked,
-            "traded_today": (tk, lvl, side, kind) in traded,
+            "traded_today": bool(rt_list), "n_trades": len(rt_list),
+            "edge": edge, "tv_pnl": tv_ps, "engine_pnl": eng_ps,
         })
 
     rows.sort(key=lambda r: (r["decision"] != "armed", r["kind"], r["ticker"], r["side"]))
@@ -9737,6 +9759,11 @@ def _entry_engine_compute(date=None, buffer=0.05):
         "match":    n_match,                       # both
         "engine_only":  len(eng_trig) - n_match,   # engine would enter, TV didn't
         "reality_only": n_trade - n_match,         # TV traded, engine wouldn't (gate/level gap)
+        # Per-share P&L on matched setups: TV's actual vs the engine's earlier entry.
+        "matched_trades": sum(r["n_trades"] for r in rows if r["edge"] is not None),
+        "tv_pnl":     round(sum(r["tv_pnl"]     for r in rows if r["edge"] is not None), 2),
+        "engine_pnl": round(sum(r["engine_pnl"] for r in rows if r["edge"] is not None), 2),
+        "edge":       round(sum(r["edge"]       for r in rows if r["edge"] is not None), 2),
     }
     return {
         "date": date, "buffer": buffer, "hours_ok": hours_ok,
@@ -9767,7 +9794,8 @@ def _log_entry_engine_day(date=None, buffer=0.05):
     s = payload["summary"]
     entry = {"date": payload["date"], "buffer": payload["buffer"], **{k: s[k] for k in (
         "setups", "breakout", "reversal", "armed", "blocked",
-        "engine_triggered", "traded", "match", "engine_only", "reality_only")},
+        "engine_triggered", "traded", "match", "engine_only", "reality_only",
+        "matched_trades", "tv_pnl", "engine_pnl", "edge")},
         "saved_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
     try:
         loglist = json.loads(_load_setting("ENTRY_ENGINE_LOG") or "[]")
