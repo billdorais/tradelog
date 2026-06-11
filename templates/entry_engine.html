@@ -91,11 +91,20 @@
       <input type="number" id="bufferInput" value="0.05" step="0.01" min="0" style="width:90px">
     </div>
     <button class="run-btn" id="runBtn" onclick="run()">Run Dry Run</button>
+    <button class="run-btn" id="saveBtn" onclick="saveSnapshot()" style="background:#517356">Save to Log</button>
   </div>
 
   <div id="status" class="status"></div>
   <div id="summary" class="stats-grid" style="display:none"></div>
   <div id="tableWrap"></div>
+
+  <div style="margin-top:28px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <h2 style="font-size:1.05rem">📒 Daily Log</h2>
+      <span style="font-size:0.72rem;color:#666">Auto-captured 4:30 PM ET on weekdays · or hit “Save to Log”.</span>
+    </div>
+    <div id="logWrap"><div class="empty">Loading log…</div></div>
+  </div>
 </div>
 
 <script>
@@ -134,11 +143,12 @@
       sum.style.display = 'grid';
       sum.innerHTML =
         `<div class="stat-card"><div class="stat-lbl">Date</div><div class="stat-val">${d.date}</div></div>` +
-        `<div class="stat-card"><div class="stat-lbl">Setups</div><div class="stat-val">${s.setups}</div></div>` +
-        `<div class="stat-card"><div class="stat-lbl">Breakout / Reversal</div><div class="stat-val" style="font-size:1rem">${s.breakout} <span style="color:#555">/</span> ${s.reversal}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Setups (B / R)</div><div class="stat-val" style="font-size:1rem">${s.setups} · ${s.breakout}/${s.reversal}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Would arm</div><div class="stat-val pos">${s.armed}</div></div>` +
-        `<div class="stat-card"><div class="stat-lbl">Blocked</div><div class="stat-val warn">${s.blocked}</div></div>` +
-        `<div class="stat-card"><div class="stat-lbl">Actually traded</div><div class="stat-val">${s.traded}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Engine triggered</div><div class="stat-val">${s.engine_triggered}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">TV traded</div><div class="stat-val">${s.traded}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Match</div><div class="stat-val pos">${s.match}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl" title="TV traded but engine wouldn't arm — a gate/level gap to check">TV-only gap</div><div class="stat-val ${s.reality_only > 0 ? 'neg' : ''}">${s.reality_only}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Refined hours</div><div class="stat-val ${d.hours_ok ? 'pos' : 'neg'}">${d.hours_ok ? 'open' : 'closed'}</div></div>`;
 
       if (!d.rows.length) { document.getElementById('tableWrap').innerHTML = '<div class="empty">No setups.</div>'; document.getElementById('runBtn').disabled = false; return; }
@@ -184,10 +194,61 @@
     document.getElementById('runBtn').disabled = false;
   }
 
+  async function saveSnapshot() {
+    const date = document.getElementById('dateInput').value;
+    const buf  = document.getElementById('bufferInput').value;
+    const btn  = document.getElementById('saveBtn');
+    btn.disabled = true;
+    setStatus('<span class="spin"></span>Saving snapshot to the log…', 'info');
+    try {
+      const r = await fetch(`/api/entry_engine/log/save?date=${encodeURIComponent(date)}&buffer=${encodeURIComponent(buf)}`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) { setStatus(d.error || 'Save failed.', 'error'); }
+      else { setStatus('Saved ' + (d.saved?.date || date) + ' to the log.', 'info'); await loadLog(); }
+    } catch (e) { setStatus('Error: ' + e.message, 'error'); }
+    btn.disabled = false;
+  }
+
+  async function loadLog() {
+    const wrap = document.getElementById('logWrap');
+    try {
+      const r = await fetch('/api/entry_engine/log');
+      const d = await r.json();
+      const days = d.days || [];
+      if (!days.length) { wrap.innerHTML = '<div class="empty">No days logged yet. Runs auto-capture at 4:30 PM ET, or use “Save to Log”.</div>'; return; }
+      const rows = days.map(e => {
+        const gap = (e.reality_only || 0) > 0;
+        return `<tr>` +
+          `<td style="font-weight:600">${e.date}</td>` +
+          `<td style="text-align:right;color:#aaa">${e.setups} <span style="color:#555">(${e.breakout}/${e.reversal})</span></td>` +
+          `<td style="text-align:right;color:#7FE098">${e.armed}</td>` +
+          `<td style="text-align:right">${e.engine_triggered}</td>` +
+          `<td style="text-align:right">${e.traded}</td>` +
+          `<td style="text-align:right;color:#7FE098;font-weight:600">${e.match}</td>` +
+          `<td style="text-align:right;color:#888">${e.engine_only}</td>` +
+          `<td style="text-align:right;${gap ? 'color:#ef5350;font-weight:600' : 'color:#444'}">${e.reality_only}</td>` +
+          `<td style="text-align:right;color:#555;font-size:0.72rem">${e.saved_at || ''}</td>` +
+          `</tr>`;
+      }).join('');
+      wrap.innerHTML =
+        `<div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:10px;overflow:hidden"><div style="overflow-x:auto">` +
+        `<table><thead><tr>` +
+        `<th>Date</th><th style="text-align:right">Setups (B/R)</th><th style="text-align:right">Armed</th>` +
+        `<th style="text-align:right" title="Engine would have filled (armed + price reached)">Eng. fill</th>` +
+        `<th style="text-align:right" title="TradingView actually traded">TV</th>` +
+        `<th style="text-align:right" title="Both engine and TV">Match</th>` +
+        `<th style="text-align:right" title="Engine would fill, TV didn't">Eng-only</th>` +
+        `<th style="text-align:right" title="TV traded, engine wouldn't arm — gate/level gap">TV-only</th>` +
+        `<th style="text-align:right">Saved</th>` +
+        `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    } catch (e) { wrap.innerHTML = `<div class="empty" style="color:#ef5350">Log error: ${e.message}</div>`; }
+  }
+
   (function init() {
     const etToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
     document.getElementById('dateInput').value = etToday;
     run();
+    loadLog();
   })();
 </script>
 </body>

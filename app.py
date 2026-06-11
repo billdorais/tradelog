@@ -6201,6 +6201,7 @@ def _refined_scheduler_loop():
     from zoneinfo import ZoneInfo
     _et = ZoneInfo("America/New_York")
     _ran_today = None
+    _ee_logged = None
     while True:
         time.sleep(60)
         if alpaca_broker is None:
@@ -6216,6 +6217,14 @@ def _refined_scheduler_loop():
                 log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
+        # Capture the entry-engine dry-run into the daily log after the close
+        # (after the refresh, so scores are fresh and the full session's bars exist).
+        if now.hour == 16 and now.minute == 30 and _ee_logged != today:
+            _ee_logged = today
+            try:
+                _log_entry_engine_day(today.isoformat())
+            except Exception as _ee:
+                log.warning("Scheduled entry-engine log failed: %s", _ee)
 
 
 threading.Thread(target=_refined_scheduler_loop, daemon=True).start()
@@ -9586,27 +9595,25 @@ def _entry_engine_setups():
     return out
 
 
-@app.route("/api/entry_engine/dryrun")
-def api_entry_engine_dryrun():
-    """DRY RUN: what entry orders Kairos would arm for the Refined breakout AND
-    reversal setups today, with gates evaluated. Breakouts arm a STOP beyond the
-    level (level ± buffer); reversals arm a LIMIT at the level. Places no orders.
-      ?buffer=0.05&date="""
+def _entry_engine_compute(date=None, buffer=0.05):
+    """Core dry-run: what entry orders Kairos would arm for the Refined breakout
+    AND reversal setups on `date`, with gates evaluated. Breakouts arm a STOP
+    beyond the level (level ± buffer); reversals arm a LIMIT at the level. Places
+    no orders. Returns the payload dict, or {"error":..., "_status":N}."""
     import datetime as _dt
     import concurrent.futures as _cf
     from zoneinfo import ZoneInfo
 
     if alpaca_broker is None:
-        return jsonify({"error": "Alpaca data is not configured."}), 503
-    try:    buffer = float(request.args.get("buffer", 0.05))
-    except Exception: buffer = 0.05
+        return {"error": "Alpaca data is not configured.", "_status": 503}
     try:    et = ZoneInfo("America/New_York")
     except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
-    date = (request.args.get("date") or _dt.datetime.now(et).date().isoformat()).strip()
+    if not date:
+        date = _dt.datetime.now(et).date().isoformat()
 
     setups = _entry_engine_setups()
     if not setups:
-        return jsonify({"error": "No Refined breakout strategies are routed."}), 404
+        return {"error": "No Refined breakout/reversal strategies are routed.", "_status": 404}
 
     score_by_strat = {}
     for _key in ("top_scored", "on_deck_scored"):
@@ -9716,19 +9723,83 @@ def api_entry_engine_dryrun():
         })
 
     rows.sort(key=lambda r: (r["decision"] != "armed", r["kind"], r["ticker"], r["side"]))
+    eng_trig = [r for r in rows if r["decision"] == "armed" and r["triggered_at"]]
+    n_trade  = sum(1 for r in rows if r["traded_today"])
+    n_match  = sum(1 for r in eng_trig if r["traded_today"])
     summary = {
         "setups":   len(rows),
         "breakout": sum(1 for r in rows if r["kind"] == "breakout"),
         "reversal": sum(1 for r in rows if r["kind"] == "reversal"),
         "armed":    sum(1 for r in rows if r["decision"] == "armed"),
         "blocked":  sum(1 for r in rows if r["decision"] == "blocked"),
-        "traded":   sum(1 for r in rows if r["traded_today"]),
+        "engine_triggered": len(eng_trig),       # would have filled (armed + price reached)
+        "traded":   n_trade,                       # TradingView actually traded
+        "match":    n_match,                       # both
+        "engine_only":  len(eng_trig) - n_match,   # engine would enter, TV didn't
+        "reality_only": n_trade - n_match,         # TV traded, engine wouldn't (gate/level gap)
     }
-    return jsonify({
+    return {
         "date": date, "buffer": buffer, "hours_ok": hours_ok,
         "strikes_enabled": STRIKES_ENABLED, "summary": summary, "rows": rows,
         "note": "DRY RUN — no orders placed.",
-    })
+    }
+
+
+@app.route("/api/entry_engine/dryrun")
+def api_entry_engine_dryrun():
+    """Live dry-run snapshot (no persistence). ?buffer=0.05&date="""
+    try:    buffer = float(request.args.get("buffer", 0.05))
+    except Exception: buffer = 0.05
+    date    = (request.args.get("date") or "").strip() or None
+    payload = _entry_engine_compute(date, buffer)
+    if "error" in payload:
+        return jsonify({"error": payload["error"]}), payload.get("_status", 400)
+    return jsonify(payload)
+
+
+def _log_entry_engine_day(date=None, buffer=0.05):
+    """Compute the day's dry-run and append its summary to the persisted daily log
+    (deduped by date, capped ~120 days). Returns the saved entry or None."""
+    payload = _entry_engine_compute(date, buffer)
+    if "error" in payload:
+        log.warning("entry engine log skipped: %s", payload["error"])
+        return None
+    s = payload["summary"]
+    entry = {"date": payload["date"], "buffer": payload["buffer"], **{k: s[k] for k in (
+        "setups", "breakout", "reversal", "armed", "blocked",
+        "engine_triggered", "traded", "match", "engine_only", "reality_only")},
+        "saved_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
+    try:
+        loglist = json.loads(_load_setting("ENTRY_ENGINE_LOG") or "[]")
+    except Exception:
+        loglist = []
+    loglist = [e for e in loglist if e.get("date") != entry["date"]]
+    loglist.append(entry)
+    loglist.sort(key=lambda e: e.get("date", ""))
+    _save_setting("ENTRY_ENGINE_LOG", json.dumps(loglist[-120:]))
+    log.info("Entry engine logged %s: armed=%s triggered=%s traded=%s match=%s",
+             entry["date"], entry["armed"], entry["engine_triggered"], entry["traded"], entry["match"])
+    return entry
+
+
+@app.route("/api/entry_engine/log")
+def api_entry_engine_log():
+    """Return the persisted daily dry-run log, newest first."""
+    try:    loglist = json.loads(_load_setting("ENTRY_ENGINE_LOG") or "[]")
+    except Exception: loglist = []
+    return jsonify({"days": list(reversed(loglist))})
+
+
+@app.route("/api/entry_engine/log/save", methods=["POST"])
+def api_entry_engine_log_save():
+    """Manually capture a day's dry-run into the log. ?date=&buffer="""
+    date = (request.args.get("date") or "").strip() or None
+    try:    buffer = float(request.args.get("buffer", 0.05))
+    except Exception: buffer = 0.05
+    entry = _log_entry_engine_day(date, buffer)
+    if entry is None:
+        return jsonify({"error": "Could not compute a snapshot to save."}), 400
+    return jsonify({"saved": entry})
 
 
 def _sharpe_from_pnls(pnls):
