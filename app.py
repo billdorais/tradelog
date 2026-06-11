@@ -9086,17 +9086,24 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
                                  timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                                  start=start, end=end)
         bars = list(client.get_stock_bars(req)[ticker.upper()])
-        k, ema, out = 2.0 / (ema_period + 1), None, []
+        k = 2.0 / (ema_period + 1)
+        ema, atr, prev_close, ema_hist, out = None, None, None, [], []
         for b in sorted(bars, key=lambda x: x.timestamp):
             t_et = b.timestamp.astimezone(et)
             if not (_dt.time(9, 30) <= t_et.time() < _dt.time(16, 0)):
                 continue
-            c   = float(b.close)
+            h, l, c = float(b.high), float(b.low), float(b.close)
+            tr  = (h - l) if prev_close is None else max(h - l, abs(h - prev_close), abs(l - prev_close))
+            atr = tr if atr is None else (atr * 13 + tr) / 14.0          # Wilder ATR(14)
             ema = c if ema is None else (c - ema) * k + ema
+            ema_hist.append(ema)
+            ema2 = ema_hist[-3] if len(ema_hist) >= 3 else None           # EMA 2 bars ago (slope)
+            prev_close = c
             if t_et.date() == day:
                 out.append(SimpleNamespace(
-                    timestamp=b.timestamp, open=float(b.open), high=float(b.high),
-                    low=float(b.low), close=c, ema=round(ema, 4)))
+                    timestamp=b.timestamp, open=float(b.open), high=h, low=l, close=c,
+                    ema=round(ema, 4), atr=round(atr, 4),
+                    ema2=round(ema2, 4) if ema2 is not None else None))
         return out
     except Exception as _e:
         log.debug("fetch_5m_rth %s %s: %s", ticker, date_str, _e)
@@ -9159,16 +9166,60 @@ def _find_entry(bars, level, side, rule, buffer, ema_filter=True, start=1):
     return None
 
 
+def _find_reversal_entry(bars, level, side, rule, ema_filter=True, atr_mult=0.25, start=1):
+    """Reversal entry (bar_index, entry_price) at/after `start`, or None. LONG =
+    bounce off support (level below price), SHORT = reject resistance (above).
+      rule 'reject' = wick into the level + close back out, wick >= atr_mult*ATR(14),
+                      EMA trend-aligned with slope — the live behaviour, enter at close.
+      rule 'touch'  = limit fill at the level on first touch (no close-back/wick).
+    EMA gate uses EMA + slope; the intrabar 'touch' uses the prior bar (no look-ahead)."""
+    n = len(bars)
+    if n < 2 or not level:
+        return None
+    is_long = side == "LONG"
+
+    def _ema_ok(b):
+        e, e2 = getattr(b, "ema", None), getattr(b, "ema2", None)
+        if not ema_filter or e is None:
+            return True
+        if is_long:
+            return b.close > e and (e2 is None or e > e2)   # close above EMA, EMA rising
+        return b.close < e and (e2 is None or e < e2)        # close below EMA, EMA falling
+
+    for i in range(max(1, start), n):
+        b, prev = bars[i], bars[i - 1]
+        hi, lo, cl = float(b.high), float(b.low), float(b.close)
+        if rule == "reject":
+            if not _ema_ok(b):
+                continue
+            atr = getattr(b, "atr", None) or 0.0
+            if is_long and lo <= level and cl > level and (level - lo) >= atr * atr_mult:
+                return (i, cl)
+            if not is_long and hi >= level and cl < level and (hi - level) >= atr * atr_mult:
+                return (i, cl)
+        else:  # touch — limit fill at the level (intrabar → prior-bar EMA gate)
+            if not _ema_ok(prev):
+                continue
+            if is_long and lo <= level:
+                return (i, level)
+            if not is_long and hi >= level:
+                return (i, level)
+    return None
+
+
 def _replay_entries(bars, level, side, rule, buffer, trail0, trigger, max_hold,
-                    ema_filter, multi):
+                    ema_filter, multi, kind="breakout", cooldown_bars=0, atr_mult=0.25):
     """Replay a rule over one day. Returns a list of (pnl_per_share, offset). When
-    multi is True, re-enters on the next fresh cross after each exit (captures
-    re-fades); otherwise just the first entry of the day."""
+    multi is True, re-enters after each exit (breakout: next fresh cross; reversal:
+    next trigger after the cooldown); otherwise just the first entry of the day."""
     import datetime as _dt2
     out, n, start, guard = [], len(bars), 1, 0
     while start < n and guard < 40:
         guard += 1
-        hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter, start=start)
+        if kind == "reversal":
+            hit = _find_reversal_entry(bars, level, side, rule, ema_filter, atr_mult, start)
+        else:
+            hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter, start=start)
         if not hit:
             break
         idx, entry_px = hit
@@ -9193,7 +9244,8 @@ def _replay_entries(bars, level, side, rule, buffer, trail0, trigger, max_hold,
                 if bars[k].timestamp > exit_dt:
                     nxt = k
                     break
-        start = max(nxt, idx + 1)
+        # cooldown is measured from the ENTRY bar (matches the live var lastEntryBar)
+        start = max(nxt, idx + 1 + cooldown_bars)
     return out
 
 
@@ -9342,6 +9394,135 @@ def api_simulate_entry_test():
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
         "skipped_reversal": skipped_reversal, "buffer": buffers[0], "ema_filter": ema_filter,
         "multi": multi, "exits": "Signal Router per strategy", "rules": out, "sweep": sweep,
+    })
+
+
+@app.route("/api/simulate/reversal_test")
+def api_simulate_reversal_test():
+    """Same idea as the breakout Entry Test, for REVERSAL strategies: does waiting
+    for the rejection close earn its keep vs fading the level on the touch?
+      - Reject (live): wick into the level + close back out, wick >= 0.25*ATR(14),
+        EMA close + slope, 5-bar cooldown. Enters at the close.
+      - Touch: a limit fill at the level on first touch (no close-back / wick).
+    Levels are inverted (LONG = bounce off S, SHORT = reject at R). Per-strategy
+    Signal Router exits. Per-share P&L (qty=1).  ?account=1|2 &from=&to=&ema=&multi="""
+    import concurrent.futures as _cf
+
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca data is not configured."}), 503
+    use2       = (request.args.get("account") or "2").strip() == "2"
+    ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
+    multi      = (request.args.get("multi", "1") or "1").strip() not in ("0", "false", "")
+    from_date  = (request.args.get("from") or "").strip()
+    to_date    = (request.args.get("to")   or "").strip()
+    COOLDOWN, ATR_MULT = 5, 0.25
+
+    # Per-strategy exit params from the live Signal Router (same loader as breakout).
+    rule_settings = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname  = (_row[0] or "").upper()
+            _rnodes = json.loads(_row[1] or "[]")
+            _trail = _trigger = _mhm = None
+            for _nd in _rnodes:
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mraw    = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mraw)) if _mraw else None
+            if _trail is not None:
+                rule_settings[_rname] = {"trail_pct": _trail, "trigger_pct": _trigger or 0.0,
+                                         "max_hold_mins": _mhm}
+        _rc.close()
+    except Exception as _re:
+        log.warning("reversal_test rule settings failed: %s", _re)
+
+    def _match_exit(strategy):
+        r = rule_settings.get((strategy or "").upper())
+        if r is None:
+            sname = (strategy or "").upper().replace(" ", "_")
+            for rkey, rval in rule_settings.items():
+                pat = "_".join(rkey.split("_CAM_")[1].split("_")[:2]) if "_CAM_" in rkey else rkey
+                if pat and pat in sname:
+                    r = rval
+                    break
+        return r or {"trail_pct": 0.3, "trigger_pct": 0.1, "max_hold_mins": None}
+
+    fills  = _get_cached_fills_2() if use2 else _get_cached_fills()
+    paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No round-trips for that account / date range."}), 404
+
+    # Reversal setups: LONG bounces off the S level, SHORT rejects at the R level.
+    setups, ticker_dates, skipped_breakout = set(), set(), 0
+    for t in trades:
+        strat = (t.get("strategy") or "").upper()
+        side  = (t.get("side") or "").upper()
+        tk    = (t.get("ticker") or "").upper()
+        date  = (t.get("entry_time") or "")[:10]
+        if "REVERSAL" not in strat:
+            skipped_breakout += 1
+            continue
+        pair = "R4S4" if "R4S4" in strat else ("R3S3" if "R3S3" in strat else None)
+        if not (pair and tk and date and side):
+            continue
+        lvl = pair[2:] if side == "LONG" else pair[:2]   # long → S, short → R
+        setups.add((tk, date, strat, side, lvl))
+        ticker_dates.add((tk, date))
+
+    if not setups:
+        return jsonify({"error": "No reversal round-trips in that range."}), 404
+
+    bars_map, lv_map = {}, {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        lfut = {pool.submit(_camarilla_levels,  tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        for f in _cf.as_completed(bfut):
+            try:    bars_map[bfut[f]] = f.result()
+            except Exception: bars_map[bfut[f]] = []
+        for f in _cf.as_completed(lfut):
+            try:    lv_map[lfut[f]] = f.result()
+            except Exception: lv_map[lfut[f]] = {}
+
+    lkey  = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    rules = ["reject", "touch"]
+    agg   = {r: {"pnls": [], "offsets": []} for r in rules}
+    n_setups = 0
+    for (tk, date, strat, side, lvl) in setups:
+        bars  = bars_map.get((tk, date)) or []
+        level = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl))
+        if not bars or not level:
+            continue
+        ex_set = _match_exit(strat)
+        trail0, trigger = ex_set["trail_pct"], ex_set["trigger_pct"]
+        max_hold = ex_set["max_hold_mins"] or 0
+        n_setups += 1
+        for rule in rules:
+            for pnl, offset in _replay_entries(bars, level, side, rule, 0.0, trail0, trigger,
+                                               max_hold, ema_filter, multi,
+                                               kind="reversal", cooldown_bars=COOLDOWN, atr_mult=ATR_MULT):
+                agg[rule]["pnls"].append(pnl)
+                agg[rule]["offsets"].append(offset)
+
+    def _summ(bucket):
+        pnls, offs = bucket["pnls"], bucket["offsets"]
+        n, wins = len(pnls), sum(1 for p in pnls if p > 0)
+        return {"trades": n, "wins": wins,
+                "win_rate":   round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl":  round(sum(pnls), 4),
+                "avg_pnl":    round(sum(pnls) / n, 4) if n else 0.0,
+                "avg_offset": round(sum(offs) / n, 4) if n else 0.0}
+
+    out = [{"rule": "reject", **_summ(agg["reject"])},
+           {"rule": "touch",  **_summ(agg["touch"])}]
+
+    return jsonify({
+        "account": "Refined" if use2 else "Paper All", "from": from_date, "to": to_date,
+        "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
+        "skipped_breakout": skipped_breakout, "ema_filter": ema_filter, "multi": multi,
+        "exits": "Signal Router per strategy", "rules": out,
     })
 
 

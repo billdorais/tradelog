@@ -485,6 +485,24 @@
     <div id="entryTestResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Reversal entry test -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Reversal Entry Test
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— does waiting for the rejection close beat fading the level on the touch?</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px">
+        <input type="checkbox" id="rvEma" checked> 8-EMA + slope filter
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px">
+        <input type="checkbox" id="rvMulti" checked> All entries
+      </label>
+      <button class="run-btn" onclick="runReversalTest()" style="padding:8px 18px">&#9654; Test Reversals</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Reject (your live: wick in + close back + ≥0.25·ATR + 5-bar cooldown) vs Touch (limit at the level).</span>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Reversal strategies only — LONG bounces off S, SHORT rejects at R. Per-share P&amp;L (qty 1); exits = each strategy's Signal Router params; exits modeled on 5-min bars.</div>
+    <div id="reversalTestResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- AI Chat panel -->
   <div id="chatPanel" class="chat-panel" style="display:none">
     <div class="chat-header">
@@ -762,6 +780,56 @@
         + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
         + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg/trade</th>`
         + `</tr></thead><tbody>${rows}</tbody></table></div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  async function runReversalTest() {
+    const out = document.getElementById('reversalTestResult');
+    const p = new URLSearchParams({
+      account: document.getElementById('account').value,
+      from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
+      ema: document.getElementById('rvEma').checked ? '1' : '0',
+      multi: document.getElementById('rvMulti').checked ? '1' : '0',
+    });
+    out.innerHTML = '<span style="color:#888">Replaying reversal setups…</span>';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    try {
+      const r = await fetch('/api/simulate/reversal_test?' + p);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+      const label = { reject: 'Reject (your live — wait for close-back)', touch: 'Touch (limit at the level)' };
+      const rej = (d.rules || []).find(x => x.rule === 'reject') || {total_pnl: 0};
+      const tch = (d.rules || []).find(x => x.rule === 'touch')  || {total_pnl: 0};
+      const best = Math.max(rej.total_pnl, tch.total_pnl);
+      const rows = d.rules.map(x => {
+        const isBest = x.trades > 0 && x.total_pnl === best;
+        return `<tr style="${isBest ? 'background:rgba(127,224,152,0.08)' : ''}">`
+          + `<td style="padding:7px 12px;color:#ccc">${label[x.rule] || x.rule}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#aaa">${x.trades}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_offset)}</td>`
+          + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
+      }).join('');
+      const delta = tch.total_pnl - rej.total_pnl;
+      const verdict = delta < 0
+        ? `<span style="color:#7FE098">✓ Waiting for the rejection close earns its keep — Reject beats Touch by ${money(Math.abs(delta))}/sh. (Confirmation helps for reversals, opposite of breakouts.)</span>`
+        : delta > 0
+        ? `<span style="color:#F2C76B">⚠ Fading on the touch beat waiting — Touch is +${money(delta)}/sh vs Reject. Worth a closer look before trusting (touch fills falling knives too).</span>`
+        : `<span style="color:#888">Reject and Touch roughly tie.</span>`;
+      const skip = d.skipped_breakout ? ` · ${d.skipped_breakout} breakout trades excluded` : '';
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} reversal setups across ${d.n_tickers} tickers · ${d.from || '—'} → ${d.to || '—'} · 8-EMA ${d.ema_filter ? 'ON' : 'OFF'} · ${d.multi ? 'all entries' : 'first/day'} · per-share P&amp;L${skip}</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
+        + `<thead><tr>`
+        + `<th style="text-align:left;padding:6px 12px;color:#555;font-size:0.7rem;text-transform:uppercase">Reversal entry</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Trades</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Win %</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem" title="Avg entry vs the level">Avg offset</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
+        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg/trade</th>`
+        + `</tr></thead><tbody>${rows}</tbody></table></div>`
+        + `<div style="font-size:0.85rem;margin-top:10px">${verdict}</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 
