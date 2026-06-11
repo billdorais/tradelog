@@ -9561,26 +9561,37 @@ def _entry_engine_setups():
 
     out, seen = [], set()
     for s in names:
-        if "BREAKOUT" not in s:
+        is_rev = "REVERSAL" in s
+        is_brk = "BREAKOUT" in s
+        if not (is_rev or is_brk):
             continue
+        kind = "reversal" if is_rev else "breakout"
         tk   = s.split("_", 1)[0]
         pair = "R4S4" if "R4S4" in s else ("R3S3" if "R3S3" in s else None)
         if not pair or not tk or len(tk) > 6:   # guard against pattern-only names
             continue
-        for side, lvl in (("LONG", pair[:2]), ("SHORT", pair[2:])):
-            key = (tk, lvl, side)
+        for side in ("LONG", "SHORT"):
+            # breakout: LONG breaks up through R, SHORT down through S.
+            # reversal: LONG bounces off S, SHORT rejects at R (inverted).
+            if kind == "breakout":
+                lvl = pair[:2] if side == "LONG" else pair[2:]
+            else:
+                lvl = pair[2:] if side == "LONG" else pair[:2]
+            key = (tk, lvl, side, kind)
             if key in seen:
                 continue
             seen.add(key)
             out.append({"strategy": s, "ticker": tk, "levelpair": pair,
-                        "side": side, "level_name": lvl})
+                        "side": side, "level_name": lvl, "kind": kind})
     return out
 
 
 @app.route("/api/entry_engine/dryrun")
 def api_entry_engine_dryrun():
-    """DRY RUN: what stop-entry orders Kairos would arm for the Refined breakout
-    setups today, with gates evaluated. Places no orders.  ?buffer=0.05&date="""
+    """DRY RUN: what entry orders Kairos would arm for the Refined breakout AND
+    reversal setups today, with gates evaluated. Breakouts arm a STOP beyond the
+    level (level ± buffer); reversals arm a LIMIT at the level. Places no orders.
+      ?buffer=0.05&date="""
     import datetime as _dt
     import concurrent.futures as _cf
     from zoneinfo import ZoneInfo
@@ -9620,13 +9631,27 @@ def api_entry_engine_dryrun():
     hours_ok = _account_hours_ok("alpaca2")
 
     # What actually traded today on Refined (for the dry-run vs reality diff).
+    # Keyed (ticker, level, side, kind) with kind-aware level so reversals match.
+    def _kind_level(strat, side):
+        su = (strat or "").upper()
+        pair = "R4S4" if "R4S4" in su else ("R3S3" if "R3S3" in su else None)
+        if not pair:
+            return (None, None)
+        kind = "reversal" if "REVERSAL" in su else "breakout"
+        if kind == "breakout":
+            lvl = pair[:2] if side == "LONG" else pair[2:]
+        else:
+            lvl = pair[2:] if side == "LONG" else pair[:2]
+        return (lvl, kind)
+
     traded = set()
     try:
         paired = _pair_alpaca_fills_lifo(_get_cached_fills_2(), from_date=date, to_date=date)
         for t in paired["closed_clean"]:
-            traded.add(((t.get("ticker") or "").upper(),
-                        _trade_level(t.get("strategy"), (t.get("side") or "").upper()),
-                        (t.get("side") or "").upper()))
+            _sd = (t.get("side") or "").upper()
+            _lvl, _kind = _kind_level(t.get("strategy"), _sd)
+            if _lvl:
+                traded.add(((t.get("ticker") or "").upper(), _lvl, _sd, _kind))
     except Exception as _te:
         log.debug("entry engine traded lookup: %s", _te)
 
@@ -9634,6 +9659,7 @@ def api_entry_engine_dryrun():
     rows = []
     for s in setups:
         tk, side, lvl, strat = s["ticker"], s["side"], s["level_name"], s["strategy"]
+        kind    = s.get("kind", "breakout")
         is_long = side == "LONG"
         bars    = bars_map.get(tk) or []
         level   = (lv_map.get(tk) or {}).get(lkey.get(lvl))
@@ -9641,16 +9667,33 @@ def api_entry_engine_dryrun():
         last_px = float(last.close) if last else None
         score   = score_by_strat.get(strat)
         qty     = _compute_refined_qty(score, last_px) if (score is not None and last_px) else None
-        stop_px = (level + buffer) if (level and is_long) else ((level - buffer) if level else None)
 
+        # Breakout = STOP beyond the level (level ± buffer). Reversal = LIMIT at the level.
+        if kind == "reversal":
+            order, order_px = "limit", level
+        else:
+            order = "stop"
+            order_px = (level + buffer) if (level and is_long) else ((level - buffer) if level else None)
+
+        # EMA gate: breakout = close vs EMA; reversal = close vs EMA + slope.
         ema_ok = None
         if last is not None and getattr(last, "ema", None) is not None:
-            ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
+            if kind == "reversal":
+                e2 = getattr(last, "ema2", None)
+                ema_ok = (last.close > last.ema and (e2 is None or last.ema > e2)) if is_long \
+                    else (last.close < last.ema and (e2 is None or last.ema < e2))
+            else:
+                ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
 
+        # Did price reach the order today? Breakout: through the stop. Reversal: to the level.
         triggered_at = None
-        if level and bars and stop_px:
+        if level and bars and order_px:
             for b in bars:
-                if (is_long and float(b.high) >= stop_px) or (not is_long and float(b.low) <= stop_px):
+                if kind == "reversal":
+                    reached = (float(b.low) <= order_px) if is_long else (float(b.high) >= order_px)
+                else:
+                    reached = (float(b.high) >= order_px) if is_long else (float(b.low) <= order_px)
+                if reached:
                     triggered_at = b.timestamp.astimezone(et).strftime("%H:%M")
                     break
 
@@ -9663,21 +9706,23 @@ def api_entry_engine_dryrun():
         decision = "blocked" if blocked else "armed"
 
         rows.append({
-            "ticker": tk, "strategy": strat, "side": side, "level_name": lvl,
+            "ticker": tk, "strategy": strat, "side": side, "level_name": lvl, "kind": kind,
             "level": round(level, 4) if level else None,
-            "stop_price": round(stop_px, 4) if stop_px else None,
+            "order": order, "stop_price": round(order_px, 4) if order_px else None,
             "qty": qty, "score": round((score or 0) * 100) if score is not None else None,
             "ema_ok": ema_ok, "triggered_at": triggered_at,
             "decision": decision, "blocked": blocked,
-            "traded_today": (tk, lvl, side) in traded,
+            "traded_today": (tk, lvl, side, kind) in traded,
         })
 
-    rows.sort(key=lambda r: (r["decision"] != "armed", r["ticker"], r["side"]))
+    rows.sort(key=lambda r: (r["decision"] != "armed", r["kind"], r["ticker"], r["side"]))
     summary = {
-        "setups":  len(rows),
-        "armed":   sum(1 for r in rows if r["decision"] == "armed"),
-        "blocked": sum(1 for r in rows if r["decision"] == "blocked"),
-        "traded":  sum(1 for r in rows if r["traded_today"]),
+        "setups":   len(rows),
+        "breakout": sum(1 for r in rows if r["kind"] == "breakout"),
+        "reversal": sum(1 for r in rows if r["kind"] == "reversal"),
+        "armed":    sum(1 for r in rows if r["decision"] == "armed"),
+        "blocked":  sum(1 for r in rows if r["decision"] == "blocked"),
+        "traded":   sum(1 for r in rows if r["traded_today"]),
     }
     return jsonify({
         "date": date, "buffer": buffer, "hours_ok": hours_ok,

@@ -59,7 +59,7 @@
 
 <div class="page">
   <h2>Entry Engine — Dry Run</h2>
-  <div class="sub">What stop-entry orders Kairos <em>would</em> arm for the Refined breakout setups, with live gates. Read-only.</div>
+  <div class="sub">What entry orders Kairos <em>would</em> arm for the Refined breakout &amp; reversal setups, with live gates. Breakouts = <strong>stop</strong> beyond the level; reversals = <strong>limit</strong> at the level. Read-only.</div>
 
   <div class="banner">⚠ <strong>DRY RUN</strong> — this places <strong>no orders</strong>. It only shows what the server-side engine would do, so you can diff it against what TradingView actually traded before any live wiring.</div>
 
@@ -107,6 +107,7 @@
       sum.innerHTML =
         `<div class="stat-card"><div class="stat-lbl">Date</div><div class="stat-val">${d.date}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Setups</div><div class="stat-val">${s.setups}</div></div>` +
+        `<div class="stat-card"><div class="stat-lbl">Breakout / Reversal</div><div class="stat-val" style="font-size:1rem">${s.breakout} <span style="color:#555">/</span> ${s.reversal}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Would arm</div><div class="stat-val pos">${s.armed}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Blocked</div><div class="stat-val warn">${s.blocked}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Actually traded</div><div class="stat-val">${s.traded}</div></div>` +
@@ -119,12 +120,20 @@
         const dec = x.decision === 'armed'
           ? '<span class="badge b-armed">ARM</span>'
           : `<span class="badge b-blocked">${blocked || 'blocked'}</span>`;
+        const isRev = x.kind === 'reversal';
+        const typeBadge = isRev
+          ? '<span class="badge" style="background:rgba(167,139,250,0.18);color:#a78bfa">REVERSAL</span>'
+          : '<span class="badge" style="background:rgba(123,179,214,0.18);color:#7bb3d6">BREAKOUT</span>';
+        const orderTxt = x.stop_price != null
+          ? `$${x.stop_price.toFixed(2)} <span style="color:#666;font-size:0.7rem">${(x.order || 'stop')}</span>`
+          : '—';
         return `<tr class="${x.decision === 'armed' ? 'armed' : ''}">` +
           `<td style="font-weight:600">${x.ticker}</td>` +
+          `<td>${typeBadge}</td>` +
           `<td class="${x.side === 'LONG' ? 'long' : 'short'}">${x.side}</td>` +
           `<td>${x.level_name}</td>` +
           `<td>${x.level != null ? '$' + x.level.toFixed(2) : '—'}</td>` +
-          `<td style="font-weight:600">${x.stop_price != null ? '$' + x.stop_price.toFixed(2) : '—'}</td>` +
+          `<td style="font-weight:600">${orderTxt}</td>` +
           `<td>${x.qty != null ? x.qty : '—'}</td>` +
           `<td style="color:#c4b5fd">${x.score != null ? x.score : '—'}</td>` +
           `<td>${yn(x.ema_ok)}</td>` +
@@ -136,8 +145,9 @@
       document.getElementById('tableWrap').innerHTML =
         `<div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:10px;overflow:hidden">` +
         `<div style="overflow-x:auto"><table><thead><tr>` +
-        `<th>Ticker</th><th>Side</th><th>Level</th><th>Level $</th><th>Stop @</th><th>Qty</th><th>Score</th>` +
-        `<th title="Prior-bar 8-EMA on the trend side">EMA</th><th title="Did price reach the stop today">Triggered</th>` +
+        `<th>Ticker</th><th>Type</th><th>Side</th><th>Level</th><th>Level $</th>` +
+        `<th title="Stop beyond the level (breakout) or limit at the level (reversal)">Order @</th><th>Qty</th><th>Score</th>` +
+        `<th title="Trend-side 8-EMA (breakout: close; reversal: close + slope)">EMA</th><th title="Did price reach the order today">Triggered</th>` +
         `<th>Engine</th><th title="Did TradingView actually trade this setup today">Reality</th>` +
         `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
     } catch (e) {
