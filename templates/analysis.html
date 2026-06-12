@@ -476,6 +476,20 @@
     <div id="cutoffImpactResult"></div>
   </div>
 
+  <!-- Take-profit sweep: best TP per band from reconstructed high-water marks -->
+  <div class="section">
+    <div class="section-title">Take-Profit Sweep <span>where your best take-profit sits per band — reconstructed from 1-min high-water marks</span></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+      <label style="font-size:0.78rem;color:#888">Window (days)</label>
+      <input type="number" id="tpSweepDays" value="45" min="1" max="180" step="1"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.82rem;outline:none;width:70px">
+      <button onclick="loadTpSweep()" id="tpSweepBtn"
+              style="background:#3a7d44;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:0.82rem;font-weight:600;cursor:pointer;font-family:inherit">Run Sweep</button>
+      <span style="font-size:0.72rem;color:#666">Fetches 1-min bars for every Refined round-trip in the window — may take a few seconds.</span>
+    </div>
+    <div id="tpSweepResult"></div>
+  </div>
+
   <!-- Drill-down modal -->
   <div class="modal-backdrop" id="pairsBackdrop" onclick="closePairs()"></div>
   <div class="modal" id="pairsModal" role="dialog" aria-hidden="true">
@@ -1736,6 +1750,72 @@
         + `<tbody>${ps}</tbody></table></div>`;
     } catch (e) {
       out.innerHTML = `<div style="color:#e74c3c">Error: ${e.message}</div>`;
+    }
+  }
+
+  // Take-profit sweep — best TP per band reconstructed from 1-min high-water marks.
+  async function loadTpSweep() {
+    const out  = document.getElementById('tpSweepResult');
+    const btn  = document.getElementById('tpSweepBtn');
+    const days = parseInt(document.getElementById('tpSweepDays').value) || 45;
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    const pct   = v => (v == null ? '—' : v.toFixed(2) + '%');
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Fetching bars and simulating… this can take a few seconds.</div>';
+    btn.disabled = true; btn.style.opacity = '0.6';
+    try {
+      const r = await fetch('/api/analysis/tp_sweep', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days }),
+      });
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<div style="color:#e74c3c">${d.error || 'Failed.'}</div>`; return; }
+
+      const head = `<div style="font-size:0.72rem;color:#666;margin-bottom:10px">`
+        + `Analyzed <strong style="color:#aaa">${d.trades_analyzed}</strong> Refined round-trips over ${d.days}d`
+        + (d.no_bar_data ? ` · ${d.no_bar_data} had no bar data (kept at actual P&L)` : '')
+        + `. ${esc(d.note)}</div>`;
+
+      const cards = (d.bands || []).map(b => {
+        const best = b.best_tp;
+        const rows = b.sweep.map(s => {
+          const isBest = s.tp === best;
+          const dCol = s.delta > 0 ? '#7FE098' : s.delta < 0 ? '#ef5350' : '#777';
+          return `<tr style="${isBest ? 'background:rgba(58,125,68,0.18)' : ''}">`
+            + `<td style="padding:4px 10px 4px 0;color:${isBest ? '#7FE098' : '#ccc'};font-weight:${isBest ? '700' : '400'}">${s.tp}%${isBest ? ' ◀ best' : ''}</td>`
+            + `<td style="text-align:right;font-weight:600" class="${s.net >= 0 ? 'pos' : 'neg'}">${money(s.net)}</td>`
+            + `<td style="text-align:right;color:${dCol}">${s.delta >= 0 ? '+' : ''}${money(s.delta)}</td>`
+            + `<td style="text-align:right;color:#888">${s.win_rate}%</td></tr>`;
+        }).join('');
+
+        const verdict = b.best_helps
+          ? `<span style="color:#7FE098">A ${best}% take-profit would have <strong>added ${money(b.best_delta)}</strong> vs no TP.</span>`
+          : `<span style="color:#888">No take-profit level beat letting trades run (best = baseline). Your exits are already capturing the gains here.</span>`;
+
+        return `<div style="background:#161823;border:1px solid #2a2d3e;border-radius:10px;padding:14px 16px;min-width:300px;flex:1">`
+          + `<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">`
+          + `<div style="font-weight:700;color:#c4b5fd;font-size:0.95rem">${esc(b.band)}</div>`
+          + `<div style="font-size:0.7rem;color:#666">${b.trades} trades</div></div>`
+          + `<div style="font-size:0.72rem;color:#888;margin-bottom:8px">`
+          + `Actual net <strong class="${b.baseline_net >= 0 ? 'pos' : 'neg'}">${money(b.baseline_net)}</strong>`
+          + ` · MFE median <span style="color:#aaa">${pct(b.mfe_median)}</span>`
+          + ` · p75 <span style="color:#aaa">${pct(b.mfe_p75)}</span>`
+          + ` · max <span style="color:#aaa">${pct(b.mfe_max)}</span></div>`
+          + `<div style="font-size:0.78rem;margin-bottom:8px">${verdict}</div>`
+          + `<table style="width:100%;border-collapse:collapse;font-size:0.78rem">`
+          + `<thead><tr>`
+          + `<th style="text-align:left;color:#555;font-size:0.66rem;text-transform:uppercase;padding-bottom:4px">TP level</th>`
+          + `<th style="text-align:right;color:#555;font-size:0.66rem">Net P&amp;L</th>`
+          + `<th style="text-align:right;color:#555;font-size:0.66rem">vs actual</th>`
+          + `<th style="text-align:right;color:#555;font-size:0.66rem">Win %</th></tr></thead>`
+          + `<tbody>${rows}</tbody></table></div>`;
+      }).join('');
+
+      out.innerHTML = head
+        + `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch">${cards || '<div style="color:#888">No bands to show.</div>'}</div>`;
+    } catch (e) {
+      out.innerHTML = `<div style="color:#e74c3c">Error: ${e.message}</div>`;
+    } finally {
+      btn.disabled = false; btn.style.opacity = '1';
     }
   }
 

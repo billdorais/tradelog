@@ -9598,6 +9598,162 @@ def api_simulate_reversal_test():
     })
 
 
+# ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────
+# For each closed Refined round-trip, fetch 1-min bars between entry and exit,
+# compute the Maximum Favorable Excursion (how far it ran in your favor), then
+# simulate each candidate take-profit level. A TP "fills" when MFE reached it
+# during the hold (capped win); otherwise the trade keeps its actual P&L. Net
+# P&L is aggregated per band (top 5 / 6-10 / 11-20) to recommend a TP target.
+_TP_SWEEP_LEVELS = [0.2, 0.3, 0.4, 0.5, 0.6, 0.75, 1.0, 1.25, 1.5, 2.0]
+
+def _tp_band(rank):
+    if rank is None: return ("Unranked", 9)
+    if rank <= 5:    return ("Top 5",  1)
+    if rank <= 10:   return ("6–10",   2)
+    if rank <= 20:   return ("11–20",  3)
+    return ("21+", 4)
+
+@app.route("/api/analysis/tp_sweep", methods=["POST"])
+def api_tp_sweep():
+    if not alpaca_broker2:
+        return jsonify({"error": "Refined account not configured"}), 400
+    import datetime as _dt
+    import concurrent.futures as _cf
+    from collections import defaultdict
+
+    body = request.get_json(silent=True) or {}
+    try:    days = int(body.get("days", 45))
+    except (TypeError, ValueError): days = 45
+    days = max(1, min(180, days))
+
+    to_d   = _dt.datetime.now(_dt.timezone.utc).date()
+    from_d = to_d - _dt.timedelta(days=days)
+    from_s, to_s = from_d.isoformat(), to_d.isoformat()
+
+    fills = _get_cached_fills_2()
+    win_fills = [f for f in fills if from_s <= (f.get("time") or "")[:10] <= to_s]
+    trades = (_pair_alpaca_fills_lifo(win_fills).get("closed_clean") or []) if win_fills else []
+    if not trades:
+        return jsonify({"error": "No completed Refined round-trips in this window"}), 404
+
+    # Band ranking from the latest snapshot (in-memory, else DB-persisted).
+    snap = _refined_last_result or {}
+    if not snap.get("top_strategies"):
+        try:
+            stored = _load_setting("REFINED_LAST_RESULT")
+            if stored: snap = json.loads(stored)
+        except Exception: snap = {}
+    rank = {str(nm): i + 1 for i, nm in enumerate(snap.get("top_strategies") or [])}
+
+    def _analyze(t):
+        ticker   = (t.get("ticker") or t.get("symbol") or "").upper()
+        is_long  = (t.get("side") or "").upper() in ("LONG", "BOT", "BUY")
+        entry_px = float(t.get("entry_price") or 0)
+        qty      = abs(float(t.get("qty") or 0))
+        pnl      = float(t.get("pnl") or 0)
+        strat    = t.get("strategy") or "Unknown"
+        et, xt   = t.get("entry_time") or "", t.get("exit_time") or ""
+        if not ticker or entry_px <= 0 or qty <= 0 or not et or not xt:
+            return None
+        try:
+            _ent = _dt.datetime.fromisoformat(et.replace("Z", "+00:00"))
+            _ex  = _dt.datetime.fromisoformat(xt.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        mfe_pct, has_bars = None, False
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            _client = StockHistoricalDataClient(api_key=alpaca_broker2._key, secret_key=alpaca_broker2._secret)
+            req = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+                start=_ent - _dt.timedelta(minutes=1),
+                end=_ex + _dt.timedelta(minutes=1),
+            )
+            bars = list(_client.get_stock_bars(req)[ticker])
+            # Include the entry-minute bar through the exit-minute bar. Anchoring to
+            # the entry minute (rather than the exact second) keeps sub-minute scalps
+            # from falling through to adjacent post-exit bars.
+            _ent_floor = _ent.replace(second=0, microsecond=0)
+            in_bars = [b for b in bars if _ent_floor <= b.timestamp <= _ex]
+            if in_bars:
+                has_bars = True
+                if is_long:
+                    mfe_pct = (max(float(b.high) for b in in_bars) - entry_px) / entry_px * 100
+                else:
+                    mfe_pct = (entry_px - min(float(b.low) for b in in_bars)) / entry_px * 100
+        except Exception as _be:
+            log.debug("tp_sweep bars %s: %s", ticker, _be)
+        # Per-TP simulated P&L: capped win if the run reached the level, else actual.
+        sim = {}
+        for tp in _TP_SWEEP_LEVELS:
+            if has_bars and mfe_pct is not None and mfe_pct >= tp:
+                sim[tp] = qty * entry_px * (tp / 100.0)
+            else:
+                sim[tp] = pnl
+        return {"band": _tp_band(rank.get(strat)), "pnl": pnl,
+                "mfe_pct": mfe_pct, "has_bars": has_bars, "sim": sim}
+
+    results, no_bars = [], 0
+    with _cf.ThreadPoolExecutor(max_workers=8) as ex:
+        for r in ex.map(_analyze, trades):
+            if r is None: continue
+            if not r["has_bars"]: no_bars += 1
+            results.append(r)
+    if not results:
+        return jsonify({"error": "Could not analyze any round-trips (no bar data)"}), 404
+
+    bands = defaultdict(lambda: {"order": 9, "trades": 0, "baseline": 0.0,
+                                 "mfe": [], "sim": defaultdict(float), "sim_wins": defaultdict(int)})
+    for r in results:
+        label, order = r["band"]
+        b = bands[label]
+        b["order"] = order
+        b["trades"] += 1
+        b["baseline"] += r["pnl"]
+        if r["mfe_pct"] is not None:
+            b["mfe"].append(r["mfe_pct"])
+        for tp in _TP_SWEEP_LEVELS:
+            b["sim"][tp] += r["sim"][tp]
+            if r["sim"][tp] > 0:
+                b["sim_wins"][tp] += 1
+
+    def _pctile(sorted_vals, p):
+        if not sorted_vals: return None
+        idx = min(len(sorted_vals) - 1, int(p * len(sorted_vals)))
+        return round(sorted_vals[idx], 3)
+
+    out_bands = []
+    for label, b in bands.items():
+        n = b["trades"]
+        sweep = [{"tp": tp, "net": round(b["sim"][tp], 2),
+                  "win_rate": round(b["sim_wins"][tp] / n * 100, 1) if n else 0.0,
+                  "delta": round(b["sim"][tp] - b["baseline"], 2)} for tp in _TP_SWEEP_LEVELS]
+        best = max(sweep, key=lambda s: s["net"])
+        mfe_sorted = sorted(b["mfe"])
+        out_bands.append({
+            "band": label, "order": b["order"], "trades": n,
+            "baseline_net": round(b["baseline"], 2),
+            "mfe_median": _pctile(mfe_sorted, 0.5),
+            "mfe_p75":    _pctile(mfe_sorted, 0.75),
+            "mfe_max":    round(max(b["mfe"]), 3) if b["mfe"] else None,
+            "sweep": sweep,
+            "best_tp": best["tp"], "best_net": best["net"], "best_delta": best["delta"],
+            "best_helps": best["delta"] > 0,
+        })
+    out_bands.sort(key=lambda x: x["order"])
+
+    return jsonify({
+        "days": days, "from": from_s, "to": to_s,
+        "trades_analyzed": len(results), "no_bar_data": no_bars,
+        "tp_levels": _TP_SWEEP_LEVELS, "bands": out_bands,
+        "note": "TP fills when the trade's favorable run reached the level during the actual hold; "
+                "otherwise the trade keeps its real P&L. % measured against entry price.",
+    })
+
+
 # ── Server-side entry engine — Phase 1: DRY RUN ONLY (places no orders) ──────
 # Computes what stop-entry orders Kairos *would* arm right now for the Refined
 # breakout strategies, with the same gates the live engine would use. Read-only:
