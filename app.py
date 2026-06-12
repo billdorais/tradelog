@@ -75,6 +75,11 @@ STRIKES_PER_LEVEL     = int(os.environ.get("STRIKES_PER_LEVEL", "2"))
 # max-hold timer gets capped at this. 0 = disabled. A safety net so a routing
 # rule missing max_hold_mins can't let a trade run forever.
 MAX_HOLD_MINS         = float(os.environ.get("MAX_HOLD_MINS", "0"))
+# Global take-profit (both accounts). Close any open position once its unrealized
+# gain reaches the dollar target OR the % target (whichever hits first). Managed by
+# the position monitor — mirror image of the MAX_POSITION_LOSS cap. 0 = disabled.
+TAKE_PROFIT_DOLLARS   = float(os.environ.get("TAKE_PROFIT_DOLLARS", "0"))
+TAKE_PROFIT_PCT       = float(os.environ.get("TAKE_PROFIT_PCT", "0"))
 # Per-account trading-hours windows (ET "HH:MM"). Empty = no restriction (all day).
 # Entries outside the window are dropped for that account only; exits always pass.
 PAPER_HOURS_START     = os.environ.get("PAPER_HOURS_START", "")     # Paper All  (alpaca)
@@ -835,9 +840,22 @@ def _check_position_stops():
         peak = max(prev, upnl) if MAX_TRAILING_GIVEBACK > 0 else 0.0
 
         # Decide which (if any) stop to fire.
-        # PCT stop applies to Refined (alpaca2) only — Paper All uses dollar stop or TV exits.
+        # Take-profit (global, both accounts) is checked first: close once the unrealized
+        # gain hits the dollar target or the % target (whichever first). Positive mirror of
+        # the loss cap — % measured against market value, same basis as the loss %.
         triggered = None
-        if broker == "alpaca2":
+        if TAKE_PROFIT_DOLLARS > 0 and upnl >= TAKE_PROFIT_DOLLARS:
+            triggered = ("take-profit",
+                         f"unrealized P&L ${upnl:.2f} hit take-profit target ${TAKE_PROFIT_DOLLARS:.2f}")
+        elif TAKE_PROFIT_PCT > 0:
+            _tp_mv = abs(float(pos.get("market_value") or 0))
+            _tp_gp = (upnl / _tp_mv * 100) if _tp_mv > 0 else 0.0
+            if _tp_gp >= TAKE_PROFIT_PCT:
+                triggered = ("take-profit-pct",
+                             f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {TAKE_PROFIT_PCT:.2f}%")
+
+        # PCT stop applies to Refined (alpaca2) only — Paper All uses dollar stop or TV exits.
+        if not triggered and broker == "alpaca2":
             mkt_val = abs(float(pos.get("market_value") or 0))
             loss_pct = (upnl / mkt_val * 100) if mkt_val > 0 else 0.0
             if MAX_POSITION_LOSS_PCT < 0 and loss_pct <= MAX_POSITION_LOSS_PCT:
@@ -846,10 +864,10 @@ def _check_position_stops():
             elif MAX_POSITION_LOSS_REFINED < 0 and upnl <= MAX_POSITION_LOSS_REFINED:
                 triggered = ("fixed-loss-refined",
                              f"unrealized ${upnl:.2f} hit Refined dollar cap ${MAX_POSITION_LOSS_REFINED:.2f}")
-        elif MAX_POSITION_LOSS < 0 and broker == "alpaca" and upnl <= MAX_POSITION_LOSS:
+        elif not triggered and MAX_POSITION_LOSS < 0 and broker == "alpaca" and upnl <= MAX_POSITION_LOSS:
             triggered = ("fixed-loss",
                          f"unrealized P&L ${upnl:.2f} hit fixed limit ${MAX_POSITION_LOSS:.2f}")
-        elif MAX_TRAILING_GIVEBACK > 0 \
+        elif not triggered and MAX_TRAILING_GIVEBACK > 0 \
                 and peak >= MAX_TRAILING_GIVEBACK \
                 and (peak - upnl) >= MAX_TRAILING_GIVEBACK:
             triggered = ("trailing",
@@ -2198,6 +2216,8 @@ def risk_status():
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
         "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
         "max_hold_mins":       MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None,
+        "take_profit_dollars": TAKE_PROFIT_DOLLARS if TAKE_PROFIT_DOLLARS > 0 else None,
+        "take_profit_pct":     TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else None,
     })
 
 
@@ -2244,7 +2264,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -2368,6 +2388,24 @@ def risk_set_limit():
         _save_setting("MAX_HOLD_MINS", f"{MAX_HOLD_MINS:g}")
         log.info("MAX_HOLD_MINS set to %g", MAX_HOLD_MINS)
         changed.append("max_hold_mins")
+    if "take_profit_dollars" in data:
+        try:
+            TAKE_PROFIT_DOLLARS = max(0.0, float(data["take_profit_dollars"] or 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "take_profit_dollars must be a number ≥ 0"}), 400
+        _update_env_file("TAKE_PROFIT_DOLLARS", f"{TAKE_PROFIT_DOLLARS:g}")
+        _save_setting("TAKE_PROFIT_DOLLARS", f"{TAKE_PROFIT_DOLLARS:g}")
+        log.info("TAKE_PROFIT_DOLLARS set to %g", TAKE_PROFIT_DOLLARS)
+        changed.append("take_profit_dollars")
+    if "take_profit_pct" in data:
+        try:
+            TAKE_PROFIT_PCT = max(0.0, float(data["take_profit_pct"] or 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "take_profit_pct must be a number ≥ 0"}), 400
+        _update_env_file("TAKE_PROFIT_PCT", f"{TAKE_PROFIT_PCT:g}")
+        _save_setting("TAKE_PROFIT_PCT", f"{TAKE_PROFIT_PCT:g}")
+        log.info("TAKE_PROFIT_PCT set to %g", TAKE_PROFIT_PCT)
+        changed.append("take_profit_pct")
     return jsonify({
         "max_daily_loss":         MAX_DAILY_LOSS,
         "max_position_loss":      MAX_POSITION_LOSS,
@@ -11568,7 +11606,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -11646,6 +11684,20 @@ def _restore_risk_settings():
         try:
             MAX_HOLD_MINS = float(stored)
             log.info("Restored MAX_HOLD_MINS=%g from DB", MAX_HOLD_MINS)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("TAKE_PROFIT_DOLLARS")
+    if stored is not None:
+        try:
+            TAKE_PROFIT_DOLLARS = float(stored)
+            log.info("Restored TAKE_PROFIT_DOLLARS=%g from DB", TAKE_PROFIT_DOLLARS)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("TAKE_PROFIT_PCT")
+    if stored is not None:
+        try:
+            TAKE_PROFIT_PCT = float(stored)
+            log.info("Restored TAKE_PROFIT_PCT=%g from DB", TAKE_PROFIT_PCT)
         except (TypeError, ValueError):
             pass
 

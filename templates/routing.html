@@ -466,6 +466,43 @@
       </div>
     </div>
 
+    <!-- Row 7: Take-profit — both accounts -->
+    <div class="rg-card" style="margin-top:10px;border-color:#3a7d44">
+      <div class="rg-card-title" style="color:#7FE098">&#9670; Take-Profit — close winners at a target</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Target ($)
+          <span style="color:#666;font-size:0.68rem">unrealized gain per position</span>
+          <span id="tpDollarBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="tpDollarDot"></span>
+            <span id="tpDollarText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="tpDollarInput" type="number" step="1" min="1" placeholder="e.g. 50" style="width:90px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpDollar()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpDollar()">Off</button>
+        </div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount.</div>
+      </div>
+      <div class="risk-section" style="margin-top:10px">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Target (%)
+          <span style="color:#666;font-size:0.68rem">% of position value</span>
+          <span id="tpPctBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="tpPctDot"></span>
+            <span id="tpPctText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="tpPctInput" type="number" step="0.05" min="0.05" placeholder="e.g. 0.5" style="width:90px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpPct()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpPct()">Off</button>
+        </div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to both accounts.</div>
+      </div>
+    </div>
+
     <!-- Blocked strategies + live positions (shown when there is data) -->
     <div class="risk-details" id="riskDetails" style="display:none">
       <div id="riskBlockedList"></div>
@@ -868,6 +905,42 @@
       }
       setRowState('maxHoldInput', mhOn);
 
+      // Take-profit ($)
+      const tpdInput = document.getElementById('tpDollarInput');
+      if (document.activeElement !== tpdInput && data.take_profit_dollars != null) {
+        tpdInput.value = data.take_profit_dollars;
+      }
+      const tpdOn = data.take_profit_dollars != null && data.take_profit_dollars > 0;
+      const tpdBadge = document.getElementById('tpDollarBadge');
+      const tpdDot   = document.getElementById('tpDollarDot');
+      const tpdText  = document.getElementById('tpDollarText');
+      if (tpdOn) {
+        tpdBadge.className = 'risk-status-badge active'; tpdDot.className = 'risk-dot green';
+        tpdText.textContent = '$' + data.take_profit_dollars;
+      } else {
+        tpdBadge.className = 'risk-status-badge disabled'; tpdDot.className = 'risk-dot grey';
+        tpdText.textContent = 'Disabled';
+      }
+      setRowState('tpDollarInput', tpdOn);
+
+      // Take-profit (%)
+      const tppInput = document.getElementById('tpPctInput');
+      if (document.activeElement !== tppInput && data.take_profit_pct != null) {
+        tppInput.value = data.take_profit_pct;
+      }
+      const tppOn = data.take_profit_pct != null && data.take_profit_pct > 0;
+      const tppBadge = document.getElementById('tpPctBadge');
+      const tppDot   = document.getElementById('tpPctDot');
+      const tppText  = document.getElementById('tpPctText');
+      if (tppOn) {
+        tppBadge.className = 'risk-status-badge active'; tppDot.className = 'risk-dot green';
+        tppText.textContent = data.take_profit_pct + '%';
+      } else {
+        tppBadge.className = 'risk-status-badge disabled'; tppDot.className = 'risk-dot grey';
+        tppText.textContent = 'Disabled';
+      }
+      setRowState('tpPctInput', tppOn);
+
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
       const posDot   = document.getElementById('posStatusDot');
@@ -1187,6 +1260,32 @@
     document.getElementById('maxHoldInput').value = '';
     try { await _postLimit({max_hold_mins: 0}); }
     catch(e) { console.error('clearMaxHold failed:', e); }
+  }
+  async function saveTpDollar() {
+    const input = document.getElementById('tpDollarInput');
+    const v = parseFloat(input.value);
+    if (isNaN(v) || v < 1) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({take_profit_dollars: v}); }
+    catch(e) { console.error('saveTpDollar failed:', e); }
+  }
+  async function clearTpDollar() {
+    document.getElementById('tpDollarInput').value = '';
+    try { await _postLimit({take_profit_dollars: 0}); }
+    catch(e) { console.error('clearTpDollar failed:', e); }
+  }
+  async function saveTpPct() {
+    const input = document.getElementById('tpPctInput');
+    const v = parseFloat(input.value);
+    if (isNaN(v) || v <= 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({take_profit_pct: v}); }
+    catch(e) { console.error('saveTpPct failed:', e); }
+  }
+  async function clearTpPct() {
+    document.getElementById('tpPctInput').value = '';
+    try { await _postLimit({take_profit_pct: 0}); }
+    catch(e) { console.error('clearTpPct failed:', e); }
   }
 
   async function saveMorningTrail() {
