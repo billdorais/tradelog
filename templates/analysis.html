@@ -997,7 +997,11 @@
         if (!iso) return '<span style="color:#444">—</span>';
         const t = new Date(iso).getTime();
         if (!t || isNaN(t)) return '<span style="color:#444">—</span>';
-        const days = Math.floor((Date.now() - t) / 86400000);
+        // Calendar-day difference in ET (not a rolling 24h window): a trade from
+        // yesterday morning should read "1d" once the ET date rolls over, even if
+        // fewer than 24 hours have elapsed.
+        const _etDay = (d) => d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const days = Math.round((Date.parse(_etDay(new Date())) - Date.parse(_etDay(new Date(iso)))) / 86400000);
         const label = days <= 0 ? 'today' : `${days}d`;
         const color = days > 10 ? '#e74c3c' : days > 5 ? '#F2E7AC' : '#888';
         return `<span style="color:${color}" title="Last closed trade ${iso}">${label}</span>`;
