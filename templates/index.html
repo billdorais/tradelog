@@ -1328,7 +1328,7 @@
       // Also captured for the daily bar chart so today's bar matches Alpaca.
       let _todayLivePnl = null;
       try {
-        const _today = new Date().toISOString().slice(0, 10);
+        const _today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
         const _acctUrl = account === '2' ? '/api/alpaca/account?account=2' : '/api/alpaca/account';
         const _acct    = await fetch(_acctUrl).then(r => r.json()).catch(() => ({}));
         if (_acct && _acct.daily_pnl != null) _todayLivePnl = _acct.daily_pnl;
@@ -2107,7 +2107,7 @@
       // Today override: replace today's bar with Alpaca's live daily P&L so the
       // chart matches what Alpaca shows. Add a today bar if none exists yet.
       if (todayLivePnl != null && !isNaN(todayLivePnl)) {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
         const idx   = labels.indexOf(today);
         if (idx >= 0) {
           netValues[idx] = parseFloat(Number(todayLivePnl).toFixed(2));
@@ -3128,7 +3128,7 @@
     }
 
     function setEquityToday() {
-      const t = _equityIso(new Date());
+      const t = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
       _setEquityRange(t, t);
       _syncEquityDateButtons('eqDateToday');
     }
