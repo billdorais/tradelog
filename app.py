@@ -9871,9 +9871,11 @@ def _entry_engine_compute(date=None, buffer=0.05):
         return (lvl, kind)
 
     traded = {}   # (ticker, level, side, kind) -> [round-trips with entry/exit/pnl/qty]
+    tv_day_pnl = 0.0   # TV's actual realized Refined P&L for the day (all round-trips)
     try:
         paired = _pair_alpaca_fills_lifo(_get_cached_fills_2(), from_date=date, to_date=date)
         for t in paired["closed_clean"]:
+            tv_day_pnl += float(t.get("pnl") or 0)
             _sd = (t.get("side") or "").upper()
             _lvl, _kind = _kind_level(t.get("strategy"), _sd)
             if _lvl:
@@ -9886,6 +9888,46 @@ def _entry_engine_compute(date=None, buffer=0.05):
                 })
     except Exception as _te:
         log.debug("entry engine traded lookup: %s", _te)
+
+    # Per-strategy exits sourced from the live Signal Router exit_params nodes
+    # (trail_offset / trail_trigger / max_hold_mins) — same source the Replay
+    # baseline uses. Lets us simulate what each engine entry would have made.
+    rule_settings = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname  = (_row[0] or "").upper()
+            _rnodes = json.loads(_row[1] or "[]")
+            _trail = _trigger = _mhm = None
+            for _nd in _rnodes:
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mraw    = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mraw)) if _mraw else None
+            if _trail is not None:
+                rule_settings[_rname] = {"trail_pct": _trail, "trigger_pct": _trigger or 0.0,
+                                         "max_hold_mins": _mhm}
+        _rc.close()
+    except Exception as _re:
+        log.debug("entry engine rule settings: %s", _re)
+
+    def _eng_exit(strategy):
+        """Exit params for a strategy: exact rule name, else BREAKOUT_R3S3-style
+        substring match (mirrors the Replay/stops baseline). Falls back to the
+        global max-hold backstop and a default trail if no rule matched."""
+        r = rule_settings.get((strategy or "").upper())
+        if r is None:
+            sname = (strategy or "").upper().replace(" ", "_")
+            for rkey, rval in rule_settings.items():
+                pat = "_".join(rkey.split("_CAM_")[1].split("_")[:2]) if "_CAM_" in rkey else rkey
+                if pat and pat in sname:
+                    r = rval
+                    break
+        if r is None:
+            r = {"trail_pct": 0.3, "trigger_pct": 0.1,
+                 "max_hold_mins": int(MAX_HOLD_MINS) if MAX_HOLD_MINS > 0 else None}
+        return r
 
     lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     rows = []
@@ -9918,15 +9960,17 @@ def _entry_engine_compute(date=None, buffer=0.05):
                 ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
 
         # Did price reach the order today? Breakout: through the stop. Reversal: to the level.
-        triggered_at = None
+        triggered_at, trig_idx, entry_dt = None, None, None
         if level and bars and order_px:
-            for b in bars:
+            for _i, b in enumerate(bars):
                 if kind == "reversal":
                     reached = (float(b.low) <= order_px) if is_long else (float(b.high) >= order_px)
                 else:
                     reached = (float(b.high) >= order_px) if is_long else (float(b.low) <= order_px)
                 if reached:
                     triggered_at = b.timestamp.astimezone(et).strftime("%H:%M")
+                    trig_idx     = _i
+                    entry_dt     = b.timestamp
                     break
 
         blocked = []
@@ -9952,6 +9996,20 @@ def _entry_engine_compute(date=None, buffer=0.05):
                 eng_ps += _tv + _ed
             edge, tv_ps, eng_ps = round(edge, 4), round(tv_ps, 4), round(eng_ps, 4)
 
+        # Simulated engine P&L: enter at order_px on the trigger bar, exit via this
+        # strategy's Signal Router exit_params (trail / trigger / max-hold), sized at
+        # the score-band qty. This is what the engine entry would have *made*.
+        eng_sim_pnl = eng_sim_reason = None
+        if decision == "armed" and trig_idx is not None and order_px and qty:
+            _xp  = _eng_exit(strat)
+            _sim = _simulate_exit(bars[trig_idx:], order_px, side,
+                                  _xp["trail_pct"], _xp["trigger_pct"], 0.0,
+                                  _xp["max_hold_mins"] or 0, entry_dt=entry_dt)
+            if _sim:
+                _per = (_sim["exit_price"] - order_px) if is_long else (order_px - _sim["exit_price"])
+                eng_sim_pnl    = round(_per * qty, 2)
+                eng_sim_reason = _sim.get("reason")
+
         rows.append({
             "ticker": tk, "strategy": strat, "side": side, "level_name": lvl, "kind": kind,
             "level": round(level, 4) if level else None,
@@ -9962,6 +10020,7 @@ def _entry_engine_compute(date=None, buffer=0.05):
             "traded_today": bool(rt_list), "n_trades": len(rt_list),
             "tv_pnl_total": round(sum(rt["pnl"] for rt in rt_list), 2) if rt_list else None,
             "edge": edge, "tv_pnl": tv_ps, "engine_pnl": eng_ps,
+            "eng_sim_pnl": eng_sim_pnl, "eng_sim_reason": eng_sim_reason,
         })
 
     rows.sort(key=lambda r: (r["decision"] != "armed", r["kind"], r["ticker"], r["side"]))
@@ -10004,6 +10063,10 @@ def _entry_engine_compute(date=None, buffer=0.05):
         "engine_only":  len(eng_trig) - n_match,   # engine would enter, TV didn't
         "reality_only": n_trade - n_match,         # TV traded, engine wouldn't (gate/level gap)
         "misses_tv_pnl": misses_tv_pnl,            # actual $ P&L TV booked on the blocked setups
+        # Simulated engine P&L (score-band sized, Signal Router exits) vs TV's actual day.
+        "engine_sim_pnl":    round(sum(r["eng_sim_pnl"] for r in rows if r["eng_sim_pnl"] is not None), 2),
+        "engine_sim_trades": sum(1 for r in rows if r["eng_sim_pnl"] is not None),
+        "tv_day_pnl":        round(tv_day_pnl, 2),
         # Per-share P&L on matched setups: TV's actual vs the engine's earlier entry.
         "matched_trades": sum(r["n_trades"] for r in rows if r["edge"] is not None),
         "tv_pnl":     round(sum(r["tv_pnl"]     for r in rows if r["edge"] is not None), 2),
