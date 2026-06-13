@@ -426,6 +426,8 @@ _alpaca_analysis_cache = {}   # key → {"data": ..., "ts": float}
 _alpaca2_fills_cache   = {"data": [], "ts": 0.0}
 _alpaca2_fills_lock    = threading.Lock()
 _alpaca2_analysis_cache = {}
+_alpaca3_fills_cache   = {"data": [], "ts": 0.0}
+_alpaca3_fills_lock    = threading.Lock()
 ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
 ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
 _broker_status_cache = {"data": None, "ts": 0.0}
@@ -461,6 +463,18 @@ def _get_cached_fills_2():
         fills = alpaca_broker2.get_fills() if alpaca_broker2 else []
         _alpaca2_fills_cache = {"data": fills, "ts": time.time()}
     return _alpaca2_fills_cache["data"]
+def _get_cached_fills_3():
+    """Return Alpaca engine-pilot (account 3) fills, cached separately."""
+    global _alpaca3_fills_cache
+    now = time.time()
+    if now - _alpaca3_fills_cache["ts"] < ALPACA_CACHE_TTL:
+        return _alpaca3_fills_cache["data"]
+    with _alpaca3_fills_lock:
+        if time.time() - _alpaca3_fills_cache["ts"] < ALPACA_CACHE_TTL:
+            return _alpaca3_fills_cache["data"]
+        fills = alpaca_broker3.get_fills() if alpaca_broker3 else []
+        _alpaca3_fills_cache = {"data": fills, "ts": time.time()}
+    return _alpaca3_fills_cache["data"]
 
 # TODO(multi-account): currently hard-coded to 2 Alpaca accounts (primary + Refined).
 # To support N accounts (ALPACA_KEY3, KEY4, ...) without manual edits each time:
@@ -10495,6 +10509,59 @@ def api_engine_pilot_toggle():
             pass
     return jsonify({"enabled": ENGINE_PILOT_ENABLED, "buffer": ENGINE_PILOT_BUFFER,
                     "configured": alpaca_broker3 is not None})
+
+
+@app.route("/api/engine_pilot/compare")
+def api_engine_pilot_compare():
+    """Head-to-head daily realized P&L: TV Refined (acct2) vs Kairos engine (acct3)
+    over the last N days, with cumulative running totals and per-account summary."""
+    import datetime as _dt
+    from collections import defaultdict
+    try:    days = int(request.args.get("days", 14))
+    except (TypeError, ValueError): days = 14
+    days = max(1, min(120, days))
+    to_d   = _dt.datetime.now(_dt.timezone.utc).date()
+    from_s = (to_d - _dt.timedelta(days=days)).isoformat()
+    to_s   = to_d.isoformat()
+
+    def _daily(fills):
+        per_day = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0})
+        win = [f for f in fills if from_s <= (f.get("time") or "")[:10] <= to_s]
+        try:    paired = _pair_alpaca_fills_lifo(win)
+        except Exception: return per_day
+        for t in paired.get("closed_clean", []):
+            d = (t.get("exit_time") or t.get("entry_time") or "")[:10]
+            if not d:
+                continue
+            pnl = float(t.get("pnl") or 0)
+            per_day[d]["pnl"]    += pnl
+            per_day[d]["trades"] += 1
+            if pnl > 0:
+                per_day[d]["wins"] += 1
+        return per_day
+
+    tv  = _daily(_get_cached_fills_2())
+    eng = _daily(_get_cached_fills_3())
+
+    rows, cum_tv, cum_eng = [], 0.0, 0.0
+    for d in sorted(set(tv) | set(eng)):
+        t = tv.get(d, {"pnl": 0, "trades": 0}); e = eng.get(d, {"pnl": 0, "trades": 0})
+        cum_tv  += t["pnl"]; cum_eng += e["pnl"]
+        rows.append({"date": d, "tv_pnl": round(t["pnl"], 2), "tv_trades": t["trades"],
+                     "engine_pnl": round(e["pnl"], 2), "engine_trades": e["trades"],
+                     "cum_tv": round(cum_tv, 2), "cum_engine": round(cum_eng, 2)})
+
+    def _summ(pd):
+        tp = sum(v["pnl"] for v in pd.values())
+        tr = sum(v["trades"] for v in pd.values())
+        w  = sum(v["wins"] for v in pd.values())
+        return {"pnl": round(tp, 2), "trades": tr, "win_rate": round(w / tr * 100, 1) if tr else 0.0}
+
+    return jsonify({
+        "days": days, "configured": alpaca_broker3 is not None,
+        "rows": list(reversed(rows)),
+        "tv": _summ(tv), "engine": _summ(eng),
+    })
 
 
 def _sharpe_from_pnls(pnls):

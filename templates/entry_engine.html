@@ -97,6 +97,7 @@
       <span style="font-size:0.7rem;color:#666">Full Refined list · fresh-cross + EMA/hours gates · one entry per setup/day · RTH only.</span>
     </div>
     <div id="pilotFills" style="margin-top:12px"></div>
+    <div id="pilotCompare" style="margin-top:14px"></div>
   </div>
 
   <div class="controls">
@@ -459,13 +460,51 @@
     } catch (e) { console.error('savePilotBuffer failed:', e); }
   }
 
+  // Head-to-head: TV Refined (acct2) vs Kairos engine (acct3).
+  async function loadPilotCompare() {
+    const el = document.getElementById('pilotCompare');
+    try {
+      const r = await fetch('/api/engine_pilot/compare?days=30');
+      const d = await r.json();
+      const rows = d.rows || [];
+      if (!rows.length) { el.innerHTML = ''; return; }
+      const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+      const tv = d.tv, eng = d.engine;
+      const diff = (eng.pnl || 0) - (tv.pnl || 0);
+      const head = `<div style="font-weight:700;color:#c4b5fd;margin:6px 0 8px">TV Refined vs Kairos Engine — head to head (${d.days}d)</div>`
+        + `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:0.84rem;margin-bottom:8px">`
+        + `<div><span style="color:#7bb3d6;font-weight:700">TV Refined:</span> <strong class="${tv.pnl>=0?'pos':'neg'}">${money(tv.pnl)}</strong> · ${tv.trades} trades · ${tv.win_rate}% win</div>`
+        + `<div><span style="color:#F2C07A;font-weight:700">Kairos Engine:</span> <strong class="${eng.pnl>=0?'pos':'neg'}">${money(eng.pnl)}</strong> · ${eng.trades} trades · ${eng.win_rate}% win</div>`
+        + `<div style="margin-left:auto"><span style="color:#888">Engine − TV:</span> <strong style="color:${diff>=0?'#7FE098':'#F2C76B'}">${diff>=0?'+':''}${money(diff)}</strong></div>`
+        + `</div>`;
+      const body = rows.map(x =>
+        `<tr>` +
+        `<td style="font-weight:600">${x.date}</td>` +
+        `<td style="text-align:right;${(x.tv_pnl)>=0?'color:#7FE098':'color:#ef5350'}">${money(x.tv_pnl)}</td>` +
+        `<td style="text-align:right;color:#555">${x.tv_trades}</td>` +
+        `<td style="text-align:right;${(x.engine_pnl)>=0?'color:#7FE098':'color:#ef5350'};font-weight:600">${money(x.engine_pnl)}</td>` +
+        `<td style="text-align:right;color:#555">${x.engine_trades}</td>` +
+        `<td style="text-align:right;color:#888">${money(x.cum_tv)}</td>` +
+        `<td style="text-align:right;color:#aaa;font-weight:600">${money(x.cum_engine)}</td>` +
+        `</tr>`).join('');
+      el.innerHTML = head
+        + `<div style="overflow-x:auto"><table style="font-size:0.8rem"><thead><tr>`
+        + `<th>Date</th><th style="text-align:right">TV P&amp;L</th><th style="text-align:right">TV #</th>`
+        + `<th style="text-align:right">Engine P&amp;L</th><th style="text-align:right">Eng #</th>`
+        + `<th style="text-align:right">Cum TV</th><th style="text-align:right">Cum Eng</th>`
+        + `</tr></thead><tbody>${body}</tbody></table></div>`;
+    } catch (e) { /* leave as-is */ }
+  }
+
   (function init() {
     const etToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
     document.getElementById('dateInput').value = etToday;
     run();
     loadLog();
     loadPilot();
+    loadPilotCompare();
     setInterval(loadPilot, 20000);
+    setInterval(loadPilotCompare, 60000);
   })();
 </script>
 </body>
