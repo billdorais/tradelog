@@ -96,6 +96,7 @@
 
   <div id="status" class="status"></div>
   <div id="summary" class="stats-grid" style="display:none"></div>
+  <div id="breakdownWrap"></div>
   <div id="missesWrap"></div>
   <div id="tableWrap"></div>
 
@@ -131,6 +132,7 @@
     const buf  = document.getElementById('bufferInput').value;
     document.getElementById('runBtn').disabled = true;
     document.getElementById('summary').style.display = 'none';
+    document.getElementById('breakdownWrap').innerHTML = '';
     document.getElementById('missesWrap').innerHTML = '';
     document.getElementById('tableWrap').innerHTML = '';
     setStatus('<span class="spin"></span>Evaluating setups…', 'info');
@@ -155,6 +157,26 @@
         `<div class="stat-card"><div class="stat-lbl" title="What the engine's ${s.engine_sim_trades} triggered entries would have made — score-band sized, exited via your Signal Router exit nodes">Engine P&L (sim)</div><div class="stat-val ${s.engine_sim_pnl >= 0 ? 'pos' : 'neg'}">${(s.engine_sim_pnl < 0 ? '-$' : '$') + Math.abs(s.engine_sim_pnl).toFixed(2)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl" title="TradingView's actual realized Refined P&L for the day (all round-trips)">TV day P&L</div><div class="stat-val ${s.tv_day_pnl >= 0 ? 'pos' : 'neg'}">${(s.tv_day_pnl < 0 ? '-$' : '$') + Math.abs(s.tv_day_pnl).toFixed(2)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Refined hours</div><div class="stat-val ${d.hours_ok ? 'pos' : 'neg'}">${d.hours_ok ? 'open' : 'closed'}</div></div>`;
+
+      // Engine P&L breakdown: trustworthy (matched) vs suspect (engine-only, purely simulated).
+      const bw = document.getElementById('breakdownWrap');
+      const m2 = v => (v == null ? '—' : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
+      const em = s.engine_matched_pnl || 0, eo = s.engine_only_pnl || 0, tvm = s.tv_matched_pnl || 0;
+      const onlyPct = (Math.abs(em) + Math.abs(eo)) ? Math.round(Math.abs(eo) / (Math.abs(em) + Math.abs(eo)) * 100) : 0;
+      const exitVerdict = (s.match === 0)
+        ? 'no matched trades to compare exits on'
+        : (em > tvm + 25)
+        ? `engine sim <strong>${m2(em)}</strong> tops TV's actual <strong>${m2(tvm)}</strong> on the same trades — exit sim looks <strong style="color:#F2C76B">optimistic</strong>`
+        : `engine sim <strong>${m2(em)}</strong> ≈ TV's actual <strong>${m2(tvm)}</strong> on the same trades — exits track reality`;
+      bw.innerHTML =
+        `<div style="background:#161823;border:1px solid #2a2d3e;border-radius:10px;padding:12px 16px;margin-bottom:18px">` +
+        `<div style="font-weight:700;color:#c4b5fd;margin-bottom:8px">Engine P&amp;L breakdown — what to trust</div>` +
+        `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:0.84rem">` +
+        `<div style="flex:1;min-width:280px"><span style="color:#7FE098;font-weight:700">✅ Matched (${s.match})</span> ` +
+        `<span style="color:#888">— ${exitVerdict}</span></div>` +
+        `<div style="flex:1;min-width:280px"><span style="color:#F2C76B;font-weight:700">⚠ Engine-only (${s.n_engine_only})</span> ` +
+        `<span style="color:#888">— ${m2(eo)}, purely simulated with no TV counterpart. <strong>${onlyPct}%</strong> of engine P&amp;L rides on this unverifiable bucket.</span></div>` +
+        `</div></div>`;
 
       // TV-only misses — the actionable gap: why the engine skipped each TV trade.
       const misses = d.misses || [];
@@ -278,11 +300,14 @@
       const days = d.days || [];
       if (!days.length) { wrap.innerHTML = '<div class="empty">No days logged yet. Runs auto-capture at 4:30 PM ET, or use “Save to Log”.</div>'; return; }
       const fmt = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
-      let cumEng = 0, cumTv = 0, nPnl = 0;
+      let cumEng = 0, cumTv = 0, nPnl = 0, cumEngM = 0, cumEngO = 0, cumTvM = 0;
       const rows = days.map(e => {
         const gap = (e.reality_only || 0) > 0;
         if (e.engine_sim_pnl != null) { cumEng += e.engine_sim_pnl; nPnl++; }
         if (e.tv_day_pnl != null) cumTv += e.tv_day_pnl;
+        if (e.engine_matched_pnl != null) cumEngM += e.engine_matched_pnl;
+        if (e.engine_only_pnl != null)    cumEngO += e.engine_only_pnl;
+        if (e.tv_matched_pnl != null)     cumTvM  += e.tv_matched_pnl;
         return `<tr>` +
           `<td style="font-weight:600">${e.date}</td>` +
           `<td style="text-align:right;color:#aaa">${e.setups} <span style="color:#555">(${e.breakout}/${e.reversal})</span></td>` +
@@ -307,6 +332,14 @@
         `<td style="text-align:right;${cumEng >= 0 ? 'color:#7FE098' : 'color:#ef5350'}">${fmt(cumEng)}</td>` +
         `<td style="text-align:right;${cumTv >= 0 ? 'color:#7FE098' : 'color:#ef5350'}">${fmt(cumTv)}</td>` +
         `<td style="text-align:right;${cumDiff >= 0 ? 'color:#7FE098' : 'color:#F2C76B'}">${(cumDiff >= 0 ? '+' : '') + fmt(cumDiff)}</td>` +
+        `</tr>` +
+        `<tr style="font-size:0.74rem;background:#13151f">` +
+        `<td style="color:#888">↳ decomposition</td>` +
+        `<td colspan="8" style="color:#888;text-align:right">` +
+        `<span style="color:#7FE098">Matched:</span> engine ${fmt(cumEngM)} vs TV ${fmt(cumTvM)} &nbsp;·&nbsp; ` +
+        `<span style="color:#F2C76B">Engine-only (sim, unverifiable):</span> ${fmt(cumEngO)}</td>` +
+        `<td style="text-align:right;color:#888;font-weight:400">${cumEng ? Math.round(Math.abs(cumEngO) / (Math.abs(cumEngM) + Math.abs(cumEngO) || 1) * 100) + '%' : ''}</td>` +
+        `<td colspan="2" style="color:#555;text-align:right;font-size:0.68rem">← engine-only share</td>` +
         `</tr>`) : '';
       wrap.innerHTML =
         `<div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:10px;overflow:hidden"><div style="overflow-x:auto">` +

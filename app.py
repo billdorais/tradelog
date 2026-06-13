@@ -10041,6 +10041,18 @@ def _entry_engine_compute(date=None, buffer=0.05):
     n_trade  = sum(1 for r in rows if r["traded_today"])
     n_match  = sum(1 for r in eng_trig if r["traded_today"])
 
+    # Split the simulated engine P&L into the trustworthy bucket (matched: TV took
+    # the same setup, so it's a real opportunity) vs the suspect bucket (engine-only:
+    # simulated entries TV never took, no real counterpart). And on the matched
+    # bucket, line up the engine's SIMULATED exit P&L against TV's ACTUAL P&L on the
+    # same setups — if engine >> TV there, the exit sim is optimistic.
+    _matched_rows = [r for r in eng_trig if r["traded_today"]]
+    _only_rows    = [r for r in eng_trig if not r["traded_today"]]
+    engine_matched_pnl = round(sum(r["eng_sim_pnl"] for r in _matched_rows if r["eng_sim_pnl"] is not None), 2)
+    engine_only_pnl    = round(sum(r["eng_sim_pnl"] for r in _only_rows    if r["eng_sim_pnl"] is not None), 2)
+    tv_matched_pnl     = round(sum(r["tv_pnl_total"] for r in _matched_rows if r["tv_pnl_total"] is not None), 2)
+    n_engine_only      = len(_only_rows)
+
     # TV-only misses: setups TV traded today but the engine would NOT have entered.
     # Each is classified so the gap is actionable — blocked by a gate, or armed but
     # price never reached the engine's stop/limit (a level/buffer/timing difference).
@@ -10080,6 +10092,12 @@ def _entry_engine_compute(date=None, buffer=0.05):
         "engine_sim_pnl":    round(sum(r["eng_sim_pnl"] for r in rows if r["eng_sim_pnl"] is not None), 2),
         "engine_sim_trades": sum(1 for r in rows if r["eng_sim_pnl"] is not None),
         "tv_day_pnl":        round(tv_day_pnl, 2),
+        # Decomposition: matched (trustworthy, has a real TV counterpart) vs engine-only
+        # (suspect, purely simulated). On matched, engine sim vs TV actual = exit-quality.
+        "engine_matched_pnl": engine_matched_pnl,
+        "engine_only_pnl":    engine_only_pnl,
+        "tv_matched_pnl":     tv_matched_pnl,
+        "n_engine_only":      n_engine_only,
         # Per-share P&L on matched setups: TV's actual vs the engine's earlier entry.
         "matched_trades": sum(r["n_trades"] for r in rows if r["edge"] is not None),
         "tv_pnl":     round(sum(r["tv_pnl"]     for r in rows if r["edge"] is not None), 2),
@@ -10118,7 +10136,8 @@ def _log_entry_engine_day(date=None, buffer=0.05):
         "setups", "breakout", "reversal", "armed", "blocked",
         "engine_triggered", "traded", "match", "engine_only", "reality_only",
         "matched_trades", "tv_pnl", "engine_pnl", "edge",
-        "engine_sim_pnl", "tv_day_pnl", "misses_tv_pnl")},
+        "engine_sim_pnl", "tv_day_pnl", "misses_tv_pnl",
+        "engine_matched_pnl", "engine_only_pnl", "tv_matched_pnl", "n_engine_only")},
         "saved_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
     try:
         loglist = json.loads(_load_setting("ENTRY_ENGINE_LOG") or "[]")
