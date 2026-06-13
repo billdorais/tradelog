@@ -96,6 +96,7 @@
 
   <div id="status" class="status"></div>
   <div id="summary" class="stats-grid" style="display:none"></div>
+  <div id="missesWrap"></div>
   <div id="tableWrap"></div>
 
   <div style="margin-top:28px">
@@ -130,6 +131,7 @@
     const buf  = document.getElementById('bufferInput').value;
     document.getElementById('runBtn').disabled = true;
     document.getElementById('summary').style.display = 'none';
+    document.getElementById('missesWrap').innerHTML = '';
     document.getElementById('tableWrap').innerHTML = '';
     setStatus('<span class="spin"></span>Evaluating setups…', 'info');
     try {
@@ -151,6 +153,47 @@
         `<div class="stat-card"><div class="stat-lbl" title="TV traded but engine wouldn't arm — a gate/level gap to check">TV-only gap</div><div class="stat-val ${s.reality_only > 0 ? 'neg' : ''}">${s.reality_only}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl" title="Per-share P&L edge from the engine's earlier entry on matched trades (same exit)">Entry edge $/sh</div><div class="stat-val ${s.edge >= 0 ? 'pos' : 'neg'}">${(s.edge < 0 ? '-$' : '$') + Math.abs(s.edge).toFixed(2)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Refined hours</div><div class="stat-val ${d.hours_ok ? 'pos' : 'neg'}">${d.hours_ok ? 'open' : 'closed'}</div></div>`;
+
+      // TV-only misses — the actionable gap: why the engine skipped each TV trade.
+      const misses = d.misses || [];
+      const mw = document.getElementById('missesWrap');
+      if (misses.length) {
+        const nBlocked = misses.filter(m => m.reason === 'blocked').length;
+        const nNoTrig  = misses.filter(m => m.reason === 'no_trigger').length;
+        const mrows = misses.map(m => {
+          const isRev = m.kind === 'reversal';
+          const typeBadge = isRev
+            ? '<span class="badge" style="background:rgba(167,139,250,0.18);color:#a78bfa">REV</span>'
+            : '<span class="badge" style="background:rgba(123,179,214,0.18);color:#7bb3d6">BRK</span>';
+          const reasonBadge = m.reason === 'blocked'
+            ? `<span class="badge b-blocked">${m.detail || 'blocked'}</span>`
+            : m.reason === 'no_trigger'
+            ? '<span class="badge" style="background:rgba(242,199,107,0.18);color:#F2C76B">no trigger</span>'
+            : '<span class="badge" style="background:#333;color:#999">other</span>';
+          return `<tr>` +
+            `<td style="font-weight:600">${m.ticker}</td>` +
+            `<td>${typeBadge}</td>` +
+            `<td class="${m.side === 'LONG' ? 'long' : 'short'}">${m.side}</td>` +
+            `<td>${m.level_name}${m.level != null ? ' <span style="color:#666">$' + m.level.toFixed(2) + '</span>' : ''}</td>` +
+            `<td style="color:#888">${m.stop_price != null ? '$' + m.stop_price.toFixed(2) + ' ' + (m.order || '') : '—'}</td>` +
+            `<td style="text-align:right;color:#aaa">${m.n_trades}</td>` +
+            `<td>${reasonBadge}</td>` +
+            `<td style="color:#888;font-size:0.78rem">${m.detail || ''}</td>` +
+            `</tr>`;
+        }).join('');
+        mw.innerHTML =
+          `<div style="background:#1c1f2e;border:1px solid #c8643855;border-radius:10px;overflow:hidden;margin-bottom:18px">` +
+          `<div style="padding:10px 14px;border-bottom:1px solid #2a2d3e;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">` +
+          `<span style="font-weight:700;color:#F2C07A">⚠ TV-Only Misses — why the engine skipped (${misses.length})</span>` +
+          `<span style="font-size:0.74rem;color:#888">${nBlocked} blocked by a gate · ${nNoTrig} armed but never triggered</span>` +
+          `<span style="font-size:0.72rem;color:#666;margin-left:auto">These are entries TradingView took that the engine wouldn't — close this gap before going live.</span>` +
+          `</div>` +
+          `<div style="overflow-x:auto"><table><thead><tr>` +
+          `<th>Ticker</th><th>Type</th><th>Side</th><th>Level</th><th>Engine order @</th>` +
+          `<th style="text-align:right" title="How many TV round-trips on this setup today"># TV</th>` +
+          `<th>Why skipped</th><th>Detail</th>` +
+          `</tr></thead><tbody>${mrows}</tbody></table></div></div>`;
+      }
 
       if (!d.rows.length) { document.getElementById('tableWrap').innerHTML = '<div class="empty">No setups.</div>'; document.getElementById('runBtn').disabled = false; return; }
 

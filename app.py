@@ -9967,6 +9967,28 @@ def _entry_engine_compute(date=None, buffer=0.05):
     eng_trig = [r for r in rows if r["decision"] == "armed" and r["triggered_at"]]
     n_trade  = sum(1 for r in rows if r["traded_today"])
     n_match  = sum(1 for r in eng_trig if r["traded_today"])
+
+    # TV-only misses: setups TV traded today but the engine would NOT have entered.
+    # Each is classified so the gap is actionable — blocked by a gate, or armed but
+    # price never reached the engine's stop/limit (a level/buffer/timing difference).
+    misses = []
+    for r in rows:
+        if not r["traded_today"] or (r["decision"] == "armed" and r["triggered_at"]):
+            continue
+        if r["decision"] == "blocked":
+            reason, detail = "blocked", (", ".join(r["blocked"]) or "blocked")
+        elif not r["triggered_at"]:
+            _px = f" @ {r['stop_price']}" if r["stop_price"] else ""
+            reason, detail = "no_trigger", f"armed, but price never reached the {r['order']}{_px}"
+        else:
+            reason, detail = "other", ""
+        misses.append({
+            "ticker": r["ticker"], "strategy": r["strategy"], "side": r["side"],
+            "kind": r["kind"], "level_name": r["level_name"], "level": r["level"],
+            "order": r["order"], "stop_price": r["stop_price"],
+            "n_trades": r["n_trades"], "reason": reason, "detail": detail,
+        })
+    misses.sort(key=lambda m: (m["reason"], m["ticker"]))
     summary = {
         "setups":   len(rows),
         "breakout": sum(1 for r in rows if r["kind"] == "breakout"),
@@ -9987,6 +10009,7 @@ def _entry_engine_compute(date=None, buffer=0.05):
     return {
         "date": date, "buffer": buffer, "hours_ok": hours_ok,
         "strikes_enabled": STRIKES_ENABLED, "summary": summary, "rows": rows,
+        "misses": misses,
         "note": "DRY RUN — no orders placed.",
     }
 
