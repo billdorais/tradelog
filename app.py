@@ -86,6 +86,13 @@ PAPER_HOURS_START     = os.environ.get("PAPER_HOURS_START", "")     # Paper All 
 PAPER_HOURS_END       = os.environ.get("PAPER_HOURS_END", "")
 REFINED_HOURS_START   = os.environ.get("REFINED_HOURS_START", "")   # Refined    (alpaca2)
 REFINED_HOURS_END     = os.environ.get("REFINED_HOURS_END", "")
+# Phase-2 server-side entry pilot: arm Kairos engine entries into the separate
+# alpaca3 paper account, in parallel with TV's Refined entries. Default OFF — it
+# places real (paper) orders, so it stays inert until explicitly enabled AND
+# ALPACA_KEY3 is configured.
+ENGINE_PILOT_ENABLED  = os.environ.get("ENGINE_PILOT_ENABLED", "0") == "1"
+ENGINE_PILOT_BUFFER   = float(os.environ.get("ENGINE_PILOT_BUFFER", "0.05"))
+ENGINE_POLL_SECS      = int(os.environ.get("ENGINE_POLL_SECS", "10"))
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -96,6 +103,12 @@ _latest_positions     = []      # cached by position monitor for the status endp
 _max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
 _max_hold_fail_ticks  = {}      # {(broker_tag, SYMBOL): consecutive_fail_count}
 _risk_lock            = threading.Lock()
+
+# Phase-2 engine pilot runtime state. `entered` = setup keys already armed today
+# (one entry per setup/day); `prev_px` = last seen price per ticker for fresh-cross
+# detection; `fills` mirrors the persisted slippage log for the status panel.
+_engine_pilot_state = {"date": None, "entered": set(), "prev_px": {}, "fills": []}
+_engine_pilot_lock  = threading.Lock()
 
 _IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
 
@@ -490,6 +503,21 @@ if os.environ.get("ALPACA_KEY2"):
 
     threading.Thread(target=_prewarm_fills, daemon=True).start()
 
+# Alpaca account 3 — the Phase-2 "Kairos engine" pilot account. Server-side entries
+# are armed HERE, in parallel with (and separate from) the TV entries on Refined
+# (acct 2), so the two can be compared head-to-head with no double-entry risk.
+# Inert unless ALPACA_KEY3 is set.
+alpaca_broker3 = None
+if os.environ.get("ALPACA_KEY3"):
+    from brokers.alpaca_broker import AlpacaBroker as _AB3
+    _paper3 = os.environ.get("ALPACA_PAPER3", "true").lower() != "false"
+    alpaca_broker3 = _AB3(
+        key    = os.environ.get("ALPACA_KEY3"),
+        secret = os.environ.get("ALPACA_SECRET3"),
+        paper  = _paper3,
+    )
+    log.info("Alpaca broker 3 (Kairos engine pilot) initialised (paper=%s)", _paper3)
+
 # ---------------------------------------------------------------------------
 # Coinbase broker (optional — set COINBASE_KEY + COINBASE_SECRET to enable)
 # ---------------------------------------------------------------------------
@@ -536,6 +564,13 @@ def _eod_close_scheduler():
                     log.info("EOD close Alpaca Refined: %s", result)
                 except Exception as e:
                     log.error("EOD close Alpaca Refined failed: %s", e)
+            # Alpaca account 3 (Kairos engine pilot)
+            if alpaca_broker3 is not None:
+                try:
+                    result = alpaca_broker3.close_all_positions()
+                    log.info("EOD close Alpaca engine pilot: %s", result)
+                except Exception as e:
+                    log.error("EOD close Alpaca engine pilot failed: %s", e)
             # Coinbase
             if coinbase_broker is not None:
                 try:
@@ -777,6 +812,16 @@ def _check_position_stops():
         except Exception as _e:
             log.warning("Position stop: Alpaca account 2 get_positions failed: %s", _e)
 
+    if alpaca_broker3:
+        try:
+            alpaca_broker3._invalidate_pos_cache()
+            for p in alpaca_broker3.get_positions():
+                p["broker"] = "alpaca3"
+                all_positions.append(p)
+            polled_brokers.add("alpaca3")
+        except Exception as _e:
+            log.warning("Position stop: Alpaca account 3 (engine pilot) get_positions failed: %s", _e)
+
     if _ib_task_queue is not None and ib_broker:
         try:
             for p in _submit_ib_task(ib_broker.get_positions, _timeout=15):
@@ -930,6 +975,11 @@ def _check_position_stops():
                 close_ok = res.get("success", False)
                 if not close_ok:
                     log.error("Position stop close failed for %s (acct2): %s", symbol, res.get("error"))
+            elif broker == "alpaca3":
+                res = alpaca_broker3.close_position(symbol)
+                close_ok = res.get("success", False)
+                if not close_ok:
+                    log.error("Position stop close failed for %s (acct3 engine pilot): %s", symbol, res.get("error"))
             elif broker == "ib" and _ib_task_queue is not None:
                 _submit_ib_task(ib_broker.close_position, symbol, pos.get("qty", 0), _timeout=30)
                 close_ok = True
@@ -962,6 +1012,7 @@ def _check_exit_params_recovery():
     accounts = []
     if alpaca_broker:  accounts.append(("alpaca",  alpaca_broker))
     if alpaca_broker2: accounts.append(("alpaca2", alpaca_broker2))
+    if alpaca_broker3: accounts.append(("alpaca3", alpaca_broker3))
 
     for broker_tag, broker_inst in accounts:
         try:
@@ -1043,7 +1094,8 @@ def _check_max_hold_exits():
             if (broker_tag, symbol) in _auto_closed_symbols:
                 continue
 
-        broker_inst = alpaca_broker2 if broker_tag == "alpaca2" else alpaca_broker
+        broker_inst = {"alpaca": alpaca_broker, "alpaca2": alpaca_broker2,
+                       "alpaca3": alpaca_broker3}.get(broker_tag)
         if broker_inst is None:
             continue
 
@@ -10172,6 +10224,279 @@ def api_entry_engine_log_save():
     return jsonify({"saved": entry})
 
 
+# ── Phase 2: live Kairos engine pilot (separate alpaca3 paper account) ───────
+# Arms server-side market entries on the alpaca3 account in parallel with TV's
+# Refined entries — a fresh-cross of a Refined setup's level (with the live EMA +
+# hours gates) fires a market order via the SAME place_order path, so the broker
+# trailing stop + max-hold arm identically. One entry per setup/day. Default OFF;
+# inert unless ALPACA_KEY3 is configured AND the pilot is enabled.
+_engine_pilot_cache = {"levels": {}, "levels_date": None,
+                       "bars": {}, "bars_ts": 0.0, "rules": {}, "rules_ts": 0.0}
+
+def _engine_pilot_prices(tickers):
+    """Fresh (uncached) latest trade prices for cross detection."""
+    import os as _os
+    out = {}
+    tickers = sorted({t.upper() for t in tickers if t})
+    if not tickers:
+        return out
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestTradeRequest
+        key = _os.environ.get("ALPACA_KEY3") or _os.environ.get("ALPACA_KEY") or _os.environ.get("ALPACA_KEY2")
+        sec = _os.environ.get("ALPACA_SECRET3") or _os.environ.get("ALPACA_SECRET") or _os.environ.get("ALPACA_SECRET2")
+        client = StockHistoricalDataClient(api_key=key, secret_key=sec)
+        trades = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=tickers)) or {}
+        for sym, tr in trades.items():
+            px = float(getattr(tr, "price", 0) or 0)
+            if px > 0:
+                out[sym] = px
+    except Exception as _e:
+        log.debug("engine pilot prices: %s", _e)
+    return out
+
+def _engine_pilot_rules():
+    """Per-rule exit_params (trail/trigger/stop/hard-stop/max-hold) from the live
+    Signal Router, cached 60s — the exits armed on each engine entry."""
+    now = time.time()
+    if now - _engine_pilot_cache["rules_ts"] < 60 and _engine_pilot_cache["rules"]:
+        return _engine_pilot_cache["rules"]
+    rules = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            nm = (_row[0] or "").upper()
+            ep = None
+            for nd in json.loads(_row[1] or "[]"):
+                if nd.get("type") == "exit_params":
+                    ep = nd
+            if ep:
+                rules[nm] = {
+                    "trail_offset":  float(ep.get("trail_offset") or 0) or None,
+                    "trail_trigger": float(ep.get("trail_trigger") or 0) or None,
+                    "trail_mode":    ep.get("mode", "dollars"),
+                    "stop_loss":     float(ep.get("stop_loss") or 0) or None,
+                    "hard_stop":     float(ep.get("hard_stop") or 0) or None,
+                    "max_hold_mins": int(float(ep.get("max_hold_mins"))) if ep.get("max_hold_mins") else None,
+                }
+        _rc.close()
+    except Exception as _e:
+        log.debug("engine pilot rules: %s", _e)
+    _engine_pilot_cache["rules"] = rules
+    _engine_pilot_cache["rules_ts"] = now
+    return rules
+
+def _engine_pilot_exit_for(strategy, rules):
+    """Exact rule name, else BREAKOUT_R3S3-style substring (mirrors the stops baseline)."""
+    r = rules.get((strategy or "").upper())
+    if r is None:
+        sname = (strategy or "").upper().replace(" ", "_")
+        for rk, rv in rules.items():
+            pat = "_".join(rk.split("_CAM_")[1].split("_")[:2]) if "_CAM_" in rk else rk
+            if pat and pat in sname:
+                r = rv
+                break
+    return r or {"trail_offset": None, "trail_trigger": None, "trail_mode": "dollars",
+                 "stop_loss": None, "hard_stop": None, "max_hold_mins": None}
+
+def _engine_pilot_levels(tickers, date):
+    if _engine_pilot_cache["levels_date"] != date:
+        _engine_pilot_cache["levels"] = {}
+        _engine_pilot_cache["levels_date"] = date
+    lv = _engine_pilot_cache["levels"]
+    for tk in tickers:
+        if tk not in lv:
+            try:    lv[tk] = _camarilla_levels(tk, date)
+            except Exception: lv[tk] = {}
+    return lv
+
+def _engine_pilot_bars(tickers, date):
+    now = time.time()
+    if now - _engine_pilot_cache["bars_ts"] > 45:
+        _engine_pilot_cache["bars"] = {}
+        _engine_pilot_cache["bars_ts"] = now
+    bm = _engine_pilot_cache["bars"]
+    for tk in tickers:
+        if tk not in bm:
+            try:    bm[tk] = _fetch_5m_rth_objs(tk, date)
+            except Exception: bm[tk] = []
+    return bm
+
+def _log_engine_pilot_fill(rec):
+    with _engine_pilot_lock:
+        _engine_pilot_state["fills"].insert(0, rec)
+        _engine_pilot_state["fills"] = _engine_pilot_state["fills"][:200]
+    try:    stored = json.loads(_load_setting("ENGINE_PILOT_FILLS") or "[]")
+    except Exception: stored = []
+    stored.append(rec)
+    _save_setting("ENGINE_PILOT_FILLS", json.dumps(stored[-500:]))
+
+def _engine_pilot_tick(now_et, today):
+    setups = _entry_engine_setups()
+    if not setups:
+        return
+    rules = _engine_pilot_rules()
+    score_by = {}
+    for _k in ("top_scored", "on_deck_scored"):
+        for it in (_refined_last_result or {}).get(_k, []):
+            nm = (it.get("name") or "").upper()
+            if nm:
+                score_by[nm] = it.get("score")
+    tickers = sorted({s["ticker"] for s in setups})
+    levels  = _engine_pilot_levels(tickers, today)
+    bars    = _engine_pilot_bars(tickers, today)
+    prices  = _engine_pilot_prices(tickers)
+    lkey    = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    hours_ok = _account_hours_ok("alpaca2", now_et=now_et)
+    now_utc  = datetime.now(timezone.utc)
+    with _engine_pilot_lock:
+        prev_px = dict(_engine_pilot_state["prev_px"])
+
+    for s in setups:
+        tk, side, lvl_name = s["ticker"], s["side"], s["level_name"]
+        strat, kind = s["strategy"], s.get("kind", "breakout")
+        key = (strat, side, lvl_name)
+        with _engine_pilot_lock:
+            if key in _engine_pilot_state["entered"]:
+                continue
+        cur   = prices.get(tk)
+        level = (levels.get(tk) or {}).get(lkey.get(lvl_name))
+        prev  = prev_px.get(tk)
+        if not cur or not level or prev is None:
+            continue
+        is_long = side == "LONG"
+        order_px = level if kind == "reversal" else (level + ENGINE_PILOT_BUFFER if is_long else level - ENGINE_PILOT_BUFFER)
+        # Fresh cross between the previous tick and now (avoids gap/stale entries).
+        if kind == "reversal":
+            crossed = (prev > level >= cur) if is_long else (prev < level <= cur)
+        else:
+            crossed = (prev < order_px <= cur) if is_long else (prev > order_px >= cur)
+        if not crossed or not hours_ok:
+            continue
+        # EMA gate (breakout: close vs EMA; reversal: close vs EMA + slope).
+        last = (bars.get(tk) or [None])[-1]
+        if last is not None and getattr(last, "ema", None) is not None:
+            if kind == "reversal":
+                e2 = getattr(last, "ema2", None)
+                ema_ok = (last.close > last.ema and (e2 is None or last.ema > e2)) if is_long \
+                    else (last.close < last.ema and (e2 is None or last.ema < e2))
+            else:
+                ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
+            if not ema_ok:
+                continue
+        qty = _compute_refined_qty(score_by.get(strat.upper()), cur)
+        if not qty or qty < 1:
+            continue
+        # Mark entered FIRST (dedup) so a slow place_order can't double-fire next tick.
+        with _engine_pilot_lock:
+            _engine_pilot_state["entered"].add(key)
+        xp  = _engine_pilot_exit_for(strat, rules)
+        act = "BUY" if is_long else "SELL"
+        try:
+            res = alpaca_broker3.place_order(
+                ticker=tk, action=act, quantity=qty, price=None,
+                strategy=strat, is_exit=False,
+                stop_loss=xp["stop_loss"], trail_trigger=xp["trail_trigger"],
+                trail_offset=xp["trail_offset"], trail_mode=xp["trail_mode"],
+                hard_stop_dollars=xp["hard_stop"], ref_price=cur,
+            )
+        except Exception as _pe:
+            log.warning("engine pilot place_order %s %s: %s", act, tk, _pe)
+            continue
+        ok = bool(res.get("success"))
+        eff_mhm = xp["max_hold_mins"] or (MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None)
+        if ok and eff_mhm:
+            with _risk_lock:
+                _max_hold_positions[("alpaca3", tk.upper())] = {"entry_time": now_utc, "max_hold_mins": eff_mhm}
+                _auto_closed_symbols.discard(("alpaca3", tk.upper()))
+            _persist_max_hold("alpaca3", tk.upper(), now_utc, eff_mhm)
+        slip = (cur - order_px) if is_long else (order_px - cur)
+        _log_engine_pilot_fill({
+            "ts": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"), "date": today, "ticker": tk,
+            "strategy": strat, "side": side, "kind": kind, "level": round(level, 4),
+            "order_px": round(order_px, 4), "entry_px": round(cur, 4), "qty": qty,
+            "slippage": round(slip, 4), "ok": ok, "order_id": res.get("order_id"),
+            "detail": None if ok else res.get("error"),
+        })
+        log.info("ENGINE PILOT %s %s x%s @~%.2f (level %.2f, slip %.3f) ok=%s",
+                 act, tk, qty, cur, level, slip, ok)
+
+    with _engine_pilot_lock:
+        _engine_pilot_state["prev_px"] = dict(prices)
+
+def _engine_pilot_loop():
+    import datetime as _dt
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    try:
+        stored = json.loads(_load_setting("ENGINE_PILOT_FILLS") or "[]")
+        with _engine_pilot_lock:
+            _engine_pilot_state["fills"] = list(reversed(stored))[:200]
+    except Exception:
+        pass
+    while True:
+        try:
+            if ENGINE_PILOT_ENABLED and alpaca_broker3 is not None:
+                now = _dt.datetime.now(et)
+                if now.weekday() < 5 and (9, 30) <= (now.hour, now.minute) <= (15, 55):
+                    today = now.date().isoformat()
+                    with _engine_pilot_lock:
+                        if _engine_pilot_state["date"] != today:
+                            _engine_pilot_state["date"]    = today
+                            _engine_pilot_state["entered"] = set()
+                            _engine_pilot_state["prev_px"] = {}
+                    _engine_pilot_tick(now, today)
+        except Exception as _e:
+            log.warning("engine pilot loop: %s", _e)
+        time.sleep(max(5, ENGINE_POLL_SECS))
+
+threading.Thread(target=_engine_pilot_loop, daemon=True).start()
+
+
+@app.route("/api/engine_pilot/status")
+def api_engine_pilot_status():
+    import datetime as _dt
+    try:    _today = _dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception: _today = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
+    with _engine_pilot_lock:
+        fills   = list(_engine_pilot_state["fills"])[:100]
+        entered = len(_engine_pilot_state["entered"])
+    acct = None
+    if alpaca_broker3 is not None:
+        try:    acct = {"daily_pnl": round(alpaca_broker3.daily_pnl(), 2)}
+        except Exception: acct = None
+    return jsonify({
+        "enabled":       ENGINE_PILOT_ENABLED,
+        "configured":    alpaca_broker3 is not None,
+        "buffer":        ENGINE_PILOT_BUFFER,
+        "poll_secs":     ENGINE_POLL_SECS,
+        "entered_today": entered,
+        "fills_today":   sum(1 for f in fills if f.get("date") == _today),
+        "account":       acct,
+        "fills":         fills,
+    })
+
+
+@app.route("/api/engine_pilot/toggle", methods=["POST"])
+def api_engine_pilot_toggle():
+    global ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER
+    body = request.get_json(silent=True) or {}
+    if "enabled" in body:
+        ENGINE_PILOT_ENABLED = bool(body["enabled"])
+        _update_env_file("ENGINE_PILOT_ENABLED", "1" if ENGINE_PILOT_ENABLED else "0")
+        _save_setting("ENGINE_PILOT_ENABLED", "1" if ENGINE_PILOT_ENABLED else "0")
+        log.info("ENGINE_PILOT_ENABLED set to %s", ENGINE_PILOT_ENABLED)
+    if "buffer" in body:
+        try:
+            ENGINE_PILOT_BUFFER = max(0.0, float(body["buffer"]))
+            _update_env_file("ENGINE_PILOT_BUFFER", f"{ENGINE_PILOT_BUFFER:g}")
+            _save_setting("ENGINE_PILOT_BUFFER", f"{ENGINE_PILOT_BUFFER:g}")
+        except (TypeError, ValueError):
+            pass
+    return jsonify({"enabled": ENGINE_PILOT_ENABLED, "buffer": ENGINE_PILOT_BUFFER,
+                    "configured": alpaca_broker3 is not None})
+
+
 def _sharpe_from_pnls(pnls):
     """Trade-level Sharpe: mean(pnl) / sample_std(pnl). Returns None if < 2 trades."""
     import math as _math
@@ -11885,7 +12210,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -11977,6 +12302,17 @@ def _restore_risk_settings():
         try:
             TAKE_PROFIT_PCT = float(stored)
             log.info("Restored TAKE_PROFIT_PCT=%g from DB", TAKE_PROFIT_PCT)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("ENGINE_PILOT_ENABLED")
+    if stored is not None:
+        ENGINE_PILOT_ENABLED = stored == "1"
+        log.info("Restored ENGINE_PILOT_ENABLED=%s from DB", ENGINE_PILOT_ENABLED)
+    stored = _load_setting("ENGINE_PILOT_BUFFER")
+    if stored is not None:
+        try:
+            ENGINE_PILOT_BUFFER = float(stored)
+            log.info("Restored ENGINE_PILOT_BUFFER=%g from DB", ENGINE_PILOT_BUFFER)
         except (TypeError, ValueError):
             pass
 

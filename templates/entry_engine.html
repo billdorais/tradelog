@@ -81,6 +81,24 @@
 
   <div class="banner">⚠ <strong>DRY RUN</strong> — this places <strong>no orders</strong>. It only shows what the server-side engine would do, so you can diff it against what TradingView actually traded before any live wiring.</div>
 
+  <!-- Phase 2 — live pilot into a separate paper account (alpaca3) -->
+  <div id="pilotPanel" style="background:#161823;border:1px solid #c86428;border-radius:10px;padding:14px 16px;margin-bottom:18px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+      <span style="font-weight:700;color:#F2C07A">🚀 Phase 2 — Live Engine Pilot</span>
+      <span id="pilotState" class="badge" style="background:#333;color:#999">checking…</span>
+      <span style="font-size:0.72rem;color:#888;margin-left:auto">Arms real (paper) entries into <strong>alpaca3</strong>, in parallel with your TV Refined entries.</span>
+    </div>
+    <div id="pilotBody" style="font-size:0.84rem;color:#888"></div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <button id="pilotToggleBtn" class="run-btn" onclick="togglePilot()" style="background:#7a3030">Enable pilot</button>
+      <label style="font-size:0.78rem;color:#888">Buffer ($)</label>
+      <input type="number" id="pilotBuffer" value="0.05" step="0.01" min="0" style="width:80px">
+      <button class="run-btn" onclick="savePilotBuffer()" style="background:#3a3d4e;font-size:0.8rem">Set buffer</button>
+      <span style="font-size:0.7rem;color:#666">Full Refined list · fresh-cross + EMA/hours gates · one entry per setup/day · RTH only.</span>
+    </div>
+    <div id="pilotFills" style="margin-top:12px"></div>
+  </div>
+
   <div class="controls">
     <div class="field">
       <label for="dateInput">Date</label>
@@ -358,11 +376,96 @@
     } catch (e) { wrap.innerHTML = `<div class="empty" style="color:#ef5350">Log error: ${e.message}</div>`; }
   }
 
+  // ── Phase 2 live pilot ──────────────────────────────────────────────────
+  let _pilotEnabled = false;
+  async function loadPilot() {
+    try {
+      const r = await fetch('/api/engine_pilot/status');
+      const d = await r.json();
+      _pilotEnabled = !!d.enabled;
+      const stateEl = document.getElementById('pilotState');
+      const btn = document.getElementById('pilotToggleBtn');
+      const money = v => (v == null ? '—' : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
+      if (!d.configured) {
+        stateEl.textContent = 'NOT CONFIGURED'; stateEl.style.background = '#333'; stateEl.style.color = '#999';
+        document.getElementById('pilotBody').innerHTML =
+          'Set <code>ALPACA_KEY3</code> / <code>ALPACA_SECRET3</code> (a new paper account) and restart to enable the pilot.';
+        btn.disabled = true; btn.style.opacity = '0.5'; return;
+      }
+      btn.disabled = false; btn.style.opacity = '1';
+      if (d.enabled) {
+        stateEl.textContent = '● LIVE'; stateEl.style.background = 'rgba(127,224,152,0.18)'; stateEl.style.color = '#7FE098';
+        btn.textContent = 'Disable pilot'; btn.style.background = '#7a3030';
+      } else {
+        stateEl.textContent = 'OFF'; stateEl.style.background = '#333'; stateEl.style.color = '#999';
+        btn.textContent = 'Enable pilot'; btn.style.background = '#3a7d44';
+      }
+      if (document.activeElement !== document.getElementById('pilotBuffer'))
+        document.getElementById('pilotBuffer').value = d.buffer;
+      const acctPnl = d.account ? money(d.account.daily_pnl) : '—';
+      document.getElementById('pilotBody').innerHTML =
+        `Account <strong>alpaca3</strong> today: <strong style="color:${(d.account && d.account.daily_pnl >= 0) ? '#7FE098' : '#ef5350'}">${acctPnl}</strong> ` +
+        `· <strong>${d.entered_today}</strong> setups entered today · <strong>${d.fills_today}</strong> fills · poll ${d.poll_secs}s`;
+      // Fills table
+      const fills = d.fills || [];
+      if (fills.length) {
+        const rows = fills.slice(0, 50).map(f => {
+          const slipCol = f.slippage > 0.10 ? '#ef5350' : f.slippage > 0.03 ? '#F2C76B' : '#7FE098';
+          return `<tr>` +
+            `<td style="color:#777;font-size:0.72rem">${(f.ts || '').slice(5, 16)}</td>` +
+            `<td style="font-weight:600">${f.ticker}</td>` +
+            `<td class="${f.side === 'LONG' ? 'long' : 'short'}">${f.side}</td>` +
+            `<td style="color:#888">${f.kind === 'reversal' ? 'REV' : 'BRK'} ${f.level_name || ''}</td>` +
+            `<td style="text-align:right;color:#888">$${(f.level || 0).toFixed(2)}</td>` +
+            `<td style="text-align:right">$${(f.entry_px || 0).toFixed(2)}</td>` +
+            `<td style="text-align:right">${f.qty}</td>` +
+            `<td style="text-align:right;color:${slipCol}">$${(f.slippage || 0).toFixed(3)}</td>` +
+            `<td>${f.ok ? '<span class="pos">✓</span>' : '<span class="neg" title="' + (f.detail || '') + '">✗</span>'}</td>` +
+            `</tr>`;
+        }).join('');
+        document.getElementById('pilotFills').innerHTML =
+          `<div style="overflow-x:auto"><table style="font-size:0.8rem"><thead><tr>` +
+          `<th>Time</th><th>Ticker</th><th>Side</th><th>Setup</th>` +
+          `<th style="text-align:right">Level</th><th style="text-align:right">Entry ~</th>` +
+          `<th style="text-align:right">Qty</th>` +
+          `<th style="text-align:right" title="Entry price minus the level — how far past the level the fresh cross caught">Slippage</th><th>OK</th>` +
+          `</tr></thead><tbody>${rows}</tbody></table></div>`;
+      } else {
+        document.getElementById('pilotFills').innerHTML =
+          '<div style="font-size:0.78rem;color:#666">No engine fills yet.</div>';
+      }
+    } catch (e) { /* leave panel as-is */ }
+  }
+  async function togglePilot() {
+    const next = !_pilotEnabled;
+    if (next && !confirm('Enable the live engine pilot? This will place REAL (paper) orders on the alpaca3 account.')) return;
+    try {
+      await fetch('/api/engine_pilot/toggle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      await loadPilot();
+    } catch (e) { console.error('togglePilot failed:', e); }
+  }
+  async function savePilotBuffer() {
+    const v = parseFloat(document.getElementById('pilotBuffer').value);
+    if (isNaN(v) || v < 0) return;
+    try {
+      await fetch('/api/engine_pilot/toggle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buffer: v }),
+      });
+      await loadPilot();
+    } catch (e) { console.error('savePilotBuffer failed:', e); }
+  }
+
   (function init() {
     const etToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
     document.getElementById('dateInput').value = etToday;
     run();
     loadLog();
+    loadPilot();
+    setInterval(loadPilot, 20000);
   })();
 </script>
 </body>
