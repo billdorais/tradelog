@@ -170,6 +170,8 @@
             : m.reason === 'no_trigger'
             ? '<span class="badge" style="background:rgba(242,199,107,0.18);color:#F2C76B">no trigger</span>'
             : '<span class="badge" style="background:#333;color:#999">other</span>';
+          const tvp = m.tv_pnl == null ? '<span style="color:#444">—</span>'
+            : `<span style="color:${m.tv_pnl >= 0 ? '#7FE098' : '#ef5350'};font-weight:600">${(m.tv_pnl < 0 ? '-$' : '$') + Math.abs(m.tv_pnl).toFixed(2)}</span>`;
           return `<tr>` +
             `<td style="font-weight:600">${m.ticker}</td>` +
             `<td>${typeBadge}</td>` +
@@ -177,20 +179,29 @@
             `<td>${m.level_name}${m.level != null ? ' <span style="color:#666">$' + m.level.toFixed(2) + '</span>' : ''}</td>` +
             `<td style="color:#888">${m.stop_price != null ? '$' + m.stop_price.toFixed(2) + ' ' + (m.order || '') : '—'}</td>` +
             `<td style="text-align:right;color:#aaa">${m.n_trades}</td>` +
+            `<td style="text-align:right">${tvp}</td>` +
             `<td>${reasonBadge}</td>` +
             `<td style="color:#888;font-size:0.78rem">${m.detail || ''}</td>` +
             `</tr>`;
         }).join('');
+        const tot = s.misses_tv_pnl;
+        const verdict = (tot == null) ? ''
+          : tot < 0
+          ? `<span style="font-size:0.74rem;color:#7FE098;margin-left:auto">These blocked trades lost TV <strong>${'$' + Math.abs(tot).toFixed(2)}</strong> — the gates would have <strong>saved</strong> you money.</span>`
+          : tot > 0
+          ? `<span style="font-size:0.74rem;color:#F2C76B;margin-left:auto">These blocked trades made TV <strong>${'$' + tot.toFixed(2)}</strong> — the gates <strong>cost</strong> you money here.</span>`
+          : `<span style="font-size:0.74rem;color:#888;margin-left:auto">These blocked trades netted TV $0.</span>`;
         mw.innerHTML =
           `<div style="background:#1c1f2e;border:1px solid #c8643855;border-radius:10px;overflow:hidden;margin-bottom:18px">` +
           `<div style="padding:10px 14px;border-bottom:1px solid #2a2d3e;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">` +
           `<span style="font-weight:700;color:#F2C07A">⚠ TV-Only Misses — why the engine skipped (${misses.length})</span>` +
           `<span style="font-size:0.74rem;color:#888">${nBlocked} blocked by a gate · ${nNoTrig} armed but never triggered</span>` +
-          `<span style="font-size:0.72rem;color:#666;margin-left:auto">These are entries TradingView took that the engine wouldn't — close this gap before going live.</span>` +
+          verdict +
           `</div>` +
           `<div style="overflow-x:auto"><table><thead><tr>` +
           `<th>Ticker</th><th>Type</th><th>Side</th><th>Level</th><th>Engine order @</th>` +
           `<th style="text-align:right" title="How many TV round-trips on this setup today"># TV</th>` +
+          `<th style="text-align:right" title="Actual P&L TradingView booked on this blocked setup today">TV P&amp;L</th>` +
           `<th>Why skipped</th><th>Detail</th>` +
           `</tr></thead><tbody>${mrows}</tbody></table></div></div>`;
       }

@@ -9960,6 +9960,7 @@ def _entry_engine_compute(date=None, buffer=0.05):
             "ema_ok": ema_ok, "triggered_at": triggered_at,
             "decision": decision, "blocked": blocked,
             "traded_today": bool(rt_list), "n_trades": len(rt_list),
+            "tv_pnl_total": round(sum(rt["pnl"] for rt in rt_list), 2) if rt_list else None,
             "edge": edge, "tv_pnl": tv_ps, "engine_pnl": eng_ps,
         })
 
@@ -9987,8 +9988,10 @@ def _entry_engine_compute(date=None, buffer=0.05):
             "kind": r["kind"], "level_name": r["level_name"], "level": r["level"],
             "order": r["order"], "stop_price": r["stop_price"],
             "n_trades": r["n_trades"], "reason": reason, "detail": detail,
+            "tv_pnl": r["tv_pnl_total"],
         })
     misses.sort(key=lambda m: (m["reason"], m["ticker"]))
+    misses_tv_pnl = round(sum(m["tv_pnl"] for m in misses if m["tv_pnl"] is not None), 2)
     summary = {
         "setups":   len(rows),
         "breakout": sum(1 for r in rows if r["kind"] == "breakout"),
@@ -10000,6 +10003,7 @@ def _entry_engine_compute(date=None, buffer=0.05):
         "match":    n_match,                       # both
         "engine_only":  len(eng_trig) - n_match,   # engine would enter, TV didn't
         "reality_only": n_trade - n_match,         # TV traded, engine wouldn't (gate/level gap)
+        "misses_tv_pnl": misses_tv_pnl,            # actual $ P&L TV booked on the blocked setups
         # Per-share P&L on matched setups: TV's actual vs the engine's earlier entry.
         "matched_trades": sum(r["n_trades"] for r in rows if r["edge"] is not None),
         "tv_pnl":     round(sum(r["tv_pnl"]     for r in rows if r["edge"] is not None), 2),
