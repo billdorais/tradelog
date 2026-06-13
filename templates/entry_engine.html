@@ -277,8 +277,12 @@
       const d = await r.json();
       const days = d.days || [];
       if (!days.length) { wrap.innerHTML = '<div class="empty">No days logged yet. Runs auto-capture at 4:30 PM ET, or use “Save to Log”.</div>'; return; }
+      const fmt = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+      let cumEng = 0, cumTv = 0, nPnl = 0;
       const rows = days.map(e => {
         const gap = (e.reality_only || 0) > 0;
+        if (e.engine_sim_pnl != null) { cumEng += e.engine_sim_pnl; nPnl++; }
+        if (e.tv_day_pnl != null) cumTv += e.tv_day_pnl;
         return `<tr>` +
           `<td style="font-weight:600">${e.date}</td>` +
           `<td style="text-align:right;color:#aaa">${e.setups} <span style="color:#555">(${e.breakout}/${e.reversal})</span></td>` +
@@ -288,10 +292,22 @@
           `<td style="text-align:right;color:#7FE098;font-weight:600">${e.match}</td>` +
           `<td style="text-align:right;color:#888">${e.engine_only}</td>` +
           `<td style="text-align:right;${gap ? 'color:#ef5350;font-weight:600' : 'color:#444'}">${e.reality_only}</td>` +
-          `<td style="text-align:right;${(e.edge || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600">${e.edge != null ? ((e.edge < 0 ? '-$' : '$') + Math.abs(e.edge).toFixed(2)) : '—'}</td>` +
+          `<td style="text-align:right;${(e.edge || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600">${e.edge != null ? fmt(e.edge) : '—'}</td>` +
+          `<td style="text-align:right;${(e.engine_sim_pnl || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600">${e.engine_sim_pnl != null ? fmt(e.engine_sim_pnl) : '—'}</td>` +
+          `<td style="text-align:right;${(e.tv_day_pnl || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'}">${e.tv_day_pnl != null ? fmt(e.tv_day_pnl) : '—'}</td>` +
           `<td style="text-align:right;color:#555;font-size:0.72rem">${e.saved_at || ''}</td>` +
           `</tr>`;
       }).join('');
+      const cumDiff = cumEng - cumTv;
+      const foot = nPnl ? (
+        `<tr style="border-top:2px solid #3a3d4e;font-weight:700;background:#161823">` +
+        `<td>Cumulative (${nPnl}d)</td>` +
+        `<td colspan="7"></td>` +
+        `<td style="text-align:right;color:#888;font-weight:400;font-size:0.7rem">Eng − TV →</td>` +
+        `<td style="text-align:right;${cumEng >= 0 ? 'color:#7FE098' : 'color:#ef5350'}">${fmt(cumEng)}</td>` +
+        `<td style="text-align:right;${cumTv >= 0 ? 'color:#7FE098' : 'color:#ef5350'}">${fmt(cumTv)}</td>` +
+        `<td style="text-align:right;${cumDiff >= 0 ? 'color:#7FE098' : 'color:#F2C76B'}">${(cumDiff >= 0 ? '+' : '') + fmt(cumDiff)}</td>` +
+        `</tr>`) : '';
       wrap.innerHTML =
         `<div style="background:#1c1f2e;border:1px solid #2a2d3e;border-radius:10px;overflow:hidden"><div style="overflow-x:auto">` +
         `<table><thead><tr>` +
@@ -302,8 +318,10 @@
         `<th style="text-align:right" title="Engine would fill, TV didn't">Eng-only</th>` +
         `<th style="text-align:right" title="TV traded, engine wouldn't arm — gate/level gap">TV-only</th>` +
         `<th style="text-align:right" title="Per-share P&L edge from the engine's earlier entry (same exit)">Edge $/sh</th>` +
+        `<th style="text-align:right" title="Simulated engine P&L — score-band sized, Signal Router exits">Engine P&L</th>` +
+        `<th style="text-align:right" title="TV's actual realized Refined P&L that day">TV P&L</th>` +
         `<th style="text-align:right">Saved</th>` +
-        `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        `</tr></thead><tbody>${rows}</tbody><tfoot>${foot}</tfoot></table></div></div>`;
     } catch (e) { wrap.innerHTML = `<div class="empty" style="color:#ef5350">Log error: ${e.message}</div>`; }
   }
 

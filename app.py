@@ -8616,16 +8616,20 @@ _strike_cache    = {"data": {}, "ts": 0.0}
 STRIKE_CACHE_TTL = 30   # seconds — bounded staleness for the live entry gate
 
 
-def _compute_strike_counts():
-    """Count today's LOSING round-trips per (account, ticker, level) across both
-    Alpaca accounts. Feeds the live N-strikes-per-level webhook gate.
+def _compute_strike_counts(date=None):
+    """Count LOSING round-trips per (account, ticker, level) across both Alpaca
+    accounts for `date` (default = today, ET). Feeds the live N-strikes-per-level
+    webhook gate (today) and the Entry Engine dry-run (any date, so historical
+    re-runs apply the strikes that actually accrued that day, not today's).
     Returns {(account, TICKER, level): n_losses} where account is 'alpaca'|'alpaca2'."""
     import datetime as _dt
     from collections import defaultdict
-    try:
-        today = _dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-    except Exception:
-        today = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
+    if date is None:
+        try:
+            date = _dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        except Exception:
+            date = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
+    today = date
     out = defaultdict(int)
     for acct, broker, fills_fn in (
         ("alpaca",  alpaca_broker,  _get_cached_fills),
@@ -9853,8 +9857,10 @@ def _entry_engine_compute(date=None, buffer=0.05):
             try:    lv_map[lfut[f]] = f.result()
             except Exception: lv_map[lfut[f]] = {}
 
-    strikes  = _get_strike_counts() if STRIKES_ENABLED else {}
-    hours_ok = _account_hours_ok("alpaca2")
+    # Strikes frozen to the queried date (not today) so historical re-runs are
+    # faithful — the strikes that actually accrued that day gate the setups.
+    strikes  = _compute_strike_counts(date) if STRIKES_ENABLED else {}
+    hours_ok = _account_hours_ok("alpaca2")   # window-open-now, for the summary card only
 
     # What actually traded today on Refined (for the dry-run vs reality diff).
     # Keyed (ticker, level, side, kind) with kind-aware level so reversals match.
@@ -9973,12 +9979,19 @@ def _entry_engine_compute(date=None, buffer=0.05):
                     entry_dt     = b.timestamp
                     break
 
+        # Hours gate evaluated at the setup's own trigger time (date-faithful),
+        # not "now" — an entry only fires when price hits the level intraday.
+        hours_ok_setup = True
+        if entry_dt is not None:
+            try:    hours_ok_setup = _account_hours_ok("alpaca2", now_et=entry_dt.astimezone(et))
+            except Exception: hours_ok_setup = True
+
         blocked = []
-        if not level:        blocked.append("no level")
-        if not hours_ok:     blocked.append("trading hours")
+        if not level:            blocked.append("no level")
+        if not hours_ok_setup:   blocked.append("trading hours")
         if STRIKES_ENABLED and strikes.get(("alpaca2", tk, lvl), 0) >= STRIKES_PER_LEVEL:
             blocked.append("two-strikes")
-        if ema_ok is False:  blocked.append("EMA")
+        if ema_ok is False:      blocked.append("EMA")
         decision = "blocked" if blocked else "armed"
 
         rt_list = traded.get((tk, lvl, side, kind), [])
@@ -10104,7 +10117,8 @@ def _log_entry_engine_day(date=None, buffer=0.05):
     entry = {"date": payload["date"], "buffer": payload["buffer"], **{k: s[k] for k in (
         "setups", "breakout", "reversal", "armed", "blocked",
         "engine_triggered", "traded", "match", "engine_only", "reality_only",
-        "matched_trades", "tv_pnl", "engine_pnl", "edge")},
+        "matched_trades", "tv_pnl", "engine_pnl", "edge",
+        "engine_sim_pnl", "tv_day_pnl", "misses_tv_pnl")},
         "saved_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
     try:
         loglist = json.loads(_load_setting("ENTRY_ENGINE_LOG") or "[]")
