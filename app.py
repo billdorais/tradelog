@@ -10527,6 +10527,41 @@ def _engine_pilot_tick(now_et, today):
         _engine_pilot_state["prev_px"]  = dict(prices)
         _engine_pilot_state["eval_bar"] = new_eval
 
+def _engine_pilot_reconcile():
+    """Backfill each logged pilot fill with the ACTUAL broker fill price (from the
+    order's filled_avg_price) so the slippage column reflects real prints, not the
+    price-at-signal estimate. Adds fill_price + fill_slip (fill vs intended order_px)."""
+    if alpaca_broker3 is None:
+        return
+    try:
+        stored = json.loads(_load_setting("ENGINE_PILOT_FILLS") or "[]")
+    except Exception:
+        return
+    pending = [f for f in stored if f.get("ok") and f.get("order_id") and f.get("fill_price") is None]
+    if not pending:
+        return
+    changed = False
+    try:    alpaca_broker3._ensure_client()
+    except Exception: return
+    for f in pending[-10:]:   # bound work per pass
+        try:
+            o   = alpaca_broker3._trading.get_order_by_id(f["order_id"])
+            fap = getattr(o, "filled_avg_price", None)
+            if fap:
+                fp = float(fap)
+                f["fill_price"] = round(fp, 4)
+                op = f.get("order_px")
+                if op is not None:
+                    is_long = (f.get("side") or "").upper() == "LONG"
+                    f["fill_slip"] = round((fp - op) if is_long else (op - fp), 4)
+                changed = True
+        except Exception:
+            continue
+    if changed:
+        _save_setting("ENGINE_PILOT_FILLS", json.dumps(stored[-500:]))
+        with _engine_pilot_lock:
+            _engine_pilot_state["fills"] = list(reversed(stored))[:200]
+
 def _engine_pilot_loop():
     import datetime as _dt
     try:    et = ZoneInfo("America/New_York")
@@ -10550,6 +10585,9 @@ def _engine_pilot_loop():
                             _engine_pilot_state["eval_bar"]   = {}
                             _engine_pilot_state["prev_px"]    = {}
                     _engine_pilot_tick(now, today)
+                # Reconcile actual fill prices (runs any time the pilot is on so the
+                # last fills of the session get their real prints after close too).
+                _engine_pilot_reconcile()
         except Exception as _e:
             log.warning("engine pilot loop: %s", _e)
         time.sleep(max(5, ENGINE_POLL_SECS))

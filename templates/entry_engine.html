@@ -411,25 +411,32 @@
       const fills = d.fills || [];
       if (fills.length) {
         const rows = fills.slice(0, 50).map(f => {
-          const slipCol = f.slippage > 0.10 ? '#ef5350' : f.slippage > 0.03 ? '#F2C76B' : '#7FE098';
+          const filled  = f.fill_price != null;
+          const slipVal = filled ? f.fill_slip : f.slippage;
+          const slipCol = (slipVal != null && slipVal > 0.10) ? '#ef5350' : (slipVal != null && slipVal > 0.03) ? '#F2C76B' : '#7FE098';
+          const entryCell = filled
+            ? `<td style="text-align:right;font-weight:600" title="Actual broker fill">$${f.fill_price.toFixed(2)}</td>`
+            : `<td style="text-align:right;color:#888" title="Price at signal (awaiting real fill)">~$${(f.entry_px || 0).toFixed(2)}</td>`;
+          const slipCell = `<td style="text-align:right;color:${slipCol}" title="${filled ? 'Actual fill vs intended order price' : 'Signal-time estimate (not reconciled yet)'}">` +
+            `${slipVal != null ? '$' + slipVal.toFixed(3) : '—'}${filled ? '' : '<span style="color:#555">~</span>'}</td>`;
           return `<tr>` +
             `<td style="color:#777;font-size:0.72rem">${(f.ts || '').slice(5, 16)}</td>` +
             `<td style="font-weight:600">${f.ticker}</td>` +
             `<td class="${f.side === 'LONG' ? 'long' : 'short'}">${f.side}</td>` +
             `<td style="color:#888">${f.kind === 'reversal' ? 'REV' : 'BRK'} ${f.level_name || ''}</td>` +
             `<td style="text-align:right;color:#888">$${(f.level || 0).toFixed(2)}</td>` +
-            `<td style="text-align:right">$${(f.entry_px || 0).toFixed(2)}</td>` +
+            entryCell +
             `<td style="text-align:right">${f.qty}</td>` +
-            `<td style="text-align:right;color:${slipCol}">$${(f.slippage || 0).toFixed(3)}</td>` +
+            slipCell +
             `<td>${f.ok ? '<span class="pos">✓</span>' : '<span class="neg" title="' + (f.detail || '') + '">✗</span>'}</td>` +
             `</tr>`;
         }).join('');
         document.getElementById('pilotFills').innerHTML =
           `<div style="overflow-x:auto"><table style="font-size:0.8rem"><thead><tr>` +
           `<th>Time</th><th>Ticker</th><th>Side</th><th>Setup</th>` +
-          `<th style="text-align:right">Level</th><th style="text-align:right">Entry ~</th>` +
+          `<th style="text-align:right">Level</th><th style="text-align:right" title="Actual broker fill once reconciled; ~estimate until then">Fill</th>` +
           `<th style="text-align:right">Qty</th>` +
-          `<th style="text-align:right" title="Entry price minus the level — how far past the level the fresh cross caught">Slippage</th><th>OK</th>` +
+          `<th style="text-align:right" title="Actual fill vs the intended order price (level±buffer). ~ = signal-time estimate awaiting reconciliation">Slippage</th><th>OK</th>` +
           `</tr></thead><tbody>${rows}</tbody></table></div>`;
       } else {
         document.getElementById('pilotFills').innerHTML =

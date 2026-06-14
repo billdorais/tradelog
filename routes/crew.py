@@ -670,6 +670,17 @@ _CREW_TOOLS = [
         "input_schema": {"type": "object", "properties": {
             "account": {"type": "string", "enum": ["1", "2", "3"], "description": "default 2"}}},
     },
+    {
+        "name": "engine_fills",
+        "description": "The Kairos engine's armed entries (fills) log — each with ticker, side, "
+                       "kind (breakout/reversal), level, intended order price, ACTUAL fill price, "
+                       "slippage (fill vs intended), and trigger reason. Use for slippage questions "
+                       "like 'worst slippage on breakouts this week' or 'how clean were the fills'.",
+        "input_schema": {"type": "object", "properties": {
+            "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "kind": {"type": "string", "enum": ["breakout", "reversal"], "description": "optional filter"}}},
+    },
 ]
 
 def _run_crew_tool(name: str, args: dict) -> str:
@@ -707,6 +718,21 @@ def _run_crew_tool(name: str, args: dict) -> str:
             acct = str(args.get("account") or "2")
             d = _get(f"/api/alpaca/positions?account={acct}")
             return json.dumps(d.get("positions") or [])[:4000]
+        if name == "engine_fills":
+            d = _get("/api/engine_pilot/status")
+            fd   = (args.get("from_date") or "").strip()
+            td   = (args.get("to_date") or "").strip()
+            kind = (args.get("kind") or "").strip().lower()
+            out = []
+            for f in (d.get("fills") or []):
+                dt = f.get("date") or ""
+                if fd and dt < fd: continue
+                if td and dt > td: continue
+                if kind and f.get("kind") != kind: continue
+                out.append({k: f.get(k) for k in (
+                    "ts", "ticker", "side", "kind", "level_name", "level", "order_px",
+                    "fill_price", "fill_slip", "slippage", "qty", "reason", "ok")})
+            return json.dumps({"count": len(out), "fills": out[:60]})[:6000]
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"Tool error ({name}): {e}"
@@ -740,8 +766,9 @@ def api_crew_chat():
         f"Today is {_today} (US/Eastern).\n\n"
         "You have TOOLS to pull live Kairos data when the report doesn't already contain the "
         "answer — engine_vs_tv (acct3 server-side engine vs acct2 TV Refined), day_recap (a "
-        "specific day's trades on both accounts), strategy_stats (per-account leaderboard), and "
-        "open_positions. USE them whenever the user asks about anything current, specific, or "
+        "specific day's trades on both accounts), strategy_stats (per-account leaderboard), "
+        "open_positions, and engine_fills (the engine's entry log with actual fill prices + "
+        "slippage, for fill-quality questions). USE them whenever the user asks about anything current, specific, or "
         "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
         "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
         "'Wednesday', 'this week') against today's date above.\n\n"
