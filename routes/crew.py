@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -418,9 +418,44 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                          "Gap = difference between sweep-optimal trail and current configured trail.")
             return "\n".join(lines)
 
+        def _fmt_engine(data: dict) -> str:
+            """Kairos engine pilot (acct 3) vs TV Refined (acct 2) head-to-head."""
+            data = data or {}
+            if not data.get("configured"):
+                return ("=== KAIROS ENGINE PILOT (account 3) ===\n"
+                        "Not configured yet — the server-side entry pilot has no data to compare. "
+                        "Treat the engine experiment as not-yet-started.")
+            rows = data.get("rows") or []
+            tv   = data.get("tv") or {}
+            eng  = data.get("engine") or {}
+            if not eng.get("trades") and not tv.get("trades"):
+                return ("=== KAIROS ENGINE PILOT (account 3) vs TV REFINED (account 2) ===\n"
+                        "The engine account is live but has barely traded — too early to judge. "
+                        "Say so plainly; do not over-read a handful of trades.")
+            diff = (eng.get("pnl", 0) or 0) - (tv.get("pnl", 0) or 0)
+            lines = [
+                f"=== KAIROS ENGINE PILOT (acct 3, server-side entries) vs TV REFINED (acct 2) — last {data.get('days', 30)}d ===",
+                f"TV Refined:    ${tv.get('pnl', 0):.2f} | {tv.get('trades', 0)} trades | {tv.get('win_rate', 0):.1f}% win",
+                f"Kairos Engine: ${eng.get('pnl', 0):.2f} | {eng.get('trades', 0)} trades | {eng.get('win_rate', 0):.1f}% win",
+                f"Engine − TV:   ${diff:+.2f}  (this is the experiment's headline number)",
+                "", "Daily (most recent first):",
+            ]
+            for r in rows[:15]:
+                lines.append(
+                    f"  {r.get('date')}: TV ${r.get('tv_pnl', 0):+.2f} ({r.get('tv_trades', 0)} tr) | "
+                    f"Engine ${r.get('engine_pnl', 0):+.2f} ({r.get('engine_trades', 0)} tr)"
+                )
+            lines.append("")
+            lines.append("Context: same Refined strategies, but acct-3 entries are generated server-side "
+                         "(fresh-cross buffered breakouts / confirmed reversal rejects) instead of by TV alerts. "
+                         "The engine enters a touch earlier on breakouts. Slippage and sim-vs-real caveats apply; "
+                         "the matched-trade comparison and a multi-week trend matter more than any single day.")
+            return "\n".join(lines)
+
         strategy_block = _fmt_strategies(strat_data)
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
+        engine_block   = _fmt_engine(engine_data)
 
         # ── Load knowledge base ───────────────────────────────────────────────
         knowledge_block = ""
@@ -451,14 +486,21 @@ Example: PLTR_CAM_BREAKOUT_R4S4_V02_5MIN
 - REVERSAL = entry on level rejection (mean-reversion)
 - V02 = strategy version; 5MIN = bar timeframe
 
-TWO ALPACA ACCOUNTS:
+THREE ALPACA ACCOUNTS:
 1. Paper All (account 1): ALL strategies run here, ~100+ active pipelines.
-2. Refined (account 2, alpaca-paper-2): TOP-20 only. THIS IS THE ACCOUNT UNDER REVIEW.
+2. Refined (account 2, alpaca-paper-2): TOP-20 only. THIS IS THE PRIMARY ACCOUNT UNDER REVIEW.
    - Daily 4:15 PM ET refresh selects top-20 by composite score:
      Sharpe 35% + Profit Factor 30% + Win Rate 20% + Trades 15%
    - 20-day rolling lookback with 10-day recency blend (60/40)
    - Min 5 trades to be eligible; 3+ consecutive losses = auto-demoted
-   - Will transition to LIVE trading on ~$25k real capital
+   - Will transition to LIVE trading (PDT $25k floor no longer required — Alpaca moved to
+     an intraday-margin model; ~$25k is now a comfort choice, not a regulation)
+3. Kairos Engine (account 3): a NEW server-side entry PILOT, running in parallel. It trades the
+   SAME Refined strategies, but Kairos generates the entries itself (fresh-cross buffered
+   breakouts; confirmed reversal rejects with wick >= 0.25*ATR) instead of relying on TradingView
+   alerts — entering a touch earlier on breakouts. Purpose: test whether server-side entries beat
+   TV entries, head-to-head, in a separate book. Earlier sim work was a mirage; the real edge is
+   modest and per-share, so judge acct3-vs-acct2 on a multi-week trend, not single days.
 
 STOP SYSTEM (6 layers, first to fire wins):
 1. Alpaca broker trailing stop — placed immediately after entry fill
@@ -520,9 +562,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 f"{strategy_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
+                + (f"{engine_block}\n\n" if engine_block else "")
                 + (f"KNOWLEDGE BASE — Camarilla theory and validated trading observations:\n\n{knowledge_block}\n\n" if knowledge_block else "")
                 + (f"For historical context, here are your previous advisory reports:\n\n{prev_block}\n\n" if prev_block else "")
-                + "Based on all of this, deliver a professional advisory report with five sections:\n\n"
+                + "Based on all of this, deliver a professional advisory report with six sections:\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
@@ -530,15 +573,23 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
                 "the journal, are current trailing stops appropriate? Reference specific sweep "
                 "results and the trader's own notes if they offer relevant observations.\n\n"
-                "4. **Risk Observations** — Concentration, drawdown patterns, or ticker "
-                "exposure worth flagging for a ~$25k live account.\n\n"
-                "5. **This Week's Focus** — One specific, testable action item. If you gave "
+                "4. **Engine vs TV Pilot** — Using the KAIROS ENGINE PILOT data, is the "
+                "server-side engine (acct 3) beating, matching, or lagging the TV-driven Refined "
+                "account (acct 2)? Break it down if you can (breakouts likely lead the edge, "
+                "reversals are the new/risky part). If there isn't enough data yet, say so plainly "
+                "and state exactly what you'd want to see before judging — do NOT over-read a few "
+                "trades or a single good/bad day.\n\n"
+                "5. **Risk Observations** — Concentration, drawdown patterns, or ticker "
+                "exposure worth flagging for a live account (note: leverage up to 4x intraday is "
+                "now available from $2k equity, so sizing discipline matters more).\n\n"
+                "6. **This Week's Focus** — One specific, testable action item. If you gave "
                 "advice last week, note whether it played out and whether it should continue.\n\n"
                 "Be direct. Cite strategy names and numbers. 'Hold steady' is valid when warranted."
             ),
             expected_output=(
-                "A professional 5-section advisory report with specific strategy names, "
-                "numbers-backed recommendations, and one concrete next-week action item."
+                "A professional 6-section advisory report with specific strategy names, "
+                "numbers-backed recommendations, an honest read on the engine-vs-TV pilot, "
+                "and one concrete next-week action item."
             ),
             agent=advisor,
         )
@@ -678,6 +729,7 @@ def api_crew_run():
         journal_data = []
         prev_reports = []
         rules_data   = []
+        engine_data  = {}
         try:
             _qs = f"account=2"
             if from_date: _qs += f"&from_date={from_date}"
@@ -686,6 +738,7 @@ def api_crew_run():
                 strat_data   = _c.get(f"/api/alpaca/analysis?{_qs}").get_json() or {}
                 journal_data = _c.get("/api/journal/entries").get_json()         or []
                 rules_data   = _c.get("/api/routing/rules").get_json()           or []
+                engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
         except Exception:
             pass
         try:
@@ -705,7 +758,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data),
             daemon=True,
         ).start()
     else:
