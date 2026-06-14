@@ -966,6 +966,8 @@
       const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
       const overlayNote = (activeSource === 'alpaca2')
         ? ' · stats reflect Paper Refined account for current date range'
+        : (activeSource === 'alpaca3')
+        ? ' · stats reflect the Kairos engine account (acct 3) for current date range'
         : '';
       meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}${overlayNote}`;
 
@@ -1031,7 +1033,7 @@
       // Overlay: when on Paper Refined tab, replace the Trades/Win%/PF/Total P&L
       // columns with stats from analysisData.per_strategy so the rows reflect what
       // the user actually sees in their Refined account (date-range scoped).
-      const useTabStats = activeSource === 'alpaca2' && analysisData && analysisData.per_strategy;
+      const useTabStats = (activeSource === 'alpaca2' || activeSource === 'alpaca3') && analysisData && analysisData.per_strategy;
       rows.innerHTML = scored.map((r, i) => {
         const ps = useTabStats ? analysisData.per_strategy[r.name] : null;
         const trades  = useTabStats ? (ps ? ps.trades        : 0)    : r.trades;
