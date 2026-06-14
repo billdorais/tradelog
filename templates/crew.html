@@ -560,6 +560,7 @@
           try {
             const msg = JSON.parse(line.slice(5).trim());
             if (msg.text) { fullText += msg.text; bubble.textContent = fullText; document.getElementById('crewChatMsgs').scrollTop = 9999; }
+            if (msg.tool) { bubble.textContent = fullText + (fullText ? '\n' : '') + '⟳ pulling ' + msg.tool + '…'; document.getElementById('crewChatMsgs').scrollTop = 9999; }
             if (msg.done) _chatHistory.push({ role: 'assistant', content: fullText });
           } catch {}
         }

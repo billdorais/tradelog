@@ -635,9 +635,88 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+# ── Chat tools — let the advisor pull LIVE Kairos data on demand ───────────────
+
+_CREW_TOOLS = [
+    {
+        "name": "engine_vs_tv",
+        "description": "Head-to-head realized P&L: the Kairos engine (account 3, server-side "
+                       "entries) vs TV Refined (account 2) over the last N days — daily rows + "
+                       "cumulative totals + per-account win rate. Use for 'is the engine beating TV'.",
+        "input_schema": {"type": "object", "properties": {
+            "days": {"type": "integer", "description": "lookback days (default 30)"}}},
+    },
+    {
+        "name": "day_recap",
+        "description": "One specific day's trades comparing TV Refined (acct2) vs Kairos engine "
+                       "(acct3): per-account P&L, win rate, and the round-trip list. Use for "
+                       "questions about a particular day ('how did Wednesday go').",
+        "input_schema": {"type": "object", "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD"}}, "required": ["date"]},
+    },
+    {
+        "name": "strategy_stats",
+        "description": "Per-strategy leaderboard + overall stats (trades, win rate, PF, P&L) for "
+                       "an account over an optional date range.",
+        "input_schema": {"type": "object", "properties": {
+            "account": {"type": "string", "enum": ["1", "2", "3"],
+                        "description": "1=Paper All, 2=Refined, 3=Kairos engine (default 2)"},
+            "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
+    },
+    {
+        "name": "open_positions",
+        "description": "Current open positions for an account (symbol, qty, unrealized P&L).",
+        "input_schema": {"type": "object", "properties": {
+            "account": {"type": "string", "enum": ["1", "2", "3"], "description": "default 2"}}},
+    },
+]
+
+def _run_crew_tool(name: str, args: dict) -> str:
+    """Execute a chat tool against Kairos's own internal endpoints. Returns a
+    compact JSON string (bounded) for the model to read."""
+    args = args or {}
+    try:
+        import app as _kairos
+        def _get(path):
+            with _kairos.app.test_client() as _c:
+                return _c.get(path).get_json() or {}
+        if name == "engine_vs_tv":
+            days = int(args.get("days") or 30)
+            d = _get(f"/api/engine_pilot/compare?days={days}")
+            return json.dumps({"days": d.get("days"), "configured": d.get("configured"),
+                               "tv": d.get("tv"), "engine": d.get("engine"),
+                               "rows": (d.get("rows") or [])[:20]})[:6000]
+        if name == "day_recap":
+            date = (args.get("date") or "").strip()
+            if not date:
+                return "Error: date (YYYY-MM-DD) required."
+            return json.dumps(_get(f"/api/engine_pilot/day_recap?date={date}"))[:6000]
+        if name == "strategy_stats":
+            acct = str(args.get("account") or "2")
+            qs = f"account={acct}"
+            if args.get("from_date"): qs += f"&from_date={args['from_date']}"
+            if args.get("to_date"):   qs += f"&to_date={args['to_date']}"
+            d = _get(f"/api/alpaca/analysis?{qs}")
+            ps = d.get("per_strategy") or {}
+            top = sorted(ps.items(), key=lambda x: x[1].get("total_pnl", 0), reverse=True)
+            summ = [{"name": k, "trades": v.get("trades"), "win_rate": v.get("win_rate"),
+                     "pf": v.get("profit_factor"), "pnl": v.get("total_pnl")} for k, v in top[:25]]
+            return json.dumps({"account": acct, "overall": d.get("overall"), "per_strategy": summ})[:6000]
+        if name == "open_positions":
+            acct = str(args.get("account") or "2")
+            d = _get(f"/api/alpaca/positions?account={acct}")
+            return json.dumps(d.get("positions") or [])[:4000]
+        return f"Unknown tool: {name}"
+    except Exception as e:
+        return f"Tool error ({name}): {e}"
+
+
 @crew_bp.route("/api/crew/chat", methods=["POST"])
 def api_crew_chat():
-    """Streaming chat with the Systematic Trading Advisor using the crew report as context."""
+    """Streaming, tool-using chat with the Systematic Trading Advisor. The advisor
+    can pull LIVE Kairos data (engine-vs-TV, day recaps, strategy stats, positions)
+    on demand, using the crew report as its standing context."""
     data     = request.get_json(silent=True) or {}
     report   = (data.get("report") or "").strip()
     messages = data.get("messages") or []
@@ -646,31 +725,60 @@ def api_crew_chat():
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 503
 
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _today = datetime.now(_ZI("America/New_York")).strftime("%Y-%m-%d (%A)")
+    except Exception:
+        _today = datetime.now().strftime("%Y-%m-%d")
+
     system_prompt = (
         "You are a Professional Systematic Trading Advisor specialising in "
         "intraday Camarilla pivot strategies on US equities (5-min bars, Alpaca). "
         "You have just completed a full analysis of the Kairos trading system. "
         "Here is your advisory report:\n\n"
         f"{report}\n\n"
-        "Answer follow-up questions directly and specifically. Reference the actual "
-        "strategy names and numbers from your report. Be concise — 100-200 words "
-        "unless the question warrants more. No filler phrases."
+        f"Today is {_today} (US/Eastern).\n\n"
+        "You have TOOLS to pull live Kairos data when the report doesn't already contain the "
+        "answer — engine_vs_tv (acct3 server-side engine vs acct2 TV Refined), day_recap (a "
+        "specific day's trades on both accounts), strategy_stats (per-account leaderboard), and "
+        "open_positions. USE them whenever the user asks about anything current, specific, or "
+        "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
+        "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
+        "'Wednesday', 'this week') against today's date above.\n\n"
+        "Stay honest about the engine pilot: the real edge is modest and per-share; never over-read "
+        "a single day or a few trades. Answer directly and specifically, cite actual strategy names "
+        "and numbers. Be concise — 100-200 words unless the question warrants more. No filler."
     )
 
     def generate():
         try:
             import anthropic as _ant
             client = _ant.Anthropic(api_key=api_key)
+            convo = list(messages)
             full_text = ""
-            with client.messages.stream(
-                model="claude-sonnet-4-6",
-                max_tokens=600,
-                system=system_prompt,
-                messages=messages,
-            ) as stream:
-                for text in stream.text_stream:
-                    full_text += text
-                    yield f"data: {json.dumps({'text': text})}\n\n"
+            for _round in range(5):   # cap tool-use rounds
+                with client.messages.stream(
+                    model="claude-sonnet-4-6",
+                    max_tokens=900,
+                    system=system_prompt,
+                    tools=_CREW_TOOLS,
+                    messages=convo,
+                ) as stream:
+                    for text in stream.text_stream:
+                        full_text += text
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+                    final = stream.get_final_message()
+                convo.append({"role": "assistant", "content": final.content})
+                if final.stop_reason != "tool_use":
+                    break
+                tool_results = []
+                for block in final.content:
+                    if getattr(block, "type", None) == "tool_use":
+                        yield f"data: {json.dumps({'tool': block.name})}\n\n"
+                        out = _run_crew_tool(block.name, dict(block.input or {}))
+                        tool_results.append({"type": "tool_result",
+                                             "tool_use_id": block.id, "content": out})
+                convo.append({"role": "user", "content": tool_results})
             yield f"data: {json.dumps({'done': True, 'full_text': full_text})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
