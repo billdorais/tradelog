@@ -4259,6 +4259,18 @@ def api_journal_generate():
             tk_str = f" | {ticker} stock {tk_ret:+.2f}%" if isinstance(tk_ret, (int, float)) else ""
             prompt += f"  {strat}: {sv['trades']} trades · ${sv['pnl']:+.2f}{tk_str}\n"
 
+    # Daily breakdown (Mon–Fri) so the AI can narrate the week's arc — strong start,
+    # gave it back Wednesday, finished flat, etc.
+    _byday = ts.get("by_day") or {}
+    prompt += "\nDAILY BREAKDOWN (Mon–Fri, by exit time ET):\n"
+    for _d in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"):
+        _dd = _byday.get(_d)
+        if _dd and _dd.get("trades"):
+            _dwr = round(_dd["wins"] / _dd["trades"] * 100)
+            prompt += f"  {_d}: {_dd['trades']} trades · {_dwr}% win · ${_dd['pnl']:+.2f}\n"
+        else:
+            prompt += f"  {_d}: no trades\n"
+
     # Prior-week reference block — gives the AI material to assess week-over-week progression.
     if prior_summary or prior_stats:
         prev_pnl   = prior_stats.get("total_pnl", 0)
@@ -4280,10 +4292,15 @@ def api_journal_generate():
             prompt += f"  Last week's journal:\n    {_trimmed}\n"
 
     prompt += (
-        f"\nWrite a weekly trading journal entry with these FIVE sections. Use the exact headers shown:\n\n"
+        f"\nWrite a weekly trading journal entry with these SIX sections. Use the exact headers shown:\n\n"
         f"**Market Regime & Setup Availability**\n"
         f"Was the regime favorable for Camarilla breakout/reversal strategies on 5-min bars? "
         f"Reference VIX level and SPY/QQQ direction specifically.\n\n"
+        f"**Daily Arc**\n"
+        f"Walk the week day by day from the DAILY BREAKDOWN. How did it unfold — start strong and fade, "
+        f"build steadily, swing, or grind flat? Name the best and worst day and what flipped (e.g. 'strong "
+        f"Mon–Tue, gave most of it back Wednesday, steadied into Friday'). Tie a turn to the regime/market "
+        f"context if there's an obvious link. 2-3 sentences.\n\n"
         f"**Top 5 Analysis**\n"
         f"Combined P&L was ${top5_pnl:+.2f}. Write one line per strategy using this exact format:\n"
         f"**TICKER** (P&L · stock return): one sentence — alpha capture or regime-driven?\n"
@@ -4311,7 +4328,7 @@ def api_journal_generate():
         f"  Volatility (pick exactly 1): high-vol, low-vol\n"
         f"  Context (pick 0 or 1 only if clearly applicable): fed-week, opex, earnings-heavy\n"
         f"Example first line: TAGS: trending, high-vol, fed-week\n\n"
-        f"Then write your four sections."
+        f"Then write your six sections."
     )
 
     def _stream():
@@ -4320,7 +4337,7 @@ def api_journal_generate():
         try:
             with client.messages.stream(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1500,
+                max_tokens=1900,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -10634,6 +10651,47 @@ def api_engine_pilot_compare():
         "days": days, "configured": alpaca_broker3 is not None,
         "rows": list(reversed(rows)),
         "tv": _summ(tv), "engine": _summ(eng),
+    })
+
+
+@app.route("/api/engine_pilot/day_recap")
+def api_engine_pilot_day_recap():
+    """One-day recap comparing TV Refined (acct2) vs Kairos engine (acct3):
+    per-account round-trips (with P&L/win-rate) plus the engine's armed fills."""
+    date = (request.args.get("date") or "").strip()
+    if not date:
+        return jsonify({"error": "date required"}), 400
+
+    def _summ(fills):
+        try:
+            paired = _pair_alpaca_fills_lifo(fills, from_date=date, to_date=date)
+            rts = paired.get("closed_clean", [])
+        except Exception:
+            rts = []
+        wins = sum(1 for t in rts if float(t.get("pnl") or 0) > 0)
+        pnl  = sum(float(t.get("pnl") or 0) for t in rts)
+        out  = [{
+            "ticker": (t.get("ticker") or "").upper(), "side": t.get("side"),
+            "strategy": t.get("strategy"),
+            "entry_price": t.get("entry_price"), "exit_price": t.get("exit_price"),
+            "pnl": round(float(t.get("pnl") or 0), 2),
+            "qty": t.get("qty"),
+            "entry_time": t.get("entry_time"), "exit_time": t.get("exit_time"),
+            "exit_reason": t.get("exit_reason"),
+        } for t in rts]
+        out.sort(key=lambda x: x.get("entry_time") or "")
+        return {"trades": len(rts), "wins": wins,
+                "win_rate": round(wins / len(rts) * 100, 1) if rts else 0.0,
+                "pnl": round(pnl, 2), "round_trips": out}
+
+    tv  = _summ(_get_cached_fills_2())
+    eng = _summ(_get_cached_fills_3())
+    try:    plog = json.loads(_load_setting("ENGINE_PILOT_FILLS") or "[]")
+    except Exception: plog = []
+    armed = [f for f in plog if f.get("date") == date]
+    return jsonify({
+        "date": date, "configured": alpaca_broker3 is not None,
+        "tv": tv, "engine": eng, "engine_armed": armed,
     })
 
 

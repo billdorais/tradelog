@@ -172,6 +172,16 @@
     <span style="font-size:0.78rem;color:#555">Pulls your Alpaca Refined trades + SPY/QQQ/VIX + last week's entry + AI analysis</span>
   </div>
 
+  <!-- Daily recap: TV Refined (acct2) vs Kairos engine (acct3), per weekday -->
+  <div style="margin:14px 0;padding:12px 14px;background:#13161f;border:1px solid #2a2d3e;border-radius:8px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <span style="font-weight:700;color:#F2C07A">Daily Recap — Refined vs Kairos</span>
+      <span id="dayBtns" style="display:inline-flex;gap:4px;flex-wrap:wrap"></span>
+      <span style="font-size:0.72rem;color:#555;margin-left:auto">Pick a day to compare TV Refined (acct2) vs the Kairos engine (acct3).</span>
+    </div>
+    <div id="dayRecap"><div style="font-size:0.8rem;color:#555">Select a day above.</div></div>
+  </div>
+
   <div id="entries"></div>
 </div>
 
@@ -235,6 +245,85 @@
     document.getElementById('weekPicker').value =
       `${tmp.getUTCFullYear()}-W${String(wk).padStart(2,'0')}`;
   })();
+
+  // ── Daily recap (Refined vs Kairos) ───────────────────────────────────────
+  function weekMondayUTC(weekStr) {
+    const [yearStr, wStr] = weekStr.split('-W');
+    const year = parseInt(yearStr), wk = parseInt(wStr);
+    const jan4  = new Date(Date.UTC(year, 0, 4));
+    const w1Mon = new Date(jan4);
+    w1Mon.setUTCDate(jan4.getUTCDate() - (jan4.getUTCDay() || 7) + 1);
+    const mon = new Date(w1Mon);
+    mon.setUTCDate(w1Mon.getUTCDate() + (wk - 1) * 7);
+    return mon;
+  }
+  function renderDayButtons() {
+    const week = document.getElementById('weekPicker').value;
+    const bar  = document.getElementById('dayBtns');
+    if (!week) { bar.innerHTML = ''; return; }
+    const mon = weekMondayUTC(week);
+    const names = ['Mon','Tue','Wed','Thu','Fri'];
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    let html = '';
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(mon); d.setUTCDate(mon.getUTCDate() + i);
+      const iso = d.toISOString().slice(0, 10);
+      const future = iso > today;
+      html += `<button onclick="loadDayRecap('${iso}', this)" data-iso="${iso}" ${future ? 'disabled' : ''}
+        style="padding:5px 12px;border-radius:6px;border:1px solid #2a2d3e;cursor:${future ? 'default' : 'pointer'};
+        font-size:0.78rem;font-family:inherit;background:#0d0f16;color:${future ? '#444' : '#ccc'}"
+        title="${iso}">${names[i]}</button>`;
+    }
+    bar.innerHTML = html;
+    document.getElementById('dayRecap').innerHTML = '<div style="font-size:0.8rem;color:#555">Select a day above.</div>';
+  }
+  async function loadDayRecap(iso, btn) {
+    document.querySelectorAll('#dayBtns button').forEach(b => {
+      b.style.background = '#0d0f16'; b.style.borderColor = '#2a2d3e'; b.style.color = '#ccc';
+    });
+    if (btn) { btn.style.background = '#2a1a08'; btn.style.borderColor = '#F2C07A'; btn.style.color = '#F2C07A'; }
+    const out = document.getElementById('dayRecap');
+    out.innerHTML = '<div style="font-size:0.8rem;color:#888">Loading…</div>';
+    try {
+      const d = await fetch('/api/engine_pilot/day_recap?date=' + iso).then(r => r.json());
+      if (d.error) { out.innerHTML = `<div style="color:#ef5350">${esc(d.error)}</div>`; return; }
+      const dt = new Date(iso + 'T12:00:00Z');
+      const dayName = dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+      const col = (title, color, s) => {
+        const rts = (s.round_trips || []).map(t =>
+          `<tr><td style="padding:2px 8px 2px 0;font-weight:600">${esc(t.ticker || '')}</td>` +
+          `<td style="color:${(t.side||'').toUpperCase()==='LONG'?'#7FE098':'#ef5350'}">${esc(t.side||'')}</td>` +
+          `<td style="text-align:right;font-weight:600;color:${t.pnl>=0?'#7FE098':'#ef5350'}">${fmt(t.pnl)}</td>` +
+          `<td style="color:#666;font-size:0.72rem;padding-left:8px">${esc(t.exit_reason||'')}</td></tr>`).join('');
+        return `<div style="flex:1;min-width:240px">` +
+          `<div style="font-weight:700;color:${color};margin-bottom:4px">${title}</div>` +
+          `<div style="font-size:0.82rem;margin-bottom:6px">` +
+          `<strong style="color:${s.pnl>=0?'#7FE098':'#ef5350'}">${fmt(s.pnl)}</strong>` +
+          ` · ${s.trades} trades · ${s.win_rate}% win</div>` +
+          (rts ? `<table style="width:100%;border-collapse:collapse;font-size:0.8rem"><tbody>${rts}</tbody></table>`
+               : `<div style="font-size:0.78rem;color:#555">No trades.</div>`) +
+          `</div>`;
+      };
+
+      const diff = (d.engine.pnl || 0) - (d.tv.pnl || 0);
+      const verdict = (!d.engine.trades && !d.tv.trades)
+        ? '<span style="color:#555">No trades on either account this day.</span>'
+        : `<span style="color:#888">Engine − Refined:</span> <strong style="color:${diff>=0?'#7FE098':'#F2C76B'}">${fmt(diff)}</strong>`;
+
+      out.innerHTML =
+        `<div style="font-size:0.78rem;color:#888;margin-bottom:8px">${dayName} &nbsp; · &nbsp; ${verdict}</div>` +
+        `<div style="display:flex;gap:24px;flex-wrap:wrap">` +
+        col('TV Refined (acct2)', '#a78bfa', d.tv) +
+        col('Kairos Engine (acct3)', '#F2C07A', d.engine) +
+        `</div>` +
+        (d.configured ? '' : '<div style="font-size:0.72rem;color:#555;margin-top:8px">Kairos account not configured yet — engine column will populate once acct3 is live.</div>');
+    } catch (e) {
+      out.innerHTML = `<div style="color:#ef5350">Error: ${esc(e.message)}</div>`;
+    }
+  }
+  document.getElementById('weekPicker').addEventListener('change', renderDayButtons);
+  renderDayButtons();
 
   async function generate() {
     const btn  = document.getElementById('genBtn');
