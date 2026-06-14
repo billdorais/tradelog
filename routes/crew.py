@@ -817,6 +817,27 @@ def api_crew_chat():
     )
 
 
+@crew_bp.route("/api/crew/reports", methods=["GET"])
+def api_crew_reports():
+    """List saved advisory reports (newest first) so past output can be browsed/read."""
+    try:
+        import app as _kairos
+        conn = _kairos.get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT id, week, created_at, report FROM crew_reports ORDER BY created_at DESC LIMIT 50")
+        rows = cur.fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            if _kairos.DATABASE_URL:
+                out.append({"id": r[0], "week": r[1], "created_at": r[2], "report": r[3]})
+            else:
+                out.append({"id": r["id"], "week": r["week"], "created_at": r["created_at"], "report": r["report"]})
+        return jsonify({"reports": out})
+    except Exception as e:
+        return jsonify({"reports": [], "error": str(e)})
+
+
 @crew_bp.route("/api/crew/knowledge", methods=["GET"])
 def api_crew_knowledge_get():
     import pathlib

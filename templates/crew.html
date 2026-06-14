@@ -265,6 +265,15 @@
     </div>
   </div>
 
+  <!-- Past reports — browse/read saved advisory reports -->
+  <div id="reportsSection" style="margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span class="section-label" style="margin:0">🗂 Past Reports</span>
+      <button onclick="loadReports()" style="background:transparent;border:1px solid #2a2d3e;color:#666;border-radius:6px;padding:4px 14px;font-size:0.75rem;cursor:pointer;font-family:inherit">↻ Refresh</button>
+    </div>
+    <div id="reportsList"><div style="font-size:0.8rem;color:#555">Loading…</div></div>
+  </div>
+
 </div>
 
 <script>
@@ -458,9 +467,11 @@
             setAgent('researcher', 'done');
             setAgent('summarizer', 'done');
             _lastResult = msg.result || '';
+            _loadedReportName = '';
             document.getElementById('finalText').textContent = _lastResult;
             document.getElementById('finalSection').style.display = '';
             setStatus('✓ Crew finished');
+            setTimeout(loadReports, 800);   // new report is now saved — refresh the list
           }
 
           if (msg.type === 'error') {
@@ -618,12 +629,53 @@
   }
 
   function downloadResult() {
+    const name = (_loadedReportName || _topic || 'report').slice(0,40).replace(/\s+/g,'_');
     const blob = new Blob([_lastResult], { type: 'text/plain' });
     const a    = Object.assign(document.createElement('a'), {
       href:     URL.createObjectURL(blob),
-      download: `summary_${_topic.slice(0,30).replace(/\s+/g,'_')}.txt`,
+      download: `crew_report_${name}.txt`,
     });
     a.click();
+  }
+
+  // ── Past reports ──────────────────────────────────────────────────────────
+  let _reportsCache = [];
+  let _loadedReportName = '';
+  async function loadReports() {
+    const el = document.getElementById('reportsList');
+    try {
+      const d = await fetch('/api/crew/reports').then(r => r.json());
+      _reportsCache = d.reports || [];
+      if (!_reportsCache.length) {
+        el.innerHTML = '<div style="font-size:0.8rem;color:#555">No saved reports yet. Run the advisor above to create one.</div>';
+        return;
+      }
+      el.innerHTML = _reportsCache.map((r, i) => {
+        const dt      = (r.created_at || '').slice(0, 16).replace('T', ' ');
+        const preview = (r.report || '').replace(/[#*`]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
+        return `<div onclick="viewReport(${i})" style="cursor:pointer;padding:9px 11px;border:1px solid #2a2d3e;border-radius:6px;margin-bottom:6px;background:#13161f"
+            onmouseover="this.style.borderColor='#6d5fa8'" onmouseout="this.style.borderColor='#2a2d3e'">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+              <span style="font-weight:600;color:#c4b5fd">${esc(r.week || 'report')}</span>
+              <span style="font-size:0.7rem;color:#555">${esc(dt)}</span>
+            </div>
+            <div style="font-size:0.74rem;color:#777;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}…</div>
+          </div>`;
+      }).join('');
+    } catch (e) {
+      el.innerHTML = `<div style="color:#ef5350;font-size:0.8rem">Error: ${esc(e.message)}</div>`;
+    }
+  }
+  function viewReport(i) {
+    const r = _reportsCache[i];
+    if (!r) return;
+    _lastResult       = r.report || '';
+    _loadedReportName = r.week || '';
+    _chatHistory      = [];   // fresh chat context for the loaded report
+    document.getElementById('finalText').textContent = _lastResult;
+    document.getElementById('finalSection').style.display = '';
+    document.getElementById('crewChat').style.display = 'none';
+    document.getElementById('finalSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   // Enter key to run
@@ -631,6 +683,7 @@
     document.getElementById('topicInput').addEventListener('keydown', e => {
       if (e.key === 'Enter') runCrew();
     });
+    loadReports();
   });
 </script>
 </body>
