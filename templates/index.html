@@ -286,6 +286,8 @@
                                color: #c4b5fd; border-bottom-color: #a78bfa; }
     .pnl-tab.active-ib      { border-color: #7FE098; background: rgba(136,191,139,0.12);
                                color: #7FE098; border-bottom-color: #7FE098; }
+    .pnl-tab.active-kairos  { border-color: #F2C07A; background: rgba(242,192,122,0.12);
+                               color: #F2C07A; border-bottom-color: #F2C07A; }
 
     /* Equity-chart date preset buttons */
     .eq-date-btn        { background: transparent; color: #888; font-family: inherit; }
@@ -647,6 +649,7 @@
         <button id="tabSignals"  class="pnl-tab"                onclick="switchTab('signals')" style="display:none">Signals P&amp;L</button>
         <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')"      style="display:none">IB P&amp;L</button>
         <button id="tabRefined"  class="pnl-tab active-refined" onclick="switchTab('refined')">Paper Refined</button>
+        <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
                  border-top-color:#7FE098;border-radius:50%;
@@ -874,6 +877,8 @@
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
     let activeTab = 'refined';
+    // Map a chart tab to its Alpaca ?account= value ('' = Paper All, 2 = Refined, 3 = Kairos engine).
+    function _acctForTab(tab) { return tab === 'refined' ? '2' : tab === 'kairos' ? '3' : ''; }
 
     async function switchTab(tab) {
       try {
@@ -886,6 +891,8 @@
         document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals'  ? ' active-signals'  : '');
         document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'       ? ' active-ib'       : '');
         document.getElementById('tabRefined').className = 'pnl-tab' + (tab === 'refined'  ? ' active-refined'  : '');
+        const _tabK = document.getElementById('tabKairos');
+        if (_tabK) _tabK.className = 'pnl-tab' + (tab === 'kairos' ? ' active-kairos' : '');
 
         const spinner = document.getElementById('chartLoadingSpinner');
         const label   = document.getElementById('equityChartLabel');
@@ -898,7 +905,7 @@
 
         // Update label and show spinner immediately (before any async work)
         if (spinner) spinner.style.display = 'inline-block';
-        if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined') ? 'flex' : 'none';
+        if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined' || tab === 'kairos') ? 'flex' : 'none';
 
         if (tab === 'refined') {
           if (label) label.textContent = 'Cumulative realized P&L from Alpaca Refined fills';
@@ -912,6 +919,23 @@
             document.getElementById('equityFromDate')?.value || '',
             document.getElementById('equityToDate')?.value   || '',
             '2'
+          );
+          loadAccount();
+          feedTab = 'refined'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('refined');
+          renderTable(allTrades, selectedStrategy);
+        } else if (tab === 'kairos') {
+          if (label) label.textContent = 'Cumulative realized P&L from Kairos engine fills (acct 3)';
+          if (note)  note.textContent  = 'Cumulative realized P&L from Kairos engine fills (paper account 3).';
+          const fromEl = document.getElementById('equityFromDate');
+          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
+          const toEl = document.getElementById('equityToDate');
+          if (toEl) toEl.style.display = '';
+          await new Promise(r => requestAnimationFrame(r));
+          renderAlpacaStats(
+            document.getElementById('equityFromDate')?.value || '',
+            document.getElementById('equityToDate')?.value   || '',
+            '3'
           );
           loadAccount();
           feedTab = 'refined'; _feedFilter.tv = false; _feedFilter.alpaca = true;
@@ -1180,12 +1204,12 @@
       const fromDate = document.getElementById('equityFromDate')?.value || '';
       const toDate   = document.getElementById('equityToDate')?.value   || '';
 
-      if (activeTab === 'alpaca' || activeTab === 'refined') {
+      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos') {
         // Rank by Alpaca P&L within the active date range — the picker should
         // surface "top performers of this period," not all-time winners that
         // may not have traded today. If fewer than N strategies traded in the
         // range, the picker returns as many as exist.
-        const acct = activeTab === 'refined' ? '2' : '';
+        const acct = _acctForTab(activeTab);
         const params = new URLSearchParams();
         if (acct)     params.set('account',   acct);
         if (fromDate) params.set('from_date', fromDate);
@@ -1257,8 +1281,8 @@
       // the chart's JS pairing, otherwise the chart misses everything that
       // happened on the second account.
       let execs;
-      if (account === '2') {
-        execs = await fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []);
+      if (account) {
+        execs = await fetch('/api/alpaca/trades?account=' + account).then(r => r.json()).catch(() => []);
       } else {
         execs = allAlpacaExecs;
       }
@@ -1329,7 +1353,7 @@
       let _todayLivePnl = null;
       try {
         const _today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-        const _acctUrl = account === '2' ? '/api/alpaca/account?account=2' : '/api/alpaca/account';
+        const _acctUrl = account ? '/api/alpaca/account?account=' + account : '/api/alpaca/account';
         const _acct    = await fetch(_acctUrl).then(r => r.json()).catch(() => ({}));
         if (_acct && _acct.daily_pnl != null) _todayLivePnl = _acct.daily_pnl;
         if (fromDate === _today && (!toDate || toDate === _today)) {
@@ -2050,7 +2074,7 @@
       // both Alpaca tabs (Paper All and Paper Refined) draw their own chart with
       // ticker/pnl tooltips in renderAlpacaStats before calling renderStats.
       // Overdrawing here would replace it with [entry #? → exit #?] placeholders.
-      if (activeTab !== 'alpaca' && activeTab !== 'refined') {
+      if (activeTab !== 'alpaca' && activeTab !== 'refined' && activeTab !== 'kairos') {
         const _curve   = stats.equity_curve || [];
         const labels   = _curve.map(p => fmtET(p.time) || p.time);
         const values   = _curve.map(p => p.value);
@@ -2576,6 +2600,7 @@
         document.getElementById('tabRefined').className = 'pnl-tab' + (chartTab === 'refined' ? ' active-refined' : '');
         document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
         document.getElementById('tabIB').className      = 'pnl-tab';
+        const _tkSync = document.getElementById('tabKairos'); if (_tkSync) _tkSync.className = 'pnl-tab';
         const spinner = document.getElementById('chartLoadingSpinner');
         if (chartTab === 'signals') {
           const label = document.getElementById('equityChartLabel');
@@ -2668,7 +2693,7 @@
     async function applyEquityFilter() {
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
-      if (activeTab === 'alpaca' || activeTab === 'refined') { renderAlpacaStats(fromDate, toDate, activeTab === 'refined' ? '2' : null); return; }
+      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos') { renderAlpacaStats(fromDate, toDate, _acctForTab(activeTab) || null); return; }
       try {
         if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
           const res = await fetch(buildStatsUrl('', fromDate, toDate));
@@ -3327,7 +3352,8 @@
       try {
         // Fetch from the account that matches the active tab so the card
         // reflects the correct positions (Refined tab → alpaca2, else alpaca).
-        const _acctParam = (activeTab === 'refined') ? '?account=2' : '';
+        const _acctForCard = _acctForTab(activeTab);
+        const _acctParam = _acctForCard ? ('?account=' + _acctForCard) : '';
         const [d, rules, snap] = await Promise.all([
           fetch(`/api/alpaca/account${_acctParam}`).then(r => r.json()),
           fetch('/api/routing/rules').then(r => r.json()).catch(() => null),

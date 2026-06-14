@@ -428,6 +428,7 @@ _alpaca2_fills_lock    = threading.Lock()
 _alpaca2_analysis_cache = {}
 _alpaca3_fills_cache   = {"data": [], "ts": 0.0}
 _alpaca3_fills_lock    = threading.Lock()
+_alpaca3_analysis_cache = {}
 ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
 ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
 _broker_status_cache = {"data": None, "ts": 0.0}
@@ -475,6 +476,14 @@ def _get_cached_fills_3():
         fills = alpaca_broker3.get_fills() if alpaca_broker3 else []
         _alpaca3_fills_cache = {"data": fills, "ts": time.time()}
     return _alpaca3_fills_cache["data"]
+
+def _alpaca_account_ctx(account):
+    """Map an ?account= value to (broker, broker_tag, label, fills_fn). Defaults to
+    account 1 (Paper All). Centralises the 1/2/3 selection for the dashboard tabs."""
+    a = str(account or "1")
+    if a == "2": return alpaca_broker2, "alpaca2", "Refined",       _get_cached_fills_2
+    if a == "3": return alpaca_broker3, "alpaca3", "Kairos engine", _get_cached_fills_3
+    return alpaca_broker, "alpaca", "Paper All", _get_cached_fills
 
 # TODO(multi-account): currently hard-coded to 2 Alpaca accounts (primary + Refined).
 # To support N accounts (ALPACA_KEY3, KEY4, ...) without manual edits each time:
@@ -1922,10 +1931,11 @@ def broker_status():
 def api_alpaca_account():
     """Buying power, equity, and open positions — polled by the dashboard.
     Pass ?account=2 to query the Alpaca Refined (second) account."""
-    use_acct2 = request.args.get("account") == "2"
-    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    account = request.args.get("account") or "1"
+    broker, broker_tag, label, _ = _alpaca_account_ctx(account)
+    is_primary = str(account) == "1"
     if broker is None:
-        return jsonify({"error": "Alpaca account 2 not configured" if use_acct2 else "Alpaca not configured"}), 400
+        return jsonify({"error": f"Alpaca {label} not configured"}), 400
     try:
         broker._ensure_client()
         acct      = broker._trading.get_account()
@@ -1933,7 +1943,6 @@ def api_alpaca_account():
         pos_list     = []
         total_mv     = 0.0
         total_upnl   = 0.0
-        broker_tag   = "alpaca2" if use_acct2 else "alpaca"
         for p in positions:
             mv   = float(p.market_value or 0)
             upnl = float(p.unrealized_pl or 0) if p.unrealized_pl is not None else 0.0
@@ -1954,15 +1963,15 @@ def api_alpaca_account():
         bp       = float(acct.buying_power)
         equity   = float(acct.equity)
         # Account 1 uses the cached _compute_daily_pnl() which also feeds the risk monitor.
-        # Account 2 calls daily_pnl() directly — no cache, called only when the analysis page loads.
-        if use_acct2:
+        # Accounts 2/3 call daily_pnl() directly — no cache, called only on page load.
+        if is_primary:
+            daily_pnl = _compute_daily_pnl()
+        else:
             try:
                 daily_pnl = round(broker.daily_pnl(), 2)
             except Exception as _e:
-                log.debug("api_alpaca_account: acct2 daily_pnl failed: %s", _e)
+                log.debug("api_alpaca_account: %s daily_pnl failed: %s", broker_tag, _e)
                 daily_pnl = None
-        else:
-            daily_pnl = _compute_daily_pnl()
         return jsonify({
             "buying_power":     round(bp, 2),
             "equity":           round(equity, 2),
@@ -2120,12 +2129,12 @@ def eod_close_toggle():
 def alpaca_positions():
     """Return current open Alpaca positions with live unrealized P&L.
     Pass ?account=2 to query the Refined (account 2) broker."""
-    account   = request.args.get("account", "1")
-    use_acct2 = (account == "2")
-    broker    = alpaca_broker2 if use_acct2 else alpaca_broker
+    account = request.args.get("account", "1")
+    broker, broker_tag, _, _ = _alpaca_account_ctx(account)
+    is_primary = str(account) == "1"
     if broker is None:
         return jsonify({"positions": [], "_debug": {"error": "broker not configured"}})
-    if not use_acct2:
+    if is_primary:
         global _alpaca_positions_cache
         now = time.time()
         if _alpaca_positions_cache["data"] is not None and (now - _alpaca_positions_cache["ts"]) < ALPACA_POSITIONS_TTL:
@@ -2134,7 +2143,6 @@ def alpaca_positions():
         positions = broker.get_positions()
         # Enrich each position with entry_time from the max-hold timer dict so the
         # dashboard can display how long the trade has been live.
-        broker_tag = "alpaca2" if use_acct2 else "alpaca"
         with _risk_lock:
             hold_snapshot = dict(_max_hold_positions)
         for pos in positions:
@@ -2145,7 +2153,7 @@ def alpaca_positions():
             "positions": positions,
             "_debug": {"paper": broker._paper, "raw_count": len(positions)},
         }
-        if not use_acct2:
+        if is_primary:
             _alpaca_positions_cache = {"data": result, "ts": time.time()}
         return jsonify(result)
     except Exception as e:
@@ -8309,20 +8317,17 @@ def alpaca_portfolio_history():
 def alpaca_trades():
     """Return filled Alpaca orders with resolved strategy names, cached.
     Pass ?account=2 to query the Alpaca Refined (second) account."""
-    use_acct2 = request.args.get("account") == "2"
-    broker    = alpaca_broker2 if use_acct2 else alpaca_broker
+    account = str(request.args.get("account") or "1")
+    broker, broker_tag, _, fills_fn = _alpaca_account_ctx(account)
     if broker is None:
         return jsonify([])
     # Check if we already have strategy-annotated data in the fills cache
     now = time.time()
-    if use_acct2:
-        if now - _alpaca2_fills_cache["ts"] < ALPACA_CACHE_TTL and _alpaca2_fills_cache["data"]:
-            return jsonify(_alpaca2_fills_cache["data"])
-    else:
-        if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL and _alpaca_fills_cache["data"]:
-            return jsonify(_alpaca_fills_cache["data"])
+    _cache = {"2": _alpaca2_fills_cache, "3": _alpaca3_fills_cache}.get(account, _alpaca_fills_cache)
+    if now - _cache["ts"] < ALPACA_CACHE_TTL and _cache["data"]:
+        return jsonify(_cache["data"])
     try:
-        fills = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+        fills = fills_fn()
         # Resolve strategy for each fill by matching time+ticker against signals DB
         try:
             from datetime import datetime as _dt
@@ -8370,8 +8375,10 @@ def alpaca_trades():
         # Write annotated data back into the cache (keeps ts from _get_cached_fills).
         # Reference the module-level cache directly so we hit whatever dict the
         # _get_cached_fills_*() call most recently bound.
-        if use_acct2:
+        if account == "2":
             _alpaca2_fills_cache["data"] = fills
+        elif account == "3":
+            _alpaca3_fills_cache["data"] = fills
         else:
             _alpaca_fills_cache["data"] = fills
         return jsonify(fills)
@@ -11499,15 +11506,10 @@ def api_alpaca_analysis():
     try:
         from datetime import datetime as _dt
 
-        account = request.args.get("account", "1")
-        use_acct2 = (account == "2")
-
-        if use_acct2:
-            if alpaca_broker2 is None:
-                return jsonify({"error": "Alpaca account 2 not configured — set ALPACA_KEY2 + ALPACA_SECRET2"}), 400
-        else:
-            if alpaca_broker is None:
-                return jsonify({"error": "Alpaca not configured"}), 400
+        account = str(request.args.get("account") or "1")
+        broker, _btag, _label, _fills_fn = _alpaca_account_ctx(account)
+        if broker is None:
+            return jsonify({"error": f"Alpaca {_label} not configured"}), 400
 
         from_date    = request.args.get("from_date",    "")
         to_date      = request.args.get("to_date",      "")
@@ -11520,12 +11522,12 @@ def api_alpaca_analysis():
         to_time      = (request.args.get("to_time")   or "").strip()
 
         _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}|{from_time}|{to_time}"
-        _acache     = _alpaca2_analysis_cache if use_acct2 else _alpaca_analysis_cache
+        _acache     = {"2": _alpaca2_analysis_cache, "3": _alpaca3_analysis_cache}.get(account, _alpaca_analysis_cache)
         _cached     = _acache.get(_cache_key)
         if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
             return jsonify(_cached["data"])
 
-        fills = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+        fills = _fills_fn()
         if not fills:
             return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
 
