@@ -224,6 +224,10 @@
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
           Paper Refined
         </button>
+        <button id="srcAlpaca3" onclick="switchSource('alpaca3')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+          Kairos
+        </button>
       </div>
     </div>
   </div>
@@ -728,13 +732,15 @@
   // ── Source toggle ──────────────────────────────────────────────────────────
   function switchSource(src) {
     activeSource = src;
-    const tabs = { signals: 'srcSignals', alpaca: 'srcAlpaca', alpaca2: 'srcAlpaca2' };
+    const tabs = { signals: 'srcSignals', alpaca: 'srcAlpaca', alpaca2: 'srcAlpaca2', alpaca3: 'srcAlpaca3' };
     Object.entries(tabs).forEach(([key, id]) => {
       const el = document.getElementById(id);
       if (!el) return;
       const active = src === key;
-      el.style.background = active ? (key === 'alpaca2' ? '#1a1030' : '#1a1d2e') : 'transparent';
-      el.style.color      = active ? (key === 'alpaca2' ? '#c4b5fd' : '#e0e0e0') : '#666';
+      const activeBg  = key === 'alpaca2' ? '#1a1030' : key === 'alpaca3' ? '#2a1a08' : '#1a1d2e';
+      const activeCol = key === 'alpaca2' ? '#c4b5fd' : key === 'alpaca3' ? '#F2C07A' : '#e0e0e0';
+      el.style.background = active ? activeBg  : 'transparent';
+      el.style.color      = active ? activeCol : '#666';
     });
     // Always hide the reconciliation panel on tab switch — loadReconciliation()
     // will re-show it with the correct account's numbers if applicable.
@@ -874,13 +880,15 @@
     const toTime   = document.getElementById('analysisToTime').value;
     const isAlpaca  = activeSource === 'alpaca';
     const isAlpaca2 = activeSource === 'alpaca2';
-    let endpoint = (isAlpaca || isAlpaca2) ? '/api/alpaca/analysis' : '/api/analysis';
+    const isAlpaca3 = activeSource === 'alpaca3';
+    let endpoint = (isAlpaca || isAlpaca2 || isAlpaca3) ? '/api/alpaca/analysis' : '/api/analysis';
     const params = new URLSearchParams();
     if (fromDate) params.set('from_date', fromDate);
     if (toDate)   params.set('to_date',   toDate);
     if (fromTime) params.set('from_time', fromTime);
     if (toTime)   params.set('to_time',   toTime);
     if (isAlpaca2) params.set('account', '2');
+    if (isAlpaca3) params.set('account', '3');
     if (isAlpaca) {
       try {
         const excl = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]');
@@ -905,7 +913,7 @@
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
-    const srcLabel = isAlpaca2 ? 'Alpaca Refined fills' : isAlpaca ? 'Alpaca fills' : 'signal trades';
+    const srcLabel = isAlpaca2 ? 'Alpaca Refined fills' : isAlpaca3 ? 'Kairos engine fills' : isAlpaca ? 'Alpaca fills' : 'signal trades';
     const exclNote = isAlpaca ? (() => {
       try {
         const n = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]').length;
@@ -1206,6 +1214,7 @@
     section.style.display = '';
 
     const accountLabel = activeSource === 'alpaca2' ? 'Paper Refined'
+                       : activeSource === 'alpaca3' ? 'Kairos engine'
                        : activeSource === 'alpaca'  ? 'Paper All'
                        :                              'TV Signals';
     document.getElementById('topNBreakdownNote').textContent =
@@ -1280,7 +1289,7 @@
     const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
     const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
     const orphanPnl = s.orphan_pnl;
-    const orphanCard = ((activeSource === 'alpaca' || activeSource === 'alpaca2') && orphanPnl != null && orphanPnl !== 0)
+    const orphanCard = ((activeSource === 'alpaca' || activeSource === 'alpaca2' || activeSource === 'alpaca3') && orphanPnl != null && orphanPnl !== 0)
       ? card(`Orphan P&L (${s.orphan_count || 0})`,
              fmt(orphanPnl),
              orphanPnl >= 0 ? 'pos' : 'neg',
