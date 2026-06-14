@@ -93,6 +93,11 @@ REFINED_HOURS_END     = os.environ.get("REFINED_HOURS_END", "")
 ENGINE_PILOT_ENABLED  = os.environ.get("ENGINE_PILOT_ENABLED", "0") == "1"
 ENGINE_PILOT_BUFFER   = float(os.environ.get("ENGINE_PILOT_BUFFER", "0.05"))
 ENGINE_POLL_SECS      = int(os.environ.get("ENGINE_POLL_SECS", "10"))
+# Minutes to wait before re-entering the same setup (≈ Pine's 5-bar reversal
+# cooldown at 5-min bars; also throttles breakout re-fades). Enables re-fades
+# while preventing rapid stacking.
+ENGINE_COOLDOWN_MINS  = int(os.environ.get("ENGINE_COOLDOWN_MINS", "25"))
+ENGINE_ATR_MULT       = float(os.environ.get("ENGINE_ATR_MULT", "0.25"))  # reject wick ≥ this × ATR(14)
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -107,7 +112,7 @@ _risk_lock            = threading.Lock()
 # Phase-2 engine pilot runtime state. `entered` = setup keys already armed today
 # (one entry per setup/day); `prev_px` = last seen price per ticker for fresh-cross
 # detection; `fills` mirrors the persisted slippage log for the status panel.
-_engine_pilot_state = {"date": None, "entered": set(), "prev_px": {}, "fills": []}
+_engine_pilot_state = {"date": None, "last_entry": {}, "eval_bar": {}, "prev_px": {}, "fills": []}
 _engine_pilot_lock  = threading.Lock()
 
 _IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
@@ -8707,6 +8712,7 @@ def _compute_strike_counts(date=None):
     for acct, broker, fills_fn in (
         ("alpaca",  alpaca_broker,  _get_cached_fills),
         ("alpaca2", alpaca_broker2, _get_cached_fills_2),
+        ("alpaca3", alpaca_broker3, _get_cached_fills_3),
     ):
         if broker is None:
             continue
@@ -10352,7 +10358,37 @@ def _log_engine_pilot_fill(rec):
     stored.append(rec)
     _save_setting("ENGINE_PILOT_FILLS", json.dumps(stored[-500:]))
 
+def _engine_last_complete_bar(bar_list, now_utc):
+    """Most recent 5-min bar that has definitely closed (bar start + 5 min ≤ now).
+    Alpaca bar timestamps are the bar's START, so a bar at T closes at T+5min."""
+    if not bar_list:
+        return None
+    for b in reversed(bar_list):
+        try:
+            if (now_utc - b.timestamp).total_seconds() >= 300:
+                return b
+        except Exception:
+            continue
+    return None
+
+def _engine_ema_ok(b, is_long, kind):
+    """Mirrors _find_entry / _find_reversal_entry EMA gates exactly.
+    Breakout: close vs EMA. Reversal: close vs EMA + EMA slope (ema vs ema 2 ago)."""
+    e = getattr(b, "ema", None)
+    if e is None:
+        return True
+    if kind == "reversal":
+        e2 = getattr(b, "ema2", None)
+        if is_long: return b.close > e and (e2 is None or e > e2)
+        return b.close < e and (e2 is None or e < e2)
+    return (b.close > e) if is_long else (b.close < e)
+
 def _engine_pilot_tick(now_et, today):
+    """One poll. Breakouts fire intrabar on a tick cross of level±buffer, gated by a
+    FRESH cross (prior completed bar on the other side) + EMA — the proven earlier
+    entry. Reversals wait for a completed bar that REJECTS the level (wick into it,
+    close back out, wick ≥ ATR_MULT×ATR(14), EMA+slope) — faithful to the Pine. Both
+    apply a per-setup cooldown + the two-strikes gate before arming on acct3."""
     setups = _entry_engine_setups()
     if not setups:
         return
@@ -10363,54 +10399,37 @@ def _engine_pilot_tick(now_et, today):
             nm = (it.get("name") or "").upper()
             if nm:
                 score_by[nm] = it.get("score")
-    tickers = sorted({s["ticker"] for s in setups})
-    levels  = _engine_pilot_levels(tickers, today)
-    bars    = _engine_pilot_bars(tickers, today)
-    prices  = _engine_pilot_prices(tickers)
-    lkey    = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    tickers  = sorted({s["ticker"] for s in setups})
+    levels   = _engine_pilot_levels(tickers, today)
+    bars     = _engine_pilot_bars(tickers, today)
+    prices   = _engine_pilot_prices(tickers)
+    lkey     = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     hours_ok = _account_hours_ok("alpaca2", now_et=now_et)
+    strikes  = _compute_strike_counts(today) if STRIKES_ENABLED else {}
     now_utc  = datetime.now(timezone.utc)
     with _engine_pilot_lock:
-        prev_px = dict(_engine_pilot_state["prev_px"])
+        prev_px  = dict(_engine_pilot_state["prev_px"])
+        eval_bar = dict(_engine_pilot_state["eval_bar"])
 
-    for s in setups:
+    def _enter(s, cur, level, order_px, reason):
+        """Shared: cooldown + strikes gate → size → market order on acct3 → arm
+        trailing stop + max-hold → log. Returns nothing; dedup via cooldown."""
         tk, side, lvl_name = s["ticker"], s["side"], s["level_name"]
         strat, kind = s["strategy"], s.get("kind", "breakout")
         key = (strat, side, lvl_name)
         with _engine_pilot_lock:
-            if key in _engine_pilot_state["entered"]:
-                continue
-        cur   = prices.get(tk)
-        level = (levels.get(tk) or {}).get(lkey.get(lvl_name))
-        prev  = prev_px.get(tk)
-        if not cur or not level or prev is None:
-            continue
-        is_long = side == "LONG"
-        order_px = level if kind == "reversal" else (level + ENGINE_PILOT_BUFFER if is_long else level - ENGINE_PILOT_BUFFER)
-        # Fresh cross between the previous tick and now (avoids gap/stale entries).
-        if kind == "reversal":
-            crossed = (prev > level >= cur) if is_long else (prev < level <= cur)
-        else:
-            crossed = (prev < order_px <= cur) if is_long else (prev > order_px >= cur)
-        if not crossed or not hours_ok:
-            continue
-        # EMA gate (breakout: close vs EMA; reversal: close vs EMA + slope).
-        last = (bars.get(tk) or [None])[-1]
-        if last is not None and getattr(last, "ema", None) is not None:
-            if kind == "reversal":
-                e2 = getattr(last, "ema2", None)
-                ema_ok = (last.close > last.ema and (e2 is None or last.ema > e2)) if is_long \
-                    else (last.close < last.ema and (e2 is None or last.ema < e2))
-            else:
-                ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
-            if not ema_ok:
-                continue
+            last = _engine_pilot_state["last_entry"].get(key)
+        if last is not None and (now_utc - last).total_seconds() < ENGINE_COOLDOWN_MINS * 60:
+            return
+        if STRIKES_ENABLED and strikes.get(("alpaca3", tk, lvl_name), 0) >= STRIKES_PER_LEVEL:
+            return
         qty = _compute_refined_qty(score_by.get(strat.upper()), cur)
         if not qty or qty < 1:
-            continue
-        # Mark entered FIRST (dedup) so a slow place_order can't double-fire next tick.
+            return
+        is_long = side == "LONG"
+        # Mark cooldown FIRST so a slow place_order can't double-fire next tick.
         with _engine_pilot_lock:
-            _engine_pilot_state["entered"].add(key)
+            _engine_pilot_state["last_entry"][key] = now_utc
         xp  = _engine_pilot_exit_for(strat, rules)
         act = "BUY" if is_long else "SELL"
         try:
@@ -10423,7 +10442,7 @@ def _engine_pilot_tick(now_et, today):
             )
         except Exception as _pe:
             log.warning("engine pilot place_order %s %s: %s", act, tk, _pe)
-            continue
+            return
         ok = bool(res.get("success"))
         eff_mhm = xp["max_hold_mins"] or (MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None)
         if ok and eff_mhm:
@@ -10437,13 +10456,59 @@ def _engine_pilot_tick(now_et, today):
             "strategy": strat, "side": side, "kind": kind, "level": round(level, 4),
             "order_px": round(order_px, 4), "entry_px": round(cur, 4), "qty": qty,
             "slippage": round(slip, 4), "ok": ok, "order_id": res.get("order_id"),
-            "detail": None if ok else res.get("error"),
+            "reason": reason, "detail": None if ok else res.get("error"),
         })
-        log.info("ENGINE PILOT %s %s x%s @~%.2f (level %.2f, slip %.3f) ok=%s",
-                 act, tk, qty, cur, level, slip, ok)
+        log.info("ENGINE PILOT %s %s x%s @~%.2f (level %.2f, %s) ok=%s",
+                 act, tk, qty, cur, level, reason, ok)
 
+    if hours_ok:
+        for s in setups:
+            tk, side, lvl_name = s["ticker"], s["side"], s["level_name"]
+            kind = s.get("kind", "breakout")
+            cur   = prices.get(tk)
+            level = (levels.get(tk) or {}).get(lkey.get(lvl_name))
+            if not cur or not level:
+                continue
+            is_long = side == "LONG"
+            cbar = _engine_last_complete_bar(bars.get(tk), now_utc)
+
+            if kind == "breakout":
+                prev = prev_px.get(tk)
+                if prev is None or cbar is None:
+                    continue
+                order_px = level + ENGINE_PILOT_BUFFER if is_long else level - ENGINE_PILOT_BUFFER
+                crossed  = (prev < order_px <= cur) if is_long else (prev > order_px >= cur)
+                if not crossed:
+                    continue
+                # Fresh-cross qualifier: prior completed bar closed on the OTHER side
+                # of the level (matches Pine close[1] <= level). EMA gate on that bar.
+                prior_ok = (cbar.close <= level) if is_long else (cbar.close >= level)
+                if not prior_ok or not _engine_ema_ok(cbar, is_long, "breakout"):
+                    continue
+                _enter(s, cur, level, order_px, "breakout cross")
+
+            else:  # reversal — evaluate the newly-completed bar for a reject
+                if cbar is None or eval_bar.get(tk) == cbar.timestamp:
+                    continue
+                atr = getattr(cbar, "atr", None) or 0.0
+                hi, lo, cl = float(cbar.high), float(cbar.low), float(cbar.close)
+                if not _engine_ema_ok(cbar, is_long, "reversal"):
+                    continue
+                reject = (is_long and lo <= level and cl > level and (level - lo) >= atr * ENGINE_ATR_MULT) or \
+                         (not is_long and hi >= level and cl < level and (hi - level) >= atr * ENGINE_ATR_MULT)
+                if reject:
+                    _enter(s, cur, level, level, "reversal reject")
+
+    # Persist prev_px (cross detection) and mark each ticker's latest complete bar
+    # as evaluated so a reject bar only fires once.
+    new_eval = dict(eval_bar)
+    for tk in tickers:
+        cbar = _engine_last_complete_bar(bars.get(tk), now_utc)
+        if cbar is not None:
+            new_eval[tk] = cbar.timestamp
     with _engine_pilot_lock:
-        _engine_pilot_state["prev_px"] = dict(prices)
+        _engine_pilot_state["prev_px"]  = dict(prices)
+        _engine_pilot_state["eval_bar"] = new_eval
 
 def _engine_pilot_loop():
     import datetime as _dt
@@ -10463,9 +10528,10 @@ def _engine_pilot_loop():
                     today = now.date().isoformat()
                     with _engine_pilot_lock:
                         if _engine_pilot_state["date"] != today:
-                            _engine_pilot_state["date"]    = today
-                            _engine_pilot_state["entered"] = set()
-                            _engine_pilot_state["prev_px"] = {}
+                            _engine_pilot_state["date"]       = today
+                            _engine_pilot_state["last_entry"] = {}
+                            _engine_pilot_state["eval_bar"]   = {}
+                            _engine_pilot_state["prev_px"]    = {}
                     _engine_pilot_tick(now, today)
         except Exception as _e:
             log.warning("engine pilot loop: %s", _e)
@@ -10481,7 +10547,7 @@ def api_engine_pilot_status():
     except Exception: _today = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
     with _engine_pilot_lock:
         fills   = list(_engine_pilot_state["fills"])[:100]
-        entered = len(_engine_pilot_state["entered"])
+        entered = len(_engine_pilot_state["last_entry"])
     acct = None
     if alpaca_broker3 is not None:
         try:    acct = {"daily_pnl": round(alpaca_broker3.daily_pnl(), 2)}
