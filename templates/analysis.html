@@ -352,6 +352,12 @@
     </div>
   </div>
 
+  <!-- By signal type — the 4 strategy families rolled up, for the active account + date window -->
+  <div class="section">
+    <div class="section-title">By Signal Type (×4) <span style="font-size:0.7rem;font-weight:400;color:#888;margin-left:8px">cumulative across all tickers per family · matches the date window above</span></div>
+    <div id="signalTypeWrap"><div style="font-size:0.82rem;color:#555">Loading…</div></div>
+  </div>
+
   <!-- Strategy leaderboard -->
   <div class="section">
     <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -923,6 +929,7 @@
     document.getElementById('dataAge').textContent =
       `${data.overall?.trades || 0} closed trades analysed (${srcLabel})${exclNote}`;
     renderOverall(data.overall || {});
+    renderSignalTypeTable(data.per_strategy || {});
     renderStratTable(data.per_strategy || {});
     renderTickerTable(data.per_ticker  || {});
     // Performance Summary always shows Refined account so you can track the curated portfolio
@@ -2161,6 +2168,59 @@
           <button onclick="restoreStrategy('${esc(n)}')" style="background:transparent;border:1px solid #2a2d3e;color:#7FE098;border-radius:5px;padding:2px 8px;font-size:0.72rem;cursor:pointer">Restore</button>
         </div>`
       ).join('');
+  }
+
+  // Roll up per-strategy stats into the 4 signal families (BREAKOUT/REVERSAL × R3S3/R4S4).
+  // Uses gross_win/gross_loss/wins so PF and win-rate aggregate exactly. Source map is the
+  // active account's per_strategy for the current date window, so it matches automatically.
+  function _familyOf(name) {
+    const u = (name || '').toUpperCase();
+    const kind = u.includes('REVERSAL') ? 'REVERSAL' : u.includes('BREAKOUT') ? 'BREAKOUT' : null;
+    const pair = u.includes('R4S4') ? 'R4S4' : u.includes('R3S3') ? 'R3S3' : null;
+    return (kind && pair) ? `${kind} ${pair}` : null;
+  }
+  function renderSignalTypeTable(map) {
+    const wrap = document.getElementById('signalTypeWrap');
+    const fams = {};
+    for (const [name, s] of Object.entries(map || {})) {
+      const fam = _familyOf(name);
+      if (!fam || !s || !s.trades) continue;
+      const f = fams[fam] || (fams[fam] = { trades: 0, wins: 0, gw: 0, gl: 0, pnl: 0, n: 0 });
+      f.trades += s.trades || 0;  f.wins += s.wins || 0;
+      f.gw += s.gross_win || 0;   f.gl += s.gross_loss || 0;
+      f.pnl += s.total_pnl || 0;  f.n += 1;
+    }
+    const order = ['BREAKOUT R3S3', 'BREAKOUT R4S4', 'REVERSAL R3S3', 'REVERSAL R4S4'];
+    const present = order.filter(k => fams[k]);
+    if (!present.length) { wrap.innerHTML = '<div style="font-size:0.82rem;color:#555">No breakout/reversal trades in this window.</div>'; return; }
+    const tot = { trades: 0, wins: 0, gw: 0, gl: 0, pnl: 0, n: 0 };
+    const rowHtml = (label, f, isTot) => {
+      const wr = f.trades ? (f.wins / f.trades * 100) : 0;
+      const pf = f.gl > 0 ? (f.gw / f.gl) : null;
+      const bd = isTot ? 'border-top:2px solid #2a2d3e;font-weight:700' : '';
+      return `<tr style="${bd}">` +
+        `<td style="padding:6px 10px 6px 0;font-weight:600;color:${isTot ? '#fff' : '#c4b5fd'};font-family:monospace">${label}</td>` +
+        `<td style="text-align:right;color:#777">${f.n || ''}</td>` +
+        `<td style="text-align:right;color:#aaa">${f.trades}</td>` +
+        `<td style="text-align:right" class="${wr >= 50 ? 'pos' : 'neg'}">${wr.toFixed(1)}%</td>` +
+        `<td style="text-align:right;color:${pf == null ? '#666' : pf >= 1 ? '#7FE098' : '#ef5350'}">${pf == null ? '∞' : pf.toFixed(2)}</td>` +
+        `<td style="text-align:right;font-weight:600" class="${f.pnl >= 0 ? 'pos' : 'neg'}">${fmt(f.pnl)}</td></tr>`;
+    };
+    let rows = '';
+    for (const k of present) {
+      rows += rowHtml(k, fams[k], false);
+      tot.trades += fams[k].trades; tot.wins += fams[k].wins; tot.gw += fams[k].gw;
+      tot.gl += fams[k].gl; tot.pnl += fams[k].pnl; tot.n += fams[k].n;
+    }
+    rows += rowHtml('ALL ×4', tot, true);
+    wrap.innerHTML =
+      `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">` +
+      `<thead><tr style="color:#555;font-size:0.7rem;text-transform:uppercase">` +
+      `<th style="text-align:left;padding-bottom:6px">Signal Type</th>` +
+      `<th style="text-align:right" title="distinct ticker strategies in this family"># Strat</th>` +
+      `<th style="text-align:right">Trades</th><th style="text-align:right">Win %</th>` +
+      `<th style="text-align:right">PF</th><th style="text-align:right">Total P&amp;L</th>` +
+      `</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
   function renderStratTable(map) {
