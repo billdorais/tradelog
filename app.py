@@ -11323,12 +11323,25 @@ def _camarilla_levels(ticker: str, trade_date: str) -> dict:
         R3 = C + rng*1.1/4   S3 = C - rng*1.1/4
         R4 = C + rng*1.1/2   S4 = C - rng*1.1/2
         DP = (H + L + C) / 3
-    Returns {r3, r4, s3, s4, dp} or {} if prior-day OHLC is unavailable."""
+    H/L/C are derived from prior-day RTH 5-min bars (9:30-16:00 ET) — Alpaca's
+    daily bar includes extended hours, which widens the range and pushes R3/R4
+    out vs Pine `request.security("D", ...)` which is RTH-only for US stocks.
+    Falls back to the daily bar if RTH bars are unavailable.
+    Returns {r3, r4, s3, s4, dp} or {} if prior-day data is unavailable."""
     bars = _fetch_daily_ohlc(ticker, trade_date, n_days=1)
     if not bars:
         return {}
-    p   = bars[0]   # prior trading day
+    p          = bars[0]
+    prior_date = p["date"]
     h, l, c = p["high"], p["low"], p["close"]
+    try:
+        rth = _fetch_5m_rth_objs(ticker, prior_date)
+        if rth:
+            h = max(float(b.high)  for b in rth)
+            l = min(float(b.low)   for b in rth)
+            c = float(rth[-1].close)
+    except Exception as _e:
+        log.debug("camarilla RTH fetch %s %s: %s", ticker, prior_date, _e)
     rng = h - l
     return {
         "r4": round(c + rng * 1.1 / 2, 4),
