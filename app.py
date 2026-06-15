@@ -9587,7 +9587,15 @@ def api_simulate_reversal_test():
     multi      = (request.args.get("multi", "1") or "1").strip() not in ("0", "false", "")
     from_date  = (request.args.get("from") or "").strip()
     to_date    = (request.args.get("to")   or "").strip()
-    COOLDOWN, ATR_MULT = 5, 0.25
+    COOLDOWN   = 5
+    # Optional rejection-wick sweep: test the reject rule at several ATR multiples
+    # (wick must be >= mult * ATR14) to see whether a pickier entry helps.
+    atr_mults = []
+    for _x in (request.args.get("atr_mults") or "").split(","):
+        try:    atr_mults.append(round(float(_x), 3))
+        except Exception: pass
+    if not atr_mults:
+        atr_mults = [0.25, 0.3, 0.4, 0.5, 0.6]
 
     # Per-strategy exit params from the live Signal Router (same loader as breakout).
     rule_settings = {}
@@ -9659,42 +9667,59 @@ def api_simulate_reversal_test():
             except Exception: lv_map[lfut[f]] = {}
 
     lkey  = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
-    rules = ["reject", "touch"]
-    agg   = {r: {"pnls": [], "offsets": []} for r in rules}
+    from collections import defaultdict as _dd
+    agg_reject = _dd(lambda: {"pnls": [], "offsets": []})   # (pair, atr_mult) -> bucket
+    agg_touch  = {"pnls": [], "offsets": []}                # baseline (no wick/ATR)
     n_setups = 0
     for (tk, date, strat, side, lvl) in setups:
         bars  = bars_map.get((tk, date)) or []
         level = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl))
         if not bars or not level:
             continue
+        pair = "R4S4" if "R4S4" in strat else "R3S3"
         ex_set = _match_exit(strat)
         trail0, trigger = ex_set["trail_pct"], ex_set["trigger_pct"]
         max_hold = ex_set["max_hold_mins"] or 0
         n_setups += 1
-        for rule in rules:
-            for pnl, offset in _replay_entries(bars, level, side, rule, 0.0, trail0, trigger,
+        for am in atr_mults:
+            for pnl, offset in _replay_entries(bars, level, side, "reject", 0.0, trail0, trigger,
                                                max_hold, ema_filter, multi,
-                                               kind="reversal", cooldown_bars=COOLDOWN, atr_mult=ATR_MULT):
-                agg[rule]["pnls"].append(pnl)
-                agg[rule]["offsets"].append(offset)
+                                               kind="reversal", cooldown_bars=COOLDOWN, atr_mult=am):
+                agg_reject[(pair, am)]["pnls"].append(pnl)
+                agg_reject[(pair, am)]["offsets"].append(offset)
+        for pnl, offset in _replay_entries(bars, level, side, "touch", 0.0, trail0, trigger,
+                                           max_hold, ema_filter, multi,
+                                           kind="reversal", cooldown_bars=COOLDOWN, atr_mult=0.25):
+            agg_touch["pnls"].append(pnl)
+            agg_touch["offsets"].append(offset)
 
     def _summ(bucket):
-        pnls, offs = bucket["pnls"], bucket["offsets"]
+        pnls = bucket.get("pnls", [])
         n, wins = len(pnls), sum(1 for p in pnls if p > 0)
         return {"trades": n, "wins": wins,
-                "win_rate":   round(wins / n * 100, 1) if n else 0.0,
-                "total_pnl":  round(sum(pnls), 4),
-                "avg_pnl":    round(sum(pnls) / n, 4) if n else 0.0,
-                "avg_offset": round(sum(offs) / n, 4) if n else 0.0}
+                "win_rate":  round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl": round(sum(pnls), 4),
+                "avg_pnl":   round(sum(pnls) / n, 4) if n else 0.0}
 
-    out = [{"rule": "reject", **_summ(agg["reject"])},
-           {"rule": "touch",  **_summ(agg["touch"])}]
+    def _sweep(pair):
+        return [{"atr_mult": am, **_summ(agg_reject[(pair, am)])} for am in atr_mults]
+
+    sweep_overall = [{"atr_mult": am, **_summ(
+        {"pnls": agg_reject[("R3S3", am)]["pnls"] + agg_reject[("R4S4", am)]["pnls"]})} for am in atr_mults]
+
+    _base   = 0.25 if 0.25 in atr_mults else atr_mults[0]
+    _rejbase = {"pnls": agg_reject[("R3S3", _base)]["pnls"] + agg_reject[("R4S4", _base)]["pnls"]}
+    out = [{"rule": f"reject ({_base})", **_summ(_rejbase)},
+           {"rule": "touch", **_summ(agg_touch)}]
 
     return jsonify({
         "account": "Refined" if use2 else "Paper All", "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
         "skipped_breakout": skipped_breakout, "ema_filter": ema_filter, "multi": multi,
         "exits": "Signal Router per strategy", "rules": out,
+        "atr_mults": atr_mults,
+        "sweep_by_pair": {"R3S3": _sweep("R3S3"), "R4S4": _sweep("R4S4")},
+        "sweep_overall": sweep_overall,
     })
 
 
