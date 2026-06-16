@@ -1145,9 +1145,13 @@ def _check_max_hold_exits():
             continue
 
         # Throttle retries: skip every other tick after first failure, then
-        # every 5 ticks (15s) after 3 consecutive failures.
+        # every 5 ticks (15s) after 3 consecutive failures. ESCAPE VALVE: once
+        # the position is past 2× its max_hold_mins (15 min late on a 15 min
+        # timer, etc.), bypass the throttle and try every tick — the position
+        # is grossly overstaying and visibility matters more than rate-limiting.
         fail_count = _max_hold_fail_ticks.get((broker_tag, symbol), 0)
-        if fail_count == 1 or (fail_count >= 3 and fail_count % 5 != 0):
+        grossly_late = elapsed_mins >= info["max_hold_mins"] * 2
+        if not grossly_late and (fail_count == 1 or (fail_count >= 3 and fail_count % 5 != 0)):
             _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
             continue
 
@@ -2308,6 +2312,8 @@ def risk_status():
                 "entry_time": v["entry_time"].isoformat(),
                 "max_hold_mins": v["max_hold_mins"],
                 "elapsed_mins": round((datetime.now(timezone.utc) - v["entry_time"]).total_seconds() / 60, 1),
+                "close_attempts": _max_hold_fail_ticks.get(k, 0),
+                "auto_closed":    k in auto_closed_snap,
             }
             for k, v in max_hold_snap.items()
         ],

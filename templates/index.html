@@ -3557,7 +3557,7 @@
         for (const t of (data.max_hold_timers || [])) {
           timerByKey[`${t.broker}:${t.symbol.toUpperCase()}`] = t;
         }
-        const autoClosedSet = new Set((data.auto_closed_symbols || []).map(x => x.symbol.toUpperCase()));
+        const autoClosedSet = new Set((data.auto_closed_symbols || []).map(x => `${x.broker}:${x.symbol.toUpperCase()}`));
 
         tbody.innerHTML = positions.map(p => {
           const upnl  = p.unrealized_pnl ?? 0;
@@ -3581,11 +3581,14 @@
                 heldColor = overLimit ? '#ef5350' : (timer.elapsed_mins >= timer.max_hold_mins * 0.8 ? '#f59e0b' : '#888');
                 const elapsedFmt = timer.elapsed_mins < 1 ? `${Math.round(timer.elapsed_mins * 60)}s` : `${timer.elapsed_mins.toFixed(1)}m`;
                 timerNote = `<br><span style="font-size:0.65rem;color:${overLimit ? '#ef5350' : '#555'}">⏱ ${elapsedFmt} / ${timer.max_hold_mins}m</span>`;
+                if (timer.close_attempts > 0 && !timer.auto_closed) {
+                  timerNote += `<br><span style="font-size:0.65rem;color:#ef5350" title="Engine has tried to close this ${timer.close_attempts} time(s) without success — check Alpaca order rejections">⚠ ${timer.close_attempts} close attempt${timer.close_attempts === 1 ? '' : 's'}</span>`;
+                }
               } else {
                 // No timer registered — warn if past a reasonable threshold
                 if (heldMins >= 15) timerNote = `<br><span style="font-size:0.65rem;color:#f59e0b" title="No max-hold timer registered for this position">⚠ no timer</span>`;
               }
-              if (autoClosedSet.has(sym)) timerNote += `<br><span style="font-size:0.65rem;color:#888">auto-close sent</span>`;
+              if (autoClosedSet.has(`${p.broker}:${sym}`)) timerNote += `<br><span style="font-size:0.65rem;color:#888">auto-close sent</span>`;
               heldCell = `<span style="color:${heldColor};font-size:0.78rem">${heldMins}m</span>${timerNote}`;
             }
           }
