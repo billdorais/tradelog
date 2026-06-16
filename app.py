@@ -6708,7 +6708,13 @@ def bulk_entry_source():
             skipped.append(rname)
             continue
         nodes = [n for n in nodes if n.get("type") != "entry_source"]
-        nodes.append({"type": "entry_source", "value": value})
+        new_node = {"type": "entry_source", "value": value}
+        # Slot right after the strategy node so the chain reads strategy → entry → …
+        strat_idx = next((i for i, n in enumerate(nodes) if n.get("type") == "strategy"), -1)
+        if strat_idx >= 0:
+            nodes.insert(strat_idx + 1, new_node)
+        else:
+            nodes.insert(0, new_node)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}",
                     (json.dumps(nodes), rid))
         updated.append(rname)
