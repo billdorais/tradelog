@@ -994,35 +994,94 @@ class AlpacaBroker:
         Cancels any open orders for the symbol first so the shares are not
         held_for_orders when the market close is submitted (trailing stop
         orders reserve the full qty and cause a 40310000 rejection otherwise).
+
+        Cancel calls sometimes time out (code 50410000) — Alpaca received the
+        request but the response was lost. We re-query open orders after the
+        first cancel pass and retry any still-open ones once; then if the
+        built-in close_position rejects with insufficient_qty, fall back to
+        submitting a direct market order for the position's qty.
         """
+        import time as _time
         self._ensure_client()
-        # Cancel open orders for this symbol so shares become available
-        try:
-            from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums   import QueryOrderStatus
-            open_req    = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol.upper()])
-            open_orders = self._trading.get_orders(filter=open_req)
+        from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
+        from alpaca.trading.enums   import QueryOrderStatus, OrderSide, TimeInForce
+        sym_u = symbol.upper()
+
+        def _sweep_open_orders(label):
+            try:
+                open_req    = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[sym_u])
+                open_orders = self._trading.get_orders(filter=open_req)
+            except Exception as _oe:
+                log.warning("close_position %s: could not fetch open orders (%s): %s", sym_u, label, _oe)
+                return -1   # unknown; assume there might still be orders
             for o in open_orders:
                 try:
                     self._trading.cancel_order_by_id(o.id)
-                    log.info("close_position %s: cancelled open order %s (%s)", symbol, o.id, o.order_type)
+                    log.info("close_position %s: cancelled open order %s (%s, %s)",
+                             sym_u, o.id, o.order_type, label)
                 except Exception as _ce:
-                    log.warning("close_position %s: cancel order %s failed: %s", symbol, o.id, _ce)
-        except Exception as _oe:
-            log.warning("close_position %s: could not fetch open orders: %s", symbol, _oe)
+                    log.warning("close_position %s: cancel order %s failed (%s): %s",
+                                sym_u, o.id, label, _ce)
+            return len(list(open_orders))
+
+        # Pass 1: cancel whatever's open right now.
+        _sweep_open_orders("pass1")
+        # Brief settle; cancellations are usually near-instant but a timed-out
+        # request that DID land needs a moment to flip the order to 'canceled'.
+        _time.sleep(0.4)
+        # Pass 2: anything still hanging around (timed-out cancel + state lag).
+        remaining = _sweep_open_orders("pass2")
+        if remaining > 0:
+            _time.sleep(0.4)
+
+        # Built-in close — submits a market order opposite the position.
         try:
-            order = self._trading.close_position(symbol)
+            order = self._trading.close_position(sym_u)
             self._invalidate_pos_cache()
-            log.info("Alpaca close_position %s → id=%s status=%s", symbol, order.id, order.status)
+            log.info("Alpaca close_position %s → id=%s status=%s", sym_u, order.id, order.status)
             return {
                 "success":  True,
                 "order_id": str(order.id),
                 "status":   str(order.status),
-                "symbol":   symbol,
+                "symbol":   sym_u,
             }
         except Exception as e:
-            log.error("Alpaca close_position failed for %s: %s", symbol, e)
-            return {"success": False, "error": str(e)}
+            err_str = str(e)
+            log.warning("Alpaca close_position %s failed (%s) — trying fallback market order",
+                        sym_u, err_str)
+
+        # Fallback: read the current qty, sweep open orders once more, then
+        # place an explicit market order opposite the position direction.
+        try:
+            pos = self._trading.get_open_position(sym_u)
+            qty = abs(float(pos.qty))
+        except Exception as _pe:
+            log.error("Alpaca close_position fallback %s: get_open_position failed: %s", sym_u, _pe)
+            return {"success": False, "error": f"close + fallback failed: {_pe}"}
+        if qty <= 0:
+            self._invalidate_pos_cache()
+            log.info("Alpaca close_position fallback %s: qty=0, already flat", sym_u)
+            return {"success": True, "status": "already_flat", "symbol": sym_u}
+        _sweep_open_orders("fallback")
+        _time.sleep(0.4)
+        side = OrderSide.SELL if float(pos.qty) > 0 else OrderSide.BUY
+        try:
+            req = MarketOrderRequest(symbol=sym_u, qty=qty, side=side,
+                                     time_in_force=TimeInForce.DAY)
+            order = self._trading.submit_order(req)
+            self._invalidate_pos_cache()
+            log.info("Alpaca close_position fallback %s: %s qty=%s → id=%s status=%s",
+                     sym_u, side.value, qty, order.id, order.status)
+            return {
+                "success":  True,
+                "order_id": str(order.id),
+                "status":   str(order.status),
+                "symbol":   sym_u,
+                "fallback": True,
+            }
+        except Exception as e:
+            log.error("Alpaca close_position fallback %s failed: %s", sym_u, e)
+            return {"success": False, "error": f"fallback market order failed: {e}"}
 
     def close_all_positions(self):
         self._ensure_client()
