@@ -4828,7 +4828,7 @@ def api_simulate_stops():
     body          = request.get_json(force=True) or {}
     from_date     = body.get("from_date", "")
     to_date       = body.get("to_date",   "")
-    use_acct2     = str(body.get("account", "2")) == "2"
+    account       = str(body.get("account", "2"))
     trail_pct          = float(body.get("trail_pct",         0.5))
     trigger_pct        = float(body.get("trigger_pct",       0.0))
     stop_loss_pct      = float(body.get("stop_loss_pct",     0.0))
@@ -4855,9 +4855,9 @@ def api_simulate_stops():
         if _parsed:
             trail_tiers = sorted(_parsed, key=lambda x: x[0])
 
-    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    broker, _broker_tag, _acct_label, _fills_fn = _alpaca_account_ctx(account)
     if broker is None:
-        return jsonify({"error": "Alpaca account not configured"}), 400
+        return jsonify({"error": f"Alpaca {_acct_label} not configured"}), 400
     if not from_date or not to_date:
         return jsonify({"error": "from_date and to_date are required"}), 400
 
@@ -4894,7 +4894,7 @@ def api_simulate_stops():
              len(rule_settings),
              {k: v.get("trail_pct") for k, v in rule_settings.items()})
 
-    fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+    fills         = _fills_fn()
     signal_lookup = _build_signal_lookup_for_alpaca()
     paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
                                             signal_lookup=signal_lookup)
@@ -5154,7 +5154,7 @@ def simulate_sweep():
     body         = request.get_json() or {}
     from_date    = body.get("from_date", "")
     to_date      = body.get("to_date",   "")
-    use_acct2    = str(body.get("account", "2")) == "2"
+    account      = str(body.get("account", "2"))
     trail_min    = float(body.get("trail_min",  0.05))
     trail_max    = float(body.get("trail_max",  0.40))
     trail_step   = float(body.get("trail_step", 0.05))
@@ -5165,9 +5165,9 @@ def simulate_sweep():
     per_strategy = bool(body.get("per_strategy", False))
     if not from_date or not to_date:
         return jsonify({"error": "from_date and to_date are required"}), 400
-    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    broker, _broker_tag, _acct_label, _fills_fn = _alpaca_account_ctx(account)
     if broker is None:
-        return jsonify({"error": "Alpaca account not configured"}), 400
+        return jsonify({"error": f"Alpaca {_acct_label} not configured"}), 400
 
     # Build trail grid
     trail_values, v = [], trail_min
@@ -5215,7 +5215,7 @@ def simulate_sweep():
         return s or "Unknown"
 
     # Fetch trades + bars
-    fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+    fills         = _fills_fn()
     signal_lookup = _build_signal_lookup_for_alpaca()
     paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
                                             signal_lookup=signal_lookup)
@@ -11810,7 +11810,7 @@ def api_strategy_sweep():
     strategy     = data.get("strategy", "").strip()
     from_date    = data.get("from_date", "")
     to_date      = data.get("to_date",   "")
-    use_acct2    = str(data.get("account", "2")) == "2"
+    account      = str(data.get("account", "2"))
     trail_min     = float(data.get("trail_min",    0.10))
     trail_max     = float(data.get("trail_max",    0.50))
     trail_step    = float(data.get("trail_step",   0.05))
@@ -11820,11 +11820,11 @@ def api_strategy_sweep():
 
     if not strategy:
         return jsonify({"error": "strategy required"}), 400
-    broker = alpaca_broker2 if use_acct2 else alpaca_broker
+    broker, _broker_tag, _acct_label, _fills_fn = _alpaca_account_ctx(account)
     if broker is None:
-        return jsonify({"error": "Alpaca account not configured"}), 400
+        return jsonify({"error": f"Alpaca {_acct_label} not configured"}), 400
 
-    fills         = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+    fills         = _fills_fn()
     signal_lookup = _build_signal_lookup_for_alpaca()
     paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
                                             signal_lookup=signal_lookup)
