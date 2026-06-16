@@ -10515,15 +10515,19 @@ def _engine_pilot_tick(now_et, today):
             cbar = _engine_last_complete_bar(bars.get(tk), now_utc)
 
             if kind == "breakout":
-                prev = prev_px.get(tk)
-                if prev is None or cbar is None:
+                if cbar is None:
                     continue
                 order_px = level + ENGINE_PILOT_BUFFER if is_long else level - ENGINE_PILOT_BUFFER
-                crossed  = (prev < order_px <= cur) if is_long else (prev > order_px >= cur)
-                if not crossed:
+                # Fire when price is CURRENTLY beyond the order price (level±buffer) — not
+                # only on the exact tick it crosses. The fresh-cross requirement is the
+                # prior COMPLETED bar still closed on the other side of the level (Pine
+                # close[1] <= level); once the breakout bar completes above, that flips
+                # false. Cooldown/last_entry prevents re-firing. Earlier we also required
+                # a tick-by-tick straddle, which almost never lined up with the 10s poll —
+                # that made the pilot whiff nearly every breakout.
+                beyond = (cur >= order_px) if is_long else (cur <= order_px)
+                if not beyond:
                     continue
-                # Fresh-cross qualifier: prior completed bar closed on the OTHER side
-                # of the level (matches Pine close[1] <= level). EMA gate on that bar.
                 prior_ok = (cbar.close <= level) if is_long else (cbar.close >= level)
                 if not prior_ok or not _engine_ema_ok(cbar, is_long, "breakout"):
                     continue
