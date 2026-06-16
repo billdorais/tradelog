@@ -10076,16 +10076,6 @@ def _entry_engine_compute(date=None, buffer=0.05):
             order = "stop"
             order_px = (level + buffer) if (level and is_long) else ((level - buffer) if level else None)
 
-        # EMA gate: breakout = close vs EMA; reversal = close vs EMA + slope.
-        ema_ok = None
-        if last is not None and getattr(last, "ema", None) is not None:
-            if kind == "reversal":
-                e2 = getattr(last, "ema2", None)
-                ema_ok = (last.close > last.ema and (e2 is None or last.ema > e2)) if is_long \
-                    else (last.close < last.ema and (e2 is None or last.ema < e2))
-            else:
-                ema_ok = (last.close > last.ema) if is_long else (last.close < last.ema)
-
         # Did price reach the order today? Breakout: through the stop. Reversal: to the level.
         triggered_at, trig_idx, entry_dt = None, None, None
         if level and bars and order_px:
@@ -10099,6 +10089,22 @@ def _entry_engine_compute(date=None, buffer=0.05):
                     trig_idx     = _i
                     entry_dt     = b.timestamp
                     break
+
+        # EMA gate — evaluated at the TRIGGER bar (prior completed bar, look-ahead-safe),
+        # NOT end-of-day. The live engine checks EMA at the breakout moment; using bars[-1]
+        # wrongly blocked breakouts that triggered early then faded below the EMA by 4 PM.
+        if trig_idx is not None:
+            _emab = bars[trig_idx - 1] if trig_idx >= 1 else bars[trig_idx]
+        else:
+            _emab = last
+        ema_ok = None
+        if _emab is not None and getattr(_emab, "ema", None) is not None:
+            if kind == "reversal":
+                e2 = getattr(_emab, "ema2", None)
+                ema_ok = (_emab.close > _emab.ema and (e2 is None or _emab.ema > e2)) if is_long \
+                    else (_emab.close < _emab.ema and (e2 is None or _emab.ema < e2))
+            else:
+                ema_ok = (_emab.close > _emab.ema) if is_long else (_emab.close < _emab.ema)
 
         # Hours gate evaluated at the setup's own trigger time (date-faithful),
         # not "now" — an entry only fires when price hits the level intraday.
