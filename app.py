@@ -1632,7 +1632,7 @@ def _recover_max_hold_positions():
     # ── Fetch open Alpaca positions ───────────────────────────────────────
     open_positions = {}   # (broker_tag, symbol) -> position dict
     failed_brokers = set()
-    for _tag, _inst in [("alpaca", alpaca_broker), ("alpaca2", alpaca_broker2)]:
+    for _tag, _inst in [("alpaca", alpaca_broker), ("alpaca2", alpaca_broker2), ("alpaca3", alpaca_broker3)]:
         if _inst is None:
             continue
         try:
@@ -1703,23 +1703,44 @@ def _recover_max_hold_positions():
             log.info("Max hold recovery: %d position(s) restored", recovered)
         return
 
+    # alpaca3 entries skip the trades table (engine pilot calls place_order
+    # directly), so a parallel lookup against the persisted engine fills log
+    # supplies their (entry_time, strategy) for Pass 2 recovery.
+    engine_fills_by_sym = {}
+    try:
+        _ef = json.loads(_load_setting("ENGINE_PILOT_FILLS") or "[]")
+        for f in reversed(_ef):  # newest last → iter newest first
+            if not f.get("ok"):
+                continue
+            sym = (f.get("ticker") or "").upper()
+            if sym and sym not in engine_fills_by_sym:
+                engine_fills_by_sym[sym] = f
+    except Exception as _e:
+        log.debug("Max hold recovery: engine fills load failed: %s", _e)
+
     for (broker_tag, symbol) in untracked:
-        # Find the most recent filled entry trade for this symbol (entry time + strategy)
-        try:
-            conn = get_db()
-            cur  = conn.cursor()
-            cur.execute(
-                f"SELECT strategy, received_at FROM trades "
-                f"WHERE ticker={p} AND exec_status='ok' "
-                f"AND action NOT IN ('EXIT_LONG','EXIT_SHORT','EXIT') AND sentiment!='flat' "
-                f"ORDER BY id DESC LIMIT 10",
-                (symbol,),
-            )
-            trade_rows = cur.fetchall()
-            conn.close()
-        except Exception as _e:
-            log.warning("Max hold recovery: trades query failed for %s: %s", symbol, _e)
-            continue
+        trade_rows = []
+        if broker_tag == "alpaca3":
+            # Synthesize a single trade_rows entry from the engine pilot fills.
+            f = engine_fills_by_sym.get(symbol.upper())
+            if f and f.get("strategy") and f.get("ts"):
+                trade_rows = [(f["strategy"], f["ts"].replace(" UTC", "+00:00").replace(" ", "T"))]
+        else:
+            try:
+                conn = get_db()
+                cur  = conn.cursor()
+                cur.execute(
+                    f"SELECT strategy, received_at FROM trades "
+                    f"WHERE ticker={p} AND exec_status='ok' "
+                    f"AND action NOT IN ('EXIT_LONG','EXIT_SHORT','EXIT') AND sentiment!='flat' "
+                    f"ORDER BY id DESC LIMIT 10",
+                    (symbol,),
+                )
+                trade_rows = cur.fetchall()
+                conn.close()
+            except Exception as _e:
+                log.warning("Max hold recovery: trades query failed for %s: %s", symbol, _e)
+                continue
 
         entry_time, mhm, src = None, None, None
         for trow in trade_rows:
