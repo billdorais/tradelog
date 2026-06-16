@@ -10035,9 +10035,17 @@ def _entry_engine_setups():
     targets_by_strategy = {}   # strategy_upper -> [{broker_tag, qty_override}]
 
     def _add_target(strat_u, broker_tag, qty_override=None):
+        """Add (or return the existing) target for strat+broker so callers can
+        decorate it (e.g. attach a qty_node) without worrying about dedup."""
         existing = targets_by_strategy.setdefault(strat_u, [])
-        if not any(t["broker_tag"] == broker_tag for t in existing):
-            existing.append({"broker_tag": broker_tag, "qty_override": qty_override})
+        for t in existing:
+            if t["broker_tag"] == broker_tag:
+                if qty_override is not None and t.get("qty_override") is None:
+                    t["qty_override"] = qty_override
+                return t
+        t = {"broker_tag": broker_tag, "qty_override": qty_override}
+        existing.append(t)
+        return t
 
     # Source 1: Refined snapshot — implicit alpaca3 target
     snap = _refined_last_result or {}
@@ -10058,7 +10066,11 @@ def _entry_engine_setups():
     except Exception as _e:
         log.debug("entry engine fills source: %s", _e)
 
-    # Source 2: routing rules opted into Kairos entries via entry_source node
+    # Source 2: routing rules opted into Kairos entries via entry_source node.
+    # Also captures the rule's quantity node (amount + unit) so non-Refined
+    # rules can size from their declared `10 shares` / `$5000` instead of the
+    # score-band default — Refined-snapshot targets that get a qty_override
+    # from the broker node still win.
     try:
         _rc = get_db()
         for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
@@ -10068,6 +10080,16 @@ def _entry_engine_setups():
             if not any(n.get("type") == "entry_source"
                        and (n.get("value") or "").lower() == "kairos" for n in nodes):
                 continue
+            qty_node = None
+            for nd in nodes:
+                if nd.get("type") == "quantity":
+                    try:
+                        qa = float(nd.get("amount") or 0)
+                    except (TypeError, ValueError):
+                        qa = 0
+                    if qa > 0:
+                        qty_node = {"amount": qa, "unit": (nd.get("unit") or "shares").lower()}
+                    break
             for nd in nodes:
                 if nd.get("type") != "broker":
                     continue
@@ -10077,7 +10099,9 @@ def _entry_engine_setups():
                 qov = None
                 try:    qov = int(nd.get("qty_override")) if nd.get("qty_override") not in (None, "") else None
                 except (TypeError, ValueError): qov = None
-                _add_target(rname, btag, qov)
+                tgt = _add_target(rname, btag, qov)
+                if qty_node is not None:
+                    tgt["qty_node"] = qty_node
         _rc.close()
     except Exception as _e:
         log.debug("entry engine kairos rules: %s", _e)
@@ -10660,8 +10684,25 @@ def _engine_pilot_tick(now_et, today):
                 continue
             if STRIKES_ENABLED and strikes.get((broker_tag, tk, lvl_name), 0) >= STRIKES_PER_LEVEL:
                 continue
-            qty = qty_override if (qty_override and qty_override > 0) else \
-                  _compute_refined_qty(score_by.get(strat.upper()), cur)
+            # Sizing priority:
+            #   1. qty_override on the broker node (set by Refined refresh for top-N strategies)
+            #   2. the rule's quantity node (so 'AAPL_CAM_*: 10 shares' fires 10 shares,
+            #      not the score-band default — covers non-Refined Paper All entries)
+            #   3. score-band default via _compute_refined_qty (legacy alpaca3 path)
+            qty = None
+            if qty_override and qty_override > 0:
+                qty = qty_override
+            else:
+                qn = tgt.get("qty_node")
+                if qn and qn.get("amount", 0) > 0:
+                    unit = qn.get("unit") or "shares"
+                    if unit == "shares":
+                        qty = int(round(qn["amount"]))
+                    elif unit == "dollars" and cur > 0:
+                        qty = max(1, int(round(qn["amount"] / cur)))
+                    # "pct" needs account equity — fall through to score-band for now
+                if qty is None:
+                    qty = _compute_refined_qty(score_by.get(strat.upper()), cur)
             if not qty or qty < 1:
                 continue
             # Mark cooldown FIRST so a slow place_order can't double-fire next tick.
