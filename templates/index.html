@@ -3530,10 +3530,11 @@
         if (!positions.length) { wrap.style.display = 'none'; return; }
         wrap.style.display = '';
 
-        // Index max-hold timers by symbol for fast lookup
-        const timerBySymbol = {};
+        // Index max-hold timers by broker+symbol so concurrent positions in the
+        // same ticker across alpaca/alpaca2/alpaca3 don't overwrite each other.
+        const timerByKey = {};
         for (const t of (data.max_hold_timers || [])) {
-          timerBySymbol[t.symbol.toUpperCase()] = t;
+          timerByKey[`${t.broker}:${t.symbol.toUpperCase()}`] = t;
         }
         const autoClosedSet = new Set((data.auto_closed_symbols || []).map(x => x.symbol.toUpperCase()));
 
@@ -3547,7 +3548,7 @@
           const animal = _rankEmoji((p.strategy || '').toUpperCase());
 
           const sym = (p.symbol || '').toUpperCase();
-          const timer = timerBySymbol[sym];
+          const timer = timerByKey[`${p.broker}:${sym}`];
           let heldCell = '<span style="color:#444">—</span>';
           if (p.entry_time) {
             const heldMins = Math.round((Date.now() - new Date(p.entry_time).getTime()) / 60000);

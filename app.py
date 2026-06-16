@@ -2179,6 +2179,8 @@ def _resolve_position_entry(symbol, broker):
     try:
         if broker == "alpaca2":
             fills = _alpaca2_fills_cache["data"]
+        elif broker == "alpaca3":
+            fills = _alpaca3_fills_cache["data"]
         elif broker == "alpaca":
             fills = _alpaca_fills_cache["data"]
         else:
