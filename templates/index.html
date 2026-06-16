@@ -322,6 +322,7 @@
     .open-pos-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
     .open-pos-table tr:last-child td { border-bottom: none; }
     .open-pos-table tr.refined-row td { background: rgba(96,165,250,0.06); }
+    .open-pos-table tr.kairos-row  td { background: rgba(242,231,172,0.07); }
 
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
@@ -3447,7 +3448,9 @@
           const stratU = strat ? strat.toUpperCase() : null;
           const animal = _rankEmoji(stratU);
           let star = '';
-          if (stratU && _refinedStrategies.has(stratU)) {
+          if (p.broker === 'alpaca3') {
+            star = `<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>`;
+          } else if (stratU && _refinedStrategies.has(stratU)) {
             star = `<span style="color:#60a5fa;margin-right:4px" title="${strat} is in the Refined top-N">★</span>`;
           } else if (stratU && _routedStrategies.has(stratU)) {
             star = `<span style="color:#F2E7AC;margin-right:4px" title="${strat} has a routing rule but isn't Refined">★</span>`;
@@ -3564,10 +3567,13 @@
               heldCell = `<span style="color:${heldColor};font-size:0.78rem">${heldMins}m</span>${timerNote}`;
             }
           }
-          const rowCls = p.broker === 'alpaca2' ? ' class="refined-row"' : '';
+          const isKairos = p.broker === 'alpaca3';
+          const rowCls = isKairos ? ' class="kairos-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : '');
+          const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
+          const brokerLabel = isKairos ? 'kairos' : escHtml(p.broker);
           return `<tr${rowCls}>
-            <td style="font-weight:600;color:#ccc">${animal}${escHtml(p.symbol)}</td>
-            <td style="color:#666;font-size:0.75rem">${escHtml(p.broker)}</td>
+            <td style="font-weight:600;color:#ccc">${animal}${kairosBolt}${escHtml(p.symbol)}</td>
+            <td style="color:#666;font-size:0.75rem">${brokerLabel}</td>
             <td>${stratCell}</td>
             <td>${renderPriceMeter(p)}</td>
             <td style="color:#aaa">${escHtml(p.qty)}</td>

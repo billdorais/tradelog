@@ -158,6 +158,7 @@
     .risk-positions-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
     .risk-positions-table tr:last-child td { border-bottom: none; }
     .risk-positions-table tr.refined-row td { background: rgba(96,165,250,0.06); }
+    .risk-positions-table tr.kairos-row  td { background: rgba(242,231,172,0.07); }
     .pos-pnl-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .pos-pnl-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
   </style>
@@ -1379,7 +1380,11 @@
         barColor = barPct >= 80 ? '#e74c3c' : barPct >= 50 ? '#f39c12' : '#7FE098';
       }
       const tr = document.createElement('tr');
-      if (p.broker === 'alpaca2') tr.classList.add('refined-row');
+      const isKairos = p.broker === 'alpaca3';
+      if (isKairos) tr.classList.add('kairos-row');
+      else if (p.broker === 'alpaca2') tr.classList.add('refined-row');
+      const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
+      const brokerLabel = isKairos ? 'kairos' : p.broker;
       const stratCell = p.strategy
         ? `<span style="color:#aaa;font-family:monospace;font-size:0.72rem">${escHtml(p.strategy)}</span>`
         : '<span style="color:#444;font-size:0.72rem">—</span>';
@@ -1389,8 +1394,8 @@
         if (heldMins >= 0) heldCell = `<span style="color:#888;font-size:0.78rem">${heldMins}m</span>`;
       }
       tr.innerHTML = `
-        <td style="font-weight:600;color:#ccc">${p.symbol}</td>
-        <td style="color:#666;font-size:0.75rem">${p.broker}</td>
+        <td style="font-weight:600;color:#ccc">${kairosBolt}${p.symbol}</td>
+        <td style="color:#666;font-size:0.75rem">${brokerLabel}</td>
         <td>${stratCell}</td>
         <td style="color:#aaa">${p.qty}</td>
         <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
