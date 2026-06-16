@@ -6665,6 +6665,60 @@ def add_broker_node_to_strategies():
     return jsonify({"updated": updated, "skipped": skipped, "not_found": not_found})
 
 
+@app.route("/api/routing/rules/bulk_entry_source", methods=["POST"])
+def bulk_entry_source():
+    """Bulk-set the entry_source node across routing rules. POST JSON:
+        {"value": "kairos"|"tv",
+         "scope": "kairos_eligible"|"all"|"enabled"}
+    kairos_eligible filters to rules whose strategy node matches the engine's
+    detection coverage (R3S3 or R4S4, BREAKOUT or REVERSAL) — adding entry_source
+    to anything else is a no-op since the engine wouldn't watch it anyway."""
+    data  = request.get_json(silent=True) or {}
+    value = (data.get("value") or "kairos").lower()
+    scope = (data.get("scope") or "kairos_eligible").lower()
+    if value not in ("tv", "kairos"):
+        return jsonify({"error": "value must be 'tv' or 'kairos'"}), 400
+
+    def _is_kairos_eligible(strat_pattern):
+        s = (strat_pattern or "").upper()
+        if not ("BREAKOUT" in s or "REVERSAL" in s):
+            return False
+        return ("R3S3" in s) or ("R4S4" in s)
+
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, name, nodes, enabled FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    updated, skipped, ineligible = [], [], []
+    for row in rows:
+        rid     = row[0] if DATABASE_URL else row["id"]
+        rname   = row[1] if DATABASE_URL else row["name"]
+        nraw    = row[2] if DATABASE_URL else row["nodes"]
+        enabled = row[3] if DATABASE_URL else row["enabled"]
+        if scope == "enabled" and not enabled:
+            continue
+        try:    nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
+        except Exception: nodes = []
+        if scope == "kairos_eligible":
+            strat_nodes = [n for n in nodes if n.get("type") == "strategy"]
+            if not strat_nodes or not any(_is_kairos_eligible(n.get("value")) for n in strat_nodes):
+                ineligible.append(rname)
+                continue
+        existing = [n for n in nodes if n.get("type") == "entry_source"]
+        if existing and (existing[0].get("value") or "tv").lower() == value:
+            skipped.append(rname)
+            continue
+        nodes = [n for n in nodes if n.get("type") != "entry_source"]
+        nodes.append({"type": "entry_source", "value": value})
+        cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}",
+                    (json.dumps(nodes), rid))
+        updated.append(rname)
+    conn.commit(); conn.close()
+    log.info("bulk_entry_source: value=%s scope=%s updated=%d skipped=%d ineligible=%d",
+             value, scope, len(updated), len(skipped), len(ineligible))
+    return jsonify({"value": value, "scope": scope,
+                    "updated": updated, "skipped": skipped, "ineligible": ineligible})
+
+
 @app.route("/api/routing/rules/bulk_add_exit_params", methods=["POST"])
 def bulk_add_exit_params():
     """Add a default exit_params node to every routing rule that doesn't already have one."""
@@ -9948,15 +10002,38 @@ def api_tp_sweep():
 # breakout strategies, with the same gates the live engine would use. Read-only:
 # nothing is sent to a broker. Run it alongside TradingView and diff.
 
+def _routing_broker_to_tag(value):
+    """Map a routing-rule broker node value to the broker_tag the engine uses
+    for max-hold / strikes / fills (alpaca, alpaca2, alpaca3). Returns None for
+    unsupported brokers (IB, Coinbase) — the engine is alpaca-only today."""
+    bv = (value or "").lower()
+    if bv in ("alpaca", "alpaca-paper", "alpaca-live"):           return "alpaca"
+    if bv in ("alpaca-paper-2", "alpaca-live-2"):                  return "alpaca2"
+    if bv in ("alpaca-paper-3", "alpaca-live-3"):                  return "alpaca3"
+    return None
+
+
 def _entry_engine_setups():
-    """Active Refined breakout setups, keyed off the FULL per-ticker strategy
-    names (e.g. AAPL_CAM_BREAKOUT_R4S4_..). Routing-rule strategy nodes are
-    ticker-agnostic patterns, so we source names from the Refined snapshot's
-    routed top strategies plus anything that's actually traded on Refined. Each
-    breakout strategy yields a LONG setup at its R level and a SHORT at its S
-    level. Returns [{strategy, ticker, levelpair, side, level_name}]."""
-    names = set()
-    # 1) routed top strategies from the snapshot (in-memory, else DB-persisted)
+    """Active engine setups, keyed off the FULL per-ticker strategy names
+    (e.g. AAPL_CAM_BREAKOUT_R4S4_..). Sources:
+      1) Refined snapshot top-N + strategies that traded on Refined acct2 —
+         implicit target = alpaca3 (the original Kairos engine pilot account).
+      2) Routing rules with an `entry_source=kairos` node — explicit target =
+         that rule's broker(s). Lets the user opt any rule (e.g. SPY R3S3 on
+         alpaca-paper-1) into engine-driven entries via the routing UI.
+
+    Setups are deduplicated by (ticker, level, side, kind); targets accumulate
+    so the same strategy on both alpaca3 (snapshot) AND alpaca (per-rule) fires
+    both. Returns [{strategy, ticker, levelpair, side, level_name, kind,
+                    targets:[{broker_tag, qty_override}]}]."""
+    targets_by_strategy = {}   # strategy_upper -> [{broker_tag, qty_override}]
+
+    def _add_target(strat_u, broker_tag, qty_override=None):
+        existing = targets_by_strategy.setdefault(strat_u, [])
+        if not any(t["broker_tag"] == broker_tag for t in existing):
+            existing.append({"broker_tag": broker_tag, "qty_override": qty_override})
+
+    # Source 1: Refined snapshot — implicit alpaca3 target
     snap = _refined_last_result or {}
     if not snap.get("top_strategies"):
         try:
@@ -9966,18 +10043,41 @@ def _entry_engine_setups():
         except Exception:
             snap = {}
     for nm in (snap.get("top_strategies") or []):
-        names.add(str(nm).upper())
-    # 2) plus any strategy that has actually traded on the Refined account
+        _add_target(str(nm).upper(), "alpaca3")
     try:
         paired = _pair_alpaca_fills_lifo(_get_cached_fills_2())
         for t in paired["closed_clean"]:
             if t.get("strategy"):
-                names.add(str(t["strategy"]).upper())
+                _add_target(str(t["strategy"]).upper(), "alpaca3")
     except Exception as _e:
         log.debug("entry engine fills source: %s", _e)
 
+    # Source 2: routing rules opted into Kairos entries via entry_source node
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            rname = (_row[0] or "").upper()
+            try:    nodes = json.loads(_row[1] or "[]")
+            except Exception: continue
+            if not any(n.get("type") == "entry_source"
+                       and (n.get("value") or "").lower() == "kairos" for n in nodes):
+                continue
+            for nd in nodes:
+                if nd.get("type") != "broker":
+                    continue
+                btag = _routing_broker_to_tag(nd.get("value"))
+                if btag is None:
+                    continue
+                qov = None
+                try:    qov = int(nd.get("qty_override")) if nd.get("qty_override") not in (None, "") else None
+                except (TypeError, ValueError): qov = None
+                _add_target(rname, btag, qov)
+        _rc.close()
+    except Exception as _e:
+        log.debug("entry engine kairos rules: %s", _e)
+
     out, seen = [], set()
-    for s in names:
+    for s, targets in targets_by_strategy.items():
         is_rev = "REVERSAL" in s
         is_brk = "BREAKOUT" in s
         if not (is_rev or is_brk):
@@ -9999,7 +10099,8 @@ def _entry_engine_setups():
                 continue
             seen.add(key)
             out.append({"strategy": s, "ticker": tk, "levelpair": pair,
-                        "side": side, "level_name": lvl, "kind": kind})
+                        "side": side, "level_name": lvl, "kind": kind,
+                        "targets": list(targets)})
     return out
 
 
@@ -10523,55 +10624,72 @@ def _engine_pilot_tick(now_et, today):
         prev_px  = dict(_engine_pilot_state["prev_px"])
         eval_bar = dict(_engine_pilot_state["eval_bar"])
 
+    broker_inst_by_tag = {"alpaca":  alpaca_broker,
+                          "alpaca2": alpaca_broker2,
+                          "alpaca3": alpaca_broker3}
+
     def _enter(s, cur, level, order_px, reason):
-        """Shared: cooldown + strikes gate → size → market order on acct3 → arm
-        trailing stop + max-hold → log. Returns nothing; dedup via cooldown."""
+        """Shared per-target: cooldown + strikes gate → size → market order on
+        the target broker → arm max-hold → log. Loops the setup's targets so a
+        setup that lives in both the Refined snapshot AND a routing rule with
+        entry_source=kairos fires on alpaca3 AND the rule's broker."""
         tk, side, lvl_name = s["ticker"], s["side"], s["level_name"]
         strat, kind = s["strategy"], s.get("kind", "breakout")
-        key = (strat, side, lvl_name)
-        with _engine_pilot_lock:
-            last = _engine_pilot_state["last_entry"].get(key)
-        if last is not None and (now_utc - last).total_seconds() < ENGINE_COOLDOWN_MINS * 60:
-            return
-        if STRIKES_ENABLED and strikes.get(("alpaca3", tk, lvl_name), 0) >= STRIKES_PER_LEVEL:
-            return
-        qty = _compute_refined_qty(score_by.get(strat.upper()), cur)
-        if not qty or qty < 1:
-            return
         is_long = side == "LONG"
-        # Mark cooldown FIRST so a slow place_order can't double-fire next tick.
-        with _engine_pilot_lock:
-            _engine_pilot_state["last_entry"][key] = now_utc
         xp  = _engine_pilot_exit_for(strat, rules)
         act = "BUY" if is_long else "SELL"
-        try:
-            res = alpaca_broker3.place_order(
-                ticker=tk, action=act, quantity=qty, price=None,
-                strategy=strat, is_exit=False,
-                stop_loss=xp["stop_loss"], trail_trigger=xp["trail_trigger"],
-                trail_offset=xp["trail_offset"], trail_mode=xp["trail_mode"],
-                hard_stop_dollars=xp["hard_stop"], ref_price=cur,
-            )
-        except Exception as _pe:
-            log.warning("engine pilot place_order %s %s: %s", act, tk, _pe)
-            return
-        ok = bool(res.get("success"))
-        eff_mhm = xp["max_hold_mins"] or (MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None)
-        if ok and eff_mhm:
-            with _risk_lock:
-                _max_hold_positions[("alpaca3", tk.upper())] = {"entry_time": now_utc, "max_hold_mins": eff_mhm}
-                _auto_closed_symbols.discard(("alpaca3", tk.upper()))
-            _persist_max_hold("alpaca3", tk.upper(), now_utc, eff_mhm)
-        slip = (cur - order_px) if is_long else (order_px - cur)
-        _log_engine_pilot_fill({
-            "ts": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"), "date": today, "ticker": tk,
-            "strategy": strat, "side": side, "kind": kind, "level": round(level, 4),
-            "order_px": round(order_px, 4), "entry_px": round(cur, 4), "qty": qty,
-            "slippage": round(slip, 4), "ok": ok, "order_id": res.get("order_id"),
-            "reason": reason, "detail": None if ok else res.get("error"),
-        })
-        log.info("ENGINE PILOT %s %s x%s @~%.2f (level %.2f, %s) ok=%s",
-                 act, tk, qty, cur, level, reason, ok)
+        targets = s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}]
+        for tgt in targets:
+            broker_tag   = tgt["broker_tag"]
+            qty_override = tgt.get("qty_override")
+            broker_inst  = broker_inst_by_tag.get(broker_tag)
+            if broker_inst is None:
+                continue
+            # Cooldown is per (broker_tag, strategy, side, level) so the same
+            # setup on alpaca + alpaca3 doesn't share a single cooldown clock.
+            key = (broker_tag, strat, side, lvl_name)
+            with _engine_pilot_lock:
+                last = _engine_pilot_state["last_entry"].get(key)
+            if last is not None and (now_utc - last).total_seconds() < ENGINE_COOLDOWN_MINS * 60:
+                continue
+            if STRIKES_ENABLED and strikes.get((broker_tag, tk, lvl_name), 0) >= STRIKES_PER_LEVEL:
+                continue
+            qty = qty_override if (qty_override and qty_override > 0) else \
+                  _compute_refined_qty(score_by.get(strat.upper()), cur)
+            if not qty or qty < 1:
+                continue
+            # Mark cooldown FIRST so a slow place_order can't double-fire next tick.
+            with _engine_pilot_lock:
+                _engine_pilot_state["last_entry"][key] = now_utc
+            try:
+                res = broker_inst.place_order(
+                    ticker=tk, action=act, quantity=qty, price=None,
+                    strategy=strat, is_exit=False,
+                    stop_loss=xp["stop_loss"], trail_trigger=xp["trail_trigger"],
+                    trail_offset=xp["trail_offset"], trail_mode=xp["trail_mode"],
+                    hard_stop_dollars=xp["hard_stop"], ref_price=cur,
+                )
+            except Exception as _pe:
+                log.warning("engine pilot place_order %s %s [%s]: %s", act, tk, broker_tag, _pe)
+                continue
+            ok = bool(res.get("success"))
+            eff_mhm = xp["max_hold_mins"] or (MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None)
+            if ok and eff_mhm:
+                with _risk_lock:
+                    _max_hold_positions[(broker_tag, tk.upper())] = {"entry_time": now_utc, "max_hold_mins": eff_mhm}
+                    _auto_closed_symbols.discard((broker_tag, tk.upper()))
+                _persist_max_hold(broker_tag, tk.upper(), now_utc, eff_mhm)
+            slip = (cur - order_px) if is_long else (order_px - cur)
+            _log_engine_pilot_fill({
+                "ts": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"), "date": today, "ticker": tk,
+                "strategy": strat, "side": side, "kind": kind, "level": round(level, 4),
+                "order_px": round(order_px, 4), "entry_px": round(cur, 4), "qty": qty,
+                "slippage": round(slip, 4), "ok": ok, "order_id": res.get("order_id"),
+                "reason": reason, "detail": None if ok else res.get("error"),
+                "broker": broker_tag,
+            })
+            log.info("ENGINE PILOT %s %s x%s @~%.2f (level %.2f, %s, %s) ok=%s",
+                     act, tk, qty, cur, level, reason, broker_tag, ok)
 
     if hours_ok:
         for s in setups:

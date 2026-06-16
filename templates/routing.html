@@ -76,6 +76,8 @@
     .node-trading_hours   { background: #1a2820; border-color: #7FE098; color: #7FE098; min-width: 120px; }
     .node-crypto_qty      { background: #1e2810; border-color: #F2E7AC; color: #F2E7AC; min-width: 120px; }
     .node-exit_params     { background: #231810; border-color: #c86428; color: #F2C07A; min-width: 120px; height: auto; min-height: 60px; }
+    .node-entry_source-tv     { background: #1a1d2e; border-color: #4a5568; color: #888; min-width: 110px; }
+    .node-entry_source-kairos { background: #2a2310; border-color: #F2C07A; color: #F2E7AC; min-width: 110px; }
 
     .add-node-btn { width: 44px; height: 44px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.3rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px; }
     .add-node-btn:hover { border-color: #7FE098; color: #7FE098; }
@@ -195,7 +197,19 @@
       <div class="page-title">Signal Routing Pipelines</div>
       <div class="page-subtitle">Each pipeline intercepts a TradingView signal and applies your routing rules before placing an order.</div>
     </div>
-    <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn" onclick="bulkApplyKairos()"
+        style="background:transparent;border:1px solid #F2C07A;color:#F2C07A;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
+        title="Add an entry_source=kairos node to every enabled R3S3/R4S4 BREAKOUT/REVERSAL pipeline. TV entry signals for those rules will be suppressed; the server-side engine fires entries instead.">
+        ⚡ Apply Kairos to All Eligible
+      </button>
+      <button class="btn" onclick="bulkRevertKairos()"
+        style="background:transparent;border:1px solid #4a5568;color:#888;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
+        title="Revert all rules to TV entries (sets entry_source=tv on every rule that has one). Undoes the Apply Kairos bulk action.">
+        Revert to TV
+      </button>
+      <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
+    </div>
   </div>
 
   <!-- Risk panel -->
@@ -709,6 +723,7 @@
   <div class="palette-item" onclick="addNode('trading_hours')"><span class="palette-dot" style="background:#2a7898"></span>Trading Hours</div>
   <div class="palette-item" onclick="addNode('crypto_qty')"><span class="palette-dot" style="background:#c8a500"></span>Crypto Dollar Qty (BTC/ETH…)</div>
   <div class="palette-item" onclick="addNode('exit_params')"><span class="palette-dot" style="background:#c86428"></span>Exit Params (Stop / Trail)</div>
+  <div class="palette-item" onclick="addNode('entry_source')"><span class="palette-dot" style="background:#F2C07A"></span>⚡ Entry Source (TV / Kairos)</div>
 </div>
 
 <!-- Edit modal -->
@@ -1688,6 +1703,7 @@
       case 'trading_hours':  return 'node-trading_hours';
       case 'crypto_qty':     return 'node-crypto_qty';
       case 'exit_params':    return 'node-exit_params';
+      case 'entry_source':   return `node-entry_source-${(node.value || 'tv') === 'kairos' ? 'kairos' : 'tv'}`;
       default:               return 'node-strategy';
     }
   }
@@ -1697,6 +1713,7 @@
       strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument',
       mode: 'Mode', broker: 'Broker', ticker: 'Ticker', options_config: 'Options',
       trading_hours: 'Hours', crypto_qty: 'Crypto $', exit_params: 'Exit',
+      entry_source: 'Entry',
     };
     return map[node.type] || node.type;
   }
@@ -1744,6 +1761,8 @@
         if (node.max_hold_mins)  parts.push(`Max ${node.max_hold_mins}m`);
         return parts.join(' · ') || '—';
       }
+      case 'entry_source':
+        return (node.value || 'tv') === 'kairos' ? '⚡ Kairos engine' : 'TradingView (default)';
       default: return '—';
     }
   }
@@ -1751,6 +1770,41 @@
   // -----------------------------------------------------------------------
   // Pipeline CRUD
   // -----------------------------------------------------------------------
+  async function bulkApplyKairos() {
+    if (!confirm(
+      'Add an ⚡ Kairos entry node to every enabled R3S3/R4S4 BREAKOUT/REVERSAL pipeline?\n\n' +
+      'TV entry alerts for those rules will be SUPPRESSED — the server-side engine will fire entries instead.\n' +
+      'Exits (trailing stop, max-hold, TV exit) keep working normally.\n\n' +
+      'You can revert with "Revert to TV".'
+    )) return;
+    try {
+      const res  = await fetch('/api/routing/rules/bulk_entry_source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'kairos', scope: 'kairos_eligible' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'request failed');
+      alert(`Updated ${data.updated.length} pipeline(s).\nSkipped ${data.skipped.length} already set to Kairos.\nIneligible (non-Cam strategies): ${data.ineligible.length}.`);
+      await load();
+    } catch (e) { alert('Bulk apply failed: ' + e.message); }
+  }
+
+  async function bulkRevertKairos() {
+    if (!confirm('Revert every rule with an entry_source node back to TV?')) return;
+    try {
+      const res  = await fetch('/api/routing/rules/bulk_entry_source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'tv', scope: 'all' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'request failed');
+      alert(`Reverted ${data.updated.length} pipeline(s) to TV. ${data.skipped.length} already TV.`);
+      await load();
+    } catch (e) { alert('Bulk revert failed: ' + e.message); }
+  }
+
   async function newPipeline() {
     const res  = await fetch('/api/routing/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Pipeline', nodes: [] }) });
     const rule = await res.json();
@@ -2313,6 +2367,25 @@
           </p>`;
       }
 
+      case 'entry_source': {
+        const ev = (v.value || 'tv') === 'kairos' ? 'kairos' : 'tv';
+        return `
+          <div class="form-group">
+            <label>Entry Source</label>
+            <select id="f_value">
+              <option value="tv"     ${ev==='tv'     ? 'selected':''}>TradingView (default) — TV alert webhook triggers entries</option>
+              <option value="kairos" ${ev==='kairos' ? 'selected':''}>⚡ Kairos engine — server-side tick + bar gates trigger entries</option>
+            </select>
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">
+            When set to <strong style="color:#F2C07A">Kairos</strong>, the engine watches this pipeline's
+            Camarilla R3/R4/S3/S4 levels and fires entries on the pipeline's broker(s). TV alerts for this
+            rule are suppressed (the webhook still receives them, but no order is placed).
+            Only R3S3 / R4S4 BREAKOUT / REVERSAL strategies are detected today — non-Cam rules are a no-op.
+            Exits keep working normally via the rule's exit_params.
+          </p>`;
+      }
+
       default: return '';
     }
   }
@@ -2350,6 +2423,7 @@
       case 'mode':
       case 'broker':
       case 'ticker':
+      case 'entry_source':
         node.value = document.getElementById('f_value').value.trim();
         // Preserve qty_override (set by the Refined refresh) when manually editing a
         // broker node — otherwise clicking through the editor wipes the override.

@@ -258,6 +258,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     ep_trail_offset  = None
     ep_trail_mode    = "dollars"
     ep_max_hold_mins = None
+    entry_source_kairos = False   # set by entry_source node; suppresses TV entry order
 
     matched_rule_id   = None  # set when a routing rule matches; used to flip tv_alert_created
     _routing_rule_count = 0   # total enabled rules; used for whitelist enforcement below
@@ -361,6 +362,11 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     ep_hard_stop     = n.get("hard_stop")
                     _mhm = n.get("max_hold_mins")
                     ep_max_hold_mins = float(_mhm) if _mhm else None
+                elif ntype == "entry_source":
+                    # `kairos` → suppress this rule's TV entry signal; the
+                    # server-side engine fires entries instead. `tv` (default)
+                    # is the legacy behavior.
+                    entry_source_kairos = (n.get("value") or "tv").lower() == "kairos"
             if broker_targets:
                 broker_name = ",".join(t[0] for t in broker_targets)
             app.log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
@@ -541,6 +547,17 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             conn.commit()
             conn.close()
         return jsonify({"status": "skipped", "reason": "exit_params_controls_exit"}), 200
+
+    # entry_source=kairos: the server-side engine fires entries for this rule;
+    # drop the TV entry signal so we don't double-enter. Exits still flow.
+    if not _is_exit and entry_source_kairos:
+        _suppress_msg = "TV entry suppressed — pipeline has entry_source=kairos, server-side engine controls entries"
+        app.log.info("%s: %s %s", _suppress_msg, strategy_name, ticker)
+        if conn:
+            app._update_exec(cur, trade_id, "skipped", _suppress_msg)
+            conn.commit()
+            conn.close()
+        return jsonify({"status": "skipped", "reason": "kairos_controls_entry"}), 200
 
     # 2. Route to broker(s) — supports single or multi-broker pipelines
     exec_status = None
