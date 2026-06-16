@@ -10654,6 +10654,54 @@ def api_engine_pilot_status():
     })
 
 
+@app.route("/api/engine_pilot/probe_bars")
+def api_engine_pilot_probe_bars():
+    """Direct probe of _fetch_5m_rth_objs for a single ticker, returning the
+    exception/traceback if it fails. Used to diagnose why bars are coming back
+    empty for every ticker in the live engine pilot."""
+    import traceback as _tb, datetime as _dt
+    tk   = (request.args.get("ticker") or "AAPL").upper()
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    date = (request.args.get("date") or _dt.datetime.now(et).date().isoformat())
+    out  = {"ticker": tk, "date": date,
+            "alpaca_broker": "configured" if alpaca_broker is not None else "None"}
+    if alpaca_broker is not None:
+        out["has_key"] = bool(getattr(alpaca_broker, "_key", None))
+        out["has_secret"] = bool(getattr(alpaca_broker, "_secret", None))
+    try:
+        bars = _fetch_5m_rth_objs(tk, date)
+        out["bars_count"] = len(bars)
+        if bars:
+            b = bars[0]
+            out["first_bar"] = {"ts": b.timestamp.isoformat(), "o": b.open, "h": b.high, "l": b.low, "c": b.close}
+            b2 = bars[-1]
+            out["last_bar"] = {"ts": b2.timestamp.isoformat(), "o": b2.open, "h": b2.high, "l": b2.low, "c": b2.close}
+    except Exception as _e:
+        out["error"] = str(_e)
+        out["trace"] = _tb.format_exc()
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        day   = _dt.date.fromisoformat(date)
+        start = _dt.datetime(day.year, day.month, day.day, tzinfo=et) - _dt.timedelta(days=5)
+        end   = _dt.datetime(day.year, day.month, day.day, 16, 0, tzinfo=et)
+        client = StockHistoricalDataClient(api_key=alpaca_broker._key, secret_key=alpaca_broker._secret)
+        req    = StockBarsRequest(symbol_or_symbols=tk, timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+                                  start=start, end=end)
+        raw = client.get_stock_bars(req)
+        bars = list(raw[tk]) if tk in raw else []
+        out["raw_bars_count"] = len(bars)
+        if bars:
+            out["raw_first"] = str(bars[0].timestamp)
+            out["raw_last"]  = str(bars[-1].timestamp)
+    except Exception as _e:
+        out["raw_error"] = str(_e)
+        out["raw_trace"] = _tb.format_exc()
+    return jsonify(out)
+
+
 @app.route("/api/engine_pilot/debug")
 def api_engine_pilot_debug():
     """Live snapshot of every armed setup with per-gate status. Use to diagnose
