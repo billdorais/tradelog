@@ -2801,18 +2801,26 @@ def broker_close_all():
 
 @app.route("/api/alpaca/close/<symbol>", methods=["POST"])
 def alpaca_close_position(symbol):
-    """Manually close a single Alpaca position by symbol."""
+    """Manually close a single Alpaca position by symbol. Pass ?account=2 or
+    ?account=3 to target the Refined or Kairos engine paper account; default
+    is account 1 (Paper All). Uses the broker's robust close_position helper
+    (two-pass cancel + market-order fallback) so stuck trailing stops don't
+    block the close."""
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
     if token != WEBHOOK_TOKEN:
         abort(401)
-    if alpaca_broker is None:
-        return jsonify({"success": False, "error": "Alpaca broker not initialised"}), 400
+    account = request.args.get("account") or "1"
+    broker, broker_tag, _label, _ = _alpaca_account_ctx(account)
+    if broker is None:
+        return jsonify({"success": False, "error": f"Alpaca {_label} not configured"}), 400
     symbol = symbol.upper()
-    result = alpaca_broker.close_position(symbol)
+    result = broker.close_position(symbol)
     if result.get("success"):
-        log.info("Manual close: %s position closed via UI", symbol)
-        global _alpaca_fills_cache
-        _alpaca_fills_cache = {"data": [], "ts": 0.0}  # force fresh fetch on next load
+        log.info("Manual close: %s position closed via UI [%s]", symbol, broker_tag)
+        global _alpaca_fills_cache, _alpaca2_fills_cache, _alpaca3_fills_cache
+        if   broker_tag == "alpaca":  _alpaca_fills_cache  = {"data": [], "ts": 0.0}
+        elif broker_tag == "alpaca2": _alpaca2_fills_cache = {"data": [], "ts": 0.0}
+        elif broker_tag == "alpaca3": _alpaca3_fills_cache = {"data": [], "ts": 0.0}
         return jsonify(result)
     return jsonify(result), 400
 
