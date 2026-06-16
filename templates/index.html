@@ -508,6 +508,7 @@
       <span class="status" id="status">Loading...</span>
       <button onclick="loadTrades()" style="background:#517356;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem">Refresh</button>
       <button id="eodToggleBtn" onclick="toggleEODClose()" style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">EOD Close: ...</button>
+      <button id="maxHoldToggleBtn" onclick="toggleMaxHoldEnforcement()" title="Pause/resume the engine's max-hold auto-close. Use to stop retrying when Alpaca paper is degraded." style="background:transparent;border:1px solid #888;color:#888;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Max-Hold: ...</button>
       <button id="closeAllBtn" onclick="closeAllPositions()" style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:0.85rem">Close All Positions</button>
       <button class="danger" onclick="clearDatabase()">Clear DB</button>
     </div>
@@ -2979,6 +2980,35 @@
       updateEODBtn(data.eod_close_enabled);
     }
 
+    function updateMaxHoldBtn(enabled) {
+      const btn = document.getElementById('maxHoldToggleBtn');
+      if (enabled) {
+        btn.textContent = 'Max-Hold: ON';
+        btn.style.borderColor = '#7FE098';
+        btn.style.color = '#7FE098';
+      } else {
+        btn.textContent = 'Max-Hold: OFF';
+        btn.style.borderColor = '#e74c3c';
+        btn.style.color = '#e74c3c';
+      }
+    }
+
+    async function toggleMaxHoldEnforcement() {
+      try {
+        const cur  = await fetch('/api/risk/status').then(r => r.json());
+        const want = !cur.max_hold_enforcement;
+        if (!want && !confirm('Disable max-hold auto-close? Open positions past their timer will NOT be closed by the engine until you re-enable.')) return;
+        const res = await fetch('/api/risk/limit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ max_hold_enforcement: want }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const next = await fetch('/api/risk/status').then(r => r.json());
+        updateMaxHoldBtn(next.max_hold_enforcement);
+      } catch (e) { alert('Max-hold toggle failed: ' + e.message); }
+    }
+
     function toggleNavMenu() {
       const m = document.getElementById('navMenu');
       m.style.display = m.style.display === 'none' ? 'block' : 'none';
@@ -3545,6 +3575,7 @@
     async function loadOpenPositionsTable() {
       try {
         const data = await fetch('/api/risk/status').then(r => r.json());
+        if (typeof data.max_hold_enforcement === 'boolean') updateMaxHoldBtn(data.max_hold_enforcement);
         const positions   = data.positions || [];
         const wrap        = document.getElementById('openPositionsSection');
         const tbody       = document.getElementById('openPositionsTbody');

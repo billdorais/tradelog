@@ -75,6 +75,11 @@ STRIKES_PER_LEVEL     = int(os.environ.get("STRIKES_PER_LEVEL", "2"))
 # max-hold timer gets capped at this. 0 = disabled. A safety net so a routing
 # rule missing max_hold_mins can't let a trade run forever.
 MAX_HOLD_MINS         = float(os.environ.get("MAX_HOLD_MINS", "0"))
+# Killswitch for max-hold auto-close. When False, timers still tick and the
+# dashboard still flags over-limit positions, but the broker close_position
+# call is skipped. Use to pause the retry loop when Alpaca paper is degraded
+# and our cancels are piling up pending_cancel locks. Defaults to ON.
+MAX_HOLD_ENFORCEMENT  = os.environ.get("MAX_HOLD_ENFORCEMENT", "1") == "1"
 # Global take-profit (both accounts). Close any open position once its unrealized
 # gain reaches the dollar target OR the % target (whichever hits first). Managed by
 # the position monitor — mirror image of the MAX_POSITION_LOSS cap. 0 = disabled.
@@ -1155,6 +1160,16 @@ def _check_max_hold_exits():
             _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
             continue
 
+        if not MAX_HOLD_ENFORCEMENT:
+            # Killswitch engaged — log once per position, leave timer in place so
+            # the dashboard still surfaces the over-limit state, but skip the
+            # actual broker call so we stop generating cancels.
+            if fail_count == 0:
+                log.warning("MAX HOLD enforcement DISABLED — %s [%s] %.1f min elapsed "
+                            "(limit %.0f) not closed", symbol, broker_tag,
+                            elapsed_mins, info["max_hold_mins"])
+            _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
+            continue
         log.info("MAX HOLD: %s [%s] — %.1f min elapsed (limit %.0f min) — closing",
                  symbol, broker_tag, elapsed_mins, info["max_hold_mins"])
         try:
@@ -2325,6 +2340,7 @@ def risk_status():
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
         "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
         "max_hold_mins":       MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None,
+        "max_hold_enforcement": MAX_HOLD_ENFORCEMENT,
         "take_profit_dollars": TAKE_PROFIT_DOLLARS if TAKE_PROFIT_DOLLARS > 0 else None,
         "take_profit_pct":     TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else None,
     })
@@ -2373,7 +2389,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -2497,6 +2513,12 @@ def risk_set_limit():
         _save_setting("MAX_HOLD_MINS", f"{MAX_HOLD_MINS:g}")
         log.info("MAX_HOLD_MINS set to %g", MAX_HOLD_MINS)
         changed.append("max_hold_mins")
+    if "max_hold_enforcement" in data:
+        MAX_HOLD_ENFORCEMENT = bool(data["max_hold_enforcement"])
+        _update_env_file("MAX_HOLD_ENFORCEMENT", "1" if MAX_HOLD_ENFORCEMENT else "0")
+        _save_setting("MAX_HOLD_ENFORCEMENT", "1" if MAX_HOLD_ENFORCEMENT else "0")
+        log.info("MAX_HOLD_ENFORCEMENT set to %s", MAX_HOLD_ENFORCEMENT)
+        changed.append("max_hold_enforcement")
     if "take_profit_dollars" in data:
         try:
             TAKE_PROFIT_DOLLARS = max(0.0, float(data["take_profit_dollars"] or 0))
@@ -12531,7 +12553,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -12611,6 +12633,10 @@ def _restore_risk_settings():
             log.info("Restored MAX_HOLD_MINS=%g from DB", MAX_HOLD_MINS)
         except (TypeError, ValueError):
             pass
+    stored = _load_setting("MAX_HOLD_ENFORCEMENT")
+    if stored is not None:
+        MAX_HOLD_ENFORCEMENT = stored == "1"
+        log.info("Restored MAX_HOLD_ENFORCEMENT=%s from DB", MAX_HOLD_ENFORCEMENT)
     stored = _load_setting("TAKE_PROFIT_DOLLARS")
     if stored is not None:
         try:
