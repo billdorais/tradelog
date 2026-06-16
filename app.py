@@ -1956,6 +1956,7 @@ def api_alpaca_account():
             _, entry_t = _resolve_position_entry(p.symbol, broker_tag)
             pos_list.append({
                 "symbol":          p.symbol,
+                "broker":          broker_tag,
                 "qty":             float(p.qty or 0),
                 "market_value":    round(mv, 2),
                 "unrealized_pnl":  round(upnl, 2),
