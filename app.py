@@ -9242,6 +9242,7 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from alpaca.data.enums import DataFeed
         from types import SimpleNamespace
         import datetime as _dt
         if alpaca_broker is None:
@@ -9254,9 +9255,12 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
         # ~5 calendar days back for EMA warm-up (covers weekends/holidays).
         start = _dt.datetime(day.year, day.month, day.day, tzinfo=et) - _dt.timedelta(days=5)
         end   = _dt.datetime(day.year, day.month, day.day, 16, 0, tzinfo=et)
+        # IEX feed: free tier doesn't permit recent SIP — defaulting to SIP returns
+        # 403 ("subscription does not permit querying recent SIP data") and silently
+        # empties bars, which previously blocked every engine breakout at cbar=None.
         req   = StockBarsRequest(symbol_or_symbols=ticker.upper(),
                                  timeframe=TimeFrame(5, TimeFrameUnit.Minute),
-                                 start=start, end=end)
+                                 start=start, end=end, feed=DataFeed.IEX)
         bars = list(client.get_stock_bars(req)[ticker.upper()])
         k = 2.0 / (ema_period + 1)
         ema, atr, prev_close, ema_hist, out = None, None, None, [], []
