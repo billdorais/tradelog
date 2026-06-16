@@ -10654,6 +10654,112 @@ def api_engine_pilot_status():
     })
 
 
+@app.route("/api/engine_pilot/debug")
+def api_engine_pilot_debug():
+    """Live snapshot of every armed setup with per-gate status. Use to diagnose
+    why the engine isn't firing — shows current price, prior completed 5m bar
+    H/L/C/EMA, and each gate's pass/fail for breakouts and reversals."""
+    import datetime as _dt
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    now_et  = _dt.datetime.now(et)
+    today   = now_et.date().isoformat()
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+
+    setups   = _entry_engine_setups()
+    tickers  = sorted({s["ticker"] for s in setups})
+    levels   = _engine_pilot_levels(tickers, today)
+    bars     = _engine_pilot_bars(tickers, today)
+    prices   = _engine_pilot_prices(tickers)
+    rules    = _engine_pilot_rules()
+    hours_ok = _account_hours_ok("alpaca2", now_et=now_et)
+    score_by = {}
+    for _k in ("top_scored", "on_deck_scored"):
+        for it in (_refined_last_result or {}).get(_k, []):
+            nm = (it.get("name") or "").upper()
+            if nm:
+                score_by[nm] = it.get("score")
+
+    with _engine_pilot_lock:
+        prev_px_snap   = dict(_engine_pilot_state["prev_px"])
+        eval_bar_snap  = dict(_engine_pilot_state["eval_bar"])
+        last_entry_n   = len(_engine_pilot_state["last_entry"])
+        pilot_date     = _engine_pilot_state["date"]
+
+    lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    bar_count = {tk: len(bars.get(tk) or []) for tk in tickers}
+    rows = []
+    for s in setups:
+        tk, side, lvl_name = s["ticker"], s["side"], s["level_name"]
+        kind = s.get("kind", "breakout")
+        is_long = side == "LONG"
+        cur     = prices.get(tk)
+        level   = (levels.get(tk) or {}).get(lkey.get(lvl_name))
+        cbar    = _engine_last_complete_bar(bars.get(tk), now_utc)
+        order_px = None
+        beyond = prior_ok = ema_ok = None
+        if level is not None:
+            order_px = (level + ENGINE_PILOT_BUFFER) if is_long else (level - ENGINE_PILOT_BUFFER)
+        if cur is not None and order_px is not None:
+            beyond = (cur >= order_px) if is_long else (cur <= order_px)
+        if cbar is not None and level is not None and kind == "breakout":
+            prior_ok = (float(cbar.close) <= level) if is_long else (float(cbar.close) >= level)
+            ema_ok   = _engine_ema_ok(cbar, is_long, "breakout")
+        score = score_by.get((s.get("strategy") or "").upper())
+        qty   = _compute_refined_qty(score, cur) if cur else None
+        cbar_dict = None
+        if cbar is not None:
+            cbar_dict = {
+                "ts":    cbar.timestamp.astimezone(et).strftime("%H:%M"),
+                "close": float(cbar.close),
+                "high":  float(cbar.high),
+                "low":   float(cbar.low),
+                "ema":   getattr(cbar, "ema", None),
+                "ema2":  getattr(cbar, "ema2", None),
+                "atr":   getattr(cbar, "atr", None),
+            }
+        rows.append({
+            "ticker": tk, "strategy": s.get("strategy"), "side": side,
+            "level_name": lvl_name, "kind": kind,
+            "level": round(level, 4) if level is not None else None,
+            "order_px": round(order_px, 4) if order_px is not None else None,
+            "cur": round(cur, 4) if cur is not None else None,
+            "beyond": beyond, "prior_ok": prior_ok, "ema_ok": ema_ok,
+            "cbar": cbar_dict,
+            "bars_n": bar_count.get(tk, 0),
+            "score": round((score or 0) * 100) if score is not None else None,
+            "qty":   qty,
+        })
+
+    fail_summary = {}
+    for r in rows:
+        if r["kind"] != "breakout":
+            continue
+        if r["level"] is None:                       fail_summary["no_level"]   = fail_summary.get("no_level", 0) + 1
+        elif r["cbar"] is None:                      fail_summary["no_cbar"]    = fail_summary.get("no_cbar", 0) + 1
+        elif r["cur"] is None:                       fail_summary["no_cur"]     = fail_summary.get("no_cur", 0) + 1
+        elif not r["beyond"]:                        fail_summary["not_beyond"] = fail_summary.get("not_beyond", 0) + 1
+        elif not r["prior_ok"]:                      fail_summary["prior_above_level"] = fail_summary.get("prior_above_level", 0) + 1
+        elif not r["ema_ok"]:                        fail_summary["ema_block"]  = fail_summary.get("ema_block", 0) + 1
+        elif not r["qty"] or r["qty"] < 1:           fail_summary["qty_zero"]   = fail_summary.get("qty_zero", 0) + 1
+        else:                                        fail_summary["would_fire"] = fail_summary.get("would_fire", 0) + 1
+
+    return jsonify({
+        "now_et":          now_et.strftime("%Y-%m-%d %H:%M:%S"),
+        "enabled":         ENGINE_PILOT_ENABLED,
+        "configured":      alpaca_broker3 is not None,
+        "hours_ok":        hours_ok,
+        "buffer":          ENGINE_PILOT_BUFFER,
+        "pilot_date":      pilot_date,
+        "last_entry_n":    last_entry_n,
+        "prev_px_n":       len(prev_px_snap),
+        "eval_bar_n":      len(eval_bar_snap),
+        "bars_per_ticker": bar_count,
+        "fail_summary":    fail_summary,
+        "rows":            rows,
+    })
+
+
 @app.route("/api/engine_pilot/toggle", methods=["POST"])
 def api_engine_pilot_toggle():
     global ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER
