@@ -786,6 +786,9 @@
       <button id="feedTabRefined" onclick="switchFeedTab('refined')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B">
         Refined</button>
+      <button id="feedTabKairos" onclick="switchFeedTab('kairos')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
+        ⚡ Kairos</button>
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Signals</button>
@@ -859,14 +862,24 @@
     let allIBExecs     = [];
     let allAlpacaExecs  = [];
     let allAlpaca2Execs = [];      // Refined account (alpaca-paper-2) fills, fetched alongside the main set
+    let allAlpaca3Execs = [];      // Kairos engine (alpaca-paper-3) fills
     let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
     let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
+    let allAlpaca3Positions = [];   // authoritative open positions from Alpaca account 3 (Kairos)
 
-    function _currentAlpacaExecs()     { return feedTab === 'refined' ? allAlpaca2Execs     : allAlpacaExecs; }
-    function _currentAlpacaPositions() { return feedTab === 'refined' ? allAlpaca2Positions : allAlpacaPositions; }
+    function _currentAlpacaExecs() {
+      if (feedTab === 'kairos')  return allAlpaca3Execs;
+      if (feedTab === 'refined') return allAlpaca2Execs;
+      return allAlpacaExecs;
+    }
+    function _currentAlpacaPositions() {
+      if (feedTab === 'kairos')  return allAlpaca3Positions;
+      if (feedTab === 'refined') return allAlpaca2Positions;
+      return allAlpacaPositions;
+    }
     let selectedStrategy   = '';
     // Per-tab strategy selections so Paper All and Paper Refined filter independently
-    const _tabSelections = { alpaca: new Set(), refined: new Set(), signals: new Set() };
+    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), signals: new Set() };
     let selectedStrategies = _tabSelections['refined'];  // active set, points into _tabSelections
     let _allStrategyNames  = [];
     let _cachedFullStats   = null;
@@ -939,8 +952,8 @@
             '3'
           );
           loadAccount();
-          feedTab = 'refined'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('refined');
+          feedTab = 'kairos'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('kairos');
           renderTable(allTrades, selectedStrategy);
         } else if (tab === 'signals') {
           if (label) label.textContent = 'Cumulative P&L from TV signals';
@@ -2578,22 +2591,24 @@
     function _syncFeedTabButtons(tab) {
       const inactive = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
       const active   = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B';
-      document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? active : inactive;
-      document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? active : inactive;
-      document.getElementById('feedTabTV').style.cssText      = tab === 'tv'      ? active : inactive;
+      const activeK  = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #F2C07A;background:rgba(242,192,122,0.12);color:#F2C07A';
+      document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? active  : inactive;
+      document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? active  : inactive;
+      document.getElementById('feedTabKairos').style.cssText  = tab === 'kairos'  ? activeK : inactive;
+      document.getElementById('feedTabTV').style.cssText      = tab === 'tv'      ? active  : inactive;
     }
 
     function switchFeedTab(tab) {
       feedTab            = tab;
       _feedFilter.tv     = (tab === 'tv');
-      _feedFilter.alpaca = (tab !== 'tv');   // 'alpaca' and 'refined' both render Alpaca rows
+      _feedFilter.alpaca = (tab !== 'tv');   // 'alpaca', 'refined', 'kairos' all render Alpaca rows
       _syncFeedTabButtons(tab);
 
       if (tab === 'tv') renderTVFeed();
       else renderTable(allTrades, selectedStrategy);
 
       // Sync chart tab — update buttons + trigger chart directly (no switchTab call to avoid loop)
-      const chartTab = tab === 'tv' ? 'signals' : (tab === 'refined' ? 'refined' : 'alpaca');
+      const chartTab = tab === 'tv' ? 'signals' : (tab === 'kairos' ? 'kairos' : (tab === 'refined' ? 'refined' : 'alpaca'));
       if (activeTab !== chartTab) {
         activeTab = chartTab;
         selectedStrategies = _tabSelections[chartTab] || (_tabSelections[chartTab] = new Set());
@@ -2612,10 +2627,12 @@
           applyEquityFilter().catch(e => console.error('chart sync:', e))
             .finally(() => spinner.style.display = 'none');
         } else {
-          const isRefined = chartTab === 'refined';
-          const labelText = isRefined
-            ? 'Cumulative realized P&L from Alpaca Refined fills'
-            : 'Cumulative realized P&L from Alpaca fills';
+          const acct = chartTab === 'kairos' ? '3' : chartTab === 'refined' ? '2' : null;
+          const labelText = chartTab === 'kairos'
+            ? 'Cumulative realized P&L from Kairos engine fills (acct 3)'
+            : chartTab === 'refined'
+              ? 'Cumulative realized P&L from Alpaca Refined fills'
+              : 'Cumulative realized P&L from Alpaca fills';
           document.getElementById('ibEquityNote').style.display = 'flex';
           document.getElementById('ibEquityNote').textContent   = labelText + '.';
           document.getElementById('equityChartLabel').textContent = labelText;
@@ -2623,7 +2640,7 @@
           renderAlpacaStats(
             document.getElementById('equityFromDate').value,
             document.getElementById('equityToDate').value,
-            isRefined ? '2' : null
+            acct
           );
           spinner.style.display = 'none';
         }
@@ -2777,15 +2794,17 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpacaPosRes, alpaca2PosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
           fetch('/api/ib/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/trades?account=3').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=2').then(r => r.json()).catch(() => ({positions: []})),
+          fetch('/api/alpaca/positions?account=3').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
@@ -2794,8 +2813,10 @@
         allIBExecs       = ibExecsRes;
         allAlpacaExecs   = alpacaExecsRes;
         allAlpaca2Execs  = Array.isArray(alpaca2ExecsRes) ? alpaca2ExecsRes : [];
+        allAlpaca3Execs  = Array.isArray(alpaca3ExecsRes) ? alpaca3ExecsRes : [];
         allAlpacaPositions  = Array.isArray(alpacaPosRes)  ? alpacaPosRes  : (alpacaPosRes.positions  || []);
         allAlpaca2Positions = Array.isArray(alpaca2PosRes) ? alpaca2PosRes : (alpaca2PosRes.positions || []);
+        allAlpaca3Positions = Array.isArray(alpaca3PosRes) ? alpaca3PosRes : (alpaca3PosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
