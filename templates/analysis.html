@@ -434,6 +434,7 @@
         <tbody id="tickerBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
       </table>
     </div>
+    <div id="excludedTickerPanel" style="display:none;margin-top:14px;padding:12px 16px;background:#0f1117;border:1px solid #2a2d3e;border-radius:8px"></div>
   </div>
 
   <!-- Trade time analysis: 30-min bucket stats, cumulative-if-stopped curve, ticker×time heatmap -->
@@ -880,6 +881,7 @@
   async function load() {
     await _loadExcluded();
     renderExcludedPanel();
+    renderExcludedTickerPanel();
     const fromDate = document.getElementById('analysisFrom').value;
     const toDate   = document.getElementById('analysisTo').value;
     const fromTime = document.getElementById('analysisFromTime').value;
@@ -2134,11 +2136,51 @@
   }
 
   let _excludedStrategies = new Set();
+  let _excludedTickers    = new Set();
   async function _loadExcluded() {
     try {
-      const list = await fetch('/api/strategies/excluded').then(r => r.json());
-      _excludedStrategies = new Set(list);
+      const [strats, tks] = await Promise.all([
+        fetch('/api/strategies/excluded').then(r => r.json()),
+        fetch('/api/tickers/excluded').then(r => r.json()),
+      ]);
+      _excludedStrategies = new Set(strats);
+      _excludedTickers    = new Set((tks || []).map(t => t.toUpperCase()));
     } catch(e) {}
+  }
+  function _strategyTicker(name) {
+    return (name || '').split('_', 1)[0].toUpperCase();
+  }
+  async function excludeTicker(ticker) {
+    const tk = (ticker || '').toUpperCase();
+    if (!confirm(`Blacklist ${tk} from the leaderboard?\n\nAll ${tk} strategies will be excluded from Refined scoring on the next refresh. You can restore it from the excluded panel below.`)) return;
+    await fetch('/api/tickers/excluded', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ticker: tk})
+    });
+    await _loadExcluded();
+    renderStratTable(_lastStratMap);
+    renderTickerTable(_lastTickerMap);
+    renderExcludedTickerPanel();
+  }
+  async function restoreTicker(ticker) {
+    await fetch(`/api/tickers/excluded/${encodeURIComponent(ticker)}`, {method: 'DELETE'});
+    await _loadExcluded();
+    renderStratTable(_lastStratMap);
+    renderTickerTable(_lastTickerMap);
+    renderExcludedTickerPanel();
+  }
+  function renderExcludedTickerPanel() {
+    const panel = document.getElementById('excludedTickerPanel');
+    if (!panel) return;
+    if (!_excludedTickers.size) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.innerHTML = `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin-bottom:8px">${_excludedTickers.size} ticker${_excludedTickers.size===1?'':'s'} blacklisted from leaderboard</div>`
+      + [..._excludedTickers].sort().map(t =>
+        `<div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-bottom:1px solid #1a1d2e;font-size:0.8rem">
+          <span style="flex:1;color:#888;font-weight:600;font-family:monospace">${esc(t)}</span>
+          <button onclick="restoreTicker('${esc(t)}')" style="background:transparent;border:1px solid #2a2d3e;color:#7FE098;border-radius:5px;padding:2px 8px;font-size:0.72rem;cursor:pointer">Restore</button>
+        </div>`
+      ).join('');
   }
   async function excludeStrategy(name) {
     if (!confirm(`Exclude "${name}" from the leaderboard and Refined scoring?\n\nYou can restore it from the excluded panel below.`)) return;
@@ -2231,7 +2273,8 @@
     const maxPnl = Object.values(map).reduce(
       (m, s) => (s.total_pnl || 0) > 0 ? Math.max(m, s.total_pnl) : m, 0);
     const all = Object.entries(map)
-      .filter(([name]) => !_excludedStrategies.has(name))
+      .filter(([name]) => !_excludedStrategies.has(name)
+                       && !_excludedTickers.has(_strategyTicker(name)))
       .sort((a, b) => _refinedScore(b[1], maxPnl) - _refinedScore(a[1], maxPnl));
     const q    = (document.getElementById('stratFilter')?.value || '').trim().toLowerCase();
     const rows = q ? all.filter(([name]) => name.toLowerCase().includes(q)) : all;
@@ -2288,7 +2331,9 @@
   function renderTickerTable(map) {
     _lastTickerMap = map;
     const body = document.getElementById('tickerBody');
-    const all  = Object.entries(map).sort((a, b) => (b[1].sharpe ?? -999) - (a[1].sharpe ?? -999));
+    const all  = Object.entries(map)
+      .filter(([ticker]) => !_excludedTickers.has(ticker.toUpperCase()))
+      .sort((a, b) => (b[1].sharpe ?? -999) - (a[1].sharpe ?? -999));
     const q    = (document.getElementById('tickerFilter')?.value || '').trim().toLowerCase();
     const rows = q ? all.filter(([ticker]) => ticker.toLowerCase().includes(q)) : all;
     const countEl = document.getElementById('tickerFilterCount');
@@ -2299,7 +2344,7 @@
     if (!rows.length) { body.innerHTML = `<tr><td colspan="7" class="empty">No tickers match "${esc(q)}".</td></tr>`; return; }
     body.innerHTML = rows.map(([ticker, s]) => `
       <tr class="drill" data-kind="ticker" data-key="${esc(ticker)}" title="Click to see round-trip pairs">
-        <td class="name">${esc(ticker)}</td>
+        <td class="name">${esc(ticker)}<button onclick="event.stopPropagation();excludeTicker('${esc(ticker)}')" title="Blacklist ${esc(ticker)} from leaderboard (excludes ALL ${esc(ticker)} strategies)" style="margin-left:8px;background:transparent;border:none;color:#333;cursor:pointer;font-size:0.8rem;padding:0;line-height:1" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#333'">✕</button></td>
         <td>${s.trades}</td>
         <td class="${s.win_rate >= 50 ? 'pos' : 'neg'}">${s.win_rate}%</td>
         <td>${pfBadge(s.profit_factor)}</td>

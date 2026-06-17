@@ -5903,11 +5903,14 @@ def _compute_strategy_stats(days=45, from_date=None):
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date)
     closed_clean = paired["closed_clean"]
 
-    excluded = _load_excluded_strategies()
+    excluded         = _load_excluded_strategies()
+    excluded_tickers = _load_excluded_tickers()
     strat_map = {}
     last_trade_at = {}   # strategy -> most recent exit_time ISO string
     for c in closed_clean:
         if c["strategy"] in excluded:
+            continue
+        if excluded_tickers and _strategy_to_ticker(c["strategy"]) in excluded_tickers:
             continue
         strat_map.setdefault(c["strategy"], []).append(
             (c["pnl"], float(c.get("qty") or 1))
@@ -6470,6 +6473,17 @@ def _save_excluded_strategies(excl_set):
     _save_setting("EXCLUDED_STRATEGIES", json.dumps(sorted(excl_set)))
 
 
+def _load_excluded_tickers():
+    raw = _load_setting("EXCLUDED_TICKERS", "[]")
+    try:
+        return set(t.upper() for t in json.loads(raw))
+    except Exception:
+        return set()
+
+def _save_excluded_tickers(excl_set):
+    _save_setting("EXCLUDED_TICKERS", json.dumps(sorted(excl_set)))
+
+
 @app.route("/api/strategies/excluded", methods=["GET"])
 def get_excluded_strategies():
     return jsonify(sorted(_load_excluded_strategies()))
@@ -6494,6 +6508,33 @@ def remove_excluded_strategy(name):
     excl.discard(name)
     _save_excluded_strategies(excl)
     log.info("Strategy restored to leaderboard: %s", name)
+    return jsonify({"excluded": sorted(excl)})
+
+
+@app.route("/api/tickers/excluded", methods=["GET"])
+def get_excluded_tickers():
+    return jsonify(sorted(_load_excluded_tickers()))
+
+
+@app.route("/api/tickers/excluded", methods=["POST"])
+def add_excluded_ticker():
+    data = request.get_json(silent=True) or {}
+    ticker = (data.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"error": "ticker required"}), 400
+    excl = _load_excluded_tickers()
+    excl.add(ticker)
+    _save_excluded_tickers(excl)
+    log.info("Ticker blacklisted from leaderboard: %s", ticker)
+    return jsonify({"excluded": sorted(excl)})
+
+
+@app.route("/api/tickers/excluded/<ticker>", methods=["DELETE"])
+def remove_excluded_ticker(ticker):
+    excl = _load_excluded_tickers()
+    excl.discard(ticker.upper())
+    _save_excluded_tickers(excl)
+    log.info("Ticker restored to leaderboard: %s", ticker.upper())
     return jsonify({"excluded": sorted(excl)})
 
 
