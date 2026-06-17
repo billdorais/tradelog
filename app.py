@@ -6445,7 +6445,13 @@ def _refined_scheduler_loop():
         if now.hour == 16 and now.minute == 15 and _ran_today != today:
             _ran_today = today
             try:
-                _do_refresh_refined(days=20)  # rolling 20-day window with 10-day recency blend
+                # Use the user-configured days window (persisted via REFINED_DAYS)
+                # so the daily 4:15 PM scheduler stays in sync with the manual
+                # Refresh Now control. Falls back to 20 if nothing saved.
+                _sched_days_raw = _load_setting("REFINED_DAYS")
+                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 20
+                except (TypeError, ValueError): _sched_days = 20
+                _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
                 log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
@@ -6541,16 +6547,30 @@ def remove_excluded_ticker(ticker):
 @app.route("/api/routing/rules/refresh_refined", methods=["GET"])
 def get_refined_status():
     anchor = _load_setting("REFINED_FROM_DATE") or ""
+    days   = _load_setting("REFINED_DAYS")
+    try:    days = int(days) if days else 20
+    except (TypeError, ValueError): days = 20
     if _refined_last_run:
-        return jsonify({**_refined_last_result, "anchor_from_date": anchor})
-    return jsonify({"run_at": None, "anchor_from_date": anchor})
+        return jsonify({**_refined_last_result, "anchor_from_date": anchor, "days": days})
+    return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
 
 
 @app.route("/api/routing/rules/refresh_refined", methods=["POST"])
 def refresh_refined():
     data = request.get_json(silent=True) or {}
     n         = int(data.get("n", 20))
-    days      = int(data.get("days", 30))
+    # Persist the days field whenever it's explicitly in the payload so the
+    # scheduler picks up the same value on its 4:15 PM run. Falls back to the
+    # saved value (or 20) otherwise.
+    if "days" in data:
+        try:    days = max(1, int(data["days"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "days must be an integer ≥ 1"}), 400
+        _save_setting("REFINED_DAYS", str(days))
+    else:
+        stored_days = _load_setting("REFINED_DAYS")
+        try:    days = int(stored_days) if stored_days else 20
+        except (TypeError, ValueError): days = 20
     if "from_date" in data:
         # Caller is explicitly setting (or clearing) the anchor — persist it
         # so the daily scheduler picks it up on subsequent runs.

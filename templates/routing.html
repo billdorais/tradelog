@@ -1472,7 +1472,9 @@
       const el       = document.getElementById('refinedLastRun');
       const topEl    = document.getElementById('refinedTopList');
       const fromEl   = document.getElementById('refinedFromDate');
+      const daysEl   = document.getElementById('refinedDays');
       if (fromEl && data.anchor_from_date) fromEl.value = data.anchor_from_date;
+      if (daysEl  && data.days)            daysEl.value  = data.days;
       if (!el) return;
       const anchorNote = data.anchor_from_date
         ? ` · anchor ${data.anchor_from_date}`
