@@ -108,6 +108,10 @@ ENGINE_ATR_MULT       = float(os.environ.get("ENGINE_ATR_MULT", "0.25"))  # reje
 # TV / entry_source — does NOT suppress TV. Format: "tag:shares[,tag:shares]".
 # e.g. "alpaca:10" = also fire Paper All at a flat 10 shares. Empty = acct3 only.
 ENGINE_PILOT_EXTRA    = os.environ.get("ENGINE_PILOT_EXTRA", "")
+# Accounts the engine fires ALL enabled breakout/reversal pipelines on (not just
+# the top-20 leaderboard), at FLAT share sizing. Same format. e.g. "alpaca:10" =
+# Paper All trades every pipeline at 10 shares via the engine. Empty = off.
+ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -10112,12 +10116,10 @@ def api_tp_sweep():
 # breakout strategies, with the same gates the live engine would use. Read-only:
 # nothing is sent to a broker. Run it alongside TradingView and diff.
 
-def _engine_extra_accounts():
-    """Parse ENGINE_PILOT_EXTRA ("tag:shares,...") into [(broker_tag, flat_shares)] —
-    accounts the engine fires the leaderboard on at FLAT sizing, on top of acct3@band.
-    Decoupled from TV: these targets are added directly, no entry_source/suppression."""
+def _parse_engine_accounts(spec):
+    """Parse a "tag:shares,..." spec into [(broker_tag, flat_shares)]."""
     out = []
-    for part in (ENGINE_PILOT_EXTRA or "").split(","):
+    for part in (spec or "").split(","):
         part = part.strip()
         if not part or ":" not in part:
             continue
@@ -10128,6 +10130,14 @@ def _engine_extra_accounts():
         if tag in ("alpaca", "alpaca2", "alpaca3") and sh >= 1:
             out.append((tag, sh))
     return out
+
+def _engine_extra_accounts():
+    """Accounts that fire the LEADERBOARD (top-20) at flat sizing, on top of acct3@band."""
+    return _parse_engine_accounts(ENGINE_PILOT_EXTRA)
+
+def _engine_all_accounts():
+    """Accounts that fire ALL enabled breakout/reversal pipelines at flat sizing."""
+    return _parse_engine_accounts(ENGINE_PILOT_ALL)
 
 
 def _routing_broker_to_tag(value):
@@ -10232,6 +10242,26 @@ def _entry_engine_setups():
         _rc.close()
     except Exception as _e:
         log.debug("entry engine kairos rules: %s", _e)
+
+    # Source 3: ENGINE_PILOT_ALL accounts fire EVERY enabled breakout/reversal
+    # pipeline (not just the leaderboard) at flat sizing — e.g. Paper All trades
+    # all pipelines @ 10 shares. Only full per-ticker strategy names (skip patterns).
+    _all_accts = _engine_all_accounts()
+    if _all_accts:
+        try:
+            _rc2 = get_db()
+            for _row in _rc2.execute("SELECT nodes FROM routing_rules WHERE enabled=1").fetchall():
+                try:    nodes = json.loads(_row[0] or "[]")
+                except Exception: continue
+                for nd in nodes:
+                    if nd.get("type") == "strategy":
+                        su = (nd.get("value") or "").strip().upper()
+                        if su and "*" not in su and ("BREAKOUT" in su or "REVERSAL" in su):
+                            for xtag, xsh in _all_accts:
+                                _add_target(su, xtag, qty_override=xsh)
+            _rc2.close()
+        except Exception as _e:
+            log.debug("entry engine all-pipelines: %s", _e)
 
     out, seen = [], set()
     for s, targets in targets_by_strategy.items():
