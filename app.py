@@ -9462,12 +9462,14 @@ def _find_entry(bars, level, side, rule, buffer, ema_filter=True, start=1):
     return None
 
 
-def _find_reversal_entry(bars, level, side, rule, ema_filter=True, atr_mult=0.25, start=1):
+def _find_reversal_entry(bars, level, side, rule, ema_filter=True, atr_mult=0.25, start=1, retest_bars=4):
     """Reversal entry (bar_index, entry_price) at/after `start`, or None. LONG =
     bounce off support (level below price), SHORT = reject resistance (above).
       rule 'reject' = wick into the level + close back out, wick >= atr_mult*ATR(14),
                       EMA trend-aligned with slope — the live behaviour, enter at close.
       rule 'touch'  = limit fill at the level on first touch (no close-back/wick).
+      rule 'retest' = confirmed reject (as above), THEN enter on the first pullback
+                      back to the level within `retest_bars` bars — the second touch.
     EMA gate uses EMA + slope; the intrabar 'touch' uses the prior bar (no look-ahead)."""
     n = len(bars)
     if n < 2 or not level:
@@ -9481,6 +9483,29 @@ def _find_reversal_entry(bars, level, side, rule, ema_filter=True, atr_mult=0.25
         if is_long:
             return b.close > e and (e2 is None or e > e2)   # close above EMA, EMA rising
         return b.close < e and (e2 is None or e < e2)        # close below EMA, EMA falling
+
+    if rule == "retest":
+        # Find a confirmed reject, then enter on the first pullback to the level
+        # within retest_bars bars after it (enter at the level on the retest).
+        rej = None
+        for i in range(max(1, start), n):
+            b = bars[i]
+            if not _ema_ok(b):
+                continue
+            atr = getattr(b, "atr", None) or 0.0
+            hi, lo, cl = float(b.high), float(b.low), float(b.close)
+            if is_long and lo <= level and cl > level and (level - lo) >= atr * atr_mult:
+                rej = i; break
+            if not is_long and hi >= level and cl < level and (hi - level) >= atr * atr_mult:
+                rej = i; break
+        if rej is None:
+            return None
+        for k in range(rej + 1, min(n, rej + 1 + max(1, retest_bars))):
+            if is_long and float(bars[k].low) <= level:
+                return (k, level)
+            if not is_long and float(bars[k].high) >= level:
+                return (k, level)
+        return None
 
     for i in range(max(1, start), n):
         b, prev = bars[i], bars[i - 1]
@@ -9504,7 +9529,8 @@ def _find_reversal_entry(bars, level, side, rule, ema_filter=True, atr_mult=0.25
 
 
 def _replay_entries(bars, level, side, rule, buffer, trail0, trigger, max_hold,
-                    ema_filter, multi, kind="breakout", cooldown_bars=0, atr_mult=0.25):
+                    ema_filter, multi, kind="breakout", cooldown_bars=0, atr_mult=0.25,
+                    retest_bars=4):
     """Replay a rule over one day. Returns a list of (pnl_per_share, offset). When
     multi is True, re-enters after each exit (breakout: next fresh cross; reversal:
     next trigger after the cooldown); otherwise just the first entry of the day."""
@@ -9513,7 +9539,7 @@ def _replay_entries(bars, level, side, rule, buffer, trail0, trigger, max_hold,
     while start < n and guard < 40:
         guard += 1
         if kind == "reversal":
-            hit = _find_reversal_entry(bars, level, side, rule, ema_filter, atr_mult, start)
+            hit = _find_reversal_entry(bars, level, side, rule, ema_filter, atr_mult, start, retest_bars)
         else:
             hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter, start=start)
         if not hit:
@@ -9720,6 +9746,15 @@ def api_simulate_reversal_test():
         except Exception: pass
     if not atr_mults:
         atr_mults = [0.25, 0.3, 0.4, 0.5, 0.6]
+    # Optional pullback-and-retest sweep: confirmed reject, then enter on the first
+    # pullback back to the level within N bars — sweep N to find the best window.
+    retest_bars_list = []
+    for _x in (request.args.get("retest_bars") or "").split(","):
+        try:
+            _rb = int(float(_x))
+            if _rb >= 1: retest_bars_list.append(_rb)
+        except Exception:
+            pass
 
     # Per-strategy exit params from the live Signal Router (same loader as breakout).
     rule_settings = {}
@@ -9793,6 +9828,7 @@ def api_simulate_reversal_test():
     lkey  = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     from collections import defaultdict as _dd
     agg_reject = _dd(lambda: {"pnls": [], "offsets": []})   # (pair, atr_mult) -> bucket
+    agg_retest = _dd(lambda: {"pnls": [], "offsets": []})   # (pair, retest_bars) -> bucket
     agg_touch  = {"pnls": [], "offsets": []}                # baseline (no wick/ATR)
     n_setups = 0
     for (tk, date, strat, side, lvl) in setups:
@@ -9811,6 +9847,13 @@ def api_simulate_reversal_test():
                                                kind="reversal", cooldown_bars=COOLDOWN, atr_mult=am):
                 agg_reject[(pair, am)]["pnls"].append(pnl)
                 agg_reject[(pair, am)]["offsets"].append(offset)
+        for rb in retest_bars_list:
+            for pnl, offset in _replay_entries(bars, level, side, "retest", 0.0, trail0, trigger,
+                                               max_hold, ema_filter, multi,
+                                               kind="reversal", cooldown_bars=COOLDOWN,
+                                               atr_mult=0.25, retest_bars=rb):
+                agg_retest[(pair, rb)]["pnls"].append(pnl)
+                agg_retest[(pair, rb)]["offsets"].append(offset)
         for pnl, offset in _replay_entries(bars, level, side, "touch", 0.0, trail0, trigger,
                                            max_hold, ema_filter, multi,
                                            kind="reversal", cooldown_bars=COOLDOWN, atr_mult=0.25):
@@ -9836,6 +9879,17 @@ def api_simulate_reversal_test():
     out = [{"rule": f"reject ({_base})", **_summ(_rejbase)},
            {"rule": "touch", **_summ(agg_touch)}]
 
+    # Retest-bars sweep (only when requested via ?retest_bars=)
+    retest_by_pair, retest_overall = {}, []
+    if retest_bars_list:
+        retest_by_pair = {
+            "R3S3": [{"retest_bars": rb, **_summ(agg_retest[("R3S3", rb)])} for rb in retest_bars_list],
+            "R4S4": [{"retest_bars": rb, **_summ(agg_retest[("R4S4", rb)])} for rb in retest_bars_list],
+        }
+        retest_overall = [{"retest_bars": rb, **_summ(
+            {"pnls": agg_retest[("R3S3", rb)]["pnls"] + agg_retest[("R4S4", rb)]["pnls"]})}
+            for rb in retest_bars_list]
+
     return jsonify({
         "account": "Refined" if use2 else "Paper All", "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
@@ -9844,6 +9898,9 @@ def api_simulate_reversal_test():
         "atr_mults": atr_mults,
         "sweep_by_pair": {"R3S3": _sweep("R3S3"), "R4S4": _sweep("R4S4")},
         "sweep_overall": sweep_overall,
+        "retest_bars_list": retest_bars_list,
+        "retest_sweep_by_pair": retest_by_pair,
+        "retest_sweep_overall": retest_overall,
     })
 
 

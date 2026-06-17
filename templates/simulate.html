@@ -498,7 +498,8 @@
         <input type="checkbox" id="rvMulti" checked> All entries
       </label>
       <button class="run-btn" onclick="runReversalTest()" style="padding:8px 18px">&#9654; Test Reversals</button>
-      <span style="font-size:0.72rem;color:#666;align-self:center">Reject (your live: wick in + close back + ≥0.25·ATR + 5-bar cooldown) vs Touch (limit at the level).</span>
+      <button class="run-btn" onclick="runRetestSweep()" style="padding:8px 18px;background:#3a7d44">&#8635; Sweep Retest Bars</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Reject vs Touch; or sweep a pullback-and-retest (reject → re-enter on the 2nd touch within N bars).</span>
     </div>
     <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Reversal strategies only — LONG bounces off S, SHORT rejects at R. Per-share P&amp;L (qty 1); exits = each strategy's Signal Router params; exits modeled on 5-min bars.</div>
     <div id="reversalTestResult" style="margin-top:14px"></div>
@@ -840,6 +841,67 @@
         + sweepTable('REVERSAL R4S4 (your focus)', '#F2C07A', r4)
         + sweepTable('REVERSAL R3S3', '#a78bfa', (d.sweep_by_pair && d.sweep_by_pair.R3S3) || [])
         + sweepTable('Both families combined', '#7bb3d6', d.sweep_overall || [])
+        + `<div style="font-size:0.85rem;margin-top:12px">${verdict}</div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  // Pullback-and-retest sweep: reject confirmed, then re-enter on the 2nd touch within N bars.
+  async function runRetestSweep() {
+    const out = document.getElementById('reversalTestResult');
+    const p = new URLSearchParams({
+      account: document.getElementById('account').value,
+      from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
+      ema: document.getElementById('rvEma').checked ? '1' : '0',
+      multi: document.getElementById('rvMulti').checked ? '1' : '0',
+      retest_bars: '1,2,3,4,5,6,8,10',
+    });
+    out.innerHTML = '<span style="color:#888">Sweeping the retest window 1 → 10 bars…</span>';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    try {
+      const r = await fetch('/api/simulate/reversal_test?' + p);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+
+      const sweepTable = (title, color, rows) => {
+        if (!rows || !rows.length) return '';
+        const best = Math.max(...rows.map(x => x.total_pnl));
+        const body = rows.map(x => {
+          const isBest = x.trades > 0 && x.total_pnl === best;
+          return `<tr style="${isBest ? 'background:rgba(127,224,152,0.10)' : ''}">`
+            + `<td style="padding:6px 12px;color:${isBest ? '#7FE098' : '#ccc'};font-weight:${isBest ? '700' : '400'}">≤ ${x.retest_bars} bars${isBest ? ' ★' : ''}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#aaa">${x.trades}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
+        }).join('');
+        return `<div style="margin-top:12px"><div style="font-weight:700;color:${color};margin-bottom:3px">${title}</div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem"><thead><tr>`
+          + `<th style="text-align:left;padding:5px 12px;color:#555;font-size:0.68rem;text-transform:uppercase">Retest window</th>`
+          + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Trades</th>`
+          + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Win %</th>`
+          + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Total/sh</th>`
+          + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Avg/trade</th>`
+          + `</tr></thead><tbody>${body}</tbody></table></div></div>`;
+      };
+
+      const r4   = (d.retest_sweep_by_pair && d.retest_sweep_by_pair.R4S4) || [];
+      const rej  = (d.rules || []).find(x => (x.rule || '').startsWith('reject')) || {total_pnl: 0};
+      const bestR4 = r4.reduce((a, b) => (b.total_pnl > (a ? a.total_pnl : -1e9) ? b : a), null);
+      let verdict = '';
+      if (bestR4 && bestR4.trades > 0) {
+        const vs = bestR4.total_pnl - (rej.total_pnl || 0);
+        verdict = vs > 0
+          ? `<span style="color:#7FE098">✓ On R4S4, waiting for a pullback and entering the retest within <strong>${bestR4.retest_bars} bars</strong> made ${money(bestR4.total_pnl)}/sh — ${money(vs)} better than entering on the initial reject (${money(rej.total_pnl)}).</span>`
+          : `<span style="color:#888">On R4S4, the retest didn't beat entering on the initial reject (${money(rej.total_pnl)}/sh) — the pullback wait costs more than it saves.</span>`;
+      } else {
+        verdict = `<span style="color:#888">Few/no retest entries — price rarely pulled back to the level after rejecting. The reject rarely gets a 2nd touch.</span>`;
+      }
+      const skip = d.skipped_breakout ? ` · ${d.skipped_breakout} breakout trades excluded` : '';
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:6px">${d.account} · ${d.n_setups} reversal setups across ${d.n_tickers} tickers · ${d.from || '—'} → ${d.to || '—'} · 8-EMA ${d.ema_filter ? 'ON' : 'OFF'} · per-share P&amp;L · entry on the retest (2nd touch) after a confirmed reject · reject baseline ${money(rej.total_pnl)}/sh${skip}</div>`
+        + sweepTable('REVERSAL R4S4 (your focus)', '#F2C07A', r4)
+        + sweepTable('REVERSAL R3S3', '#a78bfa', (d.retest_sweep_by_pair && d.retest_sweep_by_pair.R3S3) || [])
+        + sweepTable('Both families combined', '#7bb3d6', d.retest_sweep_overall || [])
         + `<div style="font-size:0.85rem;margin-top:12px">${verdict}</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
