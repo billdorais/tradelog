@@ -887,7 +887,7 @@
           const isBest = x.trades > 0 && x.total_pnl === best;
           const applyBtn = (filter && x.trades > 0)
             ? `<button onclick="applyRetest(${x.retest_bars}, '${filter}')" title="Set retest=${x.retest_bars} bars on these reversal rules"
-                 style="background:transparent;border:1px solid #2a4a35;color:#5a9e6a;border-radius:5px;padding:2px 9px;font-size:0.7rem;cursor:pointer;font-family:inherit">→ rules</button>`
+                 style="background:${isBest ? 'rgba(127,224,152,0.18)' : 'transparent'};border:1px solid ${isBest ? '#7FE098' : '#2a4a35'};color:${isBest ? '#7FE098' : '#5a9e6a'};font-weight:${isBest ? '700' : '400'};border-radius:5px;padding:2px 9px;font-size:0.7rem;cursor:pointer;font-family:inherit">${isBest ? '★ apply best' : '→ rules'}</button>`
             : '';
           return `<tr style="${isBest ? 'background:rgba(127,224,152,0.10)' : ''}">`
             + `<td style="padding:6px 12px;color:${isBest ? '#7FE098' : '#ccc'};font-weight:${isBest ? '700' : '400'}">≤ ${x.retest_bars} bars${isBest ? ' ★' : ''}</td>`
