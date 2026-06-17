@@ -117,7 +117,8 @@ _risk_lock            = threading.Lock()
 # Phase-2 engine pilot runtime state. `entered` = setup keys already armed today
 # (one entry per setup/day); `prev_px` = last seen price per ticker for fresh-cross
 # detection; `fills` mirrors the persisted slippage log for the status panel.
-_engine_pilot_state = {"date": None, "last_entry": {}, "eval_bar": {}, "prev_px": {}, "fills": []}
+_engine_pilot_state = {"date": None, "last_entry": {}, "eval_bar": {}, "prev_px": {},
+                       "pending_retest": {}, "fills": []}
 _engine_pilot_lock  = threading.Lock()
 
 _IB_ENABLED = os.environ.get("IB_ENABLED", "0") == "1"
@@ -6559,17 +6560,22 @@ def bulk_update_exit_params():
     trail_trigger        = data.get("trail_trigger")
     stop_loss            = data.get("stop_loss")
     max_hold_mins        = data.get("max_hold_mins")
+    retest_bars          = data.get("retest_bars")     # reversal entry: pullback window (bars)
     clear_trail          = bool(data.get("clear_trail", False))
     clear_trail_trigger  = bool(data.get("clear_trail_trigger", False))
     clear_max_hold       = bool(data.get("clear_max_hold", False))
+    clear_retest_bars    = bool(data.get("clear_retest_bars", False))
     name_contains        = (data.get("name_contains") or "").strip().lower()
-    if trail_offset is None and trail_trigger is None and stop_loss is None and max_hold_mins is None and not clear_trail and not clear_trail_trigger and not clear_max_hold:
+    if (trail_offset is None and trail_trigger is None and stop_loss is None and max_hold_mins is None
+            and retest_bars is None and not clear_trail and not clear_trail_trigger
+            and not clear_max_hold and not clear_retest_bars):
         trail_offset = 0.15
     try:
         if trail_offset  is not None: trail_offset  = float(trail_offset)
         if trail_trigger is not None: trail_trigger = float(trail_trigger)
         if stop_loss     is not None: stop_loss     = float(stop_loss)
         if max_hold_mins is not None: max_hold_mins = float(max_hold_mins)
+        if retest_bars   is not None: retest_bars   = int(float(retest_bars))
     except (TypeError, ValueError):
         return jsonify({"error": "exit param values must be numbers"}), 400
     if mode not in ("percent", "dollars"):
@@ -6601,6 +6607,7 @@ def bulk_update_exit_params():
         if trail_trigger is not None: ep["trail_trigger"] = trail_trigger
         if stop_loss     is not None: ep["stop_loss"]     = stop_loss
         if max_hold_mins is not None: ep["max_hold_mins"] = max_hold_mins
+        if retest_bars   is not None: ep["retest_bars"]   = retest_bars
         if clear_trail:
             ep.pop("trail_offset",  None)
             ep.pop("trail_trigger", None)
@@ -6608,6 +6615,8 @@ def bulk_update_exit_params():
             ep.pop("trail_trigger", None)
         if clear_max_hold:
             ep.pop("max_hold_mins", None)
+        if clear_retest_bars:
+            ep.pop("retest_bars", None)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()
@@ -10605,6 +10614,7 @@ def _engine_pilot_rules():
                     "stop_loss":     float(ep.get("stop_loss") or 0) or None,
                     "hard_stop":     float(ep.get("hard_stop") or 0) or None,
                     "max_hold_mins": int(float(ep.get("max_hold_mins"))) if ep.get("max_hold_mins") else None,
+                    "retest_bars":   int(float(ep.get("retest_bars"))) if ep.get("retest_bars") else 0,
                 }
         _rc.close()
     except Exception as _e:
@@ -10624,7 +10634,7 @@ def _engine_pilot_exit_for(strategy, rules):
                 r = rv
                 break
     return r or {"trail_offset": None, "trail_trigger": None, "trail_mode": "dollars",
-                 "stop_loss": None, "hard_stop": None, "max_hold_mins": None}
+                 "stop_loss": None, "hard_stop": None, "max_hold_mins": None, "retest_bars": 0}
 
 def _engine_pilot_levels(tickers, date):
     if _engine_pilot_cache["levels_date"] != date:
@@ -10825,7 +10835,26 @@ def _engine_pilot_tick(now_et, today):
                     continue
                 _enter(s, cur, level, order_px, "breakout cross")
 
-            else:  # reversal — evaluate the newly-completed bar for a reject
+            else:  # reversal
+                skey = (s["strategy"], side, lvl_name)
+                rb   = _engine_pilot_exit_for(s["strategy"], rules).get("retest_bars") or 0
+                # 1) Pending retest (rule has retest_bars>0): fill on a pullback BACK to
+                #    the level within the window (long bounce: price comes down to S;
+                #    short reject: price comes up to R), else let it expire.
+                with _engine_pilot_lock:
+                    pend = _engine_pilot_state["pending_retest"].get(skey)
+                if pend is not None:
+                    if now_utc >= pend["expiry"]:
+                        with _engine_pilot_lock:
+                            _engine_pilot_state["pending_retest"].pop(skey, None)
+                    else:
+                        retest_hit = (cur <= level) if is_long else (cur >= level)
+                        if retest_hit:
+                            with _engine_pilot_lock:
+                                _engine_pilot_state["pending_retest"].pop(skey, None)
+                            _enter(s, cur, level, level, "reversal retest")
+                            continue
+                # 2) Detect a NEW reject on the just-completed bar (once per bar).
                 if cbar is None or eval_bar.get(tk) == cbar.timestamp:
                     continue
                 atr = getattr(cbar, "atr", None) or 0.0
@@ -10835,7 +10864,13 @@ def _engine_pilot_tick(now_et, today):
                 reject = (is_long and lo <= level and cl > level and (level - lo) >= atr * ENGINE_ATR_MULT) or \
                          (not is_long and hi >= level and cl < level and (hi - level) >= atr * ENGINE_ATR_MULT)
                 if reject:
-                    _enter(s, cur, level, level, "reversal reject")
+                    if rb > 0:
+                        from datetime import timedelta as _td
+                        with _engine_pilot_lock:
+                            _engine_pilot_state["pending_retest"][skey] = {
+                                "level": level, "expiry": cbar.timestamp + _td(minutes=5 * (rb + 1))}
+                    else:
+                        _enter(s, cur, level, level, "reversal reject")
 
     # Persist prev_px (cross detection) and mark each ticker's latest complete bar
     # as evaluated so a reject bar only fires once.
@@ -10901,10 +10936,11 @@ def _engine_pilot_loop():
                     today = now.date().isoformat()
                     with _engine_pilot_lock:
                         if _engine_pilot_state["date"] != today:
-                            _engine_pilot_state["date"]       = today
-                            _engine_pilot_state["last_entry"] = {}
-                            _engine_pilot_state["eval_bar"]   = {}
-                            _engine_pilot_state["prev_px"]    = {}
+                            _engine_pilot_state["date"]           = today
+                            _engine_pilot_state["last_entry"]     = {}
+                            _engine_pilot_state["eval_bar"]       = {}
+                            _engine_pilot_state["prev_px"]        = {}
+                            _engine_pilot_state["pending_retest"] = {}
                     _engine_pilot_tick(now, today)
                 # Reconcile actual fill prices (runs any time the pilot is on so the
                 # last fills of the session get their real prints after close too).

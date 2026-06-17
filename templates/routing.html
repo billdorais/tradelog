@@ -609,6 +609,18 @@
             title="Remove max hold limit from matching pipelines">
       clear max hold
     </button>
+    <button onclick="bulkSetRetestBars()"
+            style="background:transparent;border:1px solid #F2C07A;color:#F2C07A;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Set the reversal retest window (in 5-min bars) on ALL reversal pipelines — engine enters the 2nd touch after the reject">
+      ↻ retest → reversals
+    </button>
+    <button onclick="bulkClearRetestBars()"
+            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Remove the retest window from all reversal pipelines (revert to entering on the reject)">
+      clear retest
+    </button>
     <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
       <input id="bulkHoursStart" type="time" value="09:30"
              style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
@@ -1759,6 +1771,7 @@
         if (node.trail_trigger)  parts.push(`Trigger ${sym}${node.trail_trigger}`);
         if (node.trail_offset)   parts.push(`Trail ${sym}${node.trail_offset}`);
         if (node.max_hold_mins)  parts.push(`Max ${node.max_hold_mins}m`);
+        if (node.retest_bars)    parts.push(`Retest ${node.retest_bars}b`);
         return parts.join(' · ') || '—';
       }
       case 'entry_source':
@@ -1921,6 +1934,32 @@
     const data = await res.json();
     await load();
     alert(`Done — cleared max hold from ${data.updated} pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkSetRetestBars() {
+    const bars = parseInt(prompt('Retest window in 5-min bars for ALL reversal rules.\n\nThe engine will wait for a pullback back to the level within N bars after the reject, then enter the 2nd touch (instead of entering on the reject).', '6'));
+    if (!bars || bars < 1) return;
+    if (!confirm(`Set retest = ${bars} bars (≈ ${bars*5} min) on every REVERSAL pipeline's exit_params?\n\nReversal entries will fire on the pullback/retest instead of the initial reject. Breakouts are unaffected.`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ retest_bars: bars, name_contains: 'reversal' }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — set retest ${bars} bars on ${data.updated} reversal pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkClearRetestBars() {
+    if (!confirm('Remove the retest window from all reversal rules (revert to entering on the initial reject)?')) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clear_retest_bars: true, name_contains: 'reversal' }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — cleared retest from ${data.updated} reversal pipeline${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkSetHours() {
@@ -2360,6 +2399,10 @@
             <label>Max Hold <span style="color:#555;font-weight:normal">min — Kairos closes the position after this many minutes; 0 = disabled</span></label>
             <input id="f_ep_max_hold_mins" type="number" min="0" step="1" value="${v.max_hold_mins ?? ''}" placeholder="e.g. 10">
           </div>
+          <div class="form-group">
+            <label>Retest bars <span style="color:#F2C07A">(reversal entry)</span> <span style="color:#555;font-weight:normal">— engine waits for a pullback back to the level within N bars after the reject, then enters the 2nd touch. Blank/0 = enter on the reject. 5-min bars.</span></label>
+            <input id="f_ep_retest_bars" type="number" min="0" step="1" value="${v.retest_bars ?? ''}" placeholder="e.g. 6">
+          </div>
           <p style="font-size:0.78rem;color:#555;margin-top:-8px">
             Kairos attaches a broker-side trailing stop to each BUY/SELL entry.
             <strong style="color:#888">Trail Offset</strong> is used if set; otherwise <strong style="color:#888">Stop Loss</strong> is the trailing distance.
@@ -2465,6 +2508,7 @@
         node.trail_trigger  = parseFloat(document.getElementById('f_ep_trail_trigger').value)  || null;
         node.trail_offset   = parseFloat(document.getElementById('f_ep_trail_offset').value)   || null;
         node.max_hold_mins  = parseFloat(document.getElementById('f_ep_max_hold_mins').value)  || null;
+        node.retest_bars    = parseInt(document.getElementById('f_ep_retest_bars').value)      || null;
         break;
     }
 
