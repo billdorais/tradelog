@@ -517,6 +517,7 @@
       <button class="modal-close" onclick="closePairs()">Close</button>
     </div>
     <div id="pairsSnapNote" style="display:none;padding:6px 16px;background:#2a2000;border-bottom:1px solid #5a4a00;font-size:0.82rem;color:#F2E7AC"></div>
+    <div id="pairs20dStrip" style="display:none;padding:8px 16px;border-bottom:1px solid #1e2130;font-size:0.82rem;color:#888;background:#0d0f1a"></div>
 
     <!-- Current stop settings + sweep panel -->
     <div id="pairsStopStrip" style="display:none;padding:10px 16px;border-bottom:1px solid #1e2130;display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:#0d0f1a">
@@ -2043,12 +2044,47 @@
     _renderTimeOfDayBreakdown(clean);
     // Load current stop settings for this strategy (only for strategy-level drills)
     if (kind === 'strategy') {
-      const acct = (document.querySelector('.src-btn.active') || {}).dataset?.acct || '2';
+      const acct = activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca' ? '1' : '2';
       _loadStrategyStops(key, acct);
+      _load20dStats(key, acct);
     } else {
       document.getElementById('pairsStopStrip').style.display = 'none';
       document.getElementById('strategySweepPanel').style.display = 'none';
       document.getElementById('pairsTodBreakdown').style.display = 'none';
+      document.getElementById('pairs20dStrip').style.display = 'none';
+    }
+  }
+
+  // Last-20-day win/loss + profit factor for one strategy — fetched independently
+  // of the page's date filter so it's always a true trailing-20-day read.
+  async function _load20dStats(strategy, acct) {
+    const el = document.getElementById('pairs20dStrip');
+    el.style.display = '';
+    el.innerHTML = 'Last 20 days: <span style="color:#555">loading…</span>';
+    try {
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const from  = new Date(Date.now() - 20 * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const qs = new URLSearchParams({ account: acct, from_date: from, to_date: today });
+      const d  = await fetch('/api/alpaca/analysis?' + qs).then(r => r.json());
+      const s  = (d.per_strategy || {})[strategy];
+      if (!s || !s.trades) {
+        el.innerHTML = `Last 20 days (${from} → ${today}): <span style="color:#555">no closed trades</span>`;
+        return;
+      }
+      const wins   = s.wins != null ? s.wins : Math.round((s.win_rate || 0) / 100 * s.trades);
+      const losses = s.trades - wins;
+      const pf     = s.profit_factor == null ? '∞' : s.profit_factor;
+      const pfCol  = (s.profit_factor == null || s.profit_factor >= 1) ? '#7FE098' : '#ef5350';
+      const pnlCol = (s.total_pnl || 0) >= 0 ? '#7FE098' : '#ef5350';
+      el.innerHTML =
+        `<span style="color:#666">Last 20 days:</span> `
+        + `<strong style="color:#ccc">${wins}W–${losses}L</strong> `
+        + `(<span style="color:${(s.win_rate || 0) >= 50 ? '#7FE098' : '#ef5350'}">${s.win_rate}%</span>) · `
+        + `PF <strong style="color:${pfCol}">${pf}</strong> · `
+        + `<strong style="color:${pnlCol}">${fmt(s.total_pnl)}</strong> · `
+        + `<span style="color:#888">${s.trades} trades</span>`;
+    } catch (e) {
+      el.innerHTML = 'Last 20 days: <span style="color:#ef5350">error loading</span>';
     }
   }
 
