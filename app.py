@@ -9926,6 +9926,18 @@ def api_simulate_reversal_test():
     if not setups:
         return jsonify({"error": "No reversal round-trips in that range."}), 404
 
+    # Average real traded size per strategy (from the actual fills) — used to turn
+    # the per-share replay into a "total dollars you'd have made at your sizing".
+    _qty_by_strat = {}
+    for t in trades:
+        _su = (t.get("strategy") or "").upper()
+        if "REVERSAL" not in _su:
+            continue
+        _q = abs(float(t.get("qty") or 0))
+        if _q > 0:
+            _qty_by_strat.setdefault(_su, []).append(_q)
+    _avg_qty = {s: max(1, round(sum(v) / len(v))) for s, v in _qty_by_strat.items()}
+
     bars_map, lv_map = {}, {}
     with _cf.ThreadPoolExecutor(max_workers=8) as pool:
         bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
@@ -9939,9 +9951,9 @@ def api_simulate_reversal_test():
 
     lkey  = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     from collections import defaultdict as _dd
-    agg_reject = _dd(lambda: {"pnls": [], "offsets": []})   # (pair, atr_mult) -> bucket
-    agg_retest = _dd(lambda: {"pnls": [], "offsets": []})   # (pair, retest_bars) -> bucket
-    agg_touch  = {"pnls": [], "offsets": []}                # baseline (no wick/ATR)
+    agg_reject = _dd(lambda: {"pnls": [], "offsets": [], "dollars": []})  # (pair, atr_mult)
+    agg_retest = _dd(lambda: {"pnls": [], "offsets": [], "dollars": []})  # (pair, retest_bars)
+    agg_touch  = {"pnls": [], "offsets": [], "dollars": []}               # baseline
     n_setups = 0
     for (tk, date, strat, side, lvl) in setups:
         bars  = bars_map.get((tk, date)) or []
@@ -9949,6 +9961,7 @@ def api_simulate_reversal_test():
         if not bars or not level:
             continue
         pair = "R4S4" if "R4S4" in strat else "R3S3"
+        shares = _avg_qty.get(strat, 1)   # strategy's typical real size
         ex_set = _match_exit(strat)
         trail0, trigger = ex_set["trail_pct"], ex_set["trigger_pct"]
         max_hold = ex_set["max_hold_mins"] or 0
@@ -9959,6 +9972,7 @@ def api_simulate_reversal_test():
                                                kind="reversal", cooldown_bars=COOLDOWN, atr_mult=am):
                 agg_reject[(pair, am)]["pnls"].append(pnl)
                 agg_reject[(pair, am)]["offsets"].append(offset)
+                agg_reject[(pair, am)]["dollars"].append(pnl * shares)
         for rb in retest_bars_list:
             for pnl, offset in _replay_entries(bars, level, side, "retest", 0.0, trail0, trigger,
                                                max_hold, ema_filter, multi,
@@ -9966,11 +9980,13 @@ def api_simulate_reversal_test():
                                                atr_mult=0.25, retest_bars=rb):
                 agg_retest[(pair, rb)]["pnls"].append(pnl)
                 agg_retest[(pair, rb)]["offsets"].append(offset)
+                agg_retest[(pair, rb)]["dollars"].append(pnl * shares)
         for pnl, offset in _replay_entries(bars, level, side, "touch", 0.0, trail0, trigger,
                                            max_hold, ema_filter, multi,
                                            kind="reversal", cooldown_bars=COOLDOWN, atr_mult=0.25):
             agg_touch["pnls"].append(pnl)
             agg_touch["offsets"].append(offset)
+            agg_touch["dollars"].append(pnl * shares)
 
     def _summ(bucket):
         pnls = bucket.get("pnls", [])
@@ -9978,16 +9994,24 @@ def api_simulate_reversal_test():
         return {"trades": n, "wins": wins,
                 "win_rate":  round(wins / n * 100, 1) if n else 0.0,
                 "total_pnl": round(sum(pnls), 4),
-                "avg_pnl":   round(sum(pnls) / n, 4) if n else 0.0}
+                "avg_pnl":   round(sum(pnls) / n, 4) if n else 0.0,
+                "total_dollars": round(sum(bucket.get("dollars", [])), 2)}
+
+    def _combine(*buckets):
+        out = {"pnls": [], "dollars": []}
+        for b in buckets:
+            out["pnls"]    += b.get("pnls", [])
+            out["dollars"] += b.get("dollars", [])
+        return out
 
     def _sweep(pair):
         return [{"atr_mult": am, **_summ(agg_reject[(pair, am)])} for am in atr_mults]
 
     sweep_overall = [{"atr_mult": am, **_summ(
-        {"pnls": agg_reject[("R3S3", am)]["pnls"] + agg_reject[("R4S4", am)]["pnls"]})} for am in atr_mults]
+        _combine(agg_reject[("R3S3", am)], agg_reject[("R4S4", am)]))} for am in atr_mults]
 
     _base   = 0.25 if 0.25 in atr_mults else atr_mults[0]
-    _rejbase = {"pnls": agg_reject[("R3S3", _base)]["pnls"] + agg_reject[("R4S4", _base)]["pnls"]}
+    _rejbase = _combine(agg_reject[("R3S3", _base)], agg_reject[("R4S4", _base)])
     out = [{"rule": f"reject ({_base})", **_summ(_rejbase)},
            {"rule": "touch", **_summ(agg_touch)}]
 
@@ -9999,7 +10023,7 @@ def api_simulate_reversal_test():
             "R4S4": [{"retest_bars": rb, **_summ(agg_retest[("R4S4", rb)])} for rb in retest_bars_list],
         }
         retest_overall = [{"retest_bars": rb, **_summ(
-            {"pnls": agg_retest[("R3S3", rb)]["pnls"] + agg_retest[("R4S4", rb)]["pnls"]})}
+            _combine(agg_retest[("R3S3", rb)], agg_retest[("R4S4", rb)]))}
             for rb in retest_bars_list]
 
     return jsonify({

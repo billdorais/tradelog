@@ -809,7 +809,8 @@
             + `<td style="padding:6px 12px;color:${isBest ? '#7FE098' : '#ccc'};font-weight:${isBest ? '700' : '400'}">${x.atr_mult}×ATR${isBest ? ' ★' : ''}</td>`
             + `<td style="padding:6px 12px;text-align:right;color:#aaa">${x.trades}</td>`
             + `<td style="padding:6px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
-            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#888">${money(x.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:700;color:${(x.total_dollars||0) >= 0 ? '#7FE098' : '#ef5350'}">${x.total_dollars != null ? money(x.total_dollars) : '—'}</td>`
             + `<td style="padding:6px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
         }).join('');
         return `<div style="margin-top:12px"><div style="font-weight:700;color:${color};margin-bottom:3px">${title}</div>`
@@ -818,6 +819,7 @@
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Trades</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Win %</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Total/sh</th>`
+          + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem" title="Per-share total × each strategy's real traded size">Total $</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Avg/trade</th>`
           + `</tr></thead><tbody>${body}</tbody></table></div></div>`;
       };
@@ -893,7 +895,8 @@
             + `<td style="padding:6px 12px;color:${isBest ? '#7FE098' : '#ccc'};font-weight:${isBest ? '700' : '400'}">≤ ${x.retest_bars} bars${isBest ? ' ★' : ''}</td>`
             + `<td style="padding:6px 12px;text-align:right;color:#aaa">${x.trades}</td>`
             + `<td style="padding:6px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
-            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#888">${money(x.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:700;color:${(x.total_dollars||0) >= 0 ? '#7FE098' : '#ef5350'}">${x.total_dollars != null ? money(x.total_dollars) : '—'}</td>`
             + `<td style="padding:6px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td>`
             + `<td style="padding:4px 12px;text-align:right">${applyBtn}</td></tr>`;
         }).join('');
@@ -903,6 +906,7 @@
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Trades</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Win %</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Total/sh</th>`
+          + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem" title="Per-share total × each strategy's real traded size">Total $</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Avg/trade</th>`
           + `<th style="text-align:right;padding:5px 12px;color:#555;font-size:0.68rem">Apply</th>`
           + `</tr></thead><tbody>${body}</tbody></table></div></div>`;
