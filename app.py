@@ -10193,15 +10193,12 @@ def _entry_engine_setups():
         _add_target(su, "alpaca3")                       # acct3 = score-band (qty_override=None)
         for xtag, xsh in _extra:
             _add_target(su, xtag, qty_override=xsh)       # extra accounts = flat shares
+    # acct3 mirrors Refined EXACTLY: only the current top-N leaderboard (refreshed
+    # daily at 4:15 PM ET). We intentionally do NOT include "everything that traded
+    # on Refined recently" — a demoted strategy goes cold on acct3 the same day it
+    # leaves the top-N, so acct3 is a faithful template for an eventual live account.
     for nm in (snap.get("top_strategies") or []):
         _add_snapshot_targets(str(nm).upper())
-    try:
-        paired = _pair_alpaca_fills_lifo(_get_cached_fills_2())
-        for t in paired["closed_clean"]:
-            if t.get("strategy"):
-                _add_snapshot_targets(str(t["strategy"]).upper())
-    except Exception as _e:
-        log.debug("entry engine fills source: %s", _e)
 
     # Source 2: routing rules opted into Kairos entries via entry_source node.
     # Also captures the rule's quantity node (amount + unit) so non-Refined
