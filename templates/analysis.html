@@ -133,6 +133,11 @@
     .side-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; }
     .side-badge.long  { background: rgba(81,115,86,0.18);  color: #7FE098; }
     .side-badge.short { background: rgba(231,76,60,0.18);  color: #ef5350; }
+    /* Round-trip rows whose entry falls inside the Refined rolling window
+       (REFINED_DAYS) get a faint purple tint + left rail so users can see
+       at a glance which trades the leaderboard gate is actually counting. */
+    .pair-tbl tr.in-window td       { background: rgba(167,139,250,0.05); }
+    .pair-tbl tr.in-window td:first-child { box-shadow: inset 3px 0 0 #a78bfa; }
     .pair-tabs { display: flex; gap: 4px; padding: 10px 22px 0; border-bottom: 1px solid #1e2130; }
     .pair-tab  { padding: 7px 14px; cursor: pointer; color: #888; font-size: 0.82rem;
                  border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -1476,7 +1481,10 @@
           }
         }
       }
-      return `<tr>
+      const inWin   = _inRefinedWindow(p.entry_time);
+      const rowCls  = inWin ? ' class="in-window"' : '';
+      const inWinTitle = inWin ? ` title="Within the rolling ${_refinedDays}-day Refined window — counted by the leaderboard gate"` : '';
+      return `<tr${rowCls}${inWinTitle}>
         <td><span class="side-badge ${sideCls}">${p.side}</span></td>
         <td class="mono">${esc(p.ticker)}</td>
         <td>${p.qty}</td>
@@ -1500,8 +1508,12 @@
     const rows     = isOrphan ? _activePairs.orphans : _activePairs.clean;
     const label    = isOrphan ? 'orphan' : 'round-trip';
     const totalPnl = rows.reduce((s, p) => s + p.pnl, 0);
-    document.getElementById('pairsSub').textContent =
-      `${rows.length} ${label}${rows.length === 1 ? '' : 's'} · net ${fmt(totalPnl)} · newest first`;
+    const inWinN   = isOrphan ? 0 : rows.filter(p => _inRefinedWindow(p.entry_time)).length;
+    const winTag   = (!isOrphan && rows.length)
+      ? ` · <span style="color:#a78bfa">${inWinN} in last ${_refinedDays}d</span>`
+      : '';
+    document.getElementById('pairsSub').innerHTML =
+      `${rows.length} ${label}${rows.length === 1 ? '' : 's'} · net ${fmt(totalPnl)}${winTag} · newest first`;
     const head = document.getElementById('pairsHead');
     head.innerHTML = isOrphan
       ? `<tr><th>Side</th><th>Ticker</th><th>Qty</th><th>Entry Price</th><th>Exit Price</th><th>Entry Time</th><th>Exit Time</th><th>P&amp;L</th><th>Reason</th></tr>`
@@ -2019,7 +2031,7 @@
     document.getElementById('pairsOrphanCount').textContent = ` (${orph.length})`;
     const noteEl = document.getElementById('pairsSnapNote');
     if (snapStats && snapStats.trades !== clean.length) {
-      noteEl.innerHTML = `⚠ The Refined Snapshot showed <strong>${snapStats.trades} trade${snapStats.trades === 1 ? '' : 's'} · ${snapStats.win_rate}% · ${fmt(snapStats.total_pnl)}</strong> — computed at the last refresh (45-day window). The pairs below reflect your <strong>current date range</strong> and may differ.`;
+      noteEl.innerHTML = `⚠ The Refined Snapshot showed <strong>${snapStats.trades} trade${snapStats.trades === 1 ? '' : 's'} · ${snapStats.win_rate}% · ${fmt(snapStats.total_pnl)}</strong> — computed at the last refresh (rolling ${_refinedDays}-day window). The pairs below reflect your <strong>current date range</strong>; purple-tinted rows are the ones inside the ${_refinedDays}-day Refined window.`;
       noteEl.style.display = '';
     } else {
       noteEl.style.display = 'none';
@@ -2137,15 +2149,28 @@
 
   let _excludedStrategies = new Set();
   let _excludedTickers    = new Set();
+  let _refinedDays        = 20;   // rolling window from /api/routing/rules/refresh_refined
   async function _loadExcluded() {
     try {
-      const [strats, tks] = await Promise.all([
+      const [strats, tks, refined] = await Promise.all([
         fetch('/api/strategies/excluded').then(r => r.json()),
         fetch('/api/tickers/excluded').then(r => r.json()),
+        fetch('/api/routing/rules/refresh_refined').then(r => r.json()).catch(() => ({})),
       ]);
       _excludedStrategies = new Set(strats);
       _excludedTickers    = new Set((tks || []).map(t => t.toUpperCase()));
+      if (refined && Number.isFinite(refined.days) && refined.days > 0) _refinedDays = refined.days;
     } catch(e) {}
+  }
+  // ISO date (YYYY-MM-DD) cutoff for the rolling window — entries on/after
+  // this date are within the leaderboard's gating window.
+  function _refinedWindowCutoff() {
+    const d = new Date();
+    d.setDate(d.getDate() - _refinedDays);
+    return d.toISOString().slice(0, 10);
+  }
+  function _inRefinedWindow(iso) {
+    return iso && iso.slice(0, 10) >= _refinedWindowCutoff();
   }
   function _strategyTicker(name) {
     return (name || '').split('_', 1)[0].toUpperCase();
