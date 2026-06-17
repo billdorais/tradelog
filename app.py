@@ -103,6 +103,11 @@ ENGINE_POLL_SECS      = int(os.environ.get("ENGINE_POLL_SECS", "10"))
 # while preventing rapid stacking.
 ENGINE_COOLDOWN_MINS  = int(os.environ.get("ENGINE_COOLDOWN_MINS", "25"))
 ENGINE_ATR_MULT       = float(os.environ.get("ENGINE_ATR_MULT", "0.25"))  # reject wick ≥ this × ATR(14)
+# Extra accounts the engine fires the SAME leaderboard setups on, at FLAT share
+# sizing, in addition to alpaca3 (which uses score-band sizing). Decoupled from
+# TV / entry_source — does NOT suppress TV. Format: "tag:shares[,tag:shares]".
+# e.g. "alpaca:10" = also fire Paper All at a flat 10 shares. Empty = acct3 only.
+ENGINE_PILOT_EXTRA    = os.environ.get("ENGINE_PILOT_EXTRA", "")
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -6631,6 +6636,39 @@ def bulk_update_exit_params():
     })
 
 
+@app.route("/api/routing/rules/bulk_remove_broker", methods=["POST"])
+def bulk_remove_broker():
+    """Remove broker nodes whose value maps to a given account tag from every rule
+    (optionally name-filtered) — e.g. strip Paper All (alpaca) off TV rules so it
+    stops receiving TV entries (used when the engine owns that account instead)."""
+    data          = request.get_json(silent=True) or {}
+    tag           = (data.get("tag") or "").strip().lower()
+    name_contains = (data.get("name_contains") or "").strip().lower()
+    if tag not in ("alpaca", "alpaca2", "alpaca3"):
+        return jsonify({"error": "tag must be alpaca / alpaca2 / alpaca3"}), 400
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, name, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    updated = removed = skipped = 0
+    for row in rows:
+        rid   = row[0] if DATABASE_URL else row["id"]
+        rname = (row[1] if DATABASE_URL else row["name"] or "").lower()
+        nraw  = row[2] if DATABASE_URL else row["nodes"]
+        if name_contains and name_contains not in rname:
+            skipped += 1
+            continue
+        nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
+        kept  = [n for n in nodes
+                 if not (n.get("type") == "broker" and _routing_broker_to_tag(n.get("value")) == tag)]
+        if len(kept) != len(nodes):
+            removed += len(nodes) - len(kept)
+            cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(kept), rid))
+            updated += 1
+    conn.commit(); conn.close()
+    log.info("bulk_remove_broker: removed %d %s broker node(s) from %d rule(s)", removed, tag, updated)
+    return jsonify({"updated": updated, "removed": removed, "skipped": skipped})
+
+
 @app.route("/api/routing/rules/add_broker_node", methods=["POST"])
 def add_broker_node_to_strategies():
     """Add a broker node to routing rules whose strategy node matches names in the request list."""
@@ -10074,6 +10112,24 @@ def api_tp_sweep():
 # breakout strategies, with the same gates the live engine would use. Read-only:
 # nothing is sent to a broker. Run it alongside TradingView and diff.
 
+def _engine_extra_accounts():
+    """Parse ENGINE_PILOT_EXTRA ("tag:shares,...") into [(broker_tag, flat_shares)] —
+    accounts the engine fires the leaderboard on at FLAT sizing, on top of acct3@band.
+    Decoupled from TV: these targets are added directly, no entry_source/suppression."""
+    out = []
+    for part in (ENGINE_PILOT_EXTRA or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        tag, _, sh = part.partition(":")
+        tag = tag.strip().lower()
+        try:    sh = int(float(sh))
+        except (TypeError, ValueError): continue
+        if tag in ("alpaca", "alpaca2", "alpaca3") and sh >= 1:
+            out.append((tag, sh))
+    return out
+
+
 def _routing_broker_to_tag(value):
     """Map a routing-rule broker node value to the broker_tag the engine uses
     for max-hold / strikes / fills (alpaca, alpaca2, alpaca3). Returns None for
@@ -10122,13 +10178,18 @@ def _entry_engine_setups():
                 snap = json.loads(stored)
         except Exception:
             snap = {}
+    _extra = _engine_extra_accounts()   # e.g. [("alpaca", 10)] — flat-sized extra books
+    def _add_snapshot_targets(su):
+        _add_target(su, "alpaca3")                       # acct3 = score-band (qty_override=None)
+        for xtag, xsh in _extra:
+            _add_target(su, xtag, qty_override=xsh)       # extra accounts = flat shares
     for nm in (snap.get("top_strategies") or []):
-        _add_target(str(nm).upper(), "alpaca3")
+        _add_snapshot_targets(str(nm).upper())
     try:
         paired = _pair_alpaca_fills_lifo(_get_cached_fills_2())
         for t in paired["closed_clean"]:
             if t.get("strategy"):
-                _add_target(str(t["strategy"]).upper(), "alpaca3")
+                _add_snapshot_targets(str(t["strategy"]).upper())
     except Exception as _e:
         log.debug("entry engine fills source: %s", _e)
 

@@ -621,6 +621,12 @@
             title="Remove the retest window from all reversal pipelines (revert to entering on the reject)">
       clear retest
     </button>
+    <button onclick="bulkRemovePaperAll()"
+            style="background:transparent;border:1px solid #c0392b;color:#e74c3c;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Remove the Paper All (acct1) broker from every rule so TV stops routing there — use when the engine owns Paper All via ENGINE_PILOT_EXTRA">
+      ✕ Paper All off TV
+    </button>
     <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
       <input id="bulkHoursStart" type="time" value="09:30"
              style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
@@ -1960,6 +1966,18 @@
     const data = await res.json();
     await load();
     alert(`Done — cleared retest from ${data.updated} reversal pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkRemovePaperAll() {
+    if (!confirm('Remove the "Alpaca Paper" (Paper All / acct1) broker node from EVERY rule?\n\nUse this when the Kairos engine owns Paper All (via ENGINE_PILOT_EXTRA) so TV entries stop double-trading that account. Refined / Kairos broker nodes are untouched.')) return;
+    const res = await fetch('/api/routing/rules/bulk_remove_broker', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag: 'alpaca' }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — removed ${data.removed} Paper All broker node${data.removed !== 1 ? 's' : ''} from ${data.updated} rule${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkSetHours() {
