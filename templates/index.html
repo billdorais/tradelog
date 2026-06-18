@@ -677,6 +677,7 @@
               <span onclick="selectTopN(15,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 15</span>
               <span onclick="selectTopN(20,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 20</span>
               <span onclick="selectTopN(25,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 25</span>
+              <span onclick="selectRefined(event)" title="Select exactly the Refined leaderboard strategies (★ top-20 band)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;margin-left:auto;font-weight:600">★ Refined</span>
             </div>
             <div id="stratPickerList"></div>
           </div>
@@ -1254,6 +1255,28 @@
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
+      await applyEquityFilter();
+    }
+
+    // Select exactly the Refined leaderboard strategies (the ★ top-20 band,
+    // i.e. rules carrying the alpaca-paper-2/-live-2 broker). Lets you isolate
+    // "how did the leaderboard strategies actually fare" on the equity chart.
+    async function selectRefined(e) {
+      if (e) e.stopPropagation();
+      if (!_refinedStrategies || _refinedStrategies.size === 0) {
+        alert('No Refined leaderboard strategies loaded yet — try again in a moment.');
+        return;
+      }
+      const refined = _allStrategyNames.filter(s => _refinedStrategies.has(s.toUpperCase()));
+      if (!refined.length) {
+        alert('None of the Refined leaderboard strategies have traded in this view.');
+        return;
+      }
+      selectedStrategies = new Set(refined);
+      _tabSelections[activeTab] = selectedStrategies;
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
       await applyEquityFilter();
     }
 
