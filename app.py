@@ -9118,12 +9118,14 @@ def entry_engine_page():
 
 @app.route("/api/review")
 def api_review():
-    """End-of-day chart review for the Refined (alpaca2) account.
+    """End-of-day chart review for the Refined (alpaca2) or Kairos engine (alpaca3)
+    account, selected via ?account=2|3 (default 2).
 
     Returns, for a single day, each round-trip grouped by ticker along with
     5-minute OHLC bars and entry/exit markers ready for lightweight-charts.
 
       ?date=YYYY-MM-DD   (defaults to today, US/Eastern)
+      ?account=2|3       (2 = Refined / TV entries, 3 = Kairos engine entries)
     """
     import datetime as _dt
     import concurrent.futures as _cf
@@ -9137,8 +9139,14 @@ def api_review():
             # tzdata unavailable — approximate ET as UTC-4 so the default day is right
             date = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
 
-    if alpaca_broker2 is None:
-        return jsonify({"error": "Refined account (alpaca2) is not configured."}), 503
+    # Pick the account to review. Only the two paper books that take entries
+    # (Refined TV = acct2, Kairos engine = acct3) are valid here.
+    account = (request.args.get("account") or "2").strip()
+    if account not in ("2", "3"):
+        account = "2"
+    _broker, _tag, _label, _fills_fn = _alpaca_account_ctx(account)
+    if _broker is None:
+        return jsonify({"error": f"{_label} account is not configured."}), 503
 
     try:    strikes = max(1, int(request.args.get("strikes", 2)))
     except Exception: strikes = 2
@@ -9154,7 +9162,7 @@ def api_review():
         except Exception:
             return None
 
-    fills         = _get_cached_fills_2()
+    fills         = _fills_fn()
     signal_lookup = _build_signal_lookup_for_alpaca()
     paired        = _pair_alpaca_fills_lifo(fills, from_date=date, to_date=date,
                                             signal_lookup=signal_lookup)
@@ -9269,7 +9277,8 @@ def api_review():
 
     return jsonify({
         "date":         date,
-        "account":      "Refined",
+        "account":      _label,
+        "account_id":   account,
         "total_pnl":    round(grand_total, 2),
         "n_trades":     len(trades),
         "n_tickers":    len(tickers_out),

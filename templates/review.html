@@ -106,9 +106,17 @@
 
 <div class="page">
   <h2>Chart Review</h2>
-  <div class="sub">Refined account · 5-minute bars with entry/exit markers · times shown in ET</div>
+  <div class="sub" id="reviewSub">Refined account · 5-minute bars with entry/exit markers · times shown in ET</div>
 
   <div class="controls">
+    <div class="field">
+      <label for="acctSelect">Entries</label>
+      <select id="acctSelect" onchange="load()"
+        style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:6px 10px;font-size:0.9rem;cursor:pointer">
+        <option value="2">Refined (TV entries)</option>
+        <option value="3">Kairos (engine entries)</option>
+      </select>
+    </div>
     <button class="nudge" onclick="nudgeDay(-1)" title="Previous day">&#8592;</button>
     <div class="field">
       <label for="dateInput">Date</label>
@@ -299,26 +307,36 @@
     return Math.max(1, parseInt(document.getElementById('strikesInput').value, 10) || 2);
   }
 
+  function acctVal()   { return document.getElementById('acctSelect').value || '2'; }
+  function acctLabel()  { return acctVal() === '3' ? 'Kairos' : 'Refined'; }
+
   async function load() {
     const date    = document.getElementById('dateInput').value;
     const strikes = strikesVal();
+    const account = acctVal();
     const btn     = document.getElementById('loadBtn');
+    // Two-strikes is a Refined-account gating analysis — hide it for Kairos.
+    const wkBtn = document.getElementById('weekBtn');
+    if (wkBtn) wkBtn.style.display = account === '3' ? 'none' : '';
+    const sub = document.getElementById('reviewSub');
+    if (sub) sub.textContent = (account === '3' ? 'Kairos engine account' : 'Refined account')
+      + ' · 5-minute bars with entry/exit markers · times shown in ET';
     btn.disabled = true;
     destroyCharts();
     document.getElementById('charts').innerHTML = '';
     document.getElementById('summary').style.display = 'none';
     document.getElementById('tsResult').innerHTML = '';
-    setStatus('<span class="spinner"></span>Loading Refined trades & bars…', 'info');
+    setStatus(`<span class="spinner"></span>Loading ${acctLabel()} trades & bars…`, 'info');
 
     try {
-      const r = await fetch(`/api/review?date=${encodeURIComponent(date)}&strikes=${strikes}`);
+      const r = await fetch(`/api/review?date=${encodeURIComponent(date)}&strikes=${strikes}&account=${account}`);
       const data = await r.json();
       if (!r.ok) { setStatus(data.error || 'Failed to load.', 'error'); btn.disabled = false; return; }
 
       if (!data.n_trades) {
         clearStatus();
         document.getElementById('charts').innerHTML =
-          `<div class="empty">No completed Refined round-trips on ${data.date}.</div>`;
+          `<div class="empty">No completed ${data.account || acctLabel()} round-trips on ${data.date}.</div>`;
         btn.disabled = false;
         return;
       }
@@ -328,6 +346,7 @@
       const s = document.getElementById('summary');
       s.style.display = 'grid';
       s.innerHTML =
+        `<div class="stat-card"><div class="stat-lbl">Entries</div><div class="stat-val" style="color:${data.account_id === '3' ? '#F2C07A' : '#a78bfa'};font-size:1rem">${data.account || acctLabel()}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Date</div><div class="stat-val">${data.date}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Day P&amp;L</div><div class="stat-val ${pnlClass(data.total_pnl)}">${fmtMoney(data.total_pnl)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Round-trips</div><div class="stat-val">${data.n_trades}</div></div>` +
