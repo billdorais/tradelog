@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -268,13 +268,14 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         # ── Format pre-fetched data ───────────────────────────────────────────
         # Data was fetched in the Flask route handler and passed in directly.
 
-        def _fmt_strategies(data: dict) -> str:
+        def _fmt_strategies(data: dict, header: str = "REFINED ACCOUNT — STRATEGY LEADERBOARD (last ~20 days)",
+                            empty_msg: str = "No strategy data available (Alpaca may not be configured).") -> str:
             overall   = (data or {}).get("overall", {})
             per_strat = (data or {}).get("per_strategy", {})
             if not per_strat:
-                return "No strategy data available (Alpaca may not be configured)."
+                return empty_msg
             lines = [
-                "=== REFINED ACCOUNT — STRATEGY LEADERBOARD (last ~20 days) ===",
+                f"=== {header} ===",
                 f"Overall: {overall.get('trades',0)} trades | "
                 f"Win Rate {overall.get('win_rate',0):.1f}% | "
                 f"PF {overall.get('profit_factor') or '—'} | "
@@ -453,6 +454,13 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             return "\n".join(lines)
 
         strategy_block = _fmt_strategies(strat_data)
+        engine_strat_block = _fmt_strategies(
+            engine_strat_data,
+            header="KAIROS ENGINE (account 3, server-side entries) — STRATEGY LEADERBOARD",
+            empty_msg=("=== KAIROS ENGINE (account 3) — STRATEGY LEADERBOARD ===\n"
+                       "No per-strategy data yet — the engine book (acct3) has no closed round-trips "
+                       "in this window. Treat the Kairos entries as not-yet-evaluable per strategy."),
+        )
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
         engine_block   = _fmt_engine(engine_data)
@@ -530,7 +538,12 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "You are a seasoned systematic trading professional with 20 years of "
                 "experience managing algorithmic strategy portfolios on US equities.\n\n"
                 f"{KAIROS_SYSTEM_KNOWLEDGE}\n"
-                "Your analysis is ALWAYS focused on the Refined account (account 2). "
+                "Your PRIMARY focus is the Refined account (account 2), but you ALSO directly "
+                "analyse the Kairos engine book (account 3) — its own per-strategy leaderboard, "
+                "not just the aggregate head-to-head — since those server-side entries are the "
+                "live experiment. When the Kairos book has enough trades, call out which Kairos "
+                "ENTRIES (by strategy) are pulling their weight vs which are bleeding, and how "
+                "that squares with the same strategy on the TV-driven Refined book. "
                 "You are rigorous about sample size — you don't change parameters based on "
                 "two trades. You understand regime effects: reversals thrive in ranging "
                 "markets, breakouts in trending ones. A 44% win rate with PF > 2 is a GOOD "
@@ -557,9 +570,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
         analysis_task = Task(
             description=(
-                f"Here is the Kairos Refined account data"
+                f"Here is the Kairos account data"
                 + (f" for: {period}" if period else "") + ":\n\n"
                 f"{strategy_block}\n\n"
+                f"{engine_strat_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
                 + (f"{engine_block}\n\n" if engine_block else "")
@@ -573,12 +587,14 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
                 "the journal, are current trailing stops appropriate? Reference specific sweep "
                 "results and the trader's own notes if they offer relevant observations.\n\n"
-                "4. **Engine vs TV Pilot** — Using the KAIROS ENGINE PILOT data, is the "
-                "server-side engine (acct 3) beating, matching, or lagging the TV-driven Refined "
-                "account (acct 2)? Break it down if you can (breakouts likely lead the edge, "
-                "reversals are the new/risky part). If there isn't enough data yet, say so plainly "
-                "and state exactly what you'd want to see before judging — do NOT over-read a few "
-                "trades or a single good/bad day.\n\n"
+                "4. **Engine vs TV Pilot** — Using BOTH the KAIROS ENGINE STRATEGY LEADERBOARD "
+                "(acct 3 per-strategy) and the head-to-head PILOT data, is the server-side engine "
+                "(acct 3) beating, matching, or lagging the TV-driven Refined account (acct 2)? "
+                "Name the specific Kairos ENTRIES (by strategy) that are working vs the ones "
+                "dragging the book, and compare each to the same strategy on acct 2 where possible "
+                "(breakouts likely lead the edge, reversals are the new/risky part). If there isn't "
+                "enough data yet, say so plainly and state exactly what you'd want to see before "
+                "judging — do NOT over-read a few trades or a single good/bad day.\n\n"
                 "5. **Risk Observations** — Concentration, drawdown patterns, or ticker "
                 "exposure worth flagging for a live account (note: leverage up to 4x intraday is "
                 "now available from $2k equity, so sizing discipline matters more).\n\n"
@@ -881,17 +897,22 @@ def api_crew_run():
         from_date    = (data.get("from") or "").strip()
         to_date      = (data.get("to")   or "").strip()
         range_label  = (data.get("label") or "").strip()
-        strat_data   = {}
+        strat_data        = {}
+        engine_strat_data = {}
         journal_data = []
         prev_reports = []
         rules_data   = []
         engine_data  = {}
         try:
             _qs = f"account=2"
-            if from_date: _qs += f"&from_date={from_date}"
-            if to_date:   _qs += f"&to_date={to_date}"
+            _qs3 = f"account=3"
+            if from_date:
+                _qs += f"&from_date={from_date}"; _qs3 += f"&from_date={from_date}"
+            if to_date:
+                _qs += f"&to_date={to_date}";     _qs3 += f"&to_date={to_date}"
             with _ca.test_client() as _c:
-                strat_data   = _c.get(f"/api/alpaca/analysis?{_qs}").get_json() or {}
+                strat_data        = _c.get(f"/api/alpaca/analysis?{_qs}").get_json()  or {}
+                engine_strat_data = _c.get(f"/api/alpaca/analysis?{_qs3}").get_json() or {}
                 journal_data = _c.get("/api/journal/entries").get_json()         or []
                 rules_data   = _c.get("/api/routing/rules").get_json()           or []
                 engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
@@ -914,7 +935,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data),
             daemon=True,
         ).start()
     else:
