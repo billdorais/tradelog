@@ -302,14 +302,18 @@
           `<strong style="color:${s.pnl>=0?'#7FE098':'#ef5350'}">${fmt(s.pnl)}</strong>` +
           ` · ${s.trades} trades · ${s.win_rate}% win</div>` +
           (rts ? `<table style="width:100%;border-collapse:collapse;font-size:0.8rem"><tbody>${rts}</tbody></table>`
-               : `<div style="font-size:0.78rem;color:#555">No trades.</div>`) +
+               : (s.fills_on_day
+                    ? `<div style="font-size:0.78rem;color:#888">${s.fills_on_day} fill${s.fills_on_day===1?'':'s'} this day, but no completed round-trips — positions may still be open.</div>`
+                    : `<div style="font-size:0.78rem;color:#555">No trades.</div>`)) +
           `</div>`;
       };
 
       const diff = (d.engine.pnl || 0) - (d.tv.pnl || 0);
-      const verdict = (!d.engine.trades && !d.tv.trades)
-        ? '<span style="color:#555">No trades on either account this day.</span>'
-        : `<span style="color:#888">Engine − Refined:</span> <strong style="color:${diff>=0?'#7FE098':'#F2C76B'}">${fmt(diff)}</strong>`;
+      const verdict = d.market_closed
+        ? `<span style="color:#F2C07A">🏦 Market closed — ${esc(d.market_closed)}.</span>`
+        : (!d.engine.trades && !d.tv.trades)
+          ? '<span style="color:#555">No trades on either account this day.</span>'
+          : `<span style="color:#888">Engine − Refined:</span> <strong style="color:${diff>=0?'#7FE098':'#F2C76B'}">${fmt(diff)}</strong>`;
 
       out.innerHTML =
         `<div style="font-size:0.78rem;color:#888;margin-bottom:8px">${dayName} &nbsp; · &nbsp; ${verdict}</div>` +

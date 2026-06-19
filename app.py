@@ -11222,6 +11222,47 @@ def api_engine_pilot_compare():
     })
 
 
+# NYSE full-day closures (date → holiday name). Hardcoded for the years the app
+# is actively used — avoids a market-calendar dependency. Saturdays/Sundays are
+# handled separately. Update this when rolling into a new year.
+_US_MARKET_HOLIDAYS = {
+    "2025-01-01": "New Year's Day", "2025-01-20": "Martin Luther King Jr. Day",
+    "2025-02-17": "Presidents' Day", "2025-04-18": "Good Friday",
+    "2025-05-26": "Memorial Day", "2025-06-19": "Juneteenth",
+    "2025-07-04": "Independence Day", "2025-09-01": "Labor Day",
+    "2025-11-27": "Thanksgiving", "2025-12-25": "Christmas",
+    "2026-01-01": "New Year's Day", "2026-01-19": "Martin Luther King Jr. Day",
+    "2026-02-16": "Presidents' Day", "2026-04-03": "Good Friday",
+    "2026-05-25": "Memorial Day", "2026-06-19": "Juneteenth",
+    "2026-07-03": "Independence Day (observed)", "2026-09-07": "Labor Day",
+    "2026-11-26": "Thanksgiving", "2026-12-25": "Christmas",
+    "2027-01-01": "New Year's Day", "2027-01-18": "Martin Luther King Jr. Day",
+    "2027-02-15": "Presidents' Day", "2027-03-26": "Good Friday",
+    "2027-05-31": "Memorial Day", "2027-06-18": "Juneteenth (observed)",
+    "2027-07-05": "Independence Day (observed)", "2027-09-06": "Labor Day",
+    "2027-11-25": "Thanksgiving", "2027-12-24": "Christmas (observed)",
+}
+
+
+def _market_closed_reason(date_str):
+    """Return a human label if the US equity market was fully closed on date_str
+    (YYYY-MM-DD): a weekend or a known NYSE holiday. None on a normal session day."""
+    if not date_str:
+        return None
+    name = _US_MARKET_HOLIDAYS.get(date_str)
+    if name:
+        return name
+    try:
+        from datetime import date as _d
+        y, m, d = (int(x) for x in date_str.split("-"))
+        wd = _d(y, m, d).weekday()  # Mon=0 … Sun=6
+        if wd >= 5:
+            return "Weekend"
+    except Exception:
+        pass
+    return None
+
+
 @app.route("/api/engine_pilot/day_recap")
 def api_engine_pilot_day_recap():
     """One-day recap comparing TV Refined (acct2) vs Kairos engine (acct3):
@@ -11230,11 +11271,24 @@ def api_engine_pilot_day_recap():
     if not date:
         return jsonify({"error": "date required"}), 400
 
+    # Build the signal lookup once and share it across both accounts (consistency
+    # + avoids two redundant DB scans).
+    signal_lookup = _build_signal_lookup_for_alpaca()
+
     def _summ(fills):
+        # Pair the FULL fill history (not a single-day slice) so LIFO context isn't
+        # reset at the midnight boundary — an entry from the morning and its exit are
+        # always seen together. Then keep round-trips whose EXIT lands on `date`, the
+        # correct "a trade counts on the day it closed" semantic. This matches what a
+        # multi-day range view on the dashboard shows for that day; the old approach
+        # pre-filtered fills to the day, which could orphan/mis-pair trades.
+        raw = list(fills or [])
         try:
-            paired = _pair_alpaca_fills_lifo(fills, from_date=date, to_date=date)
-            rts = paired.get("closed_clean", [])
-        except Exception:
+            paired = _pair_alpaca_fills_lifo(raw, signal_lookup=signal_lookup)
+            rts = [t for t in paired.get("closed_clean", [])
+                   if (t.get("exit_time") or "")[:10] == date]
+        except Exception as e:
+            log.warning("day_recap pairing failed for %s: %s", date, e)
             rts = []
         wins = sum(1 for t in rts if float(t.get("pnl") or 0) > 0)
         pnl  = sum(float(t.get("pnl") or 0) for t in rts)
@@ -11248,9 +11302,13 @@ def api_engine_pilot_day_recap():
             "exit_reason": t.get("exit_reason"),
         } for t in rts]
         out.sort(key=lambda x: x.get("entry_time") or "")
+        # Surface raw counts so a "0 trades" day is distinguishable from "no fills
+        # reached the endpoint" (e.g. a stale/empty per-worker cache).
         return {"trades": len(rts), "wins": wins,
                 "win_rate": round(wins / len(rts) * 100, 1) if rts else 0.0,
-                "pnl": round(pnl, 2), "round_trips": out}
+                "pnl": round(pnl, 2), "round_trips": out,
+                "raw_fills": len(raw),
+                "fills_on_day": sum(1 for f in raw if (f.get("time") or "")[:10] == date)}
 
     tv  = _summ(_get_cached_fills_2())
     eng = _summ(_get_cached_fills_3())
@@ -11260,6 +11318,7 @@ def api_engine_pilot_day_recap():
     return jsonify({
         "date": date, "configured": alpaca_broker3 is not None,
         "tv": tv, "engine": eng, "engine_armed": armed,
+        "market_closed": _market_closed_reason(date),
     })
 
 
