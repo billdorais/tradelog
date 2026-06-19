@@ -103,6 +103,16 @@ ENGINE_POLL_SECS      = int(os.environ.get("ENGINE_POLL_SECS", "10"))
 # while preventing rapid stacking.
 ENGINE_COOLDOWN_MINS  = int(os.environ.get("ENGINE_COOLDOWN_MINS", "25"))
 ENGINE_ATR_MULT       = float(os.environ.get("ENGINE_ATR_MULT", "0.25"))  # reject wick ≥ this × ATR(14)
+# Realism haircut for the dry-run Engine P&L (sim). The sim enters exactly at the
+# trigger level and exits with no friction, so the headline runs hot vs the live
+# acct3 fills. We deflate each simulated round-trip by a per-share slippage cost
+# (applied to BOTH legs) plus a per-trade commission. ENGINE_SIM_SLIP="auto"
+# (default) derives the per-share cost from the measured slippage of real acct3
+# fills; a numeric value forces that per-share cost each way. Floor avoids a
+# zero/negative haircut when limit fills happen to show price improvement.
+ENGINE_SIM_SLIP       = os.environ.get("ENGINE_SIM_SLIP", "auto")
+ENGINE_SIM_SLIP_FLOOR = float(os.environ.get("ENGINE_SIM_SLIP_FLOOR", "0.01"))  # $/share each way
+ENGINE_SIM_COMMISSION = float(os.environ.get("ENGINE_SIM_COMMISSION", "0.0"))   # $/round-trip
 # Extra accounts the engine fires the SAME leaderboard setups on, at FLAT share
 # sizing, in addition to alpaca3 (which uses score-band sizing). Decoupled from
 # TV / entry_source — does NOT suppress TV. Format: "tag:shares[,tag:shares]".
@@ -10373,6 +10383,32 @@ def _entry_engine_setups():
     return out
 
 
+def _engine_sim_slip_per_share():
+    """Per-share slippage cost (one leg) to charge the dry-run Engine P&L sim.
+
+    ENGINE_SIM_SLIP="auto" → mean of the measured entry slippage (fill_slip) across
+    real acct3 fills; a numeric value forces that cost. Floored at ENGINE_SIM_SLIP_FLOOR
+    so a stretch of price-improving limit fills can't drive the haircut to zero.
+    Returns (cost_per_share, source) where source is "measured"/"manual"/"floor"."""
+    cfg = (ENGINE_SIM_SLIP or "auto").strip().lower()
+    if cfg not in ("", "auto"):
+        try:
+            return max(float(cfg), 0.0), "manual"
+        except (TypeError, ValueError):
+            pass
+    try:
+        stored = json.loads(_load_setting("ENGINE_PILOT_FILLS") or "[]")
+    except Exception:
+        stored = []
+    slips = [float(f["fill_slip"]) for f in stored
+             if f.get("fill_slip") is not None and f.get("ok")]
+    if slips:
+        measured = sum(slips) / len(slips)
+        if measured >= ENGINE_SIM_SLIP_FLOOR:
+            return round(measured, 4), "measured"
+    return ENGINE_SIM_SLIP_FLOOR, "floor"
+
+
 def _entry_engine_compute(date=None, buffer=0.05):
     """Core dry-run: what entry orders Kairos would arm for the Refined breakout
     AND reversal setups on `date`, with gates evaluated. Breakouts arm a STOP
@@ -10490,6 +10526,18 @@ def _entry_engine_compute(date=None, buffer=0.05):
                  "max_hold_mins": int(MAX_HOLD_MINS) if MAX_HOLD_MINS > 0 else None}
         return r
 
+    # Realism haircut: charge each simulated round-trip a per-share slippage cost
+    # on BOTH legs (entry + exit) plus a per-trade commission, so the headline
+    # Engine P&L (sim) deflates toward what the live acct3 fills actually realise.
+    _slip_ps, _slip_src = _engine_sim_slip_per_share()
+    _commission = max(ENGINE_SIM_COMMISSION, 0.0)
+
+    def _net_sim(gross, qty):
+        """Apply the slippage+commission haircut to a gross simulated P&L."""
+        if gross is None:
+            return None
+        return round(gross - (2.0 * _slip_ps * (qty or 0)) - _commission, 2)
+
     lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     rows = []
     for s in setups:
@@ -10584,6 +10632,8 @@ def _entry_engine_compute(date=None, buffer=0.05):
                 eng_sim_pnl    = round(_per * qty, 2)
                 eng_sim_reason = _sim.get("reason")
 
+        eng_sim_pnl_net = _net_sim(eng_sim_pnl, qty)
+
         rows.append({
             "ticker": tk, "strategy": strat, "side": side, "level_name": lvl, "kind": kind,
             "level": round(level, 4) if level else None,
@@ -10594,7 +10644,8 @@ def _entry_engine_compute(date=None, buffer=0.05):
             "traded_today": bool(rt_list), "n_trades": len(rt_list),
             "tv_pnl_total": round(sum(rt["pnl"] for rt in rt_list), 2) if rt_list else None,
             "edge": edge, "tv_pnl": tv_ps, "engine_pnl": eng_ps,
-            "eng_sim_pnl": eng_sim_pnl, "eng_sim_reason": eng_sim_reason,
+            "eng_sim_pnl": eng_sim_pnl, "eng_sim_pnl_net": eng_sim_pnl_net,
+            "eng_sim_reason": eng_sim_reason,
         })
 
     rows.sort(key=lambda r: (r["decision"] != "armed", r["kind"], r["ticker"], r["side"]))
@@ -10613,6 +10664,9 @@ def _entry_engine_compute(date=None, buffer=0.05):
     engine_only_pnl    = round(sum(r["eng_sim_pnl"] for r in _only_rows    if r["eng_sim_pnl"] is not None), 2)
     tv_matched_pnl     = round(sum(r["tv_pnl_total"] for r in _matched_rows if r["tv_pnl_total"] is not None), 2)
     n_engine_only      = len(_only_rows)
+    # Net-of-cost versions (after the slippage + commission haircut).
+    engine_matched_pnl_net = round(sum(r["eng_sim_pnl_net"] for r in _matched_rows if r["eng_sim_pnl_net"] is not None), 2)
+    engine_only_pnl_net    = round(sum(r["eng_sim_pnl_net"] for r in _only_rows    if r["eng_sim_pnl_net"] is not None), 2)
 
     # TV-only misses: setups TV traded today but the engine would NOT have entered.
     # Each is classified so the gap is actionable — blocked by a gate, or armed but
@@ -10650,15 +10704,25 @@ def _entry_engine_compute(date=None, buffer=0.05):
         "reality_only": n_trade - n_match,         # TV traded, engine wouldn't (gate/level gap)
         "misses_tv_pnl": misses_tv_pnl,            # actual $ P&L TV booked on the blocked setups
         # Simulated engine P&L (score-band sized, Signal Router exits) vs TV's actual day.
-        "engine_sim_pnl":    round(sum(r["eng_sim_pnl"] for r in rows if r["eng_sim_pnl"] is not None), 2),
-        "engine_sim_trades": sum(1 for r in rows if r["eng_sim_pnl"] is not None),
-        "tv_day_pnl":        round(tv_day_pnl, 2),
+        # *_net = after the slippage + commission realism haircut; gross kept for reference.
+        "engine_sim_pnl":     round(sum(r["eng_sim_pnl"]     for r in rows if r["eng_sim_pnl"]     is not None), 2),
+        "engine_sim_pnl_net": round(sum(r["eng_sim_pnl_net"] for r in rows if r["eng_sim_pnl_net"] is not None), 2),
+        "engine_sim_trades":  sum(1 for r in rows if r["eng_sim_pnl"] is not None),
+        "tv_day_pnl":         round(tv_day_pnl, 2),
+        # Realism haircut inputs (so the UI can show what was charged).
+        "sim_slip_per_share": _slip_ps,
+        "sim_slip_source":    _slip_src,
+        "sim_commission":     _commission,
+        "sim_haircut_total":  round(sum((2.0 * _slip_ps * (r["qty"] or 0)) + _commission
+                                        for r in rows if r["eng_sim_pnl"] is not None), 2),
         # Decomposition: matched (trustworthy, has a real TV counterpart) vs engine-only
         # (suspect, purely simulated). On matched, engine sim vs TV actual = exit-quality.
-        "engine_matched_pnl": engine_matched_pnl,
-        "engine_only_pnl":    engine_only_pnl,
-        "tv_matched_pnl":     tv_matched_pnl,
-        "n_engine_only":      n_engine_only,
+        "engine_matched_pnl":     engine_matched_pnl,
+        "engine_matched_pnl_net": engine_matched_pnl_net,
+        "engine_only_pnl":        engine_only_pnl,
+        "engine_only_pnl_net":    engine_only_pnl_net,
+        "tv_matched_pnl":         tv_matched_pnl,
+        "n_engine_only":          n_engine_only,
         # Per-share P&L on matched setups: TV's actual vs the engine's earlier entry.
         "matched_trades": sum(r["n_trades"] for r in rows if r["edge"] is not None),
         "tv_pnl":     round(sum(r["tv_pnl"]     for r in rows if r["edge"] is not None), 2),
@@ -10697,8 +10761,11 @@ def _log_entry_engine_day(date=None, buffer=0.05):
         "setups", "breakout", "reversal", "armed", "blocked",
         "engine_triggered", "traded", "match", "engine_only", "reality_only",
         "matched_trades", "tv_pnl", "engine_pnl", "edge",
-        "engine_sim_pnl", "tv_day_pnl", "misses_tv_pnl",
-        "engine_matched_pnl", "engine_only_pnl", "tv_matched_pnl", "n_engine_only")},
+        "engine_sim_pnl", "engine_sim_pnl_net", "tv_day_pnl", "misses_tv_pnl",
+        "engine_matched_pnl", "engine_matched_pnl_net",
+        "engine_only_pnl", "engine_only_pnl_net",
+        "tv_matched_pnl", "n_engine_only",
+        "sim_slip_per_share", "sim_commission")},
         "saved_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
     try:
         loglist = json.loads(_load_setting("ENTRY_ENGINE_LOG") or "[]")

@@ -173,14 +173,25 @@
         `<div class="stat-card"><div class="stat-lbl">Match</div><div class="stat-val pos">${s.match}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl" title="TV traded but engine wouldn't arm — a gate/level gap to check">TV-only gap</div><div class="stat-val ${s.reality_only > 0 ? 'neg' : ''}">${s.reality_only}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl" title="Per-share P&L edge from the engine's earlier entry on matched trades (same exit)">Entry edge $/sh</div><div class="stat-val ${s.edge >= 0 ? 'pos' : 'neg'}">${(s.edge < 0 ? '-$' : '$') + Math.abs(s.edge).toFixed(2)}</div></div>` +
-        `<div class="stat-card"><div class="stat-lbl" title="What the engine's ${s.engine_sim_trades} triggered entries would have made — score-band sized, exited via your Signal Router exit nodes">Engine P&L (sim)</div><div class="stat-val ${s.engine_sim_pnl >= 0 ? 'pos' : 'neg'}">${(s.engine_sim_pnl < 0 ? '-$' : '$') + Math.abs(s.engine_sim_pnl).toFixed(2)}</div></div>` +
+        (function(){
+          const net   = (s.engine_sim_pnl_net != null) ? s.engine_sim_pnl_net : s.engine_sim_pnl;
+          const slip  = s.sim_slip_per_share, comm = s.sim_commission;
+          const cut   = s.sim_haircut_total;
+          const srcLbl = s.sim_slip_source === 'measured' ? 'measured from real acct3 fills'
+                       : s.sim_slip_source === 'manual'   ? 'manual override' : 'floor (no fill data yet)';
+          const tip = `What the engine's ${s.engine_sim_trades} triggered entries would have made — score-band sized, exited via your Signal Router exit nodes, NET of a realism haircut: ${slip != null ? ('$'+Number(slip).toFixed(3)+'/sh each way ('+srcLbl+')') : ''}${comm ? (' + $'+Number(comm).toFixed(2)+'/trade commission') : ''}${cut != null ? (' — total cost charged $'+Number(cut).toFixed(2)) : ''}. Gross (no costs): ${(s.engine_sim_pnl < 0 ? '-$' : '$') + Math.abs(s.engine_sim_pnl || 0).toFixed(2)}.`;
+          return `<div class="stat-card"><div class="stat-lbl" title="${tip.replace(/"/g,'&quot;')}">Engine P&L (sim, net)</div><div class="stat-val ${net >= 0 ? 'pos' : 'neg'}">${(net < 0 ? '-$' : '$') + Math.abs(net).toFixed(2)}</div>` +
+            `<div style="font-size:0.62rem;color:#777;margin-top:2px">gross ${(s.engine_sim_pnl < 0 ? '-$' : '$') + Math.abs(s.engine_sim_pnl || 0).toFixed(2)} · −$${Number(cut || 0).toFixed(2)} cost</div></div>`;
+        })() +
         `<div class="stat-card"><div class="stat-lbl" title="TradingView's actual realized Refined P&L for the day (all round-trips)">TV day P&L</div><div class="stat-val ${s.tv_day_pnl >= 0 ? 'pos' : 'neg'}">${(s.tv_day_pnl < 0 ? '-$' : '$') + Math.abs(s.tv_day_pnl).toFixed(2)}</div></div>` +
         `<div class="stat-card"><div class="stat-lbl">Refined hours</div><div class="stat-val ${d.hours_ok ? 'pos' : 'neg'}">${d.hours_ok ? 'open' : 'closed'}</div></div>`;
 
       // Engine P&L breakdown: trustworthy (matched) vs suspect (engine-only, purely simulated).
       const bw = document.getElementById('breakdownWrap');
       const m2 = v => (v == null ? '—' : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
-      const em = s.engine_matched_pnl || 0, eo = s.engine_only_pnl || 0, tvm = s.tv_matched_pnl || 0;
+      const em = (s.engine_matched_pnl_net != null ? s.engine_matched_pnl_net : s.engine_matched_pnl) || 0;
+      const eo = (s.engine_only_pnl_net    != null ? s.engine_only_pnl_net    : s.engine_only_pnl)    || 0;
+      const tvm = s.tv_matched_pnl || 0;
       const onlyPct = (Math.abs(em) + Math.abs(eo)) ? Math.round(Math.abs(eo) / (Math.abs(em) + Math.abs(eo)) * 100) : 0;
       const exitVerdict = (s.match === 0)
         ? 'no matched trades to compare exits on'
@@ -277,7 +288,9 @@
           `<td>${dec}</td>` +
           `<td>${x.traded_today ? '<span class="pos">✓ traded</span>' : '<span style="color:#444">—</span>'}</td>` +
           `<td style="text-align:right;${x.edge != null ? (x.edge >= 0 ? 'color:#7FE098;font-weight:600' : 'color:#ef5350;font-weight:600') : 'color:#444'}">${x.edge != null ? ((x.edge < 0 ? '-$' : '$') + Math.abs(x.edge).toFixed(2)) : '—'}</td>` +
-          `<td style="text-align:right;${x.eng_sim_pnl != null ? (x.eng_sim_pnl >= 0 ? 'color:#7FE098;font-weight:600' : 'color:#ef5350;font-weight:600') : 'color:#444'}" title="${x.eng_sim_reason ? 'exit: ' + x.eng_sim_reason : ''}">${x.eng_sim_pnl != null ? ((x.eng_sim_pnl < 0 ? '-$' : '$') + Math.abs(x.eng_sim_pnl).toFixed(2)) : '—'}</td>` +
+          (function(){ const v = (x.eng_sim_pnl_net != null ? x.eng_sim_pnl_net : x.eng_sim_pnl);
+            const tip = (x.eng_sim_reason ? 'exit: ' + x.eng_sim_reason : '') + (x.eng_sim_pnl_net != null ? ' · net of costs (gross ' + ((x.eng_sim_pnl < 0 ? '-$' : '$') + Math.abs(x.eng_sim_pnl).toFixed(2)) + ')' : '');
+            return `<td style="text-align:right;${v != null ? (v >= 0 ? 'color:#7FE098;font-weight:600' : 'color:#ef5350;font-weight:600') : 'color:#444'}" title="${tip.replace(/"/g,'&quot;')}">${v != null ? ((v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2)) : '—'}</td>`; })() +
           `</tr>`;
       }).join('');
       document.getElementById('tableWrap').innerHTML =
@@ -288,7 +301,7 @@
         `<th title="Trend-side 8-EMA (breakout: close; reversal: close + slope)">EMA</th><th title="Did price reach the order today">Triggered</th>` +
         `<th>Engine</th><th title="Did TradingView actually trade this setup today">Reality</th>` +
         `<th title="Per-share P&L edge vs TV's entry on matched trades (same exit)">Edge $/sh</th>` +
-        `<th title="Simulated P&L of this engine entry, score-band sized, exited via your Signal Router exit nodes">Engine P&L</th>` +
+        `<th title="Simulated P&L of this engine entry, score-band sized, exited via your Signal Router exit nodes, NET of slippage + commission">Engine P&L (net)</th>` +
         `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
     } catch (e) {
       setStatus('Error: ' + e.message, 'error');
@@ -322,10 +335,14 @@
       let cumEng = 0, cumTv = 0, nPnl = 0, cumEngM = 0, cumEngO = 0, cumTvM = 0;
       const rows = days.map(e => {
         const gap = (e.reality_only || 0) > 0;
-        if (e.engine_sim_pnl != null) { cumEng += e.engine_sim_pnl; nPnl++; }
+        // Prefer net-of-cost figures; fall back to gross for days logged before the haircut.
+        const engNet  = (e.engine_sim_pnl_net     != null) ? e.engine_sim_pnl_net     : e.engine_sim_pnl;
+        const engMNet = (e.engine_matched_pnl_net != null) ? e.engine_matched_pnl_net : e.engine_matched_pnl;
+        const engONet = (e.engine_only_pnl_net    != null) ? e.engine_only_pnl_net    : e.engine_only_pnl;
+        if (engNet != null) { cumEng += engNet; nPnl++; }
         if (e.tv_day_pnl != null) cumTv += e.tv_day_pnl;
-        if (e.engine_matched_pnl != null) cumEngM += e.engine_matched_pnl;
-        if (e.engine_only_pnl != null)    cumEngO += e.engine_only_pnl;
+        if (engMNet != null) cumEngM += engMNet;
+        if (engONet != null) cumEngO += engONet;
         if (e.tv_matched_pnl != null)     cumTvM  += e.tv_matched_pnl;
         return `<tr>` +
           `<td style="font-weight:600">${e.date}</td>` +
@@ -337,7 +354,7 @@
           `<td style="text-align:right;color:#888">${e.engine_only}</td>` +
           `<td style="text-align:right;${gap ? 'color:#ef5350;font-weight:600' : 'color:#444'}">${e.reality_only}</td>` +
           `<td style="text-align:right;${(e.edge || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600">${e.edge != null ? fmt(e.edge) : '—'}</td>` +
-          `<td style="text-align:right;${(e.engine_sim_pnl || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600">${e.engine_sim_pnl != null ? fmt(e.engine_sim_pnl) : '—'}</td>` +
+          `<td style="text-align:right;${(engNet || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'};font-weight:600" title="${e.engine_sim_pnl_net != null ? 'Net of slippage+commission. Gross ' + fmt(e.engine_sim_pnl || 0) : 'Gross (logged before haircut)'}">${engNet != null ? fmt(engNet) : '—'}</td>` +
           `<td style="text-align:right;${(e.tv_day_pnl || 0) >= 0 ? 'color:#7FE098' : 'color:#ef5350'}">${e.tv_day_pnl != null ? fmt(e.tv_day_pnl) : '—'}</td>` +
           `<td style="text-align:right;color:#555;font-size:0.72rem">${e.saved_at || ''}</td>` +
           `</tr>`;
@@ -370,7 +387,7 @@
         `<th style="text-align:right" title="Engine would fill, TV didn't">Eng-only</th>` +
         `<th style="text-align:right" title="TV traded, engine wouldn't arm — gate/level gap">TV-only</th>` +
         `<th style="text-align:right" title="Per-share P&L edge from the engine's earlier entry (same exit)">Edge $/sh</th>` +
-        `<th style="text-align:right" title="Simulated engine P&L — score-band sized, Signal Router exits">Engine P&L</th>` +
+        `<th style="text-align:right" title="Simulated engine P&L — score-band sized, Signal Router exits, NET of slippage + commission">Engine P&L (net)</th>` +
         `<th style="text-align:right" title="TV's actual realized Refined P&L that day">TV P&L</th>` +
         `<th style="text-align:right">Saved</th>` +
         `</tr></thead><tbody>${rows}</tbody><tfoot>${foot}</tfoot></table></div></div>`;
