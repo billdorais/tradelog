@@ -5968,7 +5968,7 @@ _REFINED_SCORE_WEIGHTS = {
 # Saturation points — beyond these, additional gains stop contributing to score.
 _REFINED_SHARPE_SATURATION = 3.5   # raised from 2.0 — better separates elite from good
 _REFINED_PF_SATURATION     = 2.5   # PF >= 2.5 is "great"
-_REFINED_TRADES_SATURATION = 10    # 10+ trades counts as a full sample
+_REFINED_TRADES_SATURATION = 7     # 7+ trades counts as a full sample
 
 
 def _composite_score(stats, max_pnl):
@@ -5978,7 +5978,7 @@ def _composite_score(stats, max_pnl):
       - sharpe:        sharpe / 2.0, capped at 1.0; negative → 0; None → 0
       - profit_factor: pf / 2.5, capped at 1.0; None (no losses) → 1.0
       - win_rate:      win_rate / 100
-      - trades:        trades / 10, capped at 1.0
+      - trades:        trades / 7, capped at 1.0
     """
     sh = stats.get("sharpe")
     sh_norm     = 0.0 if sh is None else max(min(sh / _REFINED_SHARPE_SATURATION, 1.0), 0.0)
