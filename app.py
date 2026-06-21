@@ -132,6 +132,15 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 DAYTYPE_GATE_ENABLED   = os.environ.get("DAYTYPE_GATE_ENABLED", "1") == "1"
 DAYTYPE_GATE_ACCOUNTS  = {"alpaca2", "alpaca3"}   # gated books; "alpaca" (Paper All) never gated
 DAYTYPE_GATE_BREAKOUT_OK_DAYS = {"Outside"}       # day types on which breakouts may fire
+# Reversal-entry retest is honored ONLY for these books. A rule's retest_bars sets
+# the pullback/2nd-touch entry window, but it's shared across every account the
+# engine trades that setup on. To keep Paper All (acct1, "alpaca") as a clean
+# reject-entry baseline while Refined/Kairos use the optimized retest, the engine
+# enters the EXCLUDED accounts immediately on the reject and only arms the pending
+# retest for the accounts listed here.
+ENGINE_RETEST_ACCOUNTS = {t.strip() for t in
+                          os.environ.get("ENGINE_RETEST_ACCOUNTS", "alpaca2,alpaca3").split(",")
+                          if t.strip()}
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -10988,7 +10997,7 @@ def _engine_pilot_tick(now_et, today):
                           "alpaca2": alpaca_broker2,
                           "alpaca3": alpaca_broker3}
 
-    def _enter(s, cur, level, order_px, reason):
+    def _enter(s, cur, level, order_px, reason, targets_override=None):
         """Shared per-target: cooldown + strikes gate → size → market order on
         the target broker → arm max-hold → log. Loops the setup's targets so a
         setup that lives in both the Refined snapshot AND a routing rule with
@@ -10998,7 +11007,8 @@ def _engine_pilot_tick(now_et, today):
         is_long = side == "LONG"
         xp  = _engine_pilot_exit_for(strat, rules)
         act = "BUY" if is_long else "SELL"
-        targets = s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}]
+        targets = targets_override if targets_override is not None \
+            else (s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}])
         for tgt in targets:
             broker_tag   = tgt["broker_tag"]
             qty_override = tgt.get("qty_override")
@@ -11121,7 +11131,11 @@ def _engine_pilot_tick(now_et, today):
                         if retest_hit:
                             with _engine_pilot_lock:
                                 _engine_pilot_state["pending_retest"].pop(skey, None)
-                            _enter(s, cur, level, level, "reversal retest")
+                            # Enter only the accounts that armed the retest (acct1
+                            # already entered on the reject). Fall back to all targets
+                            # for any pre-existing pend armed before this split existed.
+                            _enter(s, cur, level, level, "reversal retest",
+                                   targets_override=pend.get("targets"))
                             continue
                 # 2) Detect a NEW reject on the just-completed bar (once per bar).
                 if cbar is None or eval_bar.get(tk) == cbar.timestamp:
@@ -11134,10 +11148,21 @@ def _engine_pilot_tick(now_et, today):
                          (not is_long and hi >= level and cl < level and (hi - level) >= atr * ENGINE_ATR_MULT)
                 if reject:
                     if rb > 0:
-                        from datetime import timedelta as _td
-                        with _engine_pilot_lock:
-                            _engine_pilot_state["pending_retest"][skey] = {
-                                "level": level, "expiry": cbar.timestamp + _td(minutes=5 * (rb + 1))}
+                        # Split the setup's targets: ENGINE_RETEST_ACCOUNTS wait for the
+                        # pullback/2nd touch; everyone else (e.g. Paper All) enters now on
+                        # the reject — a clean baseline that ignores retest_bars.
+                        _tgts = s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}]
+                        _retest_tgts    = [t for t in _tgts if t.get("broker_tag") in ENGINE_RETEST_ACCOUNTS]
+                        _immediate_tgts = [t for t in _tgts if t.get("broker_tag") not in ENGINE_RETEST_ACCOUNTS]
+                        if _immediate_tgts:
+                            _enter(s, cur, level, level, "reversal reject",
+                                   targets_override=_immediate_tgts)
+                        if _retest_tgts:
+                            from datetime import timedelta as _td
+                            with _engine_pilot_lock:
+                                _engine_pilot_state["pending_retest"][skey] = {
+                                    "level": level, "expiry": cbar.timestamp + _td(minutes=5 * (rb + 1)),
+                                    "targets": _retest_tgts}
                     else:
                         _enter(s, cur, level, level, "reversal reject")
 
