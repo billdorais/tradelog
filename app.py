@@ -6019,11 +6019,12 @@ _REFINED_SIZE_BANDS = [
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# Raised to 10 — aligns with the score's trades-component saturation, so a
-# strategy is only eligible once its trade count is at "full sample" weight.
-# Reduces promote/demote churn from short-stint strategies whose Sharpe/PF
-# swing wildly between runs.
-_REFINED_MIN_TRADES = 10
+# Set to 7 — aligns with the score's trades-component saturation, so a strategy
+# is eligible once its trade count reaches "full sample" weight. Lowered from 10
+# because the 20-day rolling window was gating genuinely top strategies that
+# simply hadn't traded 10 times in the window. Trade-off: thinner samples (7-9
+# trades) can now route, so their Sharpe/PF may swing more between refreshes.
+_REFINED_MIN_TRADES = 7
 # Looser threshold for the On-Deck watchlist only (display, never routed) — lets
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
 # strategies clear the strict routing bar above.
