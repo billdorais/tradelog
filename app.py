@@ -122,6 +122,16 @@ ENGINE_PILOT_EXTRA    = os.environ.get("ENGINE_PILOT_EXTRA", "")
 # the top-20 leaderboard), at FLAT share sizing. Same format. e.g. "alpaca:10" =
 # Paper All trades every pipeline at 10 shares via the engine. Empty = off.
 ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
+# Day-type entry gate. The inside/outside-day test showed breakout entries only
+# pay on "Outside" days (narrow prior-day CPR → expansion/trend); they bleed on
+# Inside/Neutral days. When enabled, breakout entries are BLOCKED on non-Outside
+# days — but ONLY for the Refined (acct2) and Kairos (acct3) books. Paper All
+# (acct1, tag "alpaca") is never gated so it keeps trading everything to build
+# data. Reversals are NOT gated (sample too thin to trust yet). Fails OPEN: if a
+# ticker can't be classified, the entry is allowed.
+DAYTYPE_GATE_ENABLED   = os.environ.get("DAYTYPE_GATE_ENABLED", "1") == "1"
+DAYTYPE_GATE_ACCOUNTS  = {"alpaca2", "alpaca3"}   # gated books; "alpaca" (Paper All) never gated
+DAYTYPE_GATE_BREAKOUT_OK_DAYS = {"Outside"}       # day types on which breakouts may fire
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -10611,6 +10621,9 @@ def _entry_engine_compute(date=None, buffer=0.05):
         if STRIKES_ENABLED and strikes.get(("alpaca2", tk, lvl), 0) >= STRIKES_PER_LEVEL:
             blocked.append("two-strikes")
         if ema_ok is False:      blocked.append("EMA")
+        # Day-type gate (mirrors the live acct3 path): breakouts blocked off Outside days.
+        if _daytype_gate_block(strat, tk, date, "alpaca3")[0]:
+            blocked.append("day-type")
         decision = "blocked" if blocked else "armed"
 
         rt_list = traded.get((tk, lvl, side, kind), [])
@@ -10992,6 +11005,12 @@ def _engine_pilot_tick(now_et, today):
             broker_inst  = broker_inst_by_tag.get(broker_tag)
             if broker_inst is None:
                 continue
+            # Day-type gate (acct2/acct3 only; acct1 Paper All never gated): skip
+            # breakout entries on non-Outside days. Reversals pass through.
+            _dt_block, _dt_reason = _daytype_gate_block(strat, tk, today, broker_tag)
+            if _dt_block:
+                log.info("ENGINE PILOT skip %s %s [%s]: %s", act, tk, broker_tag, _dt_reason)
+                continue
             # Cooldown is per (broker_tag, strategy, side, level) so the same
             # setup on alpaca + alpaca3 doesn't share a single cooldown clock.
             key = (broker_tag, strat, side, lvl_name)
@@ -11244,6 +11263,31 @@ def api_engine_pilot_toggle():
             pass
     return jsonify({"enabled": ENGINE_PILOT_ENABLED, "buffer": ENGINE_PILOT_BUFFER,
                     "configured": alpaca_broker3 is not None})
+
+
+@app.route("/api/daytype_gate/status")
+def api_daytype_gate_status():
+    """Day-type entry gate state for the UI toggle."""
+    return jsonify({
+        "enabled":      DAYTYPE_GATE_ENABLED,
+        "accounts":     sorted(DAYTYPE_GATE_ACCOUNTS),
+        "breakout_ok":  sorted(DAYTYPE_GATE_BREAKOUT_OK_DAYS),
+        "note":         "Blocks breakout entries on non-Outside days for Refined (acct2) "
+                        "and Kairos (acct3) only. Paper All (acct1) is never gated. "
+                        "Reversals are not gated.",
+    })
+
+
+@app.route("/api/daytype_gate/toggle", methods=["POST"])
+def api_daytype_gate_toggle():
+    global DAYTYPE_GATE_ENABLED
+    body = request.get_json(silent=True) or {}
+    if "enabled" in body:
+        DAYTYPE_GATE_ENABLED = bool(body["enabled"])
+        _update_env_file("DAYTYPE_GATE_ENABLED", "1" if DAYTYPE_GATE_ENABLED else "0")
+        _save_setting("DAYTYPE_GATE_ENABLED", "1" if DAYTYPE_GATE_ENABLED else "0")
+        log.info("DAYTYPE_GATE_ENABLED set to %s", DAYTYPE_GATE_ENABLED)
+    return jsonify({"enabled": DAYTYPE_GATE_ENABLED})
 
 
 @app.route("/api/engine_pilot/compare")
@@ -11956,6 +12000,29 @@ def _get_day_classification(ticker: str, trade_date: str) -> dict:
     if key not in _day_class_cache:
         _day_class_cache[key] = _classify_day(ticker, trade_date)
     return _day_class_cache[key]
+
+
+def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str):
+    """Day-type entry gate. Returns (blocked: bool, reason: str).
+
+    Blocks BREAKOUT entries on non-"Outside" days for the Refined (acct2) and
+    Kairos (acct3) books only — Paper All (acct1, tag "alpaca") is never gated so
+    it keeps accumulating data on every day type. Reversals are never gated.
+    Fails OPEN: an unclassifiable ticker (no daily bars) is allowed through."""
+    if not DAYTYPE_GATE_ENABLED:
+        return False, ""
+    if account_tag not in DAYTYPE_GATE_ACCOUNTS:
+        return False, ""
+    su = (strategy or "").upper()
+    if "BREAKOUT" not in su:          # only breakouts are gated
+        return False, ""
+    try:
+        dt = (_get_day_classification(ticker, date) or {}).get("day_type")
+    except Exception:
+        return False, ""              # classification error → fail open
+    if not dt or dt in DAYTYPE_GATE_BREAKOUT_OK_DAYS:
+        return False, ""
+    return True, f"day-type gate: breakout blocked on {dt} day (Outside only)"
 
 
 def _camarilla_levels(ticker: str, trade_date: str) -> dict:
@@ -13120,7 +13187,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -13229,6 +13296,10 @@ def _restore_risk_settings():
             log.info("Restored ENGINE_PILOT_BUFFER=%g from DB", ENGINE_PILOT_BUFFER)
         except (TypeError, ValueError):
             pass
+    stored = _load_setting("DAYTYPE_GATE_ENABLED")
+    if stored is not None:
+        DAYTYPE_GATE_ENABLED = stored == "1"
+        log.info("Restored DAYTYPE_GATE_ENABLED=%s from DB", DAYTYPE_GATE_ENABLED)
 
 _restore_risk_settings()
 

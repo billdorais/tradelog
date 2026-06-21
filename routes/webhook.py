@@ -592,6 +592,32 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _in_hours
 
+    # Day-type gate (entries only): drop Refined (acct2) targets for BREAKOUT entries
+    # on non-Outside days. Paper All (acct1) is never gated — it keeps trading
+    # everything to accumulate data. Reversals pass through. Fails open.
+    if not _is_exit and alpaca_targets:
+        try:
+            _gate_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        except Exception:
+            _gate_today = datetime.now(timezone.utc).date().isoformat()
+        _kept = []
+        _gate_dropped = []
+        for (t, o) in alpaca_targets:
+            _blk, _why = app._daytype_gate_block(
+                strategy_name, ticker, _gate_today, _alpaca_broker_name(t))
+            if _blk:
+                _gate_dropped.append((t, _why))
+            else:
+                _kept.append((t, o))
+        if _gate_dropped:
+            _reason = _gate_dropped[0][1]
+            app.log.info("Day-type gate: %s %s — skipped %s (%s)", order_action, ticker,
+                         ",".join(_alpaca_broker_name(t) for (t, _w) in _gate_dropped), _reason)
+            if not _kept and conn:
+                app._update_exec(cur, trade_id, "skipped", _reason)
+                conn.commit()
+        alpaca_targets = _kept
+
     # --- Coinbase (sync-only; typically sub-second) ---
     for target, qty_override in coinbase_targets:
         _qty = qty_override if qty_override is not None else quantity
