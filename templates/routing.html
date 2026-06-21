@@ -466,7 +466,7 @@
       <div class="risk-section">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
           Block breakout entries on Inside/Neutral days
-          <span style="color:#666;font-size:0.68rem">Refined (acct2) + Kairos (acct3) only · Paper All trades everything</span>
+          <span style="color:#666;font-size:0.68rem">All three paper books (Paper All, Refined, Kairos)</span>
           <span id="dtGateBadge" class="risk-status-badge disabled">
             <span class="risk-dot grey" id="dtGateDot"></span>
             <span id="dtGateText">Disabled</span>
@@ -476,7 +476,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(true)">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(false)">Off</button>
         </div>
-        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for the Refined and Kairos books. Paper All (acct1) is never gated so it keeps accumulating data. Reversals are not gated. Fails open if a ticker can't be classified.</div>
+        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all three paper books (Paper All now runs the Kairos engine entries too). Reversals are not gated. Fails open if a ticker can't be classified.</div>
       </div>
     </div>
 

@@ -125,21 +125,19 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 # Day-type entry gate. The inside/outside-day test showed breakout entries only
 # pay on "Outside" days (narrow prior-day CPR → expansion/trend); they bleed on
 # Inside/Neutral days. When enabled, breakout entries are BLOCKED on non-Outside
-# days — but ONLY for the Refined (acct2) and Kairos (acct3) books. Paper All
-# (acct1, tag "alpaca") is never gated so it keeps trading everything to build
-# data. Reversals are NOT gated (sample too thin to trust yet). Fails OPEN: if a
-# ticker can't be classified, the entry is allowed.
+# days for the listed books. All three paper books are gated — Paper All (acct1)
+# included, since it now trades the Kairos engine entries too. Reversals are NOT
+# gated (sample too thin to trust yet). Fails OPEN: if a ticker can't be
+# classified, the entry is allowed.
 DAYTYPE_GATE_ENABLED   = os.environ.get("DAYTYPE_GATE_ENABLED", "1") == "1"
-DAYTYPE_GATE_ACCOUNTS  = {"alpaca2", "alpaca3"}   # gated books; "alpaca" (Paper All) never gated
+DAYTYPE_GATE_ACCOUNTS  = {"alpaca", "alpaca2", "alpaca3"}   # gated books (all three)
 DAYTYPE_GATE_BREAKOUT_OK_DAYS = {"Outside"}       # day types on which breakouts may fire
-# Reversal-entry retest is honored ONLY for these books. A rule's retest_bars sets
-# the pullback/2nd-touch entry window, but it's shared across every account the
-# engine trades that setup on. To keep Paper All (acct1, "alpaca") as a clean
-# reject-entry baseline while Refined/Kairos use the optimized retest, the engine
-# enters the EXCLUDED accounts immediately on the reject and only arms the pending
-# retest for the accounts listed here.
+# Reversal-entry retest is honored for these books. A rule's retest_bars sets the
+# pullback/2nd-touch entry window; any account NOT listed here enters immediately
+# on the initial reject (a baseline). All three books honor the retest — Paper All
+# (acct1) included, since it runs the Kairos engine entries too.
 ENGINE_RETEST_ACCOUNTS = {t.strip() for t in
-                          os.environ.get("ENGINE_RETEST_ACCOUNTS", "alpaca2,alpaca3").split(",")
+                          os.environ.get("ENGINE_RETEST_ACCOUNTS", "alpaca,alpaca2,alpaca3").split(",")
                           if t.strip()}
 
 _risk_halted          = False   # True when daily loss limit is breached
@@ -11015,8 +11013,8 @@ def _engine_pilot_tick(now_et, today):
             broker_inst  = broker_inst_by_tag.get(broker_tag)
             if broker_inst is None:
                 continue
-            # Day-type gate (acct2/acct3 only; acct1 Paper All never gated): skip
-            # breakout entries on non-Outside days. Reversals pass through.
+            # Day-type gate (all three books): skip breakout entries on non-Outside
+            # days. Reversals pass through.
             _dt_block, _dt_reason = _daytype_gate_block(strat, tk, today, broker_tag)
             if _dt_block:
                 log.info("ENGINE PILOT skip %s %s [%s]: %s", act, tk, broker_tag, _dt_reason)
@@ -11297,9 +11295,8 @@ def api_daytype_gate_status():
         "enabled":      DAYTYPE_GATE_ENABLED,
         "accounts":     sorted(DAYTYPE_GATE_ACCOUNTS),
         "breakout_ok":  sorted(DAYTYPE_GATE_BREAKOUT_OK_DAYS),
-        "note":         "Blocks breakout entries on non-Outside days for Refined (acct2) "
-                        "and Kairos (acct3) only. Paper All (acct1) is never gated. "
-                        "Reversals are not gated.",
+        "note":         "Blocks breakout entries on non-Outside days for all three paper "
+                        "books (Paper All, Refined, Kairos). Reversals are not gated.",
     })
 
 
@@ -12030,10 +12027,10 @@ def _get_day_classification(ticker: str, trade_date: str) -> dict:
 def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str):
     """Day-type entry gate. Returns (blocked: bool, reason: str).
 
-    Blocks BREAKOUT entries on non-"Outside" days for the Refined (acct2) and
-    Kairos (acct3) books only — Paper All (acct1, tag "alpaca") is never gated so
-    it keeps accumulating data on every day type. Reversals are never gated.
-    Fails OPEN: an unclassifiable ticker (no daily bars) is allowed through."""
+    Blocks BREAKOUT entries on non-"Outside" days for the books in
+    DAYTYPE_GATE_ACCOUNTS (all three paper books, incl. Paper All which now runs
+    the Kairos engine entries). Reversals are never gated. Fails OPEN: an
+    unclassifiable ticker (no daily bars) is allowed through."""
     if not DAYTYPE_GATE_ENABLED:
         return False, ""
     if account_tag not in DAYTYPE_GATE_ACCOUNTS:
