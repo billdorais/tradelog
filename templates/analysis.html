@@ -2185,7 +2185,7 @@
 
   let _excludedStrategies = new Set();
   let _excludedTickers    = new Set();
-  let _refinedDays        = 20;   // rolling window from /api/routing/rules/refresh_refined
+  let _refinedDays        = 30;   // rolling window from /api/routing/rules/refresh_refined
   async function _loadExcluded() {
     try {
       const [strats, tks, refined] = await Promise.all([

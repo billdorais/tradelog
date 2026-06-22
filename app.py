@@ -6116,7 +6116,7 @@ def _compute_refined_qty(score, last_price):
     return max(1, round(target / last_price))
 
 
-def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=None):
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
     Ranking uses a weighted composite score (Sharpe 35% · PF 30% · Win 20% · Trades 15%)
@@ -6124,8 +6124,9 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=20, from_date=No
     has at least 2 trades in the recent window. Net-negative strategies are filtered out.
 
     from_date (YYYY-MM-DD) anchors the ranking window; falls back to a rolling
-    `days`-day window when not provided. Default reduced from 45 → 20 days to
-    weight recent regime performance more heavily."""
+    `days`-day window when not provided. Default is 30 days — wide enough that the
+    day-type gate (which cuts breakout trade frequency) still leaves strategies with
+    enough trades to clear the eligibility floor."""
     global _refined_last_run, _refined_last_result
 
     stats_map    = _compute_strategy_stats(days=days, from_date=from_date)
@@ -6477,8 +6478,8 @@ def _refined_scheduler_loop():
                 # so the daily 4:15 PM scheduler stays in sync with the manual
                 # Refresh Now control. Falls back to 20 if nothing saved.
                 _sched_days_raw = _load_setting("REFINED_DAYS")
-                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 20
-                except (TypeError, ValueError): _sched_days = 20
+                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 30
+                except (TypeError, ValueError): _sched_days = 30
                 _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
                 log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
@@ -6576,8 +6577,8 @@ def remove_excluded_ticker(ticker):
 def get_refined_status():
     anchor = _load_setting("REFINED_FROM_DATE") or ""
     days   = _load_setting("REFINED_DAYS")
-    try:    days = int(days) if days else 20
-    except (TypeError, ValueError): days = 20
+    try:    days = int(days) if days else 30
+    except (TypeError, ValueError): days = 30
     if _refined_last_run:
         return jsonify({**_refined_last_result, "anchor_from_date": anchor, "days": days})
     return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
@@ -6597,8 +6598,8 @@ def refresh_refined():
         _save_setting("REFINED_DAYS", str(days))
     else:
         stored_days = _load_setting("REFINED_DAYS")
-        try:    days = int(stored_days) if stored_days else 20
-        except (TypeError, ValueError): days = 20
+        try:    days = int(stored_days) if stored_days else 30
+        except (TypeError, ValueError): days = 30
     if "from_date" in data:
         # Caller is explicitly setting (or clearing) the anchor — persist it
         # so the daily scheduler picks it up on subsequent runs.
@@ -13322,6 +13323,13 @@ def _restore_risk_settings():
     if stored is not None:
         DAYTYPE_GATE_ENABLED = stored == "1"
         log.info("Restored DAYTYPE_GATE_ENABLED=%s from DB", DAYTYPE_GATE_ENABLED)
+    # One-time migration: bump the Refined leaderboard window to 30 days (from the
+    # old 20/45 defaults) so the day-type gate's lower trade frequency still leaves
+    # strategies enough trades to qualify. Flag-guarded so a later manual change sticks.
+    if not _load_setting("REFINED_DAYS_30_MIGRATED"):
+        _save_setting("REFINED_DAYS", "30")
+        _save_setting("REFINED_DAYS_30_MIGRATED", "1")
+        log.info("Migrated REFINED_DAYS to 30 (one-time)")
 
 _restore_risk_settings()
 
