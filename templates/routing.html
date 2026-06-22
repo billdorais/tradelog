@@ -476,7 +476,23 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(true)">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(false)">Off</button>
         </div>
-        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all three paper books (Paper All now runs the Kairos engine entries too). Reversals are not gated. Fails open if a ticker can't be classified.</div>
+        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all three paper books (Paper All now runs the Kairos engine entries too). Reversals are gated separately below. Fails open if a ticker can't be classified.</div>
+
+        <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Block reversal entries on Outside/Neutral days
+            <span style="color:#666;font-size:0.68rem">Paper All (acct1) + Kairos (acct3) only · Refined left alone</span>
+            <span id="dtRevGateBadge" class="risk-status-badge disabled">
+              <span class="risk-dot grey" id="dtRevGateDot"></span>
+              <span id="dtRevGateText">Disabled</span>
+            </span>
+          </div>
+          <div class="risk-input-row">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setRevGate(true)">Enable</button>
+            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setRevGate(false)">Off</button>
+          </div>
+          <div class="risk-hint">Inside-day → reversals thesis. ⚠ Weaker than the breakout gate: in the test, R3S3 reversals win on Outside days too, so this can prune good trades — left OFF by default, enable to test. When on, reversal entries fire only on Inside days for Paper All + Kairos (Refined stays TV-driven and ungated). Fails open if a ticker can't be classified.</div>
+        </div>
       </div>
     </div>
 
@@ -1486,6 +1502,16 @@
         badge.className = 'risk-status-badge disabled'; dot.className = 'risk-dot grey';
         text.textContent = 'Disabled';
       }
+      const rBadge = document.getElementById('dtRevGateBadge');
+      const rDot   = document.getElementById('dtRevGateDot');
+      const rText  = document.getElementById('dtRevGateText');
+      if (d.reversal_enabled) {
+        rBadge.className = 'risk-status-badge active'; rDot.className = 'risk-dot green';
+        rText.textContent = 'Active (Inside only)';
+      } else {
+        rBadge.className = 'risk-status-badge disabled'; rDot.className = 'risk-dot grey';
+        rText.textContent = 'Disabled';
+      }
     } catch (e) { /* leave as-is */ }
   }
   async function setDayTypeGate(on) {
@@ -1493,6 +1519,15 @@
       await fetch('/api/daytype_gate/toggle', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !!on }),
+      });
+    } catch (e) { /* ignore */ }
+    loadDayTypeGate();
+  }
+  async function setRevGate(on) {
+    try {
+      await fetch('/api/daytype_gate/toggle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reversal_enabled: !!on }),
       });
     } catch (e) { /* ignore */ }
     loadDayTypeGate();

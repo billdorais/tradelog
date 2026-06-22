@@ -132,6 +132,14 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 DAYTYPE_GATE_ENABLED   = os.environ.get("DAYTYPE_GATE_ENABLED", "1") == "1"
 DAYTYPE_GATE_ACCOUNTS  = {"alpaca", "alpaca2", "alpaca3"}   # gated books (all three)
 DAYTYPE_GATE_BREAKOUT_OK_DAYS = {"Outside"}       # day types on which breakouts may fire
+# Reversal day-type gate — a SEPARATE, independently-toggled gate. The inside-day →
+# reversals thesis is weaker than the breakout one (R3S3 reversals also win on
+# Outside days), so this defaults OFF; enable via the routing page to test it. When
+# on, blocks reversal entries on non-"Inside" days for Paper All (acct1) + Kairos
+# (acct3) only — Refined (acct2) is intentionally left alone (TV-driven).
+DAYTYPE_REVERSAL_GATE_ENABLED  = os.environ.get("DAYTYPE_REVERSAL_GATE_ENABLED", "0") == "1"
+DAYTYPE_REVERSAL_GATE_ACCOUNTS = {"alpaca", "alpaca3"}
+DAYTYPE_REVERSAL_OK_DAYS       = {"Inside"}
 # Reversal-entry retest is honored for these books. A rule's retest_bars sets the
 # pullback/2nd-touch entry window; any account NOT listed here enters immediately
 # on the initial reject (a baseline). All three books honor the retest — Paper All
@@ -11291,26 +11299,36 @@ def api_engine_pilot_toggle():
 
 @app.route("/api/daytype_gate/status")
 def api_daytype_gate_status():
-    """Day-type entry gate state for the UI toggle."""
+    """Day-type entry gate state for the UI toggles (breakout + reversal)."""
     return jsonify({
         "enabled":      DAYTYPE_GATE_ENABLED,
         "accounts":     sorted(DAYTYPE_GATE_ACCOUNTS),
         "breakout_ok":  sorted(DAYTYPE_GATE_BREAKOUT_OK_DAYS),
-        "note":         "Blocks breakout entries on non-Outside days for all three paper "
-                        "books (Paper All, Refined, Kairos). Reversals are not gated.",
+        "reversal_enabled":  DAYTYPE_REVERSAL_GATE_ENABLED,
+        "reversal_accounts": sorted(DAYTYPE_REVERSAL_GATE_ACCOUNTS),
+        "reversal_ok":       sorted(DAYTYPE_REVERSAL_OK_DAYS),
+        "note":         "Breakout gate: blocks breakouts on non-Outside days for all three "
+                        "books. Reversal gate: blocks reversals on non-Inside days for Paper "
+                        "All + Kairos only (Refined left alone).",
     })
 
 
 @app.route("/api/daytype_gate/toggle", methods=["POST"])
 def api_daytype_gate_toggle():
-    global DAYTYPE_GATE_ENABLED
+    global DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED
     body = request.get_json(silent=True) or {}
     if "enabled" in body:
         DAYTYPE_GATE_ENABLED = bool(body["enabled"])
         _update_env_file("DAYTYPE_GATE_ENABLED", "1" if DAYTYPE_GATE_ENABLED else "0")
         _save_setting("DAYTYPE_GATE_ENABLED", "1" if DAYTYPE_GATE_ENABLED else "0")
         log.info("DAYTYPE_GATE_ENABLED set to %s", DAYTYPE_GATE_ENABLED)
-    return jsonify({"enabled": DAYTYPE_GATE_ENABLED})
+    if "reversal_enabled" in body:
+        DAYTYPE_REVERSAL_GATE_ENABLED = bool(body["reversal_enabled"])
+        _update_env_file("DAYTYPE_REVERSAL_GATE_ENABLED", "1" if DAYTYPE_REVERSAL_GATE_ENABLED else "0")
+        _save_setting("DAYTYPE_REVERSAL_GATE_ENABLED", "1" if DAYTYPE_REVERSAL_GATE_ENABLED else "0")
+        log.info("DAYTYPE_REVERSAL_GATE_ENABLED set to %s", DAYTYPE_REVERSAL_GATE_ENABLED)
+    return jsonify({"enabled": DAYTYPE_GATE_ENABLED,
+                    "reversal_enabled": DAYTYPE_REVERSAL_GATE_ENABLED})
 
 
 @app.route("/api/engine_pilot/compare")
@@ -12028,24 +12046,30 @@ def _get_day_classification(ticker: str, trade_date: str) -> dict:
 def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str):
     """Day-type entry gate. Returns (blocked: bool, reason: str).
 
-    Blocks BREAKOUT entries on non-"Outside" days for the books in
-    DAYTYPE_GATE_ACCOUNTS (all three paper books, incl. Paper All which now runs
-    the Kairos engine entries). Reversals are never gated. Fails OPEN: an
-    unclassifiable ticker (no daily bars) is allowed through."""
-    if not DAYTYPE_GATE_ENABLED:
-        return False, ""
-    if account_tag not in DAYTYPE_GATE_ACCOUNTS:
-        return False, ""
+    Two independent gates:
+      • BREAKOUT — blocked on non-"Outside" days for DAYTYPE_GATE_ACCOUNTS (all
+        three books), when DAYTYPE_GATE_ENABLED.
+      • REVERSAL — blocked on non-"Inside" days for DAYTYPE_REVERSAL_GATE_ACCOUNTS
+        (Paper All + Kairos), when DAYTYPE_REVERSAL_GATE_ENABLED.
+    Fails OPEN: an unclassifiable ticker (no daily bars) is allowed through."""
     su = (strategy or "").upper()
-    if "BREAKOUT" not in su:          # only breakouts are gated
+    if "BREAKOUT" in su:
+        if not DAYTYPE_GATE_ENABLED or account_tag not in DAYTYPE_GATE_ACCOUNTS:
+            return False, ""
+        ok_days, kind_lbl = DAYTYPE_GATE_BREAKOUT_OK_DAYS, "breakout"
+    elif "REVERSAL" in su:
+        if not DAYTYPE_REVERSAL_GATE_ENABLED or account_tag not in DAYTYPE_REVERSAL_GATE_ACCOUNTS:
+            return False, ""
+        ok_days, kind_lbl = DAYTYPE_REVERSAL_OK_DAYS, "reversal"
+    else:
         return False, ""
     try:
         dt = (_get_day_classification(ticker, date) or {}).get("day_type")
     except Exception:
         return False, ""              # classification error → fail open
-    if not dt or dt in DAYTYPE_GATE_BREAKOUT_OK_DAYS:
+    if not dt or dt in ok_days:
         return False, ""
-    return True, f"day-type gate: breakout blocked on {dt} day (Outside only)"
+    return True, f"day-type gate: {kind_lbl} blocked on {dt} day ({'/'.join(sorted(ok_days))} only)"
 
 
 def _camarilla_levels(ticker: str, trade_date: str) -> dict:
@@ -13210,7 +13234,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -13323,6 +13347,10 @@ def _restore_risk_settings():
     if stored is not None:
         DAYTYPE_GATE_ENABLED = stored == "1"
         log.info("Restored DAYTYPE_GATE_ENABLED=%s from DB", DAYTYPE_GATE_ENABLED)
+    stored = _load_setting("DAYTYPE_REVERSAL_GATE_ENABLED")
+    if stored is not None:
+        DAYTYPE_REVERSAL_GATE_ENABLED = stored == "1"
+        log.info("Restored DAYTYPE_REVERSAL_GATE_ENABLED=%s from DB", DAYTYPE_REVERSAL_GATE_ENABLED)
     # One-time migration: bump the Refined leaderboard window to 30 days (from the
     # old 20/45 defaults) so the day-type gate's lower trade frequency still leaves
     # strategies enough trades to qualify. Flag-guarded so a later manual change sticks.
