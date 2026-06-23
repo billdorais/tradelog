@@ -255,6 +255,47 @@ def _get_route_take_profit_pct(strategy_name: str):
                 return rv
     return None
 
+
+_route_trigger_cache    = {}   # strategy_upper → trail_trigger (float, %)
+_route_trigger_cache_ts = 0.0
+
+def _get_route_trail_trigger_pct(strategy_name: str):
+    """Return the per-rule trail_trigger % for a strategy, or None. The trail only
+    ARMS once unrealized gain reaches this % — a 'lock and let it run' (raise the
+    stop into profit, then trail). Cached 60s, exact-then-fuzzy CAM matching."""
+    global _route_trigger_cache, _route_trigger_cache_ts
+    import time as _rt
+    now = _rt.time()
+    if now - _route_trigger_cache_ts > 60:
+        try:
+            conn = get_db()
+            new_cache = {}
+            for row in conn.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+                rname = (row[0] if DATABASE_URL else row["name"] or "").upper()
+                try:    nodes = json.loads(row[1] if DATABASE_URL else row["nodes"] or "[]")
+                except Exception: nodes = []
+                for nd in nodes:
+                    if nd.get("type") == "exit_params" and nd.get("trail_trigger") and nd.get("mode") == "percent":
+                        try:    new_cache[rname] = float(nd["trail_trigger"])
+                        except (TypeError, ValueError): pass
+                        break
+            conn.close()
+            _route_trigger_cache    = new_cache
+            _route_trigger_cache_ts = now
+        except Exception as _rte:
+            log.debug("Route trigger cache refresh failed: %s", _rte)
+    if not strategy_name:
+        return None
+    su = strategy_name.upper()
+    if su in _route_trigger_cache:
+        return _route_trigger_cache[su]
+    for rk, rv in _route_trigger_cache.items():
+        if "_CAM_" in rk:
+            pat = "_".join(rk.split("_CAM_")[1].split("_")[:2])
+            if pat and pat in su:
+                return rv
+    return None
+
 if _IB_ENABLED and os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
     from brokers.ib_broker import IBBroker
@@ -1066,16 +1107,24 @@ def _check_position_stops():
                     peak_px  = entry_px + (
                         (peak_pnl / qty_abs) if is_long else -(peak_pnl / qty_abs)
                     )
+                    # trail_trigger: the trail only ARMS once peak gain reaches this %
+                    # ("lock and let it run" — raise the stop into profit, then trail).
+                    # Without a trigger the trail is active from entry (as before).
+                    _trig = _get_route_trail_trigger_pct(strat or "")
+                    peak_gain_pct = ((peak_px - entry_px) / entry_px * 100) if is_long \
+                                    else ((entry_px - peak_px) / entry_px * 100)
+                    _armed = (_trig is None) or (peak_gain_pct >= _trig)
                     # Stop level: trail % below peak for long, above for short
                     stop_px  = (peak_px * (1 - trail_pct / 100) if is_long
                                 else peak_px * (1 + trail_pct / 100))
-                    breached = (current_px <= stop_px if is_long
-                                else current_px >= stop_px)
+                    breached = _armed and (current_px <= stop_px if is_long
+                                           else current_px >= stop_px)
                     if breached:
+                        _arm_note = f", armed @+{_trig}%" if _trig is not None else ""
                         triggered = (
                             "kairos_trail",
                             f"current ${current_px:.4f} crossed trail stop ${stop_px:.4f} "
-                            f"(peak ${peak_px:.4f}, trail {trail_pct}%, "
+                            f"(peak ${peak_px:.4f}, trail {trail_pct}%{_arm_note}, "
                             f"{'long' if is_long else 'short'})",
                         )
 
