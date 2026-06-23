@@ -335,6 +335,39 @@
       <button class="run-btn" id="runBtn" onclick="runSimulation()">&#9654; Run Simulation</button>
       <button class="apply-sr-btn" id="applyBtn" onclick="applyToSignalRouter()" style="display:none" title="Push new params trail/trigger to all matching Signal Router pipelines">&#8593; Apply to Signal Router</button>
       <button class="sweep-btn" id="sweepToggleBtn" onclick="toggleSweepPanel()">⚡ Sweep</button>
+      <button class="sweep-btn" id="tpSweepToggleBtn" onclick="toggleTpSweepPanel()" title="Hold each strategy's real exits fixed and grid-search a take-profit level">💰 TP Sweep</button>
+    </div>
+    <div id="tpSweepPanel" style="display:none">
+      <div class="sweep-panel">
+        <div class="param-group">
+          <label>TP min</label>
+          <div class="input-wrap"><input type="number" id="tpSweepMin" value="0.25" step="0.25" min="0.05" max="10"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group">
+          <label>TP max</label>
+          <div class="input-wrap"><input type="number" id="tpSweepMax" value="3.00" step="0.25" min="0.05" max="20"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group">
+          <label>Step</label>
+          <div class="input-wrap"><input type="number" id="tpSweepStep" value="0.25" step="0.05" min="0.05" max="5"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <label class="toggle-wrap" title="Find the best take-profit independently per strategy band">
+            <input type="checkbox" id="tpSweepPerStrategy" checked>
+            <span class="toggle-label active">Per band</span>
+          </label>
+        </div>
+        <div class="param-group" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <button class="run-btn" id="tpSweepRunBtn" onclick="runTpSweep()" style="padding:7px 18px;font-size:0.82rem">💰 Run TP Sweep</button>
+        </div>
+      </div>
+      <div style="font-size:0.7rem;color:#666;padding:0 2px 4px">TP % = price move past entry in your favor. Each strategy keeps its real trail/trigger/max-hold; the take-profit is added on top and only "adopted" per band if it beats the no-TP baseline.</div>
+    </div>
+    <div id="tpSweepResults" class="sweep-results" style="display:none">
+      <div class="section-title" id="tpSweepTitle" style="margin-bottom:8px"></div>
+      <div id="tpSweepBody"></div>
     </div>
     <div id="sweepPanel" style="display:none">
       <div class="sweep-panel">
@@ -1778,6 +1811,110 @@
     const shown = panel.style.display !== 'none';
     panel.style.display = shown ? 'none' : 'block';
     btn.classList.toggle('active', !shown);
+  }
+
+  function toggleTpSweepPanel() {
+    const panel = document.getElementById('tpSweepPanel');
+    const btn   = document.getElementById('tpSweepToggleBtn');
+    const shown = panel.style.display !== 'none';
+    panel.style.display = shown ? 'none' : 'block';
+    btn.classList.toggle('active', !shown);
+  }
+
+  async function runTpSweep() {
+    const btn      = document.getElementById('tpSweepRunBtn');
+    const fromDate = document.getElementById('fromDate').value;
+    const toDate   = document.getElementById('toDate').value;
+    const account  = document.getElementById('account').value;
+    if (!fromDate || !toDate) { alert('Please set a date range first.'); return; }
+    const tpMin       = parseFloat(document.getElementById('tpSweepMin').value)  || 0.25;
+    const tpMax       = parseFloat(document.getElementById('tpSweepMax').value)  || 3.0;
+    const tpStep      = parseFloat(document.getElementById('tpSweepStep').value) || 0.25;
+    const perStrategy = document.getElementById('tpSweepPerStrategy').checked;
+    const skipExits   = document.getElementById('skipTvExits').checked;
+    btn.disabled = true; btn.textContent = '⏳ Sweeping…';
+    document.getElementById('tpSweepResults').style.display = 'none';
+    try {
+      const res = await fetch('/api/simulate/tp_sweep', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ from_date: fromDate, to_date: toDate, account,
+          tp_min: tpMin, tp_max: tpMax, tp_step: tpStep,
+          per_strategy: perStrategy, skip_tv_exits: skipExits }),
+      });
+      if (!res.ok) { alert(`TP sweep error ${res.status}: ${await res.text()}`); return; }
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      renderTpSweepResults(data);
+    } catch(e) {
+      alert('TP sweep failed: ' + e);
+    } finally {
+      btn.disabled = false; btn.textContent = '💰 Run TP Sweep';
+    }
+  }
+
+  function renderTpSweepResults(data) {
+    const el    = document.getElementById('tpSweepResults');
+    const body  = document.getElementById('tpSweepBody');
+    const title = document.getElementById('tpSweepTitle');
+    const fmt   = v => v >= 0 ? `<span style="color:#7FE098">+$${v.toFixed(2)}</span>`
+                              : `<span style="color:#e74c3c">-$${Math.abs(v).toFixed(2)}</span>`;
+    const applyBtn = tp =>
+      `<button class="sweep-apply-btn" onclick="applyTpGlobal(${tp})" title="Set the global take-profit % (all accounts) to ${tp}%">★ apply ${tp}%</button>`;
+
+    if (data.mode === 'global') {
+      title.textContent = `Take-Profit Sweep — no-TP baseline $${data.base_total >= 0 ? '+' : ''}${data.base_total.toFixed(2)} · ${data.results[0]?.trades || 0} trades`;
+      const rows = data.results.map((r, i) => `
+        <tr class="${i === 0 ? 'sweep-row-best' : ''}">
+          <td>${i+1}</td>
+          <td>${r.tp}%${i === 0 ? ' ★' : ''}</td>
+          <td>${fmt(r.total_pnl)}</td>
+          <td>${fmt(r.delta_vs_base)}</td>
+          <td style="color:#7FE098">${r.improved}</td>
+          <td style="color:#e74c3c">${r.worse}</td>
+          <td>${applyBtn(r.tp)}</td>
+        </tr>`).join('');
+      body.innerHTML =
+        `<table style="width:100%;border-collapse:collapse"><thead><tr>
+           <th>#</th><th>Take-Profit</th><th>Total P&amp;L</th><th>Δ vs no-TP</th>
+           <th title="Trades a TP helped">Helped</th><th title="Trades a TP hurt">Hurt</th><th>Apply</th>
+         </tr></thead><tbody>${rows}</tbody></table>
+         <div style="font-size:0.72rem;color:#888;margin-top:8px">A take-profit only helps if winners reliably run *past* the level after you'd have exited; "Hurt" counts trades where it clipped a runner. If the best Δ is barely positive (or negative), your exits are better left to the trail.</div>`;
+      el.style.display = 'block';
+      return;
+    }
+
+    // per_strategy (per band)
+    const headerDelta = data.delta;
+    title.innerHTML = `Take-Profit Sweep — per band &nbsp;·&nbsp; no-TP baseline ${fmt(data.base_total)} → best-TP ${fmt(data.combined_pnl)} `
+      + `<span style="color:${headerDelta >= 0 ? '#7FE098' : '#e74c3c'}">(${headerDelta >= 0 ? '+' : ''}$${headerDelta.toFixed(2)})</span>`;
+    const sections = data.strategies.map(s => {
+      const adopted = s.best_tp != null;
+      const verdict = adopted
+        ? `<span style="color:#7FE098">best TP <strong>${s.best_tp}%</strong> → ${fmt(s.best_pnl)} (${fmt(s.delta)} vs no-TP)</span> ${applyBtn(s.best_tp)}`
+        : `<span style="color:#888">no TP beats the baseline (${fmt(s.base_pnl)}) — leave it to the trail</span>`;
+      const top = (s.top5 || []).map(x =>
+        `<span style="color:#aaa;margin-right:12px">${x.tp}%: ${fmt(x.total_pnl)}</span>`).join('');
+      return `<div class="sweep-strat-section">
+        <div class="sweep-strat-title">${s.strategy} <span style="color:#666;font-weight:400">· ${s.trades} trades</span></div>
+        <div style="font-size:0.8rem;margin-bottom:4px">${verdict}</div>
+        <div style="font-size:0.72rem">${top}</div>
+      </div>`;
+    }).join('');
+    body.innerHTML = sections;
+    el.style.display = 'block';
+  }
+
+  async function applyTpGlobal(tp) {
+    if (!confirm(`Set the GLOBAL take-profit to ${tp}% (price move past entry)?\n\nThis applies to ALL accounts (Paper All, Refined, Kairos) — take-profit is a single global setting, not per-strategy.`)) return;
+    try {
+      const res = await fetch('/api/risk/limit', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ take_profit_pct: tp }),
+      });
+      const d = await res.json();
+      if (!res.ok) { alert('Apply failed: ' + (d.error || res.status)); return; }
+      alert(`Done — global take-profit set to ${tp}%. Manage it on the Signal Router page.`);
+    } catch (e) { alert('Error: ' + e.message); }
   }
 
   async function runSweep() {
