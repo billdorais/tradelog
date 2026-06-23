@@ -657,6 +657,35 @@
             title="Remove the retest window from all reversal pipelines (revert to entering on the reject)">
       clear retest
     </button>
+    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #88BF8B;border-radius:6px;overflow:hidden">
+      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">TP %</span>
+      <input id="bulkTpInput" type="number" min="0.05" step="0.05" value="0.50"
+             style="width:54px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
+             title="Per-band take-profit: close once unrealized gain reaches this % (price move past entry)">
+      <select id="bulkTpBand"
+              style="background:#0f1117;border:none;border-left:1px solid #88BF8B;color:#7FE098;font-size:0.74rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
+        <option value="breakout_r3s3">BREAKOUT R3S3</option>
+        <option value="breakout_r4s4">BREAKOUT R4S4</option>
+        <option value="reversal_r3s3">REVERSAL R3S3</option>
+        <option value="reversal_r4s4">REVERSAL R4S4</option>
+        <option value="breakout">All breakouts</option>
+        <option value="reversal">All reversals</option>
+        <option value="">All strategies</option>
+      </select>
+      <button onclick="bulkSetTakeProfit()"
+              style="background:transparent;border:none;border-left:1px solid #88BF8B;color:#7FE098;
+                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Set take_profit_pct on every pipeline in the selected band">
+        TP → band
+      </button>
+    </div>
+    <button onclick="bulkClearTakeProfit()"
+            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Remove the per-band take-profit from the selected band (revert to the global take-profit)">
+      clear TP
+    </button>
     <button onclick="bulkRemovePaperAll()"
             style="background:transparent;border:1px solid #c0392b;color:#e74c3c;border-radius:6px;
                    padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
@@ -1868,6 +1897,7 @@
         if (node.trail_offset)   parts.push(`Trail ${sym}${node.trail_offset}`);
         if (node.max_hold_mins)  parts.push(`Max ${node.max_hold_mins}m`);
         if (node.retest_bars)    parts.push(`Retest ${node.retest_bars}b`);
+        if (node.take_profit_pct) parts.push(`TP ${node.take_profit_pct}%`);
         return parts.join(' · ') || '—';
       }
       case 'entry_source':
@@ -2056,6 +2086,40 @@
     const data = await res.json();
     await load();
     alert(`Done — cleared retest from ${data.updated} reversal pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  const _bandLabel = b => ({
+    'breakout_r3s3':'BREAKOUT R3S3','breakout_r4s4':'BREAKOUT R4S4',
+    'reversal_r3s3':'REVERSAL R3S3','reversal_r4s4':'REVERSAL R4S4',
+    'breakout':'all BREAKOUT','reversal':'all REVERSAL','':'ALL'
+  }[b] ?? b);
+
+  async function bulkSetTakeProfit() {
+    const pct  = parseFloat(document.getElementById('bulkTpInput').value);
+    const band = document.getElementById('bulkTpBand').value;
+    if (!pct || pct <= 0) { alert('Enter a take-profit % greater than 0.'); return; }
+    if (!confirm(`Set take-profit = ${pct}% on every ${_bandLabel(band)} pipeline's exit_params?\n\nThe risk monitor will close those positions once unrealized gain hits ${pct}% (price move past entry), overriding the global take-profit for this band. Enforced on all three accounts.`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ take_profit_pct: pct, name_contains: band }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — set take-profit ${pct}% on ${data.updated} ${_bandLabel(band)} pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkClearTakeProfit() {
+    const band = document.getElementById('bulkTpBand').value;
+    if (!confirm(`Remove the per-band take-profit from every ${_bandLabel(band)} pipeline (revert to the global take-profit)?`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clear_take_profit: true, name_contains: band }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — cleared take-profit from ${data.updated} ${_bandLabel(band)} pipeline${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkRemovePaperAll() {
@@ -2511,6 +2575,10 @@
             <label>Retest bars <span style="color:#F2C07A">(reversal entry)</span> <span style="color:#555;font-weight:normal">— engine waits for a pullback back to the level within N bars after the reject, then enters the 2nd touch. Blank/0 = enter on the reject. 5-min bars.</span></label>
             <input id="f_ep_retest_bars" type="number" min="0" step="1" value="${v.retest_bars ?? ''}" placeholder="e.g. 6">
           </div>
+          <div class="form-group">
+            <label>Take-Profit <span style="color:#7FE098">%</span> <span style="color:#555;font-weight:normal">— close once unrealized gain reaches this % (price move past entry). Per-band; overrides the global take-profit for this strategy. Blank/0 = use the global setting.</span></label>
+            <input id="f_ep_take_profit_pct" type="number" min="0" step="0.05" value="${v.take_profit_pct ?? ''}" placeholder="e.g. 0.5">
+          </div>
           <p style="font-size:0.78rem;color:#555;margin-top:-8px">
             Kairos attaches a broker-side trailing stop to each BUY/SELL entry.
             <strong style="color:#888">Trail Offset</strong> is used if set; otherwise <strong style="color:#888">Stop Loss</strong> is the trailing distance.
@@ -2617,6 +2685,7 @@
         node.trail_offset   = parseFloat(document.getElementById('f_ep_trail_offset').value)   || null;
         node.max_hold_mins  = parseFloat(document.getElementById('f_ep_max_hold_mins').value)  || null;
         node.retest_bars    = parseInt(document.getElementById('f_ep_retest_bars').value)      || null;
+        node.take_profit_pct = parseFloat(document.getElementById('f_ep_take_profit_pct').value) || null;
         break;
     }
 

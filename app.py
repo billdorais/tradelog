@@ -213,6 +213,48 @@ def _get_route_trail_pct(strategy_name: str):
                 return rv
     return None
 
+
+_route_tp_cache    = {}   # strategy_upper → take_profit_pct (float, %)
+_route_tp_cache_ts = 0.0
+
+def _get_route_take_profit_pct(strategy_name: str):
+    """Return the per-rule take_profit_pct (% price move) for a strategy, or None.
+    Lets a band carry its own take-profit (set per-band on the Signal Router) which
+    the risk monitor enforces in place of the global TAKE_PROFIT_PCT. Cached 60s,
+    with the same exact-then-fuzzy CAM matching as _get_route_trail_pct."""
+    global _route_tp_cache, _route_tp_cache_ts
+    import time as _rt
+    now = _rt.time()
+    if now - _route_tp_cache_ts > 60:
+        try:
+            conn = get_db()
+            new_cache = {}
+            for row in conn.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+                rname = (row[0] if DATABASE_URL else row["name"] or "").upper()
+                try:    nodes = json.loads(row[1] if DATABASE_URL else row["nodes"] or "[]")
+                except Exception: nodes = []
+                for nd in nodes:
+                    if nd.get("type") == "exit_params" and nd.get("take_profit_pct"):
+                        try:    new_cache[rname] = float(nd["take_profit_pct"])
+                        except (TypeError, ValueError): pass
+                        break
+            conn.close()
+            _route_tp_cache    = new_cache
+            _route_tp_cache_ts = now
+        except Exception as _rte:
+            log.debug("Route TP cache refresh failed: %s", _rte)
+    if not strategy_name:
+        return None
+    su = strategy_name.upper()
+    if su in _route_tp_cache:
+        return _route_tp_cache[su]
+    for rk, rv in _route_tp_cache.items():
+        if "_CAM_" in rk:
+            pat = "_".join(rk.split("_CAM_")[1].split("_")[:2])
+            if pat and pat in su:
+                return rv
+    return None
+
 if _IB_ENABLED and os.environ.get("IB_HOST"):
     import queue as _ib_queue_mod
     from brokers.ib_broker import IBBroker
@@ -962,20 +1004,29 @@ def _check_position_stops():
                 _position_peaks[_peak_key] = upnl
         peak = max(prev, upnl) if MAX_TRAILING_GIVEBACK > 0 else 0.0
 
+        # Resolve the position's originating strategy once (reused by the take-profit
+        # band lookup and the Kairos trail-price backup below).
+        _pos_strat, _ = _resolve_position_entry(sym_u, broker)
+
         # Decide which (if any) stop to fire.
-        # Take-profit (global, both accounts) is checked first: close once the unrealized
-        # gain hits the dollar target or the % target (whichever first). Positive mirror of
-        # the loss cap — % measured against market value, same basis as the loss %.
+        # Take-profit is checked first: close once the unrealized gain hits the dollar
+        # target or the % target. The % target is PER-BAND when the strategy's
+        # exit_params carries a take_profit_pct (set on the Signal Router), otherwise it
+        # falls back to the global TAKE_PROFIT_PCT. % measured against market value, the
+        # same basis as the loss %.
+        _band_tp    = _get_route_take_profit_pct(_pos_strat) if _pos_strat else None
+        _eff_tp_pct = _band_tp if (_band_tp and _band_tp > 0) else (TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else 0.0)
         triggered = None
         if TAKE_PROFIT_DOLLARS > 0 and upnl >= TAKE_PROFIT_DOLLARS:
             triggered = ("take-profit",
                          f"unrealized P&L ${upnl:.2f} hit take-profit target ${TAKE_PROFIT_DOLLARS:.2f}")
-        elif TAKE_PROFIT_PCT > 0:
+        elif _eff_tp_pct > 0:
             _tp_mv = abs(float(pos.get("market_value") or 0))
             _tp_gp = (upnl / _tp_mv * 100) if _tp_mv > 0 else 0.0
-            if _tp_gp >= TAKE_PROFIT_PCT:
+            if _tp_gp >= _eff_tp_pct:
+                _tp_src = "band" if (_band_tp and _band_tp > 0) else "global"
                 triggered = ("take-profit-pct",
-                             f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {TAKE_PROFIT_PCT:.2f}%")
+                             f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {_eff_tp_pct:.2f}% ({_tp_src})")
 
         # PCT stop applies to Refined (alpaca2) only — Paper All uses dollar stop or TV exits.
         if not triggered and broker == "alpaca2":
@@ -1005,7 +1056,7 @@ def _check_position_stops():
             current_px = float(pos.get("current_price")   or 0)
             qty_f      = float(pos.get("qty") or 0)
             if entry_px and current_px and qty_f:
-                strat, _  = _resolve_position_entry(sym_u, broker)
+                strat     = _pos_strat
                 trail_pct = _get_route_trail_pct(strat or "")
                 if trail_pct:
                     is_long  = qty_f > 0
@@ -6850,26 +6901,31 @@ def bulk_update_exit_params():
     If a rule has no exit_params node, one is appended."""
     data                 = request.get_json(silent=True) or {}
     mode                 = (data.get("mode") or "percent").lower()
+    mode_explicit        = "mode" in data
     trail_offset         = data.get("trail_offset")
     trail_trigger        = data.get("trail_trigger")
     stop_loss            = data.get("stop_loss")
     max_hold_mins        = data.get("max_hold_mins")
-    retest_bars          = data.get("retest_bars")     # reversal entry: pullback window (bars)
+    retest_bars          = data.get("retest_bars")       # reversal entry: pullback window (bars)
+    take_profit_pct      = data.get("take_profit_pct")   # per-band TP (% price move)
     clear_trail          = bool(data.get("clear_trail", False))
     clear_trail_trigger  = bool(data.get("clear_trail_trigger", False))
     clear_max_hold       = bool(data.get("clear_max_hold", False))
     clear_retest_bars    = bool(data.get("clear_retest_bars", False))
+    clear_take_profit    = bool(data.get("clear_take_profit", False))
     name_contains        = (data.get("name_contains") or "").strip().lower()
     if (trail_offset is None and trail_trigger is None and stop_loss is None and max_hold_mins is None
-            and retest_bars is None and not clear_trail and not clear_trail_trigger
-            and not clear_max_hold and not clear_retest_bars):
+            and retest_bars is None and take_profit_pct is None and not clear_trail
+            and not clear_trail_trigger and not clear_max_hold and not clear_retest_bars
+            and not clear_take_profit):
         trail_offset = 0.15
     try:
-        if trail_offset  is not None: trail_offset  = float(trail_offset)
-        if trail_trigger is not None: trail_trigger = float(trail_trigger)
-        if stop_loss     is not None: stop_loss     = float(stop_loss)
-        if max_hold_mins is not None: max_hold_mins = float(max_hold_mins)
-        if retest_bars   is not None: retest_bars   = int(float(retest_bars))
+        if trail_offset    is not None: trail_offset    = float(trail_offset)
+        if trail_trigger   is not None: trail_trigger   = float(trail_trigger)
+        if stop_loss       is not None: stop_loss       = float(stop_loss)
+        if max_hold_mins   is not None: max_hold_mins   = float(max_hold_mins)
+        if retest_bars     is not None: retest_bars     = int(float(retest_bars))
+        if take_profit_pct is not None: take_profit_pct = float(take_profit_pct)
     except (TypeError, ValueError):
         return jsonify({"error": "exit param values must be numbers"}), 400
     if mode not in ("percent", "dollars"):
@@ -6896,12 +6952,16 @@ def bulk_update_exit_params():
             ep = {"type": "exit_params"}
             nodes.append(ep)
             added_node += 1
-        ep["mode"] = mode
-        if trail_offset  is not None: ep["trail_offset"]  = trail_offset
-        if trail_trigger is not None: ep["trail_trigger"] = trail_trigger
-        if stop_loss     is not None: ep["stop_loss"]     = stop_loss
-        if max_hold_mins is not None: ep["max_hold_mins"] = max_hold_mins
-        if retest_bars   is not None: ep["retest_bars"]   = retest_bars
+        # Only touch the trail unit-mode when a trail field is actually being set —
+        # a take-profit-only or retest-only apply must not re-key an existing trail.
+        if trail_offset is not None or clear_trail or mode_explicit:
+            ep["mode"] = mode
+        if trail_offset    is not None: ep["trail_offset"]    = trail_offset
+        if trail_trigger   is not None: ep["trail_trigger"]   = trail_trigger
+        if stop_loss       is not None: ep["stop_loss"]       = stop_loss
+        if max_hold_mins   is not None: ep["max_hold_mins"]   = max_hold_mins
+        if retest_bars     is not None: ep["retest_bars"]     = retest_bars
+        if take_profit_pct is not None: ep["take_profit_pct"] = take_profit_pct
         if clear_trail:
             ep.pop("trail_offset",  None)
             ep.pop("trail_trigger", None)
@@ -6911,6 +6971,8 @@ def bulk_update_exit_params():
             ep.pop("max_hold_mins", None)
         if clear_retest_bars:
             ep.pop("retest_bars", None)
+        if clear_take_profit:
+            ep.pop("take_profit_pct", None)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()
