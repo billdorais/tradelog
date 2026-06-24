@@ -256,17 +256,19 @@ def _get_route_take_profit_pct(strategy_name: str):
     return None
 
 
-_route_trigger_cache    = {}   # strategy_upper → trail_trigger (float, %)
-_route_trigger_cache_ts = 0.0
+_route_tiers_cache    = {}   # strategy_upper → [(gain_pct, trail_pct), ...] sorted asc
+_route_tiers_cache_ts = 0.0
 
-def _get_route_trail_trigger_pct(strategy_name: str):
-    """Return the per-rule trail_trigger % for a strategy, or None. The trail only
-    ARMS once unrealized gain reaches this % — a 'lock and let it run' (raise the
-    stop into profit, then trail). Cached 60s, exact-then-fuzzy CAM matching."""
-    global _route_trigger_cache, _route_trigger_cache_ts
+def _get_route_trail_tiers(strategy_name: str):
+    """Return the per-rule dynamic trail tiers [(gain_pct, trail_pct), ...] sorted
+    ascending, or None. The base trail stays active from entry; each tier TIGHTENS
+    the trail once peak gain clears its threshold (e.g. base 0.54% → 0.15% at +0.5%).
+    Percent-mode only (tiers compare against a % gain). Cached 60s, exact-then-fuzzy
+    CAM matching. Same {"gain","trail"} shape the Replay sim uses."""
+    global _route_tiers_cache, _route_tiers_cache_ts
     import time as _rt
     now = _rt.time()
-    if now - _route_trigger_cache_ts > 60:
+    if now - _route_tiers_cache_ts > 60:
         try:
             conn = get_db()
             new_cache = {}
@@ -275,21 +277,28 @@ def _get_route_trail_trigger_pct(strategy_name: str):
                 try:    nodes = json.loads(row[1] if DATABASE_URL else row["nodes"] or "[]")
                 except Exception: nodes = []
                 for nd in nodes:
-                    if nd.get("type") == "exit_params" and nd.get("trail_trigger") and nd.get("mode") == "percent":
-                        try:    new_cache[rname] = float(nd["trail_trigger"])
-                        except (TypeError, ValueError): pass
+                    if nd.get("type") == "exit_params" and nd.get("trail_tiers") and nd.get("mode") == "percent":
+                        parsed = []
+                        for t in (nd.get("trail_tiers") or []):
+                            try:
+                                _g = float(t.get("gain", 0)); _t = float(t.get("trail", 0))
+                                if _t > 0: parsed.append((_g, _t))
+                            except (TypeError, ValueError):
+                                pass
+                        if parsed:
+                            new_cache[rname] = sorted(parsed, key=lambda x: x[0])
                         break
             conn.close()
-            _route_trigger_cache    = new_cache
-            _route_trigger_cache_ts = now
+            _route_tiers_cache    = new_cache
+            _route_tiers_cache_ts = now
         except Exception as _rte:
-            log.debug("Route trigger cache refresh failed: %s", _rte)
+            log.debug("Route trail-tiers cache refresh failed: %s", _rte)
     if not strategy_name:
         return None
     su = strategy_name.upper()
-    if su in _route_trigger_cache:
-        return _route_trigger_cache[su]
-    for rk, rv in _route_trigger_cache.items():
+    if su in _route_tiers_cache:
+        return _route_tiers_cache[su]
+    for rk, rv in _route_tiers_cache.items():
         if "_CAM_" in rk:
             pat = "_".join(rk.split("_CAM_")[1].split("_")[:2])
             if pat and pat in su:
@@ -1107,24 +1116,25 @@ def _check_position_stops():
                     peak_px  = entry_px + (
                         (peak_pnl / qty_abs) if is_long else -(peak_pnl / qty_abs)
                     )
-                    # trail_trigger: the trail only ARMS once peak gain reaches this %
-                    # ("lock and let it run" — raise the stop into profit, then trail).
-                    # Without a trigger the trail is active from entry (as before).
-                    _trig = _get_route_trail_trigger_pct(strat or "")
+                    # Dynamic trail tiers: the base trail is active from entry; once peak
+                    # gain clears a tier threshold the trail TIGHTENS (e.g. 0.54% → 0.15%
+                    # at +0.5%), locking in profit without an unprotected early window.
                     peak_gain_pct = ((peak_px - entry_px) / entry_px * 100) if is_long \
                                     else ((entry_px - peak_px) / entry_px * 100)
-                    _armed = (_trig is None) or (peak_gain_pct >= _trig)
-                    # Stop level: trail % below peak for long, above for short
-                    stop_px  = (peak_px * (1 - trail_pct / 100) if is_long
-                                else peak_px * (1 + trail_pct / 100))
-                    breached = _armed and (current_px <= stop_px if is_long
-                                           else current_px >= stop_px)
+                    _tiers    = _get_route_trail_tiers(strat or "")
+                    eff_trail = _get_tiered_trail(peak_gain_pct, _tiers, trail_pct) if _tiers else trail_pct
+                    # Stop level: effective trail % below peak for long, above for short
+                    stop_px  = (peak_px * (1 - eff_trail / 100) if is_long
+                                else peak_px * (1 + eff_trail / 100))
+                    breached = (current_px <= stop_px if is_long
+                                else current_px >= stop_px)
                     if breached:
-                        _arm_note = f", armed @+{_trig}%" if _trig is not None else ""
+                        _tier_note = (f", tightened to {eff_trail}% @+{peak_gain_pct:.2f}%"
+                                      if eff_trail != trail_pct else "")
                         triggered = (
                             "kairos_trail",
                             f"current ${current_px:.4f} crossed trail stop ${stop_px:.4f} "
-                            f"(peak ${peak_px:.4f}, trail {trail_pct}%{_arm_note}, "
+                            f"(peak ${peak_px:.4f}, trail {eff_trail}%{_tier_note}, "
                             f"{'long' if is_long else 'short'})",
                         )
 
@@ -6957,16 +6967,18 @@ def bulk_update_exit_params():
     max_hold_mins        = data.get("max_hold_mins")
     retest_bars          = data.get("retest_bars")       # reversal entry: pullback window (bars)
     take_profit_pct      = data.get("take_profit_pct")   # per-band TP (% price move)
+    trail_tiers          = data.get("trail_tiers")       # dynamic trail: [{gain, trail}, ...]
     clear_trail          = bool(data.get("clear_trail", False))
     clear_trail_trigger  = bool(data.get("clear_trail_trigger", False))
     clear_max_hold       = bool(data.get("clear_max_hold", False))
     clear_retest_bars    = bool(data.get("clear_retest_bars", False))
     clear_take_profit    = bool(data.get("clear_take_profit", False))
+    clear_trail_tiers    = bool(data.get("clear_trail_tiers", False))
     name_contains        = (data.get("name_contains") or "").strip().lower()
     if (trail_offset is None and trail_trigger is None and stop_loss is None and max_hold_mins is None
-            and retest_bars is None and take_profit_pct is None and not clear_trail
-            and not clear_trail_trigger and not clear_max_hold and not clear_retest_bars
-            and not clear_take_profit):
+            and retest_bars is None and take_profit_pct is None and trail_tiers is None
+            and not clear_trail and not clear_trail_trigger and not clear_max_hold
+            and not clear_retest_bars and not clear_take_profit and not clear_trail_tiers):
         trail_offset = 0.15
     try:
         if trail_offset    is not None: trail_offset    = float(trail_offset)
@@ -6977,6 +6989,16 @@ def bulk_update_exit_params():
         if take_profit_pct is not None: take_profit_pct = float(take_profit_pct)
     except (TypeError, ValueError):
         return jsonify({"error": "exit param values must be numbers"}), 400
+    # Normalise trail tiers to a clean sorted [{gain, trail}] list (drops junk).
+    if trail_tiers is not None:
+        _clean_tiers = []
+        for _t in (trail_tiers or []):
+            try:
+                _g = float(_t.get("gain", 0)); _tr = float(_t.get("trail", 0))
+                if _tr > 0: _clean_tiers.append({"gain": _g, "trail": _tr})
+            except (TypeError, ValueError, AttributeError):
+                pass
+        trail_tiers = sorted(_clean_tiers, key=lambda x: x["gain"])
     if mode not in ("percent", "dollars"):
         return jsonify({"error": "mode must be 'percent' or 'dollars'"}), 400
 
@@ -7003,14 +7025,16 @@ def bulk_update_exit_params():
             added_node += 1
         # Only touch the trail unit-mode when a trail field is actually being set —
         # a take-profit-only or retest-only apply must not re-key an existing trail.
-        if trail_offset is not None or clear_trail or mode_explicit:
-            ep["mode"] = mode
+        # Tiers compare against a % gain, so applying them forces percent mode.
+        if trail_offset is not None or clear_trail or mode_explicit or trail_tiers is not None:
+            ep["mode"] = "percent" if trail_tiers is not None else mode
         if trail_offset    is not None: ep["trail_offset"]    = trail_offset
         if trail_trigger   is not None: ep["trail_trigger"]   = trail_trigger
         if stop_loss       is not None: ep["stop_loss"]       = stop_loss
         if max_hold_mins   is not None: ep["max_hold_mins"]   = max_hold_mins
         if retest_bars     is not None: ep["retest_bars"]     = retest_bars
         if take_profit_pct is not None: ep["take_profit_pct"] = take_profit_pct
+        if trail_tiers     is not None: ep["trail_tiers"]     = trail_tiers
         if clear_trail:
             ep.pop("trail_offset",  None)
             ep.pop("trail_trigger", None)
@@ -7022,6 +7046,8 @@ def bulk_update_exit_params():
             ep.pop("retest_bars", None)
         if clear_take_profit:
             ep.pop("take_profit_pct", None)
+        if clear_trail_tiers:
+            ep.pop("trail_tiers", None)
         cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(nodes), rid))
         updated += 1
     conn.commit(); conn.close()

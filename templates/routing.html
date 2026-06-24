@@ -686,6 +686,36 @@
             title="Remove the per-band take-profit from the selected band (revert to the global take-profit)">
       clear TP
     </button>
+    <div style="display:inline-flex;align-items:center;gap:3px;border:1px solid #6d5fa8;border-radius:6px;overflow:hidden"
+         title="Dynamic trail: keep the base trail from entry, then TIGHTEN it once peak gain clears the threshold (lock & let it run)">
+      <span style="font-size:0.74rem;color:#888;padding:0 6px;white-space:nowrap">tighten to</span>
+      <input id="bulkTierTrail" type="number" min="0.05" step="0.05" value="0.15"
+             style="width:48px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:6px 0;outline:none;font-family:inherit;text-align:center">
+      <span style="font-size:0.74rem;color:#888;padding:0 4px">% at</span>
+      <input id="bulkTierGain" type="number" min="0.05" step="0.05" value="0.50"
+             style="width:48px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:6px 0;outline:none;font-family:inherit;text-align:center">
+      <span style="font-size:0.74rem;color:#888;padding:0 4px">%</span>
+      <select id="bulkTierBand"
+              style="background:#0f1117;border:none;border-left:1px solid #6d5fa8;color:#c4b5fd;font-size:0.72rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
+        <option value="breakout_r3s3">BREAKOUT R3S3</option>
+        <option value="breakout_r4s4">BREAKOUT R4S4</option>
+        <option value="reversal_r3s3">REVERSAL R3S3</option>
+        <option value="reversal_r4s4">REVERSAL R4S4</option>
+        <option value="breakout">All breakouts</option>
+        <option value="reversal">All reversals</option>
+        <option value="">All strategies</option>
+      </select>
+      <button onclick="bulkSetTrailTier()"
+              style="background:transparent;border:none;border-left:1px solid #6d5fa8;color:#c4b5fd;padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap">
+        tighten → band
+      </button>
+    </div>
+    <button onclick="bulkClearTrailTier()"
+            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
+                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+            title="Remove the dynamic trail tiers from the selected band (revert to a single flat trail)">
+      clear tighten
+    </button>
     <button onclick="bulkRemovePaperAll()"
             style="background:transparent;border:1px solid #c0392b;color:#e74c3c;border-radius:6px;
                    padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
@@ -1898,6 +1928,8 @@
         if (node.max_hold_mins)  parts.push(`Max ${node.max_hold_mins}m`);
         if (node.retest_bars)    parts.push(`Retest ${node.retest_bars}b`);
         if (node.take_profit_pct) parts.push(`TP ${node.take_profit_pct}%`);
+        if (Array.isArray(node.trail_tiers) && node.trail_tiers.length)
+          parts.push(node.trail_tiers.map(t => `↳${t.trail}%@+${t.gain}%`).join(' '));
         return parts.join(' · ') || '—';
       }
       case 'entry_source':
@@ -2120,6 +2152,35 @@
     const data = await res.json();
     await load();
     alert(`Done — cleared take-profit from ${data.updated} ${_bandLabel(band)} pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkSetTrailTier() {
+    const trail = parseFloat(document.getElementById('bulkTierTrail').value);
+    const gain  = parseFloat(document.getElementById('bulkTierGain').value);
+    const band  = document.getElementById('bulkTierBand').value;
+    if (!trail || trail <= 0 || !gain || gain <= 0) { alert('Enter a tighten trail % and a gain % both greater than 0.'); return; }
+    if (!confirm(`On every ${_bandLabel(band)} pipeline: keep the base trail from entry, then TIGHTEN it to ${trail}% once the trade is up ${gain}%?\n\nThe base trail still protects you below +${gain}% — this just locks in tighter once you're ahead. Forces percent mode. Enforced on all three accounts.`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trail_tiers: [{ gain, trail }], name_contains: band }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — set tighten-to-${trail}%-at-+${gain}% on ${data.updated} ${_bandLabel(band)} pipeline${data.updated !== 1 ? 's' : ''}.`);
+  }
+
+  async function bulkClearTrailTier() {
+    const band = document.getElementById('bulkTierBand').value;
+    if (!confirm(`Remove the dynamic trail tiers from every ${_bandLabel(band)} pipeline (revert to a single flat trail)?`)) return;
+    const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clear_trail_tiers: true, name_contains: band }),
+    });
+    if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
+    const data = await res.json();
+    await load();
+    alert(`Done — cleared tighten from ${data.updated} ${_bandLabel(band)} pipeline${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkRemovePaperAll() {
@@ -2579,6 +2640,16 @@
             <label>Take-Profit <span style="color:#7FE098">%</span> <span style="color:#555;font-weight:normal">— close once unrealized gain reaches this % (price move past entry). Per-band; overrides the global take-profit for this strategy. Blank/0 = use the global setting.</span></label>
             <input id="f_ep_take_profit_pct" type="number" min="0" step="0.05" value="${v.take_profit_pct ?? ''}" placeholder="e.g. 0.5">
           </div>
+          <div class="form-group">
+            <label>Tighten trail <span style="color:#c4b5fd">(dynamic)</span> <span style="color:#555;font-weight:normal">— keep the base trail from entry, then tighten it to <em>trail%</em> once the trade is up <em>at%</em>. Locks in profit without an unprotected early window. Both blank = flat trail.</span></label>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:#888;font-size:0.8rem">to</span>
+              <input id="f_ep_tier_trail" type="number" min="0" step="0.05" value="${(v.trail_tiers && v.trail_tiers[0] && v.trail_tiers[0].trail) ?? ''}" placeholder="0.15" style="width:80px">
+              <span style="color:#888;font-size:0.8rem">% at</span>
+              <input id="f_ep_tier_gain" type="number" min="0" step="0.05" value="${(v.trail_tiers && v.trail_tiers[0] && v.trail_tiers[0].gain) ?? ''}" placeholder="0.5" style="width:80px">
+              <span style="color:#888;font-size:0.8rem">% gain</span>
+            </div>
+          </div>
           <p style="font-size:0.78rem;color:#555;margin-top:-8px">
             Kairos attaches a broker-side trailing stop to each BUY/SELL entry.
             <strong style="color:#888">Trail Offset</strong> is used if set; otherwise <strong style="color:#888">Stop Loss</strong> is the trailing distance.
@@ -2686,6 +2757,12 @@
         node.max_hold_mins  = parseFloat(document.getElementById('f_ep_max_hold_mins').value)  || null;
         node.retest_bars    = parseInt(document.getElementById('f_ep_retest_bars').value)      || null;
         node.take_profit_pct = parseFloat(document.getElementById('f_ep_take_profit_pct').value) || null;
+        {
+          const _tg = parseFloat(document.getElementById('f_ep_tier_gain').value);
+          const _tt = parseFloat(document.getElementById('f_ep_tier_trail').value);
+          node.trail_tiers = (_tg > 0 && _tt > 0) ? [{ gain: _tg, trail: _tt }] : null;
+          if (node.trail_tiers) node.mode = 'percent';   // tiers compare against % gain
+        }
         break;
     }
 
