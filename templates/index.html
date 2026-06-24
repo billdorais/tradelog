@@ -3671,6 +3671,16 @@
           const upnl  = p.unrealized_pnl ?? 0;
           const sign  = upnl >= 0 ? '+' : '';
           const color = upnl >= 0 ? '#7FE098' : '#e74c3c';
+          // % move in trade-favorable direction (matches the price-meter pct).
+          const _ep   = parseFloat(p.avg_entry_price || 0);
+          const _cp   = parseFloat(p.current_price   || 0);
+          const _long = parseFloat(p.qty || 0) > 0;
+          const pctMove = (_ep > 0 && _cp > 0)
+            ? (_long ? (_cp - _ep) / _ep * 100 : (_ep - _cp) / _ep * 100)
+            : null;
+          const pctTag = pctMove === null
+            ? ''
+            : ` <span style="color:#555;font-weight:400;font-size:0.78rem">(${pctMove >= 0 ? '+' : ''}${pctMove.toFixed(2)}%)</span>`;
           const stratCell = p.strategy
             ? `<span style="color:#aaa;font-family:monospace;font-size:0.72rem">${escHtml(p.strategy)}</span>`
             : '<span style="color:#444;font-size:0.72rem">—</span>';
@@ -3710,7 +3720,7 @@
             <td>${stratCell}</td>
             <td>${renderPriceMeter(p)}</td>
             <td style="color:#aaa">${escHtml(p.qty)}</td>
-            <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
+            <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}${pctTag}</td>
             <td>${heldCell}</td>
           </tr>`;
         }).join('');

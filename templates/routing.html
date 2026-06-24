@@ -1501,6 +1501,16 @@
       const upnl    = p.unrealized_pnl ?? 0;
       const sign    = upnl >= 0 ? '+' : '';
       const color   = upnl >= 0 ? '#7FE098' : '#e74c3c';
+      // % move in trade-favorable direction (matches dashboard price-meter pct).
+      const _ep   = parseFloat(p.avg_entry_price || 0);
+      const _cp   = parseFloat(p.current_price   || 0);
+      const _long = parseFloat(p.qty || 0) > 0;
+      const pctMove = (_ep > 0 && _cp > 0)
+        ? (_long ? (_cp - _ep) / _ep * 100 : (_ep - _cp) / _ep * 100)
+        : null;
+      const pctTag = pctMove === null
+        ? ''
+        : ` <span style="color:#555;font-weight:400;font-size:0.78rem">(${pctMove >= 0 ? '+' : ''}${pctMove.toFixed(2)}%)</span>`;
       // Bar: how far toward the limit (0–100%)
       let barPct = 0, barColor = '#e74c3c';
       if (limitVal && limitVal < 0 && upnl < 0) {
@@ -1526,7 +1536,7 @@
         <td style="color:#666;font-size:0.75rem">${brokerLabel}</td>
         <td>${stratCell}</td>
         <td style="color:#aaa">${p.qty}</td>
-        <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}</td>
+        <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}${pctTag}</td>
         <td>${heldCell}</td>
         <td>${limitVal && limitVal < 0
           ? `<div class="pos-pnl-bar-wrap"><div class="pos-pnl-bar" style="width:${barPct}%;background:${barColor}"></div></div>`
