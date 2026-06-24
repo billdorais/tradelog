@@ -11621,6 +11621,59 @@ def api_engine_pilot_toggle():
                     "configured": alpaca_broker3 is not None})
 
 
+_daytype_tape_cache = {"date": None, "data": None, "ts": 0.0}
+
+@app.route("/api/daytype/tape")
+def api_daytype_tape():
+    """CNBC-style ticker tape: today's Inside/Outside/Neutral for every routed ticker.
+    Outside → breakouts favored, Inside → reversals favored. Cached per ET day (the
+    classification is from prior-day Camarilla CPR, so it's stable intraday)."""
+    import datetime as _dt
+    import concurrent.futures as _cf
+    from collections import Counter
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    today = _dt.datetime.now(et).date().isoformat()
+    # Serve the cached board for the day (refresh hourly in case rules change).
+    if (_daytype_tape_cache["date"] == today and _daytype_tape_cache["data"]
+            and time.time() - _daytype_tape_cache["ts"] < 3600):
+        return jsonify(_daytype_tape_cache["data"])
+
+    tickers = set()
+    try:
+        conn = get_db()
+        for row in conn.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            nm = (row[0] if DATABASE_URL else row["name"]) or ""
+            u  = nm.upper(); i = u.find("_CAM_")
+            if i > 0:
+                tickers.add(u[:i])
+        conn.close()
+    except Exception as _e:
+        log.debug("daytype tape rule scan: %s", _e)
+
+    out = []
+    if tickers and alpaca_broker is not None:
+        with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+            futs = {pool.submit(_get_day_classification, tk, today): tk for tk in tickers}
+            for f in _cf.as_completed(futs):
+                tk = futs[f]
+                try:    cls = f.result() or {}
+                except Exception: cls = {}
+                dt = cls.get("day_type") or "Unknown"
+                out.append({
+                    "ticker":  tk,
+                    "day_type": dt,
+                    "ratio":   cls.get("ratio"),
+                    "favored": "breakout" if dt == "Outside" else "reversal" if dt == "Inside" else "none",
+                })
+    # Order: Outside (breakout days) first, then Inside, Neutral, Unknown — then alpha.
+    _ord = {"Outside": 0, "Inside": 1, "Neutral": 2, "Unknown": 3}
+    out.sort(key=lambda x: (_ord.get(x["day_type"], 9), x["ticker"]))
+    data = {"date": today, "tickers": out, "counts": dict(Counter(x["day_type"] for x in out))}
+    _daytype_tape_cache.update({"date": today, "data": data, "ts": time.time()})
+    return jsonify(data)
+
+
 @app.route("/api/daytype_gate/status")
 def api_daytype_gate_status():
     """Day-type entry gate state for the UI toggles (breakout + reversal)."""

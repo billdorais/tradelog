@@ -514,6 +514,28 @@
     </div>
   </header>
 
+  <!-- Day-type ticker tape (CNBC-style scroller) -->
+  <style>
+    #dtTape { position:relative; overflow:hidden; background:#0a0c12; border:1px solid #1e2130;
+              border-radius:8px; margin:6px 0 14px; height:34px; display:flex; align-items:center; }
+    #dtTape .dt-tape-label { flex:0 0 auto; padding:0 12px; height:100%; display:flex; align-items:center;
+              font-size:0.66rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase;
+              color:#8aa0c0; background:#11141d; border-right:1px solid #1e2130; white-space:nowrap; z-index:2; }
+    #dtTape .dt-tape-viewport { flex:1 1 auto; overflow:hidden; height:100%; position:relative; }
+    #dtTape .dt-tape-track { position:absolute; top:0; left:0; height:100%; display:flex; align-items:center;
+              white-space:nowrap; will-change:transform; animation:dtScroll 60s linear infinite; }
+    #dtTape:hover .dt-tape-track { animation-play-state:paused; }
+    #dtTape .dt-item { display:inline-flex; align-items:center; gap:6px; padding:0 18px; font-size:0.8rem;
+              border-right:1px solid #15171f; }
+    #dtTape .dt-tk   { font-weight:700; color:#e6e6e6; letter-spacing:0.02em; }
+    #dtTape .dt-out  { color:#7FE098; } #dtTape .dt-in { color:#7bb3d6; } #dtTape .dt-neu { color:#777; }
+    @keyframes dtScroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
+  </style>
+  <div id="dtTape" title="Today's day type per routed ticker — Outside ▲ favours breakouts, Inside ▼ favours reversals (from prior-day Camarilla CPR). Hover to pause.">
+    <div class="dt-tape-label" id="dtTapeLabel">Day Type</div>
+    <div class="dt-tape-viewport"><div class="dt-tape-track" id="dtTapeTrack"></div></div>
+  </div>
+
   <!-- Performance stats -->
   <div class="section-label" style="margin-top:8px">Performance (closed trades)</div>
   <div class="perf-cards">
@@ -3333,11 +3355,13 @@
     loadAccount();
     loadOpenPositionsTable();
     loadDashPerfSummary();
+    loadDayTypeTape();
     setInterval(loadTrades,            30000);
     setInterval(loadAccount,           30000);
     setInterval(loadOpenPositionsTable, 10000);
     setInterval(refreshLivePnl,        10000);
     setInterval(loadDashPerfSummary,  300000); // refresh every 5 min
+    setInterval(loadDayTypeTape,     1800000);  // day-type board — refresh every 30 min
 
     // Sets used to star Open Positions chips. Both ticker- and strategy-level so
     // the chip can use exact strategy attribution when we have it (purple only if
@@ -3421,6 +3445,35 @@
       const inactiveStyle = 'border:1px solid #2a2d3e;background:transparent;color:#888';
       document.getElementById('dashTabBtnDaily').style.cssText  = (name === 'daily'  ? activeStyle : inactiveStyle) + ';padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;font-family:inherit';
       document.getElementById('dashTabBtnWeekly').style.cssText = (name === 'weekly' ? activeStyle : inactiveStyle) + ';padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;font-family:inherit';
+    }
+
+    async function loadDayTypeTape() {
+      const track = document.getElementById('dtTapeTrack');
+      const label = document.getElementById('dtTapeLabel');
+      if (!track) return;
+      try {
+        const d = await fetch('/api/daytype/tape').then(r => r.json());
+        const items = (d.tickers || []);
+        if (!items.length) {
+          track.innerHTML = '<span class="dt-item" style="color:#555">No routed tickers classified yet.</span>';
+          return;
+        }
+        const c = d.counts || {};
+        if (label) label.innerHTML = `Day Type<br><span style="font-size:0.6rem;font-weight:400;color:#666">${c.Outside||0}▲ ${c.Inside||0}▼</span>`;
+        const arrow = dt => dt === 'Outside' ? '▲' : dt === 'Inside' ? '▼' : '■';
+        const cls   = dt => dt === 'Outside' ? 'dt-out' : dt === 'Inside' ? 'dt-in' : 'dt-neu';
+        const tag   = dt => dt === 'Outside' ? 'BRK' : dt === 'Inside' ? 'REV' : '—';
+        const one = x => `<span class="dt-item"><span class="dt-tk">${x.ticker}</span>`
+          + `<span class="${cls(x.day_type)}">${arrow(x.day_type)} ${x.day_type}</span>`
+          + `<span style="color:#555;font-size:0.66rem">${tag(x.day_type)}</span></span>`;
+        const seq = items.map(one).join('');
+        // Duplicate the sequence so the -50% scroll loops seamlessly.
+        track.innerHTML = seq + seq;
+        // Scale duration to item count so density stays readable (~2.5s per ticker).
+        track.style.animationDuration = Math.max(30, items.length * 2.5) + 's';
+      } catch (e) {
+        track.innerHTML = '<span class="dt-item" style="color:#555">Day-type board unavailable.</span>';
+      }
     }
 
     async function loadAccount() {
