@@ -12778,6 +12778,81 @@ def api_strategy_sweep():
     })
 
 
+@app.route("/api/alpaca/ls_breakdown")
+def api_alpaca_ls_breakdown():
+    """Long/Short diagnostic: round-trips bucketed by band×side and by side×day-type,
+    to locate a one-sided bleed (e.g. longs losing — is it a band, a side, or a regime?).
+    ?account=&from_date=&to_date="""
+    import concurrent.futures as _cf
+    from collections import defaultdict
+    account = str(request.args.get("account") or "3")
+    broker, _btag, _label, _fills_fn = _alpaca_account_ctx(account)
+    if broker is None:
+        return jsonify({"error": f"Alpaca {_label} not configured"}), 400
+    from_date = request.args.get("from_date", "")
+    to_date   = request.args.get("to_date", "")
+    fills  = _fills_fn()
+    paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
+                                     signal_lookup=_build_signal_lookup_for_alpaca())
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No completed round-trips for the selected period"}), 404
+
+    def _band(strat):
+        s = (strat or "").upper(); i = s.find("_CAM_")
+        if i >= 0:
+            p = s[i + 5:].split("_")
+            if len(p) >= 2:
+                return f"{p[0]} {p[1]}"
+        return "OTHER"
+
+    # Day type per unique (ticker, date) — concurrent, cached in _day_class_cache.
+    keyset = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
+              for t in trades if t.get("ticker") and t.get("entry_time")}
+    dtmap = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_get_day_classification, tk, dt): (tk, dt) for tk, dt in keyset}
+        for f in _cf.as_completed(futs):
+            tk, dt = futs[f]
+            try:    dtmap[(tk, dt)] = (f.result() or {}).get("day_type") or "Unknown"
+            except Exception: dtmap[(tk, dt)] = "Unknown"
+
+    bs = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})  # (band, side)
+    sd = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})  # (side, day_type)
+    ov = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})  # (side,)
+    n_total = 0
+    for t in trades:
+        side = (t.get("side") or "").upper()
+        if side not in ("LONG", "SHORT"):
+            continue
+        n_total += 1
+        band = _band(t.get("strategy"))
+        tk   = (t.get("ticker") or "").upper(); d = (t.get("entry_time") or "")[:10]
+        dt   = dtmap.get((tk, d), "Unknown")
+        pnl  = float(t.get("pnl") or 0); win = 1 if pnl > 0 else 0
+        for bucket, key in ((bs, (band, side)), (sd, (side, dt)), (ov, (side,))):
+            bucket[key]["trades"] += 1; bucket[key]["wins"] += win; bucket[key]["pnl"] += pnl
+
+    def _fmt(d, keys):
+        out = []
+        for k, v in d.items():
+            n = v["trades"]
+            row = dict(zip(keys, k))
+            row.update({"trades": n, "wins": v["wins"],
+                        "win_rate": round(v["wins"] / n * 100, 1) if n else 0.0,
+                        "pnl": round(v["pnl"], 2)})
+            out.append(row)
+        out.sort(key=lambda r: r["pnl"])   # worst first — surface the bleed
+        return out
+
+    return jsonify({
+        "account": _label, "trades": n_total,
+        "by_band_side":    _fmt(bs, ("band", "side")),
+        "by_side_daytype": _fmt(sd, ("side", "day_type")),
+        "overall_side":    _fmt(ov, ("side",)),
+    })
+
+
 @app.route("/api/alpaca/analysis")
 def api_alpaca_analysis():
     """Same analysis as /api/analysis but using Alpaca fills.

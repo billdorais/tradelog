@@ -363,6 +363,16 @@
     <div id="signalTypeWrap"><div style="font-size:0.82rem;color:#555">Loading…</div></div>
   </div>
 
+  <!-- Long/Short diagnostic — where a one-sided bleed comes from (band / side / regime) -->
+  <div class="section">
+    <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span>Long / Short Diagnostic</span>
+      <span style="font-size:0.7rem;font-weight:400;color:#888">round-trips split by side × band and side × day-type · active account + date window</span>
+      <button onclick="loadLsBreakdown()" style="margin-left:auto;background:rgba(196,181,253,0.1);border:1px solid #6d5fa8;color:#c4b5fd;border-radius:6px;padding:4px 12px;font-size:0.74rem;font-family:inherit;cursor:pointer">↔ Run</button>
+    </div>
+    <div id="lsBreakdownWrap"><div style="font-size:0.82rem;color:#555">Click Run to break down longs vs shorts by band and day type.</div></div>
+  </div>
+
   <!-- Strategy leaderboard -->
   <div class="section">
     <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -2282,6 +2292,49 @@
     const pair = u.includes('R4S4') ? 'R4S4' : u.includes('R3S3') ? 'R3S3' : null;
     return (kind && pair) ? `${kind} ${pair}` : null;
   }
+
+  async function loadLsBreakdown() {
+    const wrap = document.getElementById('lsBreakdownWrap');
+    const acct = activeSource === 'alpaca2' ? '2' : activeSource === 'alpaca3' ? '3' : '1';
+    const fromDate = document.getElementById('analysisFrom').value;
+    const toDate   = document.getElementById('analysisTo').value;
+    const p = new URLSearchParams({ account: acct });
+    if (fromDate) p.set('from_date', fromDate);
+    if (toDate)   p.set('to_date',   toDate);
+    wrap.innerHTML = '<div style="font-size:0.82rem;color:#888">Loading… (classifying day types)</div>';
+    try {
+      const d = await fetch('/api/alpaca/ls_breakdown?' + p).then(r => r.json());
+      if (d.error) { wrap.innerHTML = `<div style="color:#ef5350;font-size:0.82rem">${d.error}</div>`; return; }
+      const money = v => `<span style="color:${v >= 0 ? '#7FE098' : '#ef5350'};font-weight:600">${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}</span>`;
+      const wr    = v => `<span style="color:${v >= 50 ? '#7FE098' : v <= 40 ? '#ef5350' : '#F2E7AC'}">${v}%</span>`;
+      const sideC = s => s === 'LONG' ? '#7FE098' : '#ef5350';
+      const tbl = (title, rows, c1, c2) => {
+        if (!rows || !rows.length) return '';
+        const body = rows.map(x => `<tr style="border-bottom:1px solid #15171f">
+            <td style="padding:5px 10px;color:#ccc">${x[c1]}</td>
+            <td style="padding:5px 10px;color:${sideC(x.side)};font-weight:600">${x.side}</td>
+            <td style="padding:5px 10px;text-align:right;color:#888">${x.trades}</td>
+            <td style="padding:5px 10px;text-align:right">${wr(x.win_rate)}</td>
+            <td style="padding:5px 10px;text-align:right">${money(x.pnl)}</td></tr>`).join('');
+        return `<div style="flex:1;min-width:300px">
+          <div style="font-weight:700;color:#c4b5fd;margin-bottom:4px;font-size:0.84rem">${title}</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">
+            <th style="text-align:left;padding:3px 10px">${c1 === 'band' ? 'Band' : 'Day type'}</th><th style="text-align:left;padding:3px 10px">Side</th>
+            <th style="text-align:right;padding:3px 10px">Trades</th><th style="text-align:right;padding:3px 10px">Win%</th><th style="text-align:right;padding:3px 10px">P&amp;L</th>
+          </tr></thead><tbody>${body}</tbody></table></div>`;
+      };
+      const ov = (d.overall_side || []).map(x =>
+        `<span style="color:${sideC(x.side)};font-weight:700">${x.side}</span> ${money(x.pnl)} · ${x.trades} tr · ${wr(x.win_rate)}`).join(' &nbsp;&nbsp;·&nbsp;&nbsp; ');
+      wrap.innerHTML =
+        `<div style="font-size:0.82rem;margin-bottom:10px">${d.account} · ${d.trades} round-trips &nbsp;—&nbsp; ${ov}</div>`
+        + `<div style="display:flex;gap:24px;flex-wrap:wrap">`
+        + tbl('By band × side (worst first)', d.by_band_side, 'band')
+        + tbl('By side × day-type', d.by_side_daytype, 'day_type')
+        + `</div>`
+        + `<div style="font-size:0.72rem;color:#666;margin-top:8px">Worst P&L first. If one side bleeds in a specific band (e.g. LONG breakout R4S4) it's a strategy fix; if a side bleeds across day types it's regime. Day-type gate covers breakouts on non-Outside days.</div>`;
+    } catch (e) { wrap.innerHTML = `<div style="color:#ef5350;font-size:0.82rem">Error: ${e.message}</div>`; }
+  }
+
   function renderSignalTypeTable(map) {
     const wrap = document.getElementById('signalTypeWrap');
     const fams = {};
