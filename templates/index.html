@@ -1379,20 +1379,33 @@
       }
       const { closedTrades, tradesForScatter, deduped } = _pairAlpacaFills(execs);
 
-      document.getElementById('statTotal').textContent    = deduped.length;
-      document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
-      document.getElementById('statSells').textContent    = deduped.filter(e => e.side === 'SLD').length;
-      // Long/Short: derive from TV signals (sentiment field) filtered to the same
-      // date range. Alpaca fills don't carry directional intent — only side (BOT/SLD).
+      // Signal cards honour the strategy picker too. With a subset selected (Top N /
+      // ★N) every count is derived from that subset's TV signals — which carry clean
+      // per-strategy attribution (date-filtered). With no subset, show the full
+      // fill-based execution view (Alpaca fills only carry side, not strategy).
       const tvForRange = (allTrades || []).filter(t => {
         const ra = (t.received_at || '').slice(0, 10);
         return (!fromDate || ra >= fromDate) && (!toDate || ra <= toDate);
       });
-      document.getElementById('statLongs').textContent    = tvForRange.filter(t => (t.sentiment || '').toLowerCase() === 'long').length;
-      document.getElementById('statShorts').textContent   = tvForRange.filter(t => (t.sentiment || '').toLowerCase() === 'short').length;
-      document.getElementById('statTickers').textContent  = new Set(deduped.map(e => e.symbol).filter(Boolean)).size;
-      document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
-      document.getElementById('statErrors').textContent   = '—';
+      const _stratSubset = selectedStrategies.size > 0;
+      const tvSel = _stratSubset ? tvForRange.filter(t => selectedStrategies.has(t.strategy)) : tvForRange;
+      document.getElementById('statLongs').textContent    = tvSel.filter(t => (t.sentiment || '').toLowerCase() === 'long').length;
+      document.getElementById('statShorts').textContent   = tvSel.filter(t => (t.sentiment || '').toLowerCase() === 'short').length;
+      if (_stratSubset) {
+        document.getElementById('statTotal').textContent    = tvSel.length;
+        document.getElementById('statBuys').textContent     = tvSel.filter(t => canonAction(t.action) === 'BUY').length;
+        document.getElementById('statSells').textContent    = tvSel.filter(t => canonAction(t.action) === 'SELL').length;
+        document.getElementById('statTickers').textContent  = new Set(tvSel.map(t => t.ticker).filter(Boolean)).size;
+        document.getElementById('statExecuted').textContent = tvSel.filter(t => t.exec_status === 'ok').length;
+        document.getElementById('statErrors').textContent   = tvSel.filter(t => t.exec_status === 'error').length;
+      } else {
+        document.getElementById('statTotal').textContent    = deduped.length;
+        document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
+        document.getElementById('statSells').textContent    = deduped.filter(e => e.side === 'SLD').length;
+        document.getElementById('statTickers').textContent  = new Set(deduped.map(e => e.symbol).filter(Boolean)).size;
+        document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
+        document.getElementById('statErrors').textContent   = '—';
+      }
 
       // Apply exclusions, signals-only, and strategy visibility filter — recalc cumulative
       const displayCurve = _filterEquityCurve(equityCurve);
