@@ -700,7 +700,9 @@
               <span onclick="selectTopN(15,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 15</span>
               <span onclick="selectTopN(20,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 20</span>
               <span onclick="selectTopN(25,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 25</span>
-              <span onclick="selectRefined(event)" title="Select exactly the Refined leaderboard strategies (★ top-20 band)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;margin-left:auto;font-weight:600">★ Refined</span>
+              <span onclick="selectRefinedTopN(5,event)"  title="Refined leaderboard RANK — top 5 by composite score (not recent P&L)"  style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;margin-left:auto;font-weight:600">★5</span>
+              <span onclick="selectRefinedTopN(10,event)" title="Refined leaderboard RANK — top 10 by composite score (not recent P&L)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;font-weight:600">★10</span>
+              <span onclick="selectRefined(event)" title="Select all Refined leaderboard strategies (★ top-20 band)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;font-weight:600">★ all</span>
             </div>
             <div id="stratPickerList"></div>
           </div>
@@ -1296,6 +1298,28 @@
         return;
       }
       selectedStrategies = new Set(refined);
+      _tabSelections[activeTab] = selectedStrategies;
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    // Select the Refined leaderboard's top-N by RANK (composite score), not by
+    // recent P&L. Uses _refinedRank (strategy → 1-based leaderboard rank from the
+    // last refresh snapshot), so ★10 = ranks 1–10, independent of the date window.
+    async function selectRefinedTopN(n, e) {
+      if (e) e.stopPropagation();
+      if (!_refinedRank || !Object.keys(_refinedRank).length) {
+        alert('Leaderboard ranking not loaded yet — try again in a moment.');
+        return;
+      }
+      const picks = _allStrategyNames.filter(s => {
+        const r = _refinedRank[s.toUpperCase()];
+        return r && r >= 1 && r <= n;
+      });
+      if (!picks.length) { alert(`No leaderboard top-${n} strategies are in this view.`); return; }
+      selectedStrategies = new Set(picks);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
