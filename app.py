@@ -6482,13 +6482,17 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
                 return True
         return False
 
+    _excluded_bands = _load_excluded_bands()
     candidates = {
         k: v for k, v in stats_map.items()
         if (v.get("total_pnl") or 0) > 0
         and (v.get("trades") or 0) >= _REFINED_MIN_TRADES
         and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
         and _strategy_has_enabled_rule(k)
+        and _band_of(k) not in _excluded_bands
     }
+    if _excluded_bands:
+        log.info("Refined: excluding bands from leaderboard: %s", sorted(_excluded_bands))
     if _patterns_loaded:
         _filtered_out = [k for k in stats_map
                          if (stats_map[k].get("total_pnl") or 0) > 0
@@ -6813,6 +6817,29 @@ def _save_excluded_strategies(excl_set):
     _save_setting("EXCLUDED_STRATEGIES", json.dumps(sorted(excl_set)))
 
 
+def _band_of(strategy: str):
+    """'AAPL_CAM_BREAKOUT_R4S4_VO2_5MIN' → 'BREAKOUT R4S4', else ''."""
+    s = (strategy or "").upper(); i = s.find("_CAM_")
+    if i >= 0:
+        p = s[i + 5:].split("_")
+        if len(p) >= 2:
+            return f"{p[0]} {p[1]}"
+    return ""
+
+def _load_excluded_bands():
+    """Bands barred from the Refined leaderboard (→ not traded on Refined acct2 OR
+    the Kairos engine acct3, which both follow the leaderboard). Paper All (acct1)
+    still trades them via ENGINE_PILOT_ALL — it stays the full audition pool."""
+    raw = _load_setting("EXCLUDED_BANDS", "[]")
+    try:
+        return set(b.upper() for b in json.loads(raw))
+    except Exception:
+        return set()
+
+def _save_excluded_bands(bands):
+    _save_setting("EXCLUDED_BANDS", json.dumps(sorted({b.upper() for b in bands})))
+
+
 def _load_excluded_tickers():
     raw = _load_setting("EXCLUDED_TICKERS", "[]")
     try:
@@ -6822,6 +6849,31 @@ def _load_excluded_tickers():
 
 def _save_excluded_tickers(excl_set):
     _save_setting("EXCLUDED_TICKERS", json.dumps(sorted(excl_set)))
+
+
+@app.route("/api/leaderboard/excluded_bands", methods=["GET"])
+def get_excluded_bands():
+    return jsonify({"excluded_bands": sorted(_load_excluded_bands()),
+                    "all_bands": ["BREAKOUT R3S3", "BREAKOUT R4S4", "REVERSAL R3S3", "REVERSAL R4S4"]})
+
+
+@app.route("/api/leaderboard/excluded_bands", methods=["POST"])
+def set_excluded_bands():
+    """Bar/allow a band from the Refined leaderboard. Body: {band, excluded:bool}.
+    Takes effect on the next refresh (Refresh Now or the 4:15 PM run) — drops the
+    band from Refined (acct2) and the Kairos engine (acct3); Paper All keeps it."""
+    data = request.get_json(silent=True) or {}
+    band = (data.get("band") or "").strip().upper()
+    if not band:
+        return jsonify({"error": "band required"}), 400
+    bands = _load_excluded_bands()
+    if data.get("excluded", True):
+        bands.add(band)
+    else:
+        bands.discard(band)
+    _save_excluded_bands(bands)
+    log.info("Leaderboard excluded bands now: %s", sorted(bands))
+    return jsonify({"excluded_bands": sorted(bands)})
 
 
 @app.route("/api/strategies/excluded", methods=["GET"])

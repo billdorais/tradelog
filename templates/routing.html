@@ -789,6 +789,13 @@
     </div>
   </div>
 
+  <!-- Exclude whole bands from the Refined leaderboard (→ off Refined acct2 + Kairos acct3) -->
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+    <span style="font-size:0.72rem;color:#888">Exclude bands from leaderboard
+      <span style="color:#555">— off Refined + Kairos; Paper All still trades them. Applies on next Refresh.</span></span>
+    <span id="excludeBandsChips" style="display:inline-flex;gap:6px;flex-wrap:wrap"></span>
+  </div>
+
   <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
     <input type="text" id="pipelineSearch" placeholder="Filter pipelines (TSLA, BREAKOUT, 5MIN…)"
            oninput="renderAll()"
@@ -1619,7 +1626,36 @@
     fetchPrices();                // async — re-renders when prices arrive
     loadBlockedSignals();         // async — shows unmatched TV alerts
     loadRefinedStatus();          // async — shows last refresh time
+    loadExcludedBands();          // async — leaderboard band exclusions
     loadDayTypeGate();            // async — day-type gate state
+  }
+
+  async function loadExcludedBands() {
+    const wrap = document.getElementById('excludeBandsChips');
+    if (!wrap) return;
+    try {
+      const d = await fetch('/api/leaderboard/excluded_bands').then(r => r.json());
+      const excl = new Set(d.excluded_bands || []);
+      wrap.innerHTML = (d.all_bands || []).map(b => {
+        const off = excl.has(b);
+        const bg  = off ? 'rgba(231,57,70,0.15)' : 'rgba(127,224,152,0.10)';
+        const bc  = off ? '#e74c3c' : '#3a5a3f';
+        const fc  = off ? '#e74c3c' : '#7FE098';
+        const txt = off ? '✕ ' + b : b;
+        return `<span onclick="toggleExcludedBand('${b}', ${!off})" title="${off ? 'Excluded — click to allow back on the leaderboard' : 'On the leaderboard — click to exclude from Refined + Kairos'}"
+          style="cursor:pointer;font-size:0.72rem;padding:3px 9px;border-radius:5px;background:${bg};border:1px solid ${bc};color:${fc};font-weight:${off ? '700' : '400'}">${txt}</span>`;
+      }).join('');
+    } catch (e) { /* leave as-is */ }
+  }
+  async function toggleExcludedBand(band, excluded) {
+    if (excluded && !confirm(`Exclude ${band} from the Refined leaderboard?\n\nOn the next refresh it drops off Refined (acct2) and the Kairos engine (acct3). Paper All (acct1) keeps trading it as the audition pool. Reversible anytime.`)) return;
+    try {
+      await fetch('/api/leaderboard/excluded_bands', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ band, excluded }),
+      });
+    } catch (e) { alert('Failed: ' + e.message); }
+    loadExcludedBands();
   }
 
   async function loadRefinedStatus() {
