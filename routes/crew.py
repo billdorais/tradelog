@@ -925,16 +925,21 @@ def _run_crew_tool(name: str, args: dict) -> str:
                 return {k: {"trades": v["trades"],
                             "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0,
                             "pnl": round(v["pnl"], 2)} for k, v in out.items()}
+            idx_all = _idx(_ps(1))   # Paper All — the full audition pool, for 'indices-only'
             return json.dumps({
                 "window": {"from": fd or "default", "to": td or "now"},
                 "works_in_both": both_pos[:20],
                 "divergent_one_sided": divergent[:15],
+                "indices_paper_all_acct1": idx_all,
+                "indices_paper_all_total_pnl": round(sum(v["pnl"] for v in idx_all.values()), 2),
                 "indices_refined_acct2": _idx(ref),
                 "indices_kairos_acct3": _idx(eng),
                 "note": "works_in_both = net-positive on BOTH the TV (acct2) and engine (acct3) "
                         "books — the most cross-validated, robust set. divergent = positive on one, "
-                        "negative on the other (usually engine timing/fill difference). Still "
-                        "in-sample; small per-strategy samples regress, so weight by trade count.",
+                        "negative on the other (usually engine timing/fill difference). "
+                        "indices_paper_all = SPY/QQQ/IWM/SMH on Paper All (acct1, full pool) — use "
+                        "for 'what if I just ran the indices'; its total is indices_paper_all_total_pnl. "
+                        "Still in-sample; small per-strategy samples regress, so weight by trade count.",
             })[:7000]
         return f"Unknown tool: {name}"
     except Exception as e:
@@ -1001,9 +1006,23 @@ def api_crew_chat():
         "— that is OVERFITTING, not a better method. 'Shorts-only made $X' is what happened, not a "
         "forward edge. Always read and relay the tool's 'caveat' field; recommend a method only if "
         "it would plausibly hold OUT of sample, and prefer the risk-adjusted composite score for "
-        "selection. Answer directly and specifically, citing strategy names and numbers that trace "
+        "selection.\n\n"
+        "FORMAT — FORWARD / NEXT-MONTH RECOMMENDATIONS: when the user asks what to run next month "
+        "or for a new paper account, FIRST pull the data (cross_account, side_breakdown, "
+        "band_fill_quality, rank_compare), then LEAD your reply with exactly this card (Markdown "
+        "table), every value from a tool result — never invented:\n\n"
+        "## 📋 Next Month — Crew Paper Account\n"
+        "| Decision | Recommendation |\n|---|---|\n"
+        "| Top 5 to run | five strategy names, each tagged long / short / both |\n"
+        "| Sizing | Equal risk OR Scaled-by-score — one-line why |\n"
+        "| Day-type gate | Yes / No |\n"
+        "| Entries | Refined TV OR Kairos engine |\n"
+        "| Best indices | tickers · indices-only P&L from Paper All: $X |\n\n"
+        "Then a `## Detail` section with the reasoning, samples and caveats. Keep the card to "
+        "those five rows; put everything else under Detail.\n\n"
+        "Answer directly and specifically, citing strategy names and numbers that trace "
         "to a tool result or the snapshot (per the data-integrity rule — never invented). Be "
-        "concise — 100-200 words unless the question warrants more. No filler."
+        "concise — the card plus a tight Detail; no filler."
     )
 
     # Anti-fabrication guard: if the user's message is data-seeking, FORCE a tool
