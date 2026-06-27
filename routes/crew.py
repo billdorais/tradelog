@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -465,6 +465,26 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
         engine_block   = _fmt_engine(engine_data)
 
+        def _fmt_card_inputs(cd):
+            cd = cd or {}
+            lines = ["=== NEXT-MONTH CARD INPUTS (for the leading recommendation card) ==="]
+            idx = cd.get("indices_paper_all") or {}
+            if idx:
+                tot = round(sum(idx.values()), 2)
+                lines.append(f"Indices-only P&L on Paper All (acct1): ${tot:.2f} total — "
+                             + ", ".join(f"{k} ${v:.2f}" for k, v in sorted(idx.items(), key=lambda x: -x[1])))
+            else:
+                lines.append("Indices-only P&L on Paper All: no index data in window.")
+            for label, key in (("Refined acct2 (TV)", "side_refined"), ("Kairos acct3 (engine)", "side_kairos")):
+                ss = cd.get(key) or []
+                if ss:
+                    lines.append(f"{label} by side: " + " · ".join(
+                        f"{r.get('side')} ${r.get('pnl', 0):.2f} ({r.get('trades', 0)}t {r.get('win_rate', 0)}%)"
+                        for r in ss))
+            return "\n".join(lines)
+
+        card_block = _fmt_card_inputs(card_data)
+
         # ── Load knowledge base ───────────────────────────────────────────────
         knowledge_block = ""
         try:
@@ -574,12 +594,23 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 + (f" for: {period}" if period else "") + ":\n\n"
                 f"{strategy_block}\n\n"
                 f"{engine_strat_block}\n\n"
+                f"{card_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
                 + (f"{engine_block}\n\n" if engine_block else "")
                 + (f"KNOWLEDGE BASE — Camarilla theory and validated trading observations:\n\n{knowledge_block}\n\n" if knowledge_block else "")
                 + (f"For historical context, here are your previous advisory reports:\n\n{prev_block}\n\n" if prev_block else "")
-                + "Based on all of this, deliver a professional advisory report with six sections:\n\n"
+                + "Based on all of this, deliver the report. START with this decision card "
+                "(Markdown table) as the VERY FIRST thing, before any section — fill every cell "
+                "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
+                "## 📋 Next Month — Crew Paper Account\n"
+                "| Decision | Recommendation |\n|---|---|\n"
+                "| Top 5 to run | five strategy names (your best risk-adjusted picks across acct2/acct3), each tagged long / short / both per the side data |\n"
+                "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
+                "| Day-type gate | Yes / No |\n"
+                "| Entries | Refined TV OR Kairos engine — per the engine-vs-TV read |\n"
+                "| Best indices | top index tickers · indices-only P&L from Paper All: $X (from the card inputs) |\n\n"
+                "Then continue with the six detailed sections:\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
@@ -1159,19 +1190,34 @@ def api_crew_run():
         prev_reports = []
         rules_data   = []
         engine_data  = {}
+        card_data    = {}
         try:
-            _qs = f"account=2"
-            _qs3 = f"account=3"
-            if from_date:
-                _qs += f"&from_date={from_date}"; _qs3 += f"&from_date={from_date}"
-            if to_date:
-                _qs += f"&to_date={to_date}";     _qs3 += f"&to_date={to_date}"
+            _dr  = (f"&from_date={from_date}" if from_date else "") + (f"&to_date={to_date}" if to_date else "")
+            _qs  = "account=2" + _dr
+            _qs3 = "account=3" + _dr
             with _ca.test_client() as _c:
                 strat_data        = _c.get(f"/api/alpaca/analysis?{_qs}").get_json()  or {}
                 engine_strat_data = _c.get(f"/api/alpaca/analysis?{_qs3}").get_json() or {}
                 journal_data = _c.get("/api/journal/entries").get_json()         or []
                 rules_data   = _c.get("/api/routing/rules").get_json()           or []
                 engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
+                # Inputs for the "Next Month" card baked into the report.
+                _pa  = _c.get(f"/api/alpaca/analysis?account=1{_dr}").get_json() or {}
+                _s2  = _c.get(f"/api/alpaca/ls_breakdown?account=2{_dr}").get_json() or {}
+                _s3  = _c.get(f"/api/alpaca/ls_breakdown?account=3{_dr}").get_json() or {}
+            _IDX = ("SPY", "QQQ", "IWM", "SMH")
+            def _idx_sum(ps):
+                out = {}
+                for nm, s in (ps or {}).items():
+                    tk = nm.upper().split("_")[0]
+                    if tk in _IDX:
+                        out[tk] = round(out.get(tk, 0) + (s.get("total_pnl", 0) or 0), 2)
+                return out
+            card_data = {
+                "indices_paper_all": _idx_sum(_pa.get("per_strategy")),
+                "side_refined": (_s2 or {}).get("overall_side"),
+                "side_kairos":  (_s3 or {}).get("overall_side"),
+            }
         except Exception:
             pass
         try:
@@ -1191,7 +1237,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data),
             daemon=True,
         ).start()
     else:
