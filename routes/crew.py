@@ -738,6 +738,19 @@ _CREW_TOOLS = [
                      "description": "breakout_r3s3 | breakout_r4s4 | reversal_r3s3 | reversal_r4s4"}},
             "required": ["band"]},
     },
+    {
+        "name": "cross_account",
+        "description": "Cross-validate strategies across Refined (acct2, TV entries) and Kairos "
+                       "(acct3, engine entries): returns strategies POSITIVE on BOTH books (the "
+                       "most robust set — works on TV and the engine), the DIVERGENT ones "
+                       "(positive on one, negative on the other), and an INDEX rollup (SPY/QQQ/"
+                       "IWM/SMH P&L+win% per account). Use for 'which strategies work in both' and "
+                       "'how did the indices do on their own', and to seed a curated set for a new "
+                       "account. Optional date range.",
+        "input_schema": {"type": "object", "properties": {
+            "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
+    },
 ]
 
 def _run_crew_tool(name: str, args: dict) -> str:
@@ -874,6 +887,55 @@ def _run_crew_tool(name: str, args: dict) -> str:
                         "intended level) is the prime suspect. Slippage is per-share — multiply by "
                         "size for dollars.",
             })[:6000]
+        if name == "cross_account":
+            fd = (args.get("from_date") or "").strip()
+            td = (args.get("to_date") or "").strip()
+            def _ps(acct):
+                qs = f"account={acct}"
+                if fd: qs += f"&from_date={fd}"
+                if td: qs += f"&to_date={td}"
+                return _get(f"/api/alpaca/analysis?{qs}").get("per_strategy") or {}
+            ref = _ps(2); eng = _ps(3)
+            def _row(nm):
+                r = ref.get(nm) or {}; e = eng.get(nm) or {}
+                return {"name": nm,
+                        "refined": {"trades": r.get("trades", 0), "win_rate": r.get("win_rate", 0),
+                                    "pnl": round(r.get("total_pnl", 0) or 0, 2)},
+                        "kairos":  {"trades": e.get("trades", 0), "win_rate": e.get("win_rate", 0),
+                                    "pnl": round(e.get("total_pnl", 0) or 0, 2)}}
+            both_pos, divergent = [], []
+            for nm in (set(ref) | set(eng)):
+                r = ref.get(nm) or {}; e = eng.get(nm) or {}
+                rp = r.get("total_pnl", 0) or 0; ep = e.get("total_pnl", 0) or 0
+                if (r.get("trades", 0) or 0) and (e.get("trades", 0) or 0):   # traded on both
+                    if rp > 0 and ep > 0: both_pos.append(_row(nm))
+                    elif (rp > 0) != (ep > 0): divergent.append(_row(nm))
+            both_pos.sort(key=lambda x: -(x["refined"]["pnl"] + x["kairos"]["pnl"]))
+            divergent.sort(key=lambda x: -(x["refined"]["pnl"] + x["kairos"]["pnl"]))
+            IDX = ("SPY", "QQQ", "IWM", "SMH")
+            def _idx(ps):
+                out = {}
+                for nm, s in ps.items():
+                    tk = nm.upper().split("_")[0]
+                    if tk in IDX:
+                        o = out.setdefault(tk, {"trades": 0, "wins": 0, "pnl": 0.0})
+                        t = s.get("trades", 0) or 0; w = s.get("wins")
+                        if w is None: w = round((s.get("win_rate", 0) or 0) / 100 * t)
+                        o["trades"] += t; o["wins"] += w; o["pnl"] += s.get("total_pnl", 0) or 0
+                return {k: {"trades": v["trades"],
+                            "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0,
+                            "pnl": round(v["pnl"], 2)} for k, v in out.items()}
+            return json.dumps({
+                "window": {"from": fd or "default", "to": td or "now"},
+                "works_in_both": both_pos[:20],
+                "divergent_one_sided": divergent[:15],
+                "indices_refined_acct2": _idx(ref),
+                "indices_kairos_acct3": _idx(eng),
+                "note": "works_in_both = net-positive on BOTH the TV (acct2) and engine (acct3) "
+                        "books — the most cross-validated, robust set. divergent = positive on one, "
+                        "negative on the other (usually engine timing/fill difference). Still "
+                        "in-sample; small per-strategy samples regress, so weight by trade count.",
+            })[:7000]
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"Tool error ({name}): {e}"
@@ -925,7 +987,9 @@ def api_crew_chat():
         "score on Paper All — for 'would the top-20-by-P&L have beaten the leaderboard'), and "
         "side_breakdown (long vs short by band/day-type — for 'what if I only traded shorts'), and "
         "band_fill_quality (one band: Refined-TV vs Kairos-engine P&L + the engine's slippage — "
-        "for 'is the engine degrading R3S3 breakout'). "
+        "for 'is the engine degrading R3S3 breakout'), and cross_account (strategies positive on "
+        "BOTH books + divergent ones + an index SPY/QQQ/IWM/SMH rollup — for 'which strategies "
+        "work in both' and 'how did the indices do'). "
         "USE them whenever the user asks about anything current, specific, or "
         "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
         "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
