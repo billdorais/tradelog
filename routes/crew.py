@@ -851,9 +851,21 @@ def api_crew_chat():
 
     system_prompt = (
         "You are a Professional Systematic Trading Advisor specialising in "
-        "intraday Camarilla pivot strategies on US equities (5-min bars, Alpaca). "
-        "You have just completed a full analysis of the Kairos trading system. "
-        "Here is your advisory report:\n\n"
+        "intraday Camarilla pivot strategies on US equities (5-min bars, Alpaca).\n\n"
+        "═══ ABSOLUTE DATA-INTEGRITY RULE (read first) ═══\n"
+        "Every specific figure you state — P&L, win rate, trade count, profit factor, a "
+        "per-strategy or per-band number, a ranking — MUST come from either (a) a tool RESULT "
+        "you received in THIS conversation, or (b) the standing report snapshot below. You may "
+        "NOT invent, estimate, round-from-memory, or 'fill in' numbers. If you need current/live/"
+        "fresh data and have not yet received a tool result for it, CALL THE TOOL and WAIT for the "
+        "result before writing any numbers. Never write 'let me pull fresh data…' and then produce "
+        "numbers in the same message without an actual tool result — emit the tool call and stop. "
+        "If a tool fails or returns nothing, say so plainly; do not substitute fabricated figures. "
+        "When you cite a number, it must be traceable to a tool result or the snapshot — if you "
+        "can't trace it, don't say it.\n"
+        "═════════════════════════════════════════════════\n\n"
+        "Standing report SNAPSHOT (from the last full analysis — may be STALE; for anything "
+        "'current'/'live'/'fresh' you MUST re-pull with a tool, not quote this):\n\n"
         f"{report}\n\n"
         f"Today is {_today} (US/Eastern).\n\n"
         "You have TOOLS to pull live Kairos data when the report doesn't already contain the "
@@ -874,9 +886,30 @@ def api_crew_chat():
         "— that is OVERFITTING, not a better method. 'Shorts-only made $X' is what happened, not a "
         "forward edge. Always read and relay the tool's 'caveat' field; recommend a method only if "
         "it would plausibly hold OUT of sample, and prefer the risk-adjusted composite score for "
-        "selection. Answer directly and specifically, cite actual strategy names and numbers. Be "
+        "selection. Answer directly and specifically, citing strategy names and numbers that trace "
+        "to a tool result or the snapshot (per the data-integrity rule — never invented). Be "
         "concise — 100-200 words unless the question warrants more. No filler."
     )
+
+    # Anti-fabrication guard: if the user's message is data-seeking, FORCE a tool
+    # call on the first round so the advisor can't stream a made-up answer before
+    # pulling real numbers. Conceptual questions are left free (auto).
+    def _last_user_text(msgs):
+        for m in reversed(msgs):
+            if isinstance(m, dict) and m.get("role") == "user":
+                c = m.get("content")
+                if isinstance(c, str): return c
+                if isinstance(c, list):
+                    return " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+        return ""
+    _ut = _last_user_text(messages).lower()
+    _DATA_KWS = ("pull", "current", "live", "fresh", "today", "yesterday", "week", "month",
+                 "30 day", "leaderboard", "account", "acct", "stats", "p&l", "pnl", "win rate",
+                 "breakdown", "short", "long", "strateg", "top ", "rank", "fill", "slippage",
+                 "position", "engine", "refined", "paper all", "kairos", "day type", "day-type",
+                 "recommend", "should i", "which ", "how did", "how much", "drawdown", "compare",
+                 "play", "trade")
+    _force_tool_round0 = any(k in _ut for k in _DATA_KWS)
 
     def generate():
         try:
@@ -885,13 +918,17 @@ def api_crew_chat():
             convo = list(messages)
             full_text = ""
             for _round in range(5):   # cap tool-use rounds
-                with client.messages.stream(
+                _stream_kwargs = dict(
                     model="claude-sonnet-4-6",
                     max_tokens=900,
                     system=system_prompt,
                     tools=_CREW_TOOLS,
                     messages=convo,
-                ) as stream:
+                )
+                # Force at least one real tool call before any prose, for data questions.
+                if _round == 0 and _force_tool_round0:
+                    _stream_kwargs["tool_choice"] = {"type": "any"}
+                with client.messages.stream(**_stream_kwargs) as stream:
                     for text in stream.text_stream:
                         full_text += text
                         yield f"data: {json.dumps({'text': text})}\n\n"
