@@ -725,6 +725,19 @@ _CREW_TOOLS = [
             "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
             "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
     },
+    {
+        "name": "band_fill_quality",
+        "description": "Compare ONE band across Refined (acct2, TV entries) vs Kairos (acct3, "
+                       "engine entries): trades, win%, P&L on each, PLUS the engine's measured "
+                       "slippage on that band's fills. Use to confirm whether the server-side "
+                       "engine is DEGRADING a band's edge that TV captures cleanly (acct3 P&L far "
+                       "below acct2 + adverse slippage = the engine entry is the culprit). Band "
+                       "must be: breakout_r3s3 | breakout_r4s4 | reversal_r3s3 | reversal_r4s4.",
+        "input_schema": {"type": "object", "properties": {
+            "band": {"type": "string",
+                     "description": "breakout_r3s3 | breakout_r4s4 | reversal_r3s3 | reversal_r4s4"}},
+            "required": ["band"]},
+    },
 ]
 
 def _run_crew_tool(name: str, args: dict) -> str:
@@ -825,6 +838,42 @@ def _run_crew_tool(name: str, args: dict) -> str:
                           "happened, not a forward guarantee — a side's edge can flip, and you "
                           "didn't know in advance which side would win.",
             })[:6500]
+        if name == "band_fill_quality":
+            band = (args.get("band") or "").strip().lower()
+            kind = "breakout" if "breakout" in band else "reversal" if "reversal" in band else ""
+            pair = "r3s3" if "r3s3" in band else "r4s4" if "r4s4" in band else ""
+            if not kind or not pair:
+                return "Error: band must be breakout_r3s3 | breakout_r4s4 | reversal_r3s3 | reversal_r4s4."
+            def _agg(acct):
+                d = _get(f"/api/alpaca/analysis?account={acct}")
+                ps = d.get("per_strategy") or {}
+                tr = wn = 0; pnl = 0.0; ns = 0
+                for nm, s in ps.items():
+                    u = nm.upper()
+                    if kind.upper() in u and pair.upper() in u:
+                        t = s.get("trades", 0) or 0
+                        w = s.get("wins")
+                        if w is None: w = round((s.get("win_rate", 0) or 0) / 100 * t)
+                        tr += t; wn += w; pnl += s.get("total_pnl", 0) or 0; ns += 1
+                return {"trades": tr, "win_rate": round(wn / tr * 100, 1) if tr else 0,
+                        "pnl": round(pnl, 2), "strategies": ns}
+            fills = _get("/api/engine_pilot/status").get("fills") or []
+            bf = [f for f in fills if f.get("kind") == kind
+                  and pair.upper() in (f.get("strategy") or "").upper()]
+            slips = [f["fill_slip"] for f in bf if f.get("fill_slip") is not None]
+            avg_slip = round(sum(slips) / len(slips), 4) if slips else None
+            return json.dumps({
+                "band": f"{kind.upper()} {pair.upper()}",
+                "refined_acct2_TV": _agg(2),
+                "kairos_acct3_engine": _agg(3),
+                "engine_fills_with_slippage": len(slips),
+                "engine_avg_slippage_per_share": avg_slip,
+                "engine_worst_slippage_per_share": round(max(slips), 4) if slips else None,
+                "note": "If acct3 P&L is materially below acct2 on the same band, the engine entry "
+                        "is degrading the edge; positive avg slippage (filled worse than the "
+                        "intended level) is the prime suspect. Slippage is per-share — multiply by "
+                        "size for dollars.",
+            })[:6000]
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"Tool error ({name}): {e}"
@@ -874,7 +923,9 @@ def api_crew_chat():
         "open_positions, engine_fills (the engine's entry log with actual fill prices + "
         "slippage, for fill-quality questions), rank_compare (top-N by raw P&L vs by composite "
         "score on Paper All — for 'would the top-20-by-P&L have beaten the leaderboard'), and "
-        "side_breakdown (long vs short by band/day-type — for 'what if I only traded shorts'). "
+        "side_breakdown (long vs short by band/day-type — for 'what if I only traded shorts'), and "
+        "band_fill_quality (one band: Refined-TV vs Kairos-engine P&L + the engine's slippage — "
+        "for 'is the engine degrading R3S3 breakout'). "
         "USE them whenever the user asks about anything current, specific, or "
         "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
         "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
