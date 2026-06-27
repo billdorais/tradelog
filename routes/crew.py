@@ -697,6 +697,34 @@ _CREW_TOOLS = [
             "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
             "kind": {"type": "string", "enum": ["breakout", "reversal"], "description": "optional filter"}}},
     },
+    {
+        "name": "rank_compare",
+        "description": "Backtest the leaderboard SELECTION METHOD on Paper All (acct1 — the "
+                       "audition pool the Refined leaderboard is built from) over N days: ranks "
+                       "strategies by RAW P&L vs by the live COMPOSITE SCORE (Sharpe 35/PF 30/Win "
+                       "20/Trades 15), takes the top N of each, and reports each set's combined "
+                       "P&L + the overlap + which strategies differ. Use for 'would trading the "
+                       "top 20 by P&L have beaten the leaderboard?'. CRITICAL: both rankings are "
+                       "computed AND measured on the SAME window, so by-P&L is tautologically >= "
+                       "by-score in-sample — that is NOT evidence it's better going forward "
+                       "(classic overfit). Read the 'caveat' field and say so.",
+        "input_schema": {"type": "object", "properties": {
+            "days": {"type": "integer", "description": "lookback days (default 30)"},
+            "n": {"type": "integer", "description": "top N (default 20)"}}},
+    },
+    {
+        "name": "side_breakdown",
+        "description": "Long vs Short performance for an account over a date range: overall per "
+                       "side, plus band×side and side×day-type (trades, win%, P&L). Use for 'what "
+                       "if I only traded shorts' / 'are my longs the problem'. Hindsight caveat: a "
+                       "side's past edge can flip — 'shorts-only would have made $X' is what "
+                       "happened, not a forward guarantee.",
+        "input_schema": {"type": "object", "properties": {
+            "account": {"type": "string", "enum": ["1", "2", "3"],
+                        "description": "1=Paper All, 2=Refined, 3=Kairos (default 3)"},
+            "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
+    },
 ]
 
 def _run_crew_tool(name: str, args: dict) -> str:
@@ -749,6 +777,54 @@ def _run_crew_tool(name: str, args: dict) -> str:
                     "ts", "ticker", "side", "kind", "level_name", "level", "order_px",
                     "fill_price", "fill_slip", "slippage", "qty", "reason", "ok")})
             return json.dumps({"count": len(out), "fills": out[:60]})[:6000]
+        if name == "rank_compare":
+            days = int(args.get("days") or 30)
+            n    = int(args.get("n") or 20)
+            stats = _kairos._compute_strategy_stats(days=days)   # acct1 (Paper All) per-strategy
+            if not stats:
+                return json.dumps({"error": "No Paper All (acct1) stats available."})
+            max_pnl = max((s.get("total_pnl", 0) or 0) for s in stats.values())
+            rows = [{
+                "name": k, "pnl": round(s.get("total_pnl", 0) or 0, 2),
+                "trades": s.get("trades", 0), "win_rate": s.get("win_rate", 0),
+                "pf": s.get("profit_factor"),
+                "score": round(_kairos._composite_score(s, max_pnl), 4),
+            } for k, s in stats.items()]
+            # Same eligibility the leaderboard applies: net-positive + min trades.
+            elig = [r for r in rows if r["pnl"] > 0 and r["trades"] >= _kairos._REFINED_MIN_TRADES]
+            by_pnl   = sorted(elig, key=lambda r: -r["pnl"])[:n]
+            by_score = sorted(elig, key=lambda r: -r["score"])[:n]
+            sp = {r["name"] for r in by_pnl}; ss = {r["name"] for r in by_score}
+            return json.dumps({
+                "account": "Paper All (1)", "days": days, "n": n, "eligible_pool": len(elig),
+                "combined_pnl_top_by_pnl":   round(sum(r["pnl"] for r in by_pnl), 2),
+                "combined_pnl_top_by_score": round(sum(r["pnl"] for r in by_score), 2),
+                "overlap": len(sp & ss),
+                "only_in_pnl_rank":   sorted(sp - ss),
+                "only_in_score_rank": sorted(ss - sp),
+                "caveat": "IN-SAMPLE: ranked AND measured on the same window, so by-P&L is "
+                          "tautologically >= by-score here. Not evidence P&L-ranking wins going "
+                          "forward (overfit). The composite score trades in-sample P&L for "
+                          "out-of-sample stability — fewer flukes, less promote/demote churn.",
+                "top_by_pnl": by_pnl, "top_by_score": by_score,
+            })[:6500]
+        if name == "side_breakdown":
+            acct = str(args.get("account") or "3")
+            qs = f"account={acct}"
+            if args.get("from_date"): qs += f"&from_date={args['from_date']}"
+            if args.get("to_date"):   qs += f"&to_date={args['to_date']}"
+            d = _get(f"/api/alpaca/ls_breakdown?{qs}")
+            if d.get("error"):
+                return json.dumps({"error": d["error"]})
+            return json.dumps({
+                "account": d.get("account"), "trades": d.get("trades"),
+                "overall_side": d.get("overall_side"),
+                "by_band_side": d.get("by_band_side"),
+                "by_side_daytype": d.get("by_side_daytype"),
+                "caveat": "Hindsight/descriptive: 'shorts-only would have made $X' is what "
+                          "happened, not a forward guarantee — a side's edge can flip, and you "
+                          "didn't know in advance which side would win.",
+            })[:6500]
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"Tool error ({name}): {e}"
@@ -783,14 +859,23 @@ def api_crew_chat():
         "You have TOOLS to pull live Kairos data when the report doesn't already contain the "
         "answer — engine_vs_tv (acct3 server-side engine vs acct2 TV Refined), day_recap (a "
         "specific day's trades on both accounts), strategy_stats (per-account leaderboard), "
-        "open_positions, and engine_fills (the engine's entry log with actual fill prices + "
-        "slippage, for fill-quality questions). USE them whenever the user asks about anything current, specific, or "
+        "open_positions, engine_fills (the engine's entry log with actual fill prices + "
+        "slippage, for fill-quality questions), rank_compare (top-N by raw P&L vs by composite "
+        "score on Paper All — for 'would the top-20-by-P&L have beaten the leaderboard'), and "
+        "side_breakdown (long vs short by band/day-type — for 'what if I only traded shorts'). "
+        "USE them whenever the user asks about anything current, specific, or "
         "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
         "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
         "'Wednesday', 'this week') against today's date above.\n\n"
         "Stay honest about the engine pilot: the real edge is modest and per-share; never over-read "
-        "a single day or a few trades. Answer directly and specifically, cite actual strategy names "
-        "and numbers. Be concise — 100-200 words unless the question warrants more. No filler."
+        "a single day or a few trades. CRITICAL on backward-looking 'would it have been better' "
+        "questions (rank_compare, side_breakdown): these are IN-SAMPLE / hindsight. Ranking by raw "
+        "P&L always wins on the same window you measure (you literally picked the biggest winners) "
+        "— that is OVERFITTING, not a better method. 'Shorts-only made $X' is what happened, not a "
+        "forward edge. Always read and relay the tool's 'caveat' field; recommend a method only if "
+        "it would plausibly hold OUT of sample, and prefer the risk-adjusted composite score for "
+        "selection. Answer directly and specifically, cite actual strategy names and numbers. Be "
+        "concise — 100-200 words unless the question warrants more. No filler."
     )
 
     def generate():
