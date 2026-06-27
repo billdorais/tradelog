@@ -694,6 +694,7 @@
             <div style="display:flex;gap:14px;padding:2px 8px 8px;border-bottom:1px solid #1e2130;margin-bottom:4px">
               <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">All</span>
               <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">None</span>
+              <span onclick="selectIndices(event)" title="Select index/ETF strategies (SPY, QQQ, IWM, SMH)" style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Indices</span>
               <span onclick="selectTopN(3,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 3</span>
               <span onclick="selectTopN(5,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 5</span>
               <span onclick="selectTopN(10,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 10</span>
@@ -1298,6 +1299,21 @@
         return;
       }
       selectedStrategies = new Set(refined);
+      _tabSelections[activeTab] = selectedStrategies;
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    // Select strategies whose ticker is an index/ETF (SPY, QQQ, IWM, SMH) — the
+    // ticker is the prefix before _CAM_ (e.g. SPY_CAM_BREAKOUT_R3S3_VO2_5MIN).
+    const _INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'SMH']);
+    async function selectIndices(e) {
+      if (e) e.stopPropagation();
+      const picks = _allStrategyNames.filter(s => _INDEX_TICKERS.has(s.toUpperCase().split('_')[0]));
+      if (!picks.length) { alert('No index/ETF strategies (SPY, QQQ, IWM, SMH) in this view.'); return; }
+      selectedStrategies = new Set(picks);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
