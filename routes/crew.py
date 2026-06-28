@@ -11,7 +11,7 @@ import queue
 import re
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 
@@ -1139,6 +1139,139 @@ def api_crew_reports():
         return jsonify({"reports": out})
     except Exception as e:
         return jsonify({"reports": [], "error": str(e)})
+
+
+# Canonical per-ticker strategy slug, e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN
+_STRAT_SLUG_RE = re.compile(
+    r'[A-Z][A-Z0-9]*_CAM_(?:BREAKOUT|REVERSAL)_(?:R3S3|R4S4)_V\d+_5MIN', re.I)
+
+
+def _parse_next_month_card(report):
+    """Extract the wire-able picks from a crew report's "Next Month — Crew Paper"
+    decision card. Returns {picks:[{strategy, side}], entry_source, sizing, daytype}.
+    Strategy names are pulled ONLY from the 'Top 5 to run' row so the Detail
+    section's pause/demote mentions never get wired by mistake."""
+    picks, seen = [], set()
+    entry_source, sizing, daytype = "tv", "equal", None
+    for line in (report or "").splitlines():
+        low = line.lower()
+        if "top 5 to run" in low or ("top 5" in low and "_cam_" in low):
+            for m in _STRAT_SLUG_RE.findall(line):
+                slug = m.upper()
+                if slug in seen:
+                    continue
+                seen.add(slug)
+                # Best-effort side tag from the text just after the slug.
+                tail = line.upper().split(slug, 1)[1][:24]
+                side = ("short" if "SHORT" in tail else
+                        "long"  if "LONG"  in tail else "both")
+                picks.append({"strategy": slug, "side": side})
+        if "entries" in low and ("kairos" in low or "engine" in low):
+            entry_source = "kairos"
+        if "sizing" in low and "scaled" in low:
+            sizing = "scaled"
+        if "day-type gate" in low or "day type gate" in low:
+            if re.search(r"\byes\b", low):  daytype = True
+            elif re.search(r"\bno\b", low): daytype = False
+    return {"picks": picks, "entry_source": entry_source,
+            "sizing": sizing, "daytype": daytype}
+
+
+@crew_bp.route("/api/crew/wire_to_router", methods=["POST"])
+def api_crew_wire_to_router():
+    """Append the latest crew report's "Next Month — Crew Paper" picks to the
+    Signal Router as routing rules targeting the Crew Paper account (alpaca-paper-4).
+
+    Append-only with dedupe: a pick is skipped if a rule already routes that
+    strategy to acct4. Fails loudly if there's no report or no parsable picks."""
+    import app as _kairos
+    import json as _json
+    data = request.get_json(silent=True) or {}
+    try:    qty = max(1, int(data.get("qty", 10)))
+    except (TypeError, ValueError): qty = 10
+
+    # Crew Paper (acct4) must be a real configured account, otherwise alpaca-paper-4
+    # rules would have nowhere to route (the webhook skips unconfigured slots). Refuse
+    # rather than create orphan rules. Alpaca caps paper accounts at 3 per login — to
+    # enable acct4, point ALPACA_KEY4/SECRET4/PAPER4 at a separate Alpaca login.
+    if "alpaca4" not in _kairos.ACCOUNTS_BY_TAG:
+        return jsonify({"error": "Crew Paper account (acct4) isn't configured — set "
+                        "ALPACA_KEY4/SECRET4/PAPER4 (separate Alpaca login; see "
+                        "docs/adding_a_paper_account.md). No rules created."}), 400
+
+    conn = _kairos.get_db()
+    cur  = conn.cursor()
+
+    # 1) Latest report
+    cur.execute("SELECT week, created_at, report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "No crew report found — generate a report first."}), 400
+    if _kairos.DATABASE_URL:
+        week, created_at, report = row[0], row[1], row[2]
+    else:
+        week, created_at, report = row["week"], row["created_at"], row["report"]
+
+    parsed = _parse_next_month_card(report)
+    picks  = parsed["picks"]
+    if not picks:
+        conn.close()
+        return jsonify({"error": "Could not find any strategy names in the "
+                        "'Next Month — Crew Paper' card. Make sure the latest report "
+                        "leads with the decision card and names full strategy slugs "
+                        "(e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN)."}), 400
+
+    # 2) Which strategies already route to acct4? (dedupe set)
+    cur.execute("SELECT name, nodes FROM routing_rules")
+    existing_acct4 = set()
+    for r in cur.fetchall():
+        raw = r[1] if _kairos.DATABASE_URL else r["nodes"]
+        try:    nodes = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception: nodes = []
+        targets_acct4 = any(n.get("type") == "broker" and
+                            (n.get("value") or "").lower() in ("alpaca-paper-4", "alpaca-live-4")
+                            for n in nodes)
+        if targets_acct4:
+            for n in nodes:
+                if n.get("type") == "strategy" and n.get("value"):
+                    existing_acct4.add(n["value"].strip().upper())
+
+    # 3) Append new rules
+    p  = _kairos.placeholder()
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    created, skipped = [], []
+    for pick in picks:
+        slug = pick["strategy"]
+        if slug in existing_acct4:
+            skipped.append(slug)
+            continue
+        nodes_json = _json.dumps(
+            _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"], qty=qty))
+        rule_name  = f"{slug} · Crew"
+        if _kairos.DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                f"VALUES ({p},{p},{p},{p},{p})",
+                (rule_name, 1, nodes_json, ts, 0),
+            )
+        else:
+            cur.execute(
+                f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                f"VALUES ({p},{p},{p},{p},{p})",
+                (rule_name, 1, nodes_json, ts, 0),
+            )
+        created.append(slug)
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "created": created, "skipped": skipped,
+        "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
+        "daytype_gate": parsed["daytype"], "qty": qty,
+        "source_report_week": week, "source_report_at": created_at,
+        "sides": {pk["strategy"]: pk["side"] for pk in picks},
+    })
 
 
 @crew_bp.route("/api/crew/knowledge", methods=["GET"])

@@ -288,6 +288,8 @@
                                color: #7FE098; border-bottom-color: #7FE098; }
     .pnl-tab.active-kairos  { border-color: #F2C07A; background: rgba(242,192,122,0.12);
                                color: #F2C07A; border-bottom-color: #F2C07A; }
+    .pnl-tab.active-crew    { border-color: #7FE098; background: rgba(127,224,152,0.12);
+                               color: #7FE098; border-bottom-color: #7FE098; }
 
     /* Equity-chart date preset buttons */
     .eq-date-btn        { background: transparent; color: #888; font-family: inherit; }
@@ -323,6 +325,7 @@
     .open-pos-table tr:last-child td { border-bottom: none; }
     .open-pos-table tr.refined-row td { background: rgba(96,165,250,0.06); }
     .open-pos-table tr.kairos-row  td { background: rgba(242,231,172,0.07); }
+    .open-pos-table tr.crew-row    td { background: rgba(127,224,152,0.07); }
 
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
@@ -675,6 +678,7 @@
         <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')"      style="display:none">IB P&amp;L</button>
         <button id="tabRefined"  class="pnl-tab active-refined" onclick="switchTab('refined')">Paper Refined</button>
         <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos</button>
+        <button id="tabCrew"     class="pnl-tab"                onclick="switchTab('crew')">Crew Paper</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
                  border-top-color:#7FE098;border-radius:50%;
@@ -817,6 +821,9 @@
       <button id="feedTabKairos" onclick="switchFeedTab('kairos')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         ⚡ Kairos</button>
+      <button id="feedTabCrew" onclick="switchFeedTab('crew')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
+        Crew</button>
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Signals</button>
@@ -891,23 +898,27 @@
     let allAlpacaExecs  = [];
     let allAlpaca2Execs = [];      // Refined account (alpaca-paper-2) fills, fetched alongside the main set
     let allAlpaca3Execs = [];      // Kairos engine (alpaca-paper-3) fills
+    let allAlpaca4Execs = [];      // Crew Paper (alpaca-paper-4) fills
     let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
     let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
     let allAlpaca3Positions = [];   // authoritative open positions from Alpaca account 3 (Kairos)
+    let allAlpaca4Positions = [];   // authoritative open positions from Alpaca account 4 (Crew Paper)
 
     function _currentAlpacaExecs() {
+      if (feedTab === 'crew')    return allAlpaca4Execs;
       if (feedTab === 'kairos')  return allAlpaca3Execs;
       if (feedTab === 'refined') return allAlpaca2Execs;
       return allAlpacaExecs;
     }
     function _currentAlpacaPositions() {
+      if (feedTab === 'crew')    return allAlpaca4Positions;
       if (feedTab === 'kairos')  return allAlpaca3Positions;
       if (feedTab === 'refined') return allAlpaca2Positions;
       return allAlpacaPositions;
     }
     let selectedStrategy   = '';
     // Per-tab strategy selections so Paper All and Paper Refined filter independently
-    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), signals: new Set() };
+    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), crew: new Set(), signals: new Set() };
     let selectedStrategies = _tabSelections['refined'];  // active set, points into _tabSelections
     let _allStrategyNames  = [];
     let _cachedFullStats   = null;
@@ -919,8 +930,8 @@
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
     let activeTab = 'refined';
-    // Map a chart tab to its Alpaca ?account= value ('' = Paper All, 2 = Refined, 3 = Kairos engine).
-    function _acctForTab(tab) { return tab === 'refined' ? '2' : tab === 'kairos' ? '3' : ''; }
+    // Map a chart tab to its Alpaca ?account= value ('' = Paper All, 2 = Refined, 3 = Kairos engine, 4 = Crew Paper).
+    function _acctForTab(tab) { return tab === 'refined' ? '2' : tab === 'kairos' ? '3' : tab === 'crew' ? '4' : ''; }
 
     async function switchTab(tab) {
       try {
@@ -935,6 +946,8 @@
         document.getElementById('tabRefined').className = 'pnl-tab' + (tab === 'refined'  ? ' active-refined'  : '');
         const _tabK = document.getElementById('tabKairos');
         if (_tabK) _tabK.className = 'pnl-tab' + (tab === 'kairos' ? ' active-kairos' : '');
+        const _tabC = document.getElementById('tabCrew');
+        if (_tabC) _tabC.className = 'pnl-tab' + (tab === 'crew' ? ' active-crew' : '');
 
         const spinner = document.getElementById('chartLoadingSpinner');
         const label   = document.getElementById('equityChartLabel');
@@ -947,7 +960,7 @@
 
         // Update label and show spinner immediately (before any async work)
         if (spinner) spinner.style.display = 'inline-block';
-        if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined' || tab === 'kairos') ? 'flex' : 'none';
+        if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined' || tab === 'kairos' || tab === 'crew') ? 'flex' : 'none';
 
         if (tab === 'refined') {
           if (label) label.textContent = 'Cumulative realized P&L from Alpaca Refined fills';
@@ -982,6 +995,23 @@
           loadAccount();
           feedTab = 'kairos'; _feedFilter.tv = false; _feedFilter.alpaca = true;
           _syncFeedTabButtons('kairos');
+          renderTable(allTrades, selectedStrategy);
+        } else if (tab === 'crew') {
+          if (label) label.textContent = 'Cumulative realized P&L from Crew Paper fills (acct 4)';
+          if (note)  note.textContent  = 'Cumulative realized P&L from Crew Paper fills (paper account 4).';
+          const fromEl = document.getElementById('equityFromDate');
+          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
+          const toEl = document.getElementById('equityToDate');
+          if (toEl) toEl.style.display = '';
+          await new Promise(r => requestAnimationFrame(r));
+          renderAlpacaStats(
+            document.getElementById('equityFromDate')?.value || '',
+            document.getElementById('equityToDate')?.value   || '',
+            '4'
+          );
+          loadAccount();
+          feedTab = 'crew'; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons('crew');
           renderTable(allTrades, selectedStrategy);
         } else if (tab === 'signals') {
           if (label) label.textContent = 'Cumulative P&L from TV signals';
@@ -1246,7 +1276,7 @@
       const fromDate = document.getElementById('equityFromDate')?.value || '';
       const toDate   = document.getElementById('equityToDate')?.value   || '';
 
-      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos') {
+      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos' || activeTab === 'crew') {
         // Rank by Alpaca P&L within the active date range — the picker should
         // surface "top performers of this period," not all-time winners that
         // may not have traded today. If fewer than N strategies traded in the
@@ -2188,7 +2218,7 @@
       // both Alpaca tabs (Paper All and Paper Refined) draw their own chart with
       // ticker/pnl tooltips in renderAlpacaStats before calling renderStats.
       // Overdrawing here would replace it with [entry #? → exit #?] placeholders.
-      if (activeTab !== 'alpaca' && activeTab !== 'refined' && activeTab !== 'kairos') {
+      if (activeTab !== 'alpaca' && activeTab !== 'refined' && activeTab !== 'kairos' && activeTab !== 'crew') {
         const _curve   = stats.equity_curve || [];
         const labels   = _curve.map(p => fmtET(p.time) || p.time);
         const values   = _curve.map(p => p.value);
@@ -2695,6 +2725,8 @@
       document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? active  : inactive;
       document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? active  : inactive;
       document.getElementById('feedTabKairos').style.cssText  = tab === 'kairos'  ? activeK : inactive;
+      const _fc = document.getElementById('feedTabCrew');
+      if (_fc) _fc.style.cssText = tab === 'crew' ? active : inactive;
       document.getElementById('feedTabTV').style.cssText      = tab === 'tv'      ? active  : inactive;
     }
 
@@ -2708,7 +2740,7 @@
       else renderTable(allTrades, selectedStrategy);
 
       // Sync chart tab — update buttons + trigger chart directly (no switchTab call to avoid loop)
-      const chartTab = tab === 'tv' ? 'signals' : (tab === 'kairos' ? 'kairos' : (tab === 'refined' ? 'refined' : 'alpaca'));
+      const chartTab = tab === 'tv' ? 'signals' : (tab === 'kairos' ? 'kairos' : (tab === 'crew' ? 'crew' : (tab === 'refined' ? 'refined' : 'alpaca')));
       if (activeTab !== chartTab) {
         activeTab = chartTab;
         selectedStrategies = _tabSelections[chartTab] || (_tabSelections[chartTab] = new Set());
@@ -2716,7 +2748,8 @@
         document.getElementById('tabRefined').className = 'pnl-tab' + (chartTab === 'refined' ? ' active-refined' : '');
         document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
         document.getElementById('tabIB').className      = 'pnl-tab';
-        const _tkSync = document.getElementById('tabKairos'); if (_tkSync) _tkSync.className = 'pnl-tab';
+        const _tkSync = document.getElementById('tabKairos'); if (_tkSync) _tkSync.className = 'pnl-tab' + (chartTab === 'kairos' ? ' active-kairos' : '');
+        const _tcSync = document.getElementById('tabCrew'); if (_tcSync) _tcSync.className = 'pnl-tab' + (chartTab === 'crew' ? ' active-crew' : '');
         const spinner = document.getElementById('chartLoadingSpinner');
         if (chartTab === 'signals') {
           const label = document.getElementById('equityChartLabel');
@@ -2727,12 +2760,14 @@
           applyEquityFilter().catch(e => console.error('chart sync:', e))
             .finally(() => spinner.style.display = 'none');
         } else {
-          const acct = chartTab === 'kairos' ? '3' : chartTab === 'refined' ? '2' : null;
+          const acct = chartTab === 'kairos' ? '3' : chartTab === 'crew' ? '4' : chartTab === 'refined' ? '2' : null;
           const labelText = chartTab === 'kairos'
             ? 'Cumulative realized P&L from Kairos engine fills (acct 3)'
-            : chartTab === 'refined'
-              ? 'Cumulative realized P&L from Alpaca Refined fills'
-              : 'Cumulative realized P&L from Alpaca fills';
+            : chartTab === 'crew'
+              ? 'Cumulative realized P&L from Crew Paper fills (acct 4)'
+              : chartTab === 'refined'
+                ? 'Cumulative realized P&L from Alpaca Refined fills'
+                : 'Cumulative realized P&L from Alpaca fills';
           document.getElementById('ibEquityNote').style.display = 'flex';
           document.getElementById('ibEquityNote').textContent   = labelText + '.';
           document.getElementById('equityChartLabel').textContent = labelText;
@@ -2811,7 +2846,7 @@
     async function applyEquityFilter() {
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
-      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos') { renderAlpacaStats(fromDate, toDate, _acctForTab(activeTab) || null); return; }
+      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos' || activeTab === 'crew') { renderAlpacaStats(fromDate, toDate, _acctForTab(activeTab) || null); return; }
       try {
         if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
           const res = await fetch(buildStatsUrl('', fromDate, toDate));
@@ -2894,7 +2929,7 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
@@ -2902,9 +2937,11 @@
           fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=3').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/trades?account=4').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=2').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=3').then(r => r.json()).catch(() => ({positions: []})),
+          fetch('/api/alpaca/positions?account=4').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
@@ -2914,9 +2951,11 @@
         allAlpacaExecs   = alpacaExecsRes;
         allAlpaca2Execs  = Array.isArray(alpaca2ExecsRes) ? alpaca2ExecsRes : [];
         allAlpaca3Execs  = Array.isArray(alpaca3ExecsRes) ? alpaca3ExecsRes : [];
+        allAlpaca4Execs  = Array.isArray(alpaca4ExecsRes) ? alpaca4ExecsRes : [];
         allAlpacaPositions  = Array.isArray(alpacaPosRes)  ? alpacaPosRes  : (alpacaPosRes.positions  || []);
         allAlpaca2Positions = Array.isArray(alpaca2PosRes) ? alpaca2PosRes : (alpaca2PosRes.positions || []);
         allAlpaca3Positions = Array.isArray(alpaca3PosRes) ? alpaca3PosRes : (alpaca3PosRes.positions || []);
+        allAlpaca4Positions = Array.isArray(alpaca4PosRes) ? alpaca4PosRes : (alpaca4PosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
@@ -3764,9 +3803,10 @@
             }
           }
           const isKairos = p.broker === 'alpaca3';
-          const rowCls = isKairos ? ' class="kairos-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : '');
+          const isCrew   = p.broker === 'alpaca4';
+          const rowCls = isKairos ? ' class="kairos-row"' : (isCrew ? ' class="crew-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : ''));
           const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
-          const brokerLabel = isKairos ? 'kairos' : escHtml(p.broker);
+          const brokerLabel = isKairos ? 'kairos' : (isCrew ? 'crew' : escHtml(p.broker));
           return `<tr${rowCls}>
             <td style="font-weight:600;color:#ccc">${animal}${kairosBolt}${escHtml(p.symbol)}</td>
             <td style="color:#666;font-size:0.75rem">${brokerLabel}</td>

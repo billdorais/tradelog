@@ -70,6 +70,10 @@
     .node-broker-alpaca-live  { background: #0e2814; border-color: #7FE098; color: #7FE098; }
     .node-broker-alpaca-paper-2 { background: #1a1030; border-color: #a78bfa; color: #c4b5fd; }
     .node-broker-alpaca-live-2  { background: #0e1428; border-color: #818cf8; color: #a5b4fc; }
+    .node-broker-alpaca-paper-3 { background: #2a1a08; border-color: #F2C07A; color: #F2C07A; }
+    .node-broker-alpaca-live-3  { background: #2a1a08; border-color: #F2C07A; color: #F2C07A; }
+    .node-broker-alpaca-paper-4 { background: #0c2417; border-color: #7FE098; color: #7FE098; }
+    .node-broker-alpaca-live-4  { background: #0c2417; border-color: #7FE098; color: #7FE098; }
     .node-broker-coinbase   { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
     .node-ticker          { background: #1a2820; border-color: #7FE098; color: #7FE098; }
     .node-options_config  { background: #2a2318; border-color: #c8832a; color: #F2E7AC; min-width: 110px; }
@@ -207,6 +211,11 @@
         style="background:transparent;border:1px solid #4a5568;color:#888;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
         title="Revert all rules to TV entries (sets entry_source=tv on every rule that has one). Undoes the Apply Kairos bulk action.">
         Revert to TV
+      </button>
+      <button class="btn" onclick="wireCrewToRouter()"
+        style="background:transparent;border:1px solid #7FE098;color:#7FE098;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
+        title="Append the latest crew report's 'Next Month — Crew Paper' picks as routing rules targeting the Crew Paper account (alpaca-paper-4). Existing Crew Paper rules are kept; only new strategies are added.">
+        ⚡ Wire Crew Picks → Crew Paper
       </button>
       <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
     </div>
@@ -1942,6 +1951,8 @@
           'ib': 'IB Paper', 'ib-paper': 'IB Paper', 'ib-live': 'IB Live',
           'alpaca': 'Alpaca Paper', 'alpaca-paper': 'Alpaca Paper', 'alpaca-live': 'Alpaca Live',
           'alpaca-paper-2': 'Alpaca Refined', 'alpaca-live-2': 'Alpaca Refined Live',
+          'alpaca-paper-3': 'Alpaca Kairos', 'alpaca-live-3': 'Alpaca Kairos Live',
+          'alpaca-paper-4': 'Alpaca Crew', 'alpaca-live-4': 'Alpaca Crew Live',
           'coinbase': 'Coinbase',
         };
         return bmap[node.value] || node.value || 'IB Paper';
@@ -2005,6 +2016,27 @@
       alert(`Updated ${data.updated.length} pipeline(s).\nSkipped ${data.skipped.length} already set to Kairos.\nIneligible (non-Cam strategies): ${data.ineligible.length}.`);
       await load();
     } catch (e) { alert('Bulk apply failed: ' + e.message); }
+  }
+
+  async function wireCrewToRouter() {
+    if (!confirm(
+      'Append the latest crew report\'s "Next Month — Crew Paper" picks as routing rules\n' +
+      'targeting the Crew Paper account (acct 4)?\n\n' +
+      'Existing Crew Paper rules are kept — only new strategies are added.'
+    )) return;
+    try {
+      const res  = await fetch('/api/crew/wire_to_router', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'request failed');
+      const c = (data.created || []).length, s = (data.skipped || []).length;
+      alert(`Wired ${c} new rule(s) to Crew Paper.` +
+            (s ? `\nSkipped ${s} already wired.` : '') +
+            `\nEntries: ${data.entry_source} · qty ${data.qty}` +
+            (data.created && data.created.length ? `\n\n${data.created.join('\n')}` : ''));
+      await load();
+    } catch (e) { alert('Wire crew picks failed: ' + e.message); }
   }
 
   async function bulkRevertKairos() {
@@ -2500,6 +2532,10 @@
               <option value="alpaca-live"  ${bv==='alpaca-live'  ? 'selected':''}>Alpaca — Live</option>
               <option value="alpaca-paper-2" ${bv==='alpaca-paper-2' ? 'selected':''}>Alpaca Paper — Refined (account 2)</option>
               <option value="alpaca-live-2"  ${bv==='alpaca-live-2'  ? 'selected':''}>Alpaca Live — Refined (account 2)</option>
+              <option value="alpaca-paper-3" ${bv==='alpaca-paper-3' ? 'selected':''}>Alpaca Paper — Kairos engine (account 3)</option>
+              <option value="alpaca-live-3"  ${bv==='alpaca-live-3'  ? 'selected':''}>Alpaca Live — Kairos engine (account 3)</option>
+              <option value="alpaca-paper-4" ${bv==='alpaca-paper-4' ? 'selected':''}>Alpaca Paper — Crew Paper (account 4)</option>
+              <option value="alpaca-live-4"  ${bv==='alpaca-live-4'  ? 'selected':''}>Alpaca Live — Crew Paper (account 4)</option>
               <option value="coinbase"     ${bv==='coinbase'     ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;

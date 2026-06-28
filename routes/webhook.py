@@ -29,18 +29,25 @@ webhook_bp = Blueprint("webhook", __name__)
 def _broker_family(target: str) -> str:
     if target in ("ib", "ib-paper", "ib-live"):
         return "ib"
-    if target in ("alpaca", "alpaca-paper", "alpaca-live",
-                  "alpaca-paper-2", "alpaca-live-2"):
+    t = (target or "").lower()
+    if t == "alpaca" or t.startswith("alpaca-paper") or t.startswith("alpaca-live"):
         return "alpaca"
     return target
 
 
 def _resolve_alpaca_broker(target: str):
-    """Return the AlpacaBroker instance for a given target name."""
+    """Return the AlpacaBroker instance for a given target name, or None.
+    Registry-driven, so any configured account (alpaca-paper-2/-3/-4, ...) resolves
+    automatically. An explicit but UNCONFIGURED slot (e.g. alpaca-paper-4 with no
+    ALPACA_KEY4) returns None so the caller SKIPS the order rather than silently
+    routing it to Paper All. Only bare/legacy targets fall back to account 1."""
     import app as _app
-    if target in ("alpaca-paper-2", "alpaca-live-2"):
-        return _app.alpaca_broker2
-    return _app.alpaca_broker
+    tag = _app._routing_broker_to_tag(target)
+    if tag is None:
+        t = (target or "").lower()
+        return _app.alpaca_broker if t in ("alpaca", "alpaca-paper", "alpaca-live") else None
+    rec = _app.ACCOUNTS_BY_TAG.get(tag)
+    return rec["broker"] if rec else None
 
 
 def _alpaca_broker_name(target: str) -> str:
@@ -48,7 +55,8 @@ def _alpaca_broker_name(target: str) -> str:
     suffixes that resolve to the same broker, so a 'lock for MU on alpaca' is
     the same lock regardless of whether the signal came in as alpaca-paper or
     alpaca-live."""
-    return "alpaca2" if target in ("alpaca-paper-2", "alpaca-live-2") else "alpaca"
+    import app as _app
+    return _app._routing_broker_to_tag(target) or "alpaca"
 
 
 # Per-(broker, ticker) FIFO queue so entry + exit signals for the same symbol

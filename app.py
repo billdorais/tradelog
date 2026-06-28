@@ -129,8 +129,35 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 # included, since it now trades the Kairos engine entries too. Reversals are NOT
 # gated (sample too thin to trust yet). Fails OPEN: if a ticker can't be
 # classified, the entry is allowed.
+# ── Paper-account registry config (single source of truth) ──────────────────
+# To add a paper account: set ALPACA_KEY{N}/SECRET{N}/PAPER{N} env vars. Optionally
+# add a row here to customise its label/colour/feature flags; slots without a row
+# fall back to sensible defaults. See docs/adding_a_paper_account.md.
+#   auto_source — receives auto-generated entries (Refined snapshot / engine pilot).
+#                 Crew Paper (acct4) is False: it trades ONLY rules wired from the
+#                 crew page, never the snapshot/engine auto-sources.
+ACCOUNT_META = {
+    "1": {"tag": "alpaca",  "label": "Paper All",     "color": "#9aa0b5",
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True},
+    "2": {"tag": "alpaca2", "label": "Refined",       "color": "#c4b5fd",
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True},
+    "3": {"tag": "alpaca3", "label": "Kairos engine", "color": "#F2C07A",
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True},
+    "4": {"tag": "alpaca4", "label": "Crew Paper",    "color": "#7FE098",
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False},
+}
+MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
+
+def _meta_tag(num):
+    n = str(num)
+    return ACCOUNT_META.get(n, {}).get("tag", "alpaca" if n == "1" else "alpaca" + n)
+
+def _accounts_with(flag):
+    """Tags of accounts whose ACCOUNT_META flag is truthy — config-driven gate sets."""
+    return {_meta_tag(n) for n, m in ACCOUNT_META.items() if m.get(flag)}
+
 DAYTYPE_GATE_ENABLED   = os.environ.get("DAYTYPE_GATE_ENABLED", "1") == "1"
-DAYTYPE_GATE_ACCOUNTS  = {"alpaca", "alpaca2", "alpaca3"}   # gated books (all three)
+DAYTYPE_GATE_ACCOUNTS  = _accounts_with("daytype_gate")   # gated books (config-driven)
 DAYTYPE_GATE_BREAKOUT_OK_DAYS = {"Outside"}       # day types on which breakouts may fire
 # Reversal day-type gate — a SEPARATE, independently-toggled gate. The inside-day →
 # reversals thesis is weaker than the breakout one (R3S3 reversals also win on
@@ -138,15 +165,15 @@ DAYTYPE_GATE_BREAKOUT_OK_DAYS = {"Outside"}       # day types on which breakouts
 # on, blocks reversal entries on non-"Inside" days for Paper All (acct1) + Kairos
 # (acct3) only — Refined (acct2) is intentionally left alone (TV-driven).
 DAYTYPE_REVERSAL_GATE_ENABLED  = os.environ.get("DAYTYPE_REVERSAL_GATE_ENABLED", "0") == "1"
-DAYTYPE_REVERSAL_GATE_ACCOUNTS = {"alpaca", "alpaca3"}
+DAYTYPE_REVERSAL_GATE_ACCOUNTS = _accounts_with("reversal_gate")
 DAYTYPE_REVERSAL_OK_DAYS       = {"Inside"}
 # Reversal-entry retest is honored for these books. A rule's retest_bars sets the
 # pullback/2nd-touch entry window; any account NOT listed here enters immediately
 # on the initial reject (a baseline). All three books honor the retest — Paper All
 # (acct1) included, since it runs the Kairos engine entries too.
-ENGINE_RETEST_ACCOUNTS = {t.strip() for t in
-                          os.environ.get("ENGINE_RETEST_ACCOUNTS", "alpaca,alpaca2,alpaca3").split(",")
-                          if t.strip()}
+ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS"].split(",") if t.strip()}
+                          if os.environ.get("ENGINE_RETEST_ACCOUNTS")
+                          else _accounts_with("retest"))
 
 _risk_halted          = False   # True when daily loss limit is breached
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
@@ -567,15 +594,21 @@ if _IB_ENABLED and os.environ.get("IB_HOST_LIVE"):
 # ---------------------------------------------------------------------------
 
 alpaca_broker = None
-_alpaca_fills_cache    = {"data": [], "ts": 0.0}
-_alpaca_fills_lock     = threading.Lock()
-_alpaca_analysis_cache = {}   # key → {"data": ..., "ts": float}
-_alpaca2_fills_cache   = {"data": [], "ts": 0.0}
-_alpaca2_fills_lock    = threading.Lock()
-_alpaca2_analysis_cache = {}
-_alpaca3_fills_cache   = {"data": [], "ts": 0.0}
-_alpaca3_fills_lock    = threading.Lock()
-_alpaca3_analysis_cache = {}
+
+# ── Paper-account caches (registry-backed) ──────────────────────────────────
+# One fills/analysis cache + lock per account slot, indexed by account number.
+# IMPORTANT: these dicts are MUTATED IN PLACE (cache["data"] = ...), never
+# reassigned, so the back-compat aliases below and the registry records all stay
+# pointed at the same object for the life of the process.
+_ALPACA_NUMS            = tuple(str(i) for i in range(1, MAX_ALPACA_ACCOUNTS + 1))
+_alpaca_caches          = {n: {"data": [], "ts": 0.0} for n in _ALPACA_NUMS}
+_alpaca_cache_locks     = {n: threading.Lock()        for n in _ALPACA_NUMS}
+_alpaca_analysis_caches = {n: {}                       for n in _ALPACA_NUMS}
+
+# Back-compat aliases — the SAME dict objects the registry holds. Mutate in place.
+_alpaca_fills_cache,  _alpaca2_fills_cache,  _alpaca3_fills_cache,  _alpaca4_fills_cache    = (_alpaca_caches[n]          for n in _ALPACA_NUMS[:4])
+_alpaca_fills_lock,   _alpaca2_fills_lock,   _alpaca3_fills_lock,   _alpaca4_fills_lock     = (_alpaca_cache_locks[n]     for n in _ALPACA_NUMS[:4])
+_alpaca_analysis_cache, _alpaca2_analysis_cache, _alpaca3_analysis_cache, _alpaca4_analysis_cache = (_alpaca_analysis_caches[n] for n in _ALPACA_NUMS[:4])
 ALPACA_CACHE_TTL    = 120  # seconds — paginated fetch can be slow, cache longer
 ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is also expensive
 _broker_status_cache = {"data": None, "ts": 0.0}
@@ -585,83 +618,110 @@ _alpaca_positions_cache = {"data": None, "ts": 0.0}
 ALPACA_POSITIONS_TTL = 15  # seconds — live P&L dashboard polls every 10s; cache prevents thundering herd
 
 
-def _get_cached_fills():
-    """Return Alpaca fills from the shared cache, fetching only when stale.
-    Lock prevents concurrent duplicate fetches (thundering herd on startup)."""
-    global _alpaca_fills_cache
+def _get_cached_fills_n(num):
+    """Return cached Alpaca fills for account `num`, fetching only when stale.
+    Mutates the cache dict IN PLACE (never rebinds) so registry/alias refs stay
+    valid. Lock prevents concurrent duplicate fetches (thundering herd on startup)."""
+    num   = str(num)
+    cache = _alpaca_caches.get(num)
+    if cache is None:
+        return []
     now = time.time()
-    if now - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
-        return _alpaca_fills_cache["data"]
-    with _alpaca_fills_lock:
+    if now - cache["ts"] < ALPACA_CACHE_TTL:
+        return cache["data"]
+    with _alpaca_cache_locks[num]:
         # Re-check inside lock — another thread may have populated while we waited
-        if time.time() - _alpaca_fills_cache["ts"] < ALPACA_CACHE_TTL:
-            return _alpaca_fills_cache["data"]
-        fills = alpaca_broker.get_fills()
-        _alpaca_fills_cache = {"data": fills, "ts": time.time()}
-    return _alpaca_fills_cache["data"]
-def _get_cached_fills_2():
-    """Return Alpaca Refined (account 2) fills, cached separately from account 1."""
-    global _alpaca2_fills_cache
-    now = time.time()
-    if now - _alpaca2_fills_cache["ts"] < ALPACA_CACHE_TTL:
-        return _alpaca2_fills_cache["data"]
-    with _alpaca2_fills_lock:
-        if time.time() - _alpaca2_fills_cache["ts"] < ALPACA_CACHE_TTL:
-            return _alpaca2_fills_cache["data"]
-        fills = alpaca_broker2.get_fills() if alpaca_broker2 else []
-        _alpaca2_fills_cache = {"data": fills, "ts": time.time()}
-    return _alpaca2_fills_cache["data"]
-def _get_cached_fills_3():
-    """Return Alpaca engine-pilot (account 3) fills, cached separately."""
-    global _alpaca3_fills_cache
-    now = time.time()
-    if now - _alpaca3_fills_cache["ts"] < ALPACA_CACHE_TTL:
-        return _alpaca3_fills_cache["data"]
-    with _alpaca3_fills_lock:
-        if time.time() - _alpaca3_fills_cache["ts"] < ALPACA_CACHE_TTL:
-            return _alpaca3_fills_cache["data"]
-        fills = alpaca_broker3.get_fills() if alpaca_broker3 else []
-        _alpaca3_fills_cache = {"data": fills, "ts": time.time()}
-    return _alpaca3_fills_cache["data"]
+        if time.time() - cache["ts"] < ALPACA_CACHE_TTL:
+            return cache["data"]
+        rec    = ACCOUNTS_BY_NUM.get(num)
+        broker = rec["broker"] if rec else None
+        fills  = broker.get_fills() if broker else []
+        cache["data"] = fills
+        cache["ts"]   = time.time()
+    return cache["data"]
+
+# Named wrappers — kept for the many existing call sites.
+def _get_cached_fills():   return _get_cached_fills_n("1")
+def _get_cached_fills_2(): return _get_cached_fills_n("2")
+def _get_cached_fills_3(): return _get_cached_fills_n("3")
+def _get_cached_fills_4(): return _get_cached_fills_n("4")
 
 def _alpaca_account_ctx(account):
     """Map an ?account= value to (broker, broker_tag, label, fills_fn). Defaults to
-    account 1 (Paper All). Centralises the 1/2/3 selection for the dashboard tabs."""
-    a = str(account or "1")
-    if a == "2": return alpaca_broker2, "alpaca2", "Refined",       _get_cached_fills_2
-    if a == "3": return alpaca_broker3, "alpaca3", "Kairos engine", _get_cached_fills_3
-    return alpaca_broker, "alpaca", "Paper All", _get_cached_fills
+    account 1 (Paper All). Driven by the account registry (ACCOUNTS_BY_NUM)."""
+    a   = str(account or "1")
+    rec = ACCOUNTS_BY_NUM.get(a) or ACCOUNTS_BY_NUM.get("1")
+    if not rec:
+        return alpaca_broker, "alpaca", "Paper All", _get_cached_fills
+    return rec["broker"], rec["tag"], rec["label"], rec["fills_fn"]
 
 # TODO(multi-account): currently hard-coded to 2 Alpaca accounts (primary + Refined).
-# To support N accounts (ALPACA_KEY3, KEY4, ...) without manual edits each time:
-#   1. Replace alpaca_broker / alpaca_broker2 globals with alpaca_brokers = {"1": ..., "2": ...}
-#      populated by scanning ALPACA_KEY, ALPACA_KEY<N> env vars.
-#   2. Centralise the broker-target lookup: routes/webhook.py:_resolve_alpaca_broker should
-#      key off the trailing digit in target names (alpaca-paper-3, alpaca-live-3, ...).
-#   3. Update every iteration site to loop the registry instead of naming each broker:
-#        - _check_position_stops (risk monitor)
-#        - _check_exit_params_recovery (partial-fill watchdog)
-#        - /api/alpaca/account, /api/alpaca/analysis endpoints (?account=N)
-#        - fills cache (_alpaca_fills_cache, _alpaca2_fills_cache → keyed dict)
-#   4. UI dropdowns instead of fixed Paper All / Paper Refined tabs (templates/index.html,
-#      analysis.html, routing.html).
-# Bounded ~half-day refactor; defer until a 3rd account is actually needed.
-if os.environ.get("ALPACA_KEY"):
+# Accounts are now driven by the registry below: one record per configured
+# ALPACA_KEY{N} slot, built by scanning env. Every iteration site (risk monitor,
+# EOD close, fills refresh, /api/alpaca endpoints, webhook broker resolution)
+# loops ALPACA_ACCOUNTS instead of naming each broker. To add an account, set the
+# env vars (and optionally an ACCOUNT_META row) — see docs/adding_a_paper_account.md.
+
+def _build_alpaca_broker(num):
+    """Construct the AlpacaBroker for account slot `num`, or None if not configured.
+    Slot 1 uses the default constructor (reads ALPACA_KEY/SECRET/PAPER from env);
+    higher slots pass ALPACA_KEY{N}/SECRET{N}/PAPER{N} explicitly."""
+    num    = str(num)
+    suffix = "" if num == "1" else num
+    if not os.environ.get("ALPACA_KEY" + suffix):
+        return None
     from brokers.alpaca_broker import AlpacaBroker
-    alpaca_broker = AlpacaBroker()
-    log.info("Alpaca broker initialised (paper=%s)", os.environ.get("ALPACA_PAPER", "true"))
-
-alpaca_broker2 = None
-if os.environ.get("ALPACA_KEY2"):
-    from brokers.alpaca_broker import AlpacaBroker as _AB2
-    _paper2 = os.environ.get("ALPACA_PAPER2", "true").lower() != "false"
-    alpaca_broker2 = _AB2(
-        key    = os.environ.get("ALPACA_KEY2"),
-        secret = os.environ.get("ALPACA_SECRET2"),
-        paper  = _paper2,
+    if num == "1":
+        return AlpacaBroker()
+    paper = os.environ.get("ALPACA_PAPER" + suffix, "true").lower() != "false"
+    return AlpacaBroker(
+        key    = os.environ.get("ALPACA_KEY"    + suffix),
+        secret = os.environ.get("ALPACA_SECRET" + suffix),
+        paper  = paper,
     )
-    log.info("Alpaca broker 2 initialised (paper=%s)", _paper2)
 
+ALPACA_ACCOUNTS = []    # ordered list of configured account records
+ACCOUNTS_BY_NUM = {}    # "1" -> record
+ACCOUNTS_BY_TAG = {}    # "alpaca" -> record
+
+for _num in _ALPACA_NUMS:
+    _broker = _build_alpaca_broker(_num)
+    if _broker is None:
+        continue
+    _meta   = ACCOUNT_META.get(_num, {})
+    _suffix = "" if _num == "1" else _num
+    _paper  = os.environ.get("ALPACA_PAPER" + _suffix, "true").lower() != "false"
+    _rec = {
+        "num":           _num,
+        "tag":           _meta_tag(_num),
+        "label":         _meta.get("label", "Paper " + _num),
+        "color":         _meta.get("color", "#888"),
+        "paper":         _paper,
+        "broker":        _broker,
+        "fills_cache":   _alpaca_caches[_num],
+        "fills_lock":    _alpaca_cache_locks[_num],
+        "analysis_cache": _alpaca_analysis_caches[_num],
+        "fills_fn":      (lambda n=_num: _get_cached_fills_n(n)),
+        "target_paper":  "alpaca-paper" if _num == "1" else "alpaca-paper-" + _num,
+        "target_live":   "alpaca-live"  if _num == "1" else "alpaca-live-"  + _num,
+        "daytype_gate":  _meta.get("daytype_gate", True),
+        "reversal_gate": _meta.get("reversal_gate", True),
+        "retest":        _meta.get("retest", True),
+        "auto_source":   _meta.get("auto_source", True),
+    }
+    ALPACA_ACCOUNTS.append(_rec)
+    ACCOUNTS_BY_NUM[_num]        = _rec
+    ACCOUNTS_BY_TAG[_rec["tag"]] = _rec
+    log.info("Alpaca account %s (%s) initialised (paper=%s)", _num, _rec["label"], _paper)
+
+# Back-compat broker globals — same instances the registry holds. Existing code
+# that names a specific broker keeps working; new/iteration code uses the registry.
+alpaca_broker  = ACCOUNTS_BY_NUM.get("1", {}).get("broker")
+alpaca_broker2 = ACCOUNTS_BY_NUM.get("2", {}).get("broker")
+alpaca_broker3 = ACCOUNTS_BY_NUM.get("3", {}).get("broker")
+alpaca_broker4 = ACCOUNTS_BY_NUM.get("4", {}).get("broker")
+
+if alpaca_broker is not None:
     def _prewarm_fills():
         """Populate the fills cache in background so the first page load is instant."""
         time.sleep(3)   # let gunicorn finish binding before making API calls
@@ -672,21 +732,6 @@ if os.environ.get("ALPACA_KEY2"):
             log.warning("Fills cache pre-warm failed: %s", _e)
 
     threading.Thread(target=_prewarm_fills, daemon=True).start()
-
-# Alpaca account 3 — the Phase-2 "Kairos engine" pilot account. Server-side entries
-# are armed HERE, in parallel with (and separate from) the TV entries on Refined
-# (acct 2), so the two can be compared head-to-head with no double-entry risk.
-# Inert unless ALPACA_KEY3 is set.
-alpaca_broker3 = None
-if os.environ.get("ALPACA_KEY3"):
-    from brokers.alpaca_broker import AlpacaBroker as _AB3
-    _paper3 = os.environ.get("ALPACA_PAPER3", "true").lower() != "false"
-    alpaca_broker3 = _AB3(
-        key    = os.environ.get("ALPACA_KEY3"),
-        secret = os.environ.get("ALPACA_SECRET3"),
-        paper  = _paper3,
-    )
-    log.info("Alpaca broker 3 (Kairos engine pilot) initialised (paper=%s)", _paper3)
 
 # ---------------------------------------------------------------------------
 # Coinbase broker (optional — set COINBASE_KEY + COINBASE_SECRET to enable)
@@ -719,28 +764,15 @@ def _eod_close_scheduler():
                 and triggered_date != today):
             triggered_date = today
             log.info("EOD scheduler: closing all positions at %02d:%02d ET", now.hour, now.minute)
-            # Alpaca account 1 (Paper All)
-            if alpaca_broker is not None:
+            # Every configured Alpaca paper account — each holds its own positions,
+            # so each needs a separate close call (missing one leaves shorts open
+            # overnight). Driven by the registry so new accounts are covered too.
+            for _acct in ALPACA_ACCOUNTS:
                 try:
-                    result = alpaca_broker.close_all_positions()
-                    log.info("EOD close Alpaca: %s", result)
+                    result = _acct["broker"].close_all_positions()
+                    log.info("EOD close Alpaca %s: %s", _acct["label"], result)
                 except Exception as e:
-                    log.error("EOD close Alpaca failed: %s", e)
-            # Alpaca account 2 (Refined) — separate close call since each account
-            # holds its own positions. Missing this leaves Refined shorts open overnight.
-            if alpaca_broker2 is not None:
-                try:
-                    result = alpaca_broker2.close_all_positions()
-                    log.info("EOD close Alpaca Refined: %s", result)
-                except Exception as e:
-                    log.error("EOD close Alpaca Refined failed: %s", e)
-            # Alpaca account 3 (Kairos engine pilot)
-            if alpaca_broker3 is not None:
-                try:
-                    result = alpaca_broker3.close_all_positions()
-                    log.info("EOD close Alpaca engine pilot: %s", result)
-                except Exception as e:
-                    log.error("EOD close Alpaca engine pilot failed: %s", e)
+                    log.error("EOD close Alpaca %s failed: %s", _acct["label"], e)
             # Coinbase
             if coinbase_broker is not None:
                 try:
@@ -961,36 +993,19 @@ def _check_position_stops():
     all_positions = []
     polled_brokers = set()   # only brokers we fetched cleanly; used to gate stale cleanup
 
-    if alpaca_broker:
+    # Poll every configured Alpaca paper account for fresh positions (registry-driven).
+    for _acct in ALPACA_ACCOUNTS:
+        _br, _tag = _acct["broker"], _acct["tag"]
         try:
             # Bypass the position cache here — risk checks need fresh data.
-            alpaca_broker._invalidate_pos_cache()
-            for p in alpaca_broker.get_positions():
-                p["broker"] = "alpaca"
+            _br._invalidate_pos_cache()
+            for p in _br.get_positions():
+                p["broker"] = _tag
                 all_positions.append(p)
-            polled_brokers.add("alpaca")
+            polled_brokers.add(_tag)
         except Exception as _e:
-            log.warning("Position stop: Alpaca get_positions failed: %s", _e)
-
-    if alpaca_broker2:
-        try:
-            alpaca_broker2._invalidate_pos_cache()
-            for p in alpaca_broker2.get_positions():
-                p["broker"] = "alpaca2"
-                all_positions.append(p)
-            polled_brokers.add("alpaca2")
-        except Exception as _e:
-            log.warning("Position stop: Alpaca account 2 get_positions failed: %s", _e)
-
-    if alpaca_broker3:
-        try:
-            alpaca_broker3._invalidate_pos_cache()
-            for p in alpaca_broker3.get_positions():
-                p["broker"] = "alpaca3"
-                all_positions.append(p)
-            polled_brokers.add("alpaca3")
-        except Exception as _e:
-            log.warning("Position stop: Alpaca account 3 (engine pilot) get_positions failed: %s", _e)
+            log.warning("Position stop: Alpaca %s (%s) get_positions failed: %s",
+                        _acct["num"], _acct["label"], _e)
 
     if _ib_task_queue is not None and ib_broker:
         try:
@@ -1153,21 +1168,13 @@ def _check_position_stops():
         # Close the position — only mark as handled if the order is successfully submitted
         close_ok = False
         try:
-            if broker == "alpaca":
-                res = alpaca_broker.close_position(symbol)
+            if broker in ACCOUNTS_BY_TAG:
+                _rec = ACCOUNTS_BY_TAG[broker]
+                res = _rec["broker"].close_position(symbol)
                 close_ok = res.get("success", False)
                 if not close_ok:
-                    log.error("Position stop close failed for %s: %s", symbol, res.get("error"))
-            elif broker == "alpaca2":
-                res = alpaca_broker2.close_position(symbol)
-                close_ok = res.get("success", False)
-                if not close_ok:
-                    log.error("Position stop close failed for %s (acct2): %s", symbol, res.get("error"))
-            elif broker == "alpaca3":
-                res = alpaca_broker3.close_position(symbol)
-                close_ok = res.get("success", False)
-                if not close_ok:
-                    log.error("Position stop close failed for %s (acct3 engine pilot): %s", symbol, res.get("error"))
+                    log.error("Position stop close failed for %s (%s): %s",
+                              symbol, _rec["label"], res.get("error"))
             elif broker == "ib" and _ib_task_queue is not None:
                 _submit_ib_task(ib_broker.close_position, symbol, pos.get("qty", 0), _timeout=30)
                 close_ok = True
@@ -1197,10 +1204,7 @@ def _check_exit_params_recovery():
     except Exception:
         return  # SDK unavailable
 
-    accounts = []
-    if alpaca_broker:  accounts.append(("alpaca",  alpaca_broker))
-    if alpaca_broker2: accounts.append(("alpaca2", alpaca_broker2))
-    if alpaca_broker3: accounts.append(("alpaca3", alpaca_broker3))
+    accounts = [(a["tag"], a["broker"]) for a in ALPACA_ACCOUNTS]
 
     for broker_tag, broker_inst in accounts:
         try:
@@ -1282,8 +1286,8 @@ def _check_max_hold_exits():
             if (broker_tag, symbol) in _auto_closed_symbols:
                 continue
 
-        broker_inst = {"alpaca": alpaca_broker, "alpaca2": alpaca_broker2,
-                       "alpaca3": alpaca_broker3}.get(broker_tag)
+        _rec = ACCOUNTS_BY_TAG.get(broker_tag)
+        broker_inst = _rec["broker"] if _rec else None
         if broker_inst is None:
             continue
 
@@ -1806,9 +1810,8 @@ def _recover_max_hold_positions():
     # ── Fetch open Alpaca positions ───────────────────────────────────────
     open_positions = {}   # (broker_tag, symbol) -> position dict
     failed_brokers = set()
-    for _tag, _inst in [("alpaca", alpaca_broker), ("alpaca2", alpaca_broker2), ("alpaca3", alpaca_broker3)]:
-        if _inst is None:
-            continue
+    for _acct in ALPACA_ACCOUNTS:
+        _tag, _inst = _acct["tag"], _acct["broker"]
         try:
             for _pos in _inst.get_positions():
                 if abs(float(_pos.get("qty") or 0)) > 0:
@@ -2373,12 +2376,9 @@ def _resolve_position_entry(symbol, broker):
         return "", None
     sym_u = symbol.upper()
     try:
-        if broker == "alpaca2":
-            fills = _alpaca2_fills_cache["data"]
-        elif broker == "alpaca3":
-            fills = _alpaca3_fills_cache["data"]
-        elif broker == "alpaca":
-            fills = _alpaca_fills_cache["data"]
+        _rec = ACCOUNTS_BY_TAG.get(broker)
+        if _rec is not None:
+            fills = _rec["fills_cache"]["data"]
         else:
             return "", None  # IB doesn't tag client_order_id with strategy
         for f in sorted(fills, key=lambda x: x.get("time", ""), reverse=True):
@@ -2994,10 +2994,11 @@ def alpaca_close_position(symbol):
     result = broker.close_position(symbol)
     if result.get("success"):
         log.info("Manual close: %s position closed via UI [%s]", symbol, broker_tag)
-        global _alpaca_fills_cache, _alpaca2_fills_cache, _alpaca3_fills_cache
-        if   broker_tag == "alpaca":  _alpaca_fills_cache  = {"data": [], "ts": 0.0}
-        elif broker_tag == "alpaca2": _alpaca2_fills_cache = {"data": [], "ts": 0.0}
-        elif broker_tag == "alpaca3": _alpaca3_fills_cache = {"data": [], "ts": 0.0}
+        # Invalidate that account's fills cache (mutate in place — never rebind).
+        _rec = ACCOUNTS_BY_TAG.get(broker_tag)
+        if _rec is not None:
+            _rec["fills_cache"]["data"] = []
+            _rec["fills_cache"]["ts"]   = 0.0
         return jsonify(result)
     return jsonify(result), 400
 
@@ -5851,6 +5852,21 @@ def _progress_default_nodes(name):
     ]
 
 
+def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares"):
+    """Routing-rule nodes for a crew-wired Crew Paper (acct4) pipeline. Mirrors
+    _progress_default_nodes but targets alpaca-paper-4 and pins the entry source
+    (tv = fan the existing TV alert out to acct4; kairos = server-side engine)."""
+    return [
+        {"type": "strategy",      "value": name},
+        {"type": "quantity",      "amount": qty, "unit": unit},
+        {"type": "instrument",    "value": "STK"},
+        {"type": "broker",        "value": "alpaca-paper-4"},
+        {"type": "entry_source",  "value": ("kairos" if entry_source == "kairos" else "tv")},
+        {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
+        {"type": "exit_params",   "stop_loss": None, "trail_trigger": None, "trail_offset": 0.15, "mode": "percent"},
+    ]
+
+
 @app.route("/api/progress/add_ticker", methods=["POST"])
 def progress_add_ticker():
     """Create routing rules for a ticker (idempotent) and return the alert checklist.
@@ -6322,17 +6338,22 @@ def _composite_score(stats, max_pnl):
 # Refined sizing: per-strategy dollar target by composite-score band.
 # Score is 0..1 from _composite_score; bands are score-percent thresholds.
 # First matching band wins (highest score-floor first).
-# Calibrated to the realized score distribution (~0.46–0.68) so the bands
-# actually span the field — the old 0.80 top floor was never reached, bunching
-# everything into $6k. Sized for ~$27k equity on 4× day-trade margin: worst-case
-# ~4 concurrent band-A (≥0.60) fires = $100k, within the $108k DTBP. Strategies
-# are intraday so no overnight 2× exposure. Reduce floors if concurrency creeps
-# above ~4–5 top-band fires/day or scores drift higher.
+# GENTLE TAPER (2026-06-28): top band anchored at $25k, lower bands fade off
+# slightly (even −$3k steps → ~1.6× top-to-floor). Replaces the old 10× spread
+# ($25k→$2.5k) that concentrated nearly all P&L variance in the ~4 top-scored
+# names, which lose together (correlated top Camarilla setups) — the "top 5 give
+# it all back" days. The score is backward-looking with unproven forward edge, so
+# a slight tilt keeps optionality on it without the blow-up tail of a steep ladder.
+#   Buying power: BP_PAUSE_PCT (default 75%) pauses new entries once BP usage
+#   crosses the threshold, so excess concurrent fires are dropped rather than
+#   margin-called. Widen the steps only if the ≥0.60 band's PROFIT FACTOR proves
+#   materially above the lower bands out of sample; flatten further if the top
+#   band keeps round-tripping.
 _REFINED_SIZE_BANDS = [
-    (60, 25_000),   # score ≥ 0.60 → $25k per trade  (~top 4)
-    (52, 12_000),   # score ≥ 0.52 → $12k
-    (46,  6_000),   # score ≥ 0.46 → $6k
-    ( 0,  2_500),   # else         → $2.5k floor
+    (60, 25_000),   # score ≥ 0.60 → $25k per trade  (top, anchored)
+    (52, 22_000),   # score ≥ 0.52 → $22k
+    (46, 19_000),   # score ≥ 0.46 → $19k
+    ( 0, 16_000),   # else         → $16k floor
 ]
 
 # Consecutive live losing trades that trigger auto-demotion from Refined.
@@ -7122,8 +7143,9 @@ def bulk_remove_broker():
     data          = request.get_json(silent=True) or {}
     tag           = (data.get("tag") or "").strip().lower()
     name_contains = (data.get("name_contains") or "").strip().lower()
-    if tag not in ("alpaca", "alpaca2", "alpaca3"):
-        return jsonify({"error": "tag must be alpaca / alpaca2 / alpaca3"}), 400
+    if tag not in ACCOUNTS_BY_TAG:
+        return jsonify({"error": "tag must be a configured account: "
+                        + " / ".join(ACCOUNTS_BY_TAG)}), 400
     conn = get_db(); cur = conn.cursor(); p = placeholder()
     cur.execute("SELECT id, name, nodes FROM routing_rules ORDER BY id")
     rows = cur.fetchall()
@@ -8990,7 +9012,7 @@ def alpaca_trades():
         return jsonify([])
     # Check if we already have strategy-annotated data in the fills cache
     now = time.time()
-    _cache = {"2": _alpaca2_fills_cache, "3": _alpaca3_fills_cache}.get(account, _alpaca_fills_cache)
+    _cache = _alpaca_caches.get(str(account), _alpaca_caches["1"])
     if now - _cache["ts"] < ALPACA_CACHE_TTL and _cache["data"]:
         return jsonify(_cache["data"])
     try:
@@ -9040,14 +9062,8 @@ def alpaca_trades():
         except Exception as _e:
             log.debug("alpaca_trades strategy resolution error: %s", _e)
         # Write annotated data back into the cache (keeps ts from _get_cached_fills).
-        # Reference the module-level cache directly so we hit whatever dict the
-        # _get_cached_fills_*() call most recently bound.
-        if account == "2":
-            _alpaca2_fills_cache["data"] = fills
-        elif account == "3":
-            _alpaca3_fills_cache["data"] = fills
-        else:
-            _alpaca_fills_cache["data"] = fills
+        # Mutate the registry cache dict in place so every alias sees it.
+        _alpaca_caches.get(str(account), _alpaca_caches["1"])["data"] = fills
         return jsonify(fills)
     except Exception as e:
         log.error("alpaca_trades error: %s", e)
@@ -9371,11 +9387,8 @@ def _compute_strike_counts(date=None):
             date = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
     today = date
     out = defaultdict(int)
-    for acct, broker, fills_fn in (
-        ("alpaca",  alpaca_broker,  _get_cached_fills),
-        ("alpaca2", alpaca_broker2, _get_cached_fills_2),
-        ("alpaca3", alpaca_broker3, _get_cached_fills_3),
-    ):
+    for _a in ALPACA_ACCOUNTS:
+        acct, broker, fills_fn = _a["tag"], _a["broker"], _a["fills_fn"]
         if broker is None:
             continue
         try:
@@ -10634,7 +10647,7 @@ def _parse_engine_accounts(spec):
         tag = tag.strip().lower()
         try:    sh = int(float(sh))
         except (TypeError, ValueError): continue
-        if tag in ("alpaca", "alpaca2", "alpaca3") and sh >= 1:
+        if tag in ACCOUNTS_BY_TAG and sh >= 1:
             out.append((tag, sh))
     return out
 
@@ -10649,12 +10662,15 @@ def _engine_all_accounts():
 
 def _routing_broker_to_tag(value):
     """Map a routing-rule broker node value to the broker_tag the engine uses
-    for max-hold / strikes / fills (alpaca, alpaca2, alpaca3). Returns None for
-    unsupported brokers (IB, Coinbase) — the engine is alpaca-only today."""
+    for max-hold / strikes / fills (alpaca, alpaca2, ...). Registry-driven, so a
+    new account's targets resolve automatically. Returns None for unsupported
+    brokers (IB, Coinbase) — the engine is alpaca-only today."""
     bv = (value or "").lower()
-    if bv in ("alpaca", "alpaca-paper", "alpaca-live"):           return "alpaca"
-    if bv in ("alpaca-paper-2", "alpaca-live-2"):                  return "alpaca2"
-    if bv in ("alpaca-paper-3", "alpaca-live-3"):                  return "alpaca3"
+    if bv in ("alpaca", "alpaca-paper", "alpaca-live"):
+        return "alpaca"
+    for _a in ALPACA_ACCOUNTS:
+        if bv in (_a["target_paper"], _a["target_live"]):
+            return _a["tag"]
     return None
 
 
@@ -11376,9 +11392,7 @@ def _engine_pilot_tick(now_et, today):
         prev_px  = dict(_engine_pilot_state["prev_px"])
         eval_bar = dict(_engine_pilot_state["eval_bar"])
 
-    broker_inst_by_tag = {"alpaca":  alpaca_broker,
-                          "alpaca2": alpaca_broker2,
-                          "alpaca3": alpaca_broker3}
+    broker_inst_by_tag = {a["tag"]: a["broker"] for a in ALPACA_ACCOUNTS}
 
     def _enter(s, cur, level, order_px, reason, targets_override=None):
         """Shared per-target: cooldown + strikes gate → size → market order on
@@ -12981,7 +12995,7 @@ def api_alpaca_analysis():
         to_time      = (request.args.get("to_time")   or "").strip()
 
         _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}|{from_time}|{to_time}"
-        _acache     = {"2": _alpaca2_analysis_cache, "3": _alpaca3_analysis_cache}.get(account, _alpaca_analysis_cache)
+        _acache     = _alpaca_analysis_caches.get(str(account), _alpaca_analysis_caches["1"])
         _cached     = _acache.get(_cache_key)
         if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
             return jsonify(_cached["data"])

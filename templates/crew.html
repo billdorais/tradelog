@@ -241,7 +241,9 @@
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
       <button onclick="downloadResult()" style="background:transparent;border:1px solid #2a4a35;color:#5a9e6a;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit">⬇ Download</button>
       <button onclick="openCrewChat()" style="background:rgba(196,181,253,0.1);border:1px solid #6d5fa8;color:#c4b5fd;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✦ Chat with Advisor</button>
+      <button onclick="wireToRouter()" id="wireBtn" title="Append the latest report's 'Next Month — Crew Paper' picks to the Signal Router, targeting the Crew Paper account (alpaca-paper-4)." style="background:rgba(127,224,152,0.1);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">⚡ Wire to Crew Paper router</button>
     </div>
+    <div id="wireResult" style="margin-top:8px;font-size:0.78rem;color:#888;display:none"></div>
 
     <!-- Chat panel -->
     <div class="crew-chat" id="crewChat" style="display:none">
@@ -690,6 +692,39 @@
       download: `crew_report_${name}.txt`,
     });
     a.click();
+  }
+
+  // ── Wire crew picks → Signal Router (Crew Paper / acct4) ───────────────────
+  async function wireToRouter() {
+    const btn = document.getElementById('wireBtn');
+    const out = document.getElementById('wireResult');
+    if (!confirm('Append the latest report\'s "Next Month — Crew Paper" picks to the '
+               + 'Signal Router, targeting the Crew Paper account (acct 4)?\n\n'
+               + 'Existing Crew Paper rules are kept; only new strategies are added.')) return;
+    btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Wiring…';
+    out.style.display = 'block'; out.style.color = '#888'; out.textContent = 'Wiring crew picks to the router…';
+    try {
+      const r = await fetch('/api/crew/wire_to_router', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) {
+        out.style.color = '#ef5350';
+        out.textContent = '⚠ ' + (d.error || ('HTTP ' + r.status));
+      } else {
+        out.style.color = '#7FE098';
+        const c = (d.created || []).length, s = (d.skipped || []).length;
+        out.innerHTML = `✓ Wired ${c} new rule${c===1?'':'s'} to Crew Paper`
+          + (s ? ` · skipped ${s} already wired` : '')
+          + ` · entries: ${d.entry_source} · qty ${d.qty}`
+          + (d.created && d.created.length ? `<br><span style="color:#666">${d.created.join(', ')}</span>` : '')
+          + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`;
+      }
+    } catch (e) {
+      out.style.color = '#ef5350'; out.textContent = '⚠ ' + e;
+    } finally {
+      btn.disabled = false; btn.textContent = _txt;
+    }
   }
 
   // ── Past reports ──────────────────────────────────────────────────────────
