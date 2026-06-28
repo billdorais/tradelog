@@ -698,9 +698,10 @@
   async function wireToRouter() {
     const btn = document.getElementById('wireBtn');
     const out = document.getElementById('wireResult');
-    if (!confirm('Append the latest report\'s "Next Month — Crew Paper" picks to the '
-               + 'Signal Router, targeting the Crew Paper account (acct 4)?\n\n'
-               + 'Existing Crew Paper rules are kept; only new strategies are added.')) return;
+    if (!confirm('Sync the latest report\'s "Next Month — Crew Paper" picks to the '
+               + 'Crew Paper account (acct 4)?\n\n'
+               + 'New picks are added; existing Crew rules are updated to match the latest '
+               + 'card (size + entry) and each strategy\'s tuned exits.')) return;
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Wiring…';
     out.style.display = 'block'; out.style.color = '#888'; out.textContent = 'Wiring crew picks to the router…';
     try {
@@ -713,12 +714,12 @@
         out.textContent = '⚠ ' + (d.error || ('HTTP ' + r.status));
       } else {
         out.style.color = '#7FE098';
-        const c = (d.created || []).length, s = (d.skipped || []).length;
+        const c = (d.created || []).length, u = (d.updated || []).length;
+        const all = [...(d.created || []), ...(d.updated || [])];
         const sizeTxt = d.size_dollars ? `~$${Math.round(d.size_dollars).toLocaleString()}/trade` : `qty ${d.qty}`;
-        out.innerHTML = `✓ Wired ${c} new rule${c===1?'':'s'} to Crew Paper`
-          + (s ? ` · skipped ${s} already wired` : '')
-          + ` · entries: ${d.entry_source} · ${sizeTxt}`
-          + (d.created && d.created.length ? `<br><span style="color:#666">${d.created.join(', ')}</span>` : '')
+        out.innerHTML = `✓ Crew Paper: ${c} added, ${u} updated`
+          + ` · entries: ${d.entry_source} · ${sizeTxt} · exits cloned from each strategy's pipeline`
+          + (all.length ? `<br><span style="color:#666">${all.join(', ')}</span>` : '')
           + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`;
       }
     } catch (e) {

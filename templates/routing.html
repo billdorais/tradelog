@@ -2032,9 +2032,10 @@
 
   async function wireCrewToRouter() {
     if (!confirm(
-      'Append the latest crew report\'s "Next Month — Crew Paper" picks as routing rules\n' +
-      'targeting the Crew Paper account (acct 4)?\n\n' +
-      'Existing Crew Paper rules are kept — only new strategies are added.'
+      'Sync the latest crew report\'s "Next Month — Crew Paper" picks to the\n' +
+      'Crew Paper account (acct 4)?\n\n' +
+      'New picks are added; existing Crew rules are updated to match the latest\n' +
+      'card (size + entry) and each strategy\'s tuned exits.'
     )) return;
     try {
       const res  = await fetch('/api/crew/wire_to_router', {
@@ -2042,11 +2043,11 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'request failed');
-      const c = (data.created || []).length, s = (data.skipped || []).length;
-      alert(`Wired ${c} new rule(s) to Crew Paper.` +
-            (s ? `\nSkipped ${s} already wired.` : '') +
-            `\nEntries: ${data.entry_source} · qty ${data.qty}` +
-            (data.created && data.created.length ? `\n\n${data.created.join('\n')}` : ''));
+      const c = (data.created || []).length, u = (data.updated || []).length;
+      const sizeTxt = data.size_dollars ? `~$${Math.round(data.size_dollars).toLocaleString()}/trade` : `qty ${data.qty}`;
+      alert(`Crew Paper synced: ${c} added, ${u} updated.\n` +
+            `Entries: ${data.entry_source} · ${sizeTxt}\n` +
+            `Exits cloned from each strategy's own pipeline.`);
       await load();
     } catch (e) { alert('Wire crew picks failed: ' + e.message); }
   }

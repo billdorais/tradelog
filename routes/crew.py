@@ -1214,6 +1214,7 @@ def api_crew_wire_to_router():
     Append-only with dedupe: a pick is skipped if a rule already routes that
     strategy to acct4. Fails loudly if there's no report or no parsable picks."""
     import app as _kairos
+    import copy as _copy
     import json as _json
     data = request.get_json(silent=True) or {}
     try:    qty = max(1, int(data.get("qty", 10)))
@@ -1251,20 +1252,30 @@ def api_crew_wire_to_router():
                         "leads with the decision card and names full strategy slugs "
                         "(e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN)."}), 400
 
-    # 2) Which strategies already route to acct4? (dedupe set)
-    cur.execute("SELECT name, nodes FROM routing_rules")
-    existing_acct4 = set()
+    # 2) Inventory existing rules: source pipelines (to clone each pick's tuned
+    #    exit_params / hours / instrument) and existing Crew rules (to update in
+    #    place on re-run instead of duplicating).
+    cur.execute("SELECT id, name, nodes FROM routing_rules")
+    source_nodes  = {}   # strat -> (priority, nodes) — best non-acct4 pipeline
+    existing_crew = {}   # strat -> rule_id of the acct4 rule
     for r in cur.fetchall():
-        raw = r[1] if _kairos.DATABASE_URL else r["nodes"]
+        rid = r[0] if _kairos.DATABASE_URL else r["id"]
+        raw = r[2] if _kairos.DATABASE_URL else r["nodes"]
         try:    nodes = _json.loads(raw) if isinstance(raw, str) else (raw or [])
         except Exception: nodes = []
-        targets_acct4 = any(n.get("type") == "broker" and
-                            (n.get("value") or "").lower() in ("alpaca-paper-4", "alpaca-live-4")
-                            for n in nodes)
-        if targets_acct4:
-            for n in nodes:
-                if n.get("type") == "strategy" and n.get("value"):
-                    existing_acct4.add(n["value"].strip().upper())
+        brokers   = [(n.get("value") or "").lower() for n in nodes if n.get("type") == "broker"]
+        is_acct4  = any(b in ("alpaca-paper-4", "alpaca-live-4") for b in brokers)
+        strat_vals = [(n.get("value") or "").strip().upper()
+                      for n in nodes if n.get("type") == "strategy" and n.get("value")]
+        if is_acct4:
+            for s in strat_vals:
+                existing_crew[s] = rid
+            continue
+        # Prefer the Refined (acct2) pipeline as the source of truth for exits/hours.
+        prio = 2 if any(b in ("alpaca-paper-2", "alpaca-live-2") for b in brokers) else 1
+        for s in strat_vals:
+            if s not in source_nodes or source_nodes[s][0] < prio:
+                source_nodes[s] = (prio, nodes)
 
     # 2b) Sizing — honor the card's flat per-trade dollar size (e.g. "$1.5k/trade
     # flat" = equal risk). Convert to shares per ticker via a live price fetch so
@@ -1290,37 +1301,61 @@ def api_crew_wire_to_router():
             return max(1, round(size_dollars / prices[tk]))
         return qty
 
-    # 3) Append new rules
+    def _build_nodes(slug, q):
+        """Clone the strategy's top-performer pipeline (tuned exit_params, hours,
+        instrument) and swap in the Crew broker, dollar-sized quantity, and the
+        card's entry source. Falls back to a generic default if no source rule."""
+        src = source_nodes.get(slug)
+        if not src:
+            return _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"], qty=q)
+        out, have_broker, have_entry = [], False, False
+        for n in _copy.deepcopy(src[1]):
+            t = n.get("type")
+            if t == "broker":
+                if have_broker:
+                    continue                      # collapse multiple brokers to one
+                out.append({"type": "broker", "value": "alpaca-paper-4"})
+                have_broker = True
+            elif t == "quantity":
+                out.append({"type": "quantity", "amount": q, "unit": (n.get("unit") or "shares")})
+            elif t == "entry_source":
+                out.append({"type": "entry_source", "value": parsed["entry_source"]})
+                have_entry = True
+            else:
+                out.append(n)                     # strategy, instrument, hours, exit_params, ...
+        if not have_broker:
+            out.append({"type": "broker", "value": "alpaca-paper-4"})
+        if not have_entry:
+            out.append({"type": "entry_source", "value": parsed["entry_source"]})
+        return out
+
+    # 3) Upsert: update an existing Crew rule in place, else insert a new one. This
+    # makes re-clicking re-sync Crew Paper to the latest card + tuned exits.
     p  = _kairos.placeholder()
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    created, skipped = [], []
+    created, updated, cloned = [], [], []
     for pick in picks:
         slug = pick["strategy"]
-        if slug in existing_acct4:
-            skipped.append(slug)
-            continue
-        nodes_json = _json.dumps(
-            _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"],
-                                        qty=_rule_qty(slug)))
-        rule_name  = f"{slug} · Crew"
-        if _kairos.DATABASE_URL:
-            cur.execute(
-                f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
-                f"VALUES ({p},{p},{p},{p},{p})",
-                (rule_name, 1, nodes_json, ts, 0),
-            )
+        nodes_json = _json.dumps(_build_nodes(slug, _rule_qty(slug)))
+        if slug in source_nodes:
+            cloned.append(slug)
+        rid = existing_crew.get(slug)
+        if rid is not None:
+            cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (nodes_json, rid))
+            updated.append(slug)
         else:
             cur.execute(
                 f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
                 f"VALUES ({p},{p},{p},{p},{p})",
-                (rule_name, 1, nodes_json, ts, 0),
+                (f"{slug} · Crew", 1, nodes_json, ts, 0),
             )
-        created.append(slug)
+            created.append(slug)
     conn.commit()
     conn.close()
 
     return jsonify({
-        "created": created, "skipped": skipped,
+        "created": created, "updated": updated,
+        "cloned_from_source": cloned,
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
         "size_dollars": size_dollars, "daytype_gate": parsed["daytype"], "qty": qty,
         "source_report_week": week, "source_report_at": created_at,
