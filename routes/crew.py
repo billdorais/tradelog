@@ -1277,12 +1277,13 @@ def api_crew_wire_to_router():
             if s not in source_nodes or source_nodes[s][0] < prio:
                 source_nodes[s] = (prio, nodes)
 
-    # 2b) Sizing — honor the card's flat per-trade dollar size (e.g. "$1.5k/trade
-    # flat" = equal risk). Convert to shares per ticker via a live price fetch so
-    # every pick risks ~the same dollars. Falls back to a flat share count (qty)
-    # when no dollar size is parsed or a price is unavailable. Request body may
-    # override via size_dollars / qty.
-    size_dollars = parsed.get("size_dollars")
+    # 2b) Sizing — Crew Paper trades at the TOP Refined band so its positions match
+    # the top band in Refined/Kairos (single source of truth: _REFINED_SIZE_BANDS[0]).
+    # Converted to shares per ticker via a live price fetch. The card's parsed size is
+    # kept for reference but no longer caps Crew sizing. Request body overrides via
+    # size_dollars; falls back to a flat share count (qty) if no price is available.
+    try:    size_dollars = float(_kairos._REFINED_SIZE_BANDS[0][1])
+    except Exception: size_dollars = parsed.get("size_dollars")
     if data.get("size_dollars") not in (None, ""):
         try:    size_dollars = max(1.0, float(data["size_dollars"]))
         except (TypeError, ValueError): pass

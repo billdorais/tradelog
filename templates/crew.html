@@ -700,8 +700,8 @@
     const out = document.getElementById('wireResult');
     if (!confirm('Sync the latest report\'s "Next Month — Crew Paper" picks to the '
                + 'Crew Paper account (acct 4)?\n\n'
-               + 'New picks are added; existing Crew rules are updated to match the latest '
-               + 'card (size + entry) and each strategy\'s tuned exits.')) return;
+               + 'New picks are added; existing Crew rules are updated to the card\'s entry, '
+               + 'each strategy\'s tuned exits, and TOP-BAND sizing (matches Refined/Kairos).')) return;
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Wiring…';
     out.style.display = 'block'; out.style.color = '#888'; out.textContent = 'Wiring crew picks to the router…';
     try {

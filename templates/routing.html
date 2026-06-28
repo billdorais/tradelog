@@ -2034,8 +2034,8 @@
     if (!confirm(
       'Sync the latest crew report\'s "Next Month — Crew Paper" picks to the\n' +
       'Crew Paper account (acct 4)?\n\n' +
-      'New picks are added; existing Crew rules are updated to match the latest\n' +
-      'card (size + entry) and each strategy\'s tuned exits.'
+      'New picks are added; existing Crew rules are updated to the card\'s entry,\n' +
+      'each strategy\'s tuned exits, and TOP-BAND sizing (matches Refined/Kairos).'
     )) return;
     try {
       const res  = await fetch('/api/crew/wire_to_router', {
