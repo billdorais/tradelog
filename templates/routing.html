@@ -74,6 +74,13 @@
     .node-broker-alpaca-live-3  { background: #2a1a08; border-color: #F2C07A; color: #F2C07A; }
     .node-broker-alpaca-paper-4 { background: #0c2417; border-color: #7FE098; color: #7FE098; }
     .node-broker-alpaca-live-4  { background: #0c2417; border-color: #7FE098; color: #7FE098; }
+    /* Bulk-actions toolbar — grouped, labeled rows */
+    .bulk-card    { background:#0d0f16; border:1px solid #1e2130; border-radius:10px; padding:12px 14px; margin-bottom:10px; display:flex; flex-direction:column; gap:9px; }
+    .bulk-row     { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .bulk-label   { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.07em; color:#6a7185; font-weight:700; min-width:148px; flex-shrink:0; }
+    .bulk-divider { height:1px; background:#1a1d2e; }
+    .bulk-hint    { font-size:0.68rem; color:#555; }
+    @media (max-width: 900px) { .bulk-label { min-width:100%; margin-bottom:-2px; } }
     .node-broker-coinbase   { background: #101a2a; border-color: #2a5fc8; color: #70a8f5; }
     .node-ticker          { background: #1a2820; border-color: #7FE098; color: #7FE098; }
     .node-options_config  { background: #2a2318; border-color: #c8832a; color: #F2E7AC; min-width: 110px; }
@@ -580,190 +587,217 @@
     </div>
   </div>
 
-  <!-- Bulk actions row — pattern filter scopes trail/trigger buttons to matching rules -->
-  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-    <div style="display:inline-flex;align-items:center;gap:4px;background:#0d0f16;border:1px solid #2a2d3e;border-radius:6px;overflow:hidden"
-         title="Optional: only update rules whose name contains this text (case-insensitive). Leave blank for all rules.">
-      <span style="font-size:0.72rem;color:#555;padding:0 6px;white-space:nowrap">pattern</span>
-      <input id="bulkPatternInput" type="text" placeholder="R4S4 / R3S3 / REVERSAL…"
-             style="width:140px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;
-                    padding:6px 4px;outline:none;font-family:inherit"
-             title="Only update rules whose name contains this text (blank = all rules)"
-             oninput="renderExitParamsTable()">
+  <!-- Bulk actions — grouped into labeled rows for readability -->
+  <div class="bulk-card">
+
+    <!-- Scope: limits the "→ matching" actions below -->
+    <div class="bulk-row">
+      <span class="bulk-label">Scope</span>
+      <div style="display:inline-flex;align-items:center;gap:4px;background:#0d0f16;border:1px solid #2a2d3e;border-radius:6px;overflow:hidden"
+           title="Optional: only update rules whose name contains this text (case-insensitive). Leave blank for all rules.">
+        <span style="font-size:0.72rem;color:#555;padding:0 6px;white-space:nowrap">pattern</span>
+        <input id="bulkPatternInput" type="text" placeholder="R4S4 / R3S3 / REVERSAL…"
+               style="width:140px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;
+                      padding:6px 4px;outline:none;font-family:inherit"
+               title="Only update rules whose name contains this text (blank = all rules)"
+               oninput="renderExitParamsTable()">
+      </div>
+      <span class="bulk-hint">scopes the “→ matching” actions below · blank = every rule</span>
     </div>
-    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c86428;border-radius:6px;overflow:hidden">
-      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">$</span>
-      <input id="bulkStopInput" type="number" min="0.01" step="0.05" value="0.50"
-             style="width:60px;background:transparent;border:none;color:#F2C07A;font-size:0.78rem;
-                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
-             title="Stop loss per share">
-      <button onclick="bulkAddExitParams()"
-              style="background:transparent;border:none;border-left:1px solid #c86428;color:#F2C07A;
-                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Add this stop loss to matching pipelines">
-        stop to all
+
+    <div class="bulk-divider"></div>
+
+    <!-- Stops, trail, max-hold, hours applied to rules matching the pattern -->
+    <div class="bulk-row">
+      <span class="bulk-label">Stops &amp; exits → matching</span>
+      <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c86428;border-radius:6px;overflow:hidden">
+        <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">$</span>
+        <input id="bulkStopInput" type="number" min="0.01" step="0.05" value="0.50"
+               style="width:60px;background:transparent;border:none;color:#F2C07A;font-size:0.78rem;
+                      padding:6px 0;outline:none;font-family:inherit;text-align:center"
+               title="Stop loss per share">
+        <button onclick="bulkAddExitParams()"
+                style="background:transparent;border:none;border-left:1px solid #c86428;color:#F2C07A;
+                       padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+                title="Add this stop loss to matching pipelines">
+          stop
+        </button>
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
+        <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">trail %</span>
+        <input id="bulkPctTrailInput" type="number" min="0.01" step="0.01" value="0.15"
+               style="width:60px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                      padding:6px 0;outline:none;font-family:inherit;text-align:center"
+               title="Trailing-stop offset as a percentage of price (0.15 = 0.15%)">
+        <button onclick="bulkConvertTrailToPercent()"
+                style="background:transparent;border:none;border-left:1px solid #7FE098;color:#7FE098;
+                       padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+                title="Set trail_offset to this percent on matching pipelines.">
+          trail
+        </button>
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c86428;border-radius:6px;overflow:hidden">
+        <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">trigger %</span>
+        <input id="bulkTriggerInput" type="number" min="0.01" step="0.01" value="0.20"
+               style="width:60px;background:transparent;border:none;color:#F2C07A;font-size:0.78rem;
+                      padding:6px 0;outline:none;font-family:inherit;text-align:center"
+               title="Trail trigger: price must move this % in your favour before the trailing stop activates">
+        <button onclick="bulkSetTrailTrigger()"
+                style="background:transparent;border:none;border-left:1px solid #c86428;color:#F2C07A;
+                       padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+                title="Set trail_trigger to this % on matching pipelines.">
+          trigger
+        </button>
+      </div>
+      <button onclick="bulkClearTrailTriggers()"
+              style="background:transparent;border:1px solid #3a3d4e;color:#777;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove trail_trigger from matching pipelines (trail activates immediately on entry)">
+        clear triggers
+      </button>
+      <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #6a7fad;border-radius:6px;overflow:hidden">
+        <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">max hold min</span>
+        <input id="bulkMaxHoldInput" type="number" min="1" step="1" value="10"
+               style="width:50px;background:transparent;border:none;color:#a8c0f0;font-size:0.78rem;
+                      padding:6px 0;outline:none;font-family:inherit;text-align:center"
+               title="Auto-close position after this many minutes">
+        <button onclick="bulkSetMaxHold()"
+                style="background:transparent;border:none;border-left:1px solid #6a7fad;color:#a8c0f0;
+                       padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+                title="Set max hold time on matching pipelines">
+          set
+        </button>
+      </div>
+      <button onclick="bulkClearMaxHold()"
+              style="background:transparent;border:1px solid #3a3d4e;color:#777;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove max hold limit from matching pipelines">
+        clear max hold
+      </button>
+      <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
+        <input id="bulkHoursStart" type="time" value="09:30"
+               style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                      padding:6px 4px;outline:none;font-family:inherit;text-align:center"
+               title="Session start time">
+        <span style="font-size:0.78rem;color:#555">–</span>
+        <input id="bulkHoursEnd" type="time" value="15:55"
+               style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                      padding:6px 4px;outline:none;font-family:inherit;text-align:center"
+               title="Session end time">
+        <select id="bulkHoursTz"
+                style="background:transparent;border:none;border-left:1px solid #2a4a35;color:#7FE098;
+                       font-size:0.78rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
+          <option value="America/New_York">ET</option>
+          <option value="America/Chicago">CT</option>
+          <option value="America/Denver">MT</option>
+          <option value="America/Los_Angeles">PT</option>
+          <option value="UTC">UTC</option>
+        </select>
+        <button onclick="bulkSetHours()"
+                style="background:transparent;border:none;border-left:1px solid #7FE098;color:#7FE098;
+                       padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+                title="Set trading hours on all matching pipelines (adds node if missing)">
+          hours
+        </button>
+      </div>
+    </div>
+
+    <div class="bulk-divider"></div>
+
+    <!-- Per-band setters: choose a band, then apply -->
+    <div class="bulk-row">
+      <span class="bulk-label">Per band</span>
+      <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #88BF8B;border-radius:6px;overflow:hidden">
+        <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">TP %</span>
+        <input id="bulkTpInput" type="number" min="0.05" step="0.05" value="0.50"
+               style="width:54px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
+                      padding:6px 0;outline:none;font-family:inherit;text-align:center"
+               title="Per-band take-profit: close once unrealized gain reaches this % (price move past entry)">
+        <select id="bulkTpBand"
+                style="background:#0f1117;border:none;border-left:1px solid #88BF8B;color:#7FE098;font-size:0.74rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
+          <option value="breakout_r3s3">BREAKOUT R3S3</option>
+          <option value="breakout_r4s4">BREAKOUT R4S4</option>
+          <option value="reversal_r3s3">REVERSAL R3S3</option>
+          <option value="reversal_r4s4">REVERSAL R4S4</option>
+          <option value="breakout">All breakouts</option>
+          <option value="reversal">All reversals</option>
+          <option value="">All strategies</option>
+        </select>
+        <button onclick="bulkSetTakeProfit()"
+                style="background:transparent;border:none;border-left:1px solid #88BF8B;color:#7FE098;
+                       padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+                title="Set take_profit_pct on every pipeline in the selected band">
+          TP → band
+        </button>
+      </div>
+      <button onclick="bulkClearTakeProfit()"
+              style="background:transparent;border:1px solid #3a3d4e;color:#777;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove the per-band take-profit from the selected band (revert to the global take-profit)">
+        clear TP
+      </button>
+      <div style="display:inline-flex;align-items:center;gap:3px;border:1px solid #6d5fa8;border-radius:6px;overflow:hidden"
+           title="Dynamic trail: keep the base trail from entry, then TIGHTEN it once peak gain clears the threshold (lock & let it run)">
+        <span style="font-size:0.74rem;color:#888;padding:0 6px;white-space:nowrap">tighten to</span>
+        <input id="bulkTierTrail" type="number" min="0.05" step="0.05" value="0.15"
+               style="width:48px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:6px 0;outline:none;font-family:inherit;text-align:center">
+        <span style="font-size:0.74rem;color:#888;padding:0 4px">% at</span>
+        <input id="bulkTierGain" type="number" min="0.05" step="0.05" value="0.50"
+               style="width:48px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:6px 0;outline:none;font-family:inherit;text-align:center">
+        <span style="font-size:0.74rem;color:#888;padding:0 4px">%</span>
+        <select id="bulkTierBand"
+                style="background:#0f1117;border:none;border-left:1px solid #6d5fa8;color:#c4b5fd;font-size:0.72rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
+          <option value="breakout_r3s3">BREAKOUT R3S3</option>
+          <option value="breakout_r4s4">BREAKOUT R4S4</option>
+          <option value="reversal_r3s3">REVERSAL R3S3</option>
+          <option value="reversal_r4s4">REVERSAL R4S4</option>
+          <option value="breakout">All breakouts</option>
+          <option value="reversal">All reversals</option>
+          <option value="">All strategies</option>
+        </select>
+        <button onclick="bulkSetTrailTier()"
+                style="background:transparent;border:none;border-left:1px solid #6d5fa8;color:#c4b5fd;padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap">
+          tighten → band
+        </button>
+      </div>
+      <button onclick="bulkClearTrailTier()"
+              style="background:transparent;border:1px solid #3a3d4e;color:#777;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove the dynamic trail tiers from the selected band (revert to a single flat trail)">
+        clear tighten
+      </button>
+      <button onclick="bulkSetRetestBars()"
+              style="background:transparent;border:1px solid #F2C07A;color:#F2C07A;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Set the reversal retest window (in 5-min bars) on ALL reversal pipelines — engine enters the 2nd touch after the reject">
+        ↻ retest → reversals
+      </button>
+      <button onclick="bulkClearRetestBars()"
+              style="background:transparent;border:1px solid #3a3d4e;color:#777;border-radius:6px;
+                     padding:6px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove the retest window from all reversal pipelines (revert to entering on the reject)">
+        clear retest
       </button>
     </div>
-    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
-      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">%</span>
-      <input id="bulkPctTrailInput" type="number" min="0.01" step="0.01" value="0.15"
-             style="width:60px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
-                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
-             title="Trailing-stop offset as a percentage of price (0.15 = 0.15%)">
-      <button onclick="bulkConvertTrailToPercent()"
-              style="background:transparent;border:none;border-left:1px solid #7FE098;color:#7FE098;
-                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Set trail_offset to this percent on matching pipelines.">
-        trail % to all
+
+    <div class="bulk-divider"></div>
+
+    <!-- Destructive / structural — separated so they aren't clicked by accident -->
+    <div class="bulk-row">
+      <span class="bulk-label">Reset</span>
+      <button onclick="bulkRemoveExitParams()"
+              style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;
+                     padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove Exit Params node from every pipeline">
+        remove exit nodes
+      </button>
+      <button onclick="bulkRemovePaperAll()"
+              style="background:transparent;border:1px solid #c0392b;color:#e74c3c;border-radius:6px;
+                     padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
+              title="Remove the Paper All (acct1) broker from every rule so TV stops routing there — use when the engine owns Paper All via ENGINE_PILOT_EXTRA">
+        ✕ Paper All off TV
       </button>
     </div>
-    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #c86428;border-radius:6px;overflow:hidden">
-      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">%</span>
-      <input id="bulkTriggerInput" type="number" min="0.01" step="0.01" value="0.20"
-             style="width:60px;background:transparent;border:none;color:#F2C07A;font-size:0.78rem;
-                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
-             title="Trail trigger: price must move this % in your favour before the trailing stop activates">
-      <button onclick="bulkSetTrailTrigger()"
-              style="background:transparent;border:none;border-left:1px solid #c86428;color:#F2C07A;
-                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Set trail_trigger to this % on matching pipelines.">
-        trigger % to all
-      </button>
-    </div>
-    <button onclick="bulkClearTrailTriggers()"
-            style="background:transparent;border:1px solid #888;color:#888;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove trail_trigger from matching pipelines (trail activates immediately on entry)">
-      clear triggers
-    </button>
-    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #6a7fad;border-radius:6px;overflow:hidden">
-      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">min</span>
-      <input id="bulkMaxHoldInput" type="number" min="1" step="1" value="10"
-             style="width:50px;background:transparent;border:none;color:#a8c0f0;font-size:0.78rem;
-                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
-             title="Auto-close position after this many minutes">
-      <button onclick="bulkSetMaxHold()"
-              style="background:transparent;border:none;border-left:1px solid #6a7fad;color:#a8c0f0;
-                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Set max hold time on matching pipelines">
-        max hold to all
-      </button>
-    </div>
-    <button onclick="bulkClearMaxHold()"
-            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove max hold limit from matching pipelines">
-      clear max hold
-    </button>
-    <button onclick="bulkSetRetestBars()"
-            style="background:transparent;border:1px solid #F2C07A;color:#F2C07A;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Set the reversal retest window (in 5-min bars) on ALL reversal pipelines — engine enters the 2nd touch after the reject">
-      ↻ retest → reversals
-    </button>
-    <button onclick="bulkClearRetestBars()"
-            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove the retest window from all reversal pipelines (revert to entering on the reject)">
-      clear retest
-    </button>
-    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #88BF8B;border-radius:6px;overflow:hidden">
-      <span style="font-size:0.78rem;color:#888;padding:0 8px;white-space:nowrap">TP %</span>
-      <input id="bulkTpInput" type="number" min="0.05" step="0.05" value="0.50"
-             style="width:54px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
-                    padding:6px 0;outline:none;font-family:inherit;text-align:center"
-             title="Per-band take-profit: close once unrealized gain reaches this % (price move past entry)">
-      <select id="bulkTpBand"
-              style="background:#0f1117;border:none;border-left:1px solid #88BF8B;color:#7FE098;font-size:0.74rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
-        <option value="breakout_r3s3">BREAKOUT R3S3</option>
-        <option value="breakout_r4s4">BREAKOUT R4S4</option>
-        <option value="reversal_r3s3">REVERSAL R3S3</option>
-        <option value="reversal_r4s4">REVERSAL R4S4</option>
-        <option value="breakout">All breakouts</option>
-        <option value="reversal">All reversals</option>
-        <option value="">All strategies</option>
-      </select>
-      <button onclick="bulkSetTakeProfit()"
-              style="background:transparent;border:none;border-left:1px solid #88BF8B;color:#7FE098;
-                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Set take_profit_pct on every pipeline in the selected band">
-        TP → band
-      </button>
-    </div>
-    <button onclick="bulkClearTakeProfit()"
-            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove the per-band take-profit from the selected band (revert to the global take-profit)">
-      clear TP
-    </button>
-    <div style="display:inline-flex;align-items:center;gap:3px;border:1px solid #6d5fa8;border-radius:6px;overflow:hidden"
-         title="Dynamic trail: keep the base trail from entry, then TIGHTEN it once peak gain clears the threshold (lock & let it run)">
-      <span style="font-size:0.74rem;color:#888;padding:0 6px;white-space:nowrap">tighten to</span>
-      <input id="bulkTierTrail" type="number" min="0.05" step="0.05" value="0.15"
-             style="width:48px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:6px 0;outline:none;font-family:inherit;text-align:center">
-      <span style="font-size:0.74rem;color:#888;padding:0 4px">% at</span>
-      <input id="bulkTierGain" type="number" min="0.05" step="0.05" value="0.50"
-             style="width:48px;background:transparent;border:none;color:#c4b5fd;font-size:0.78rem;padding:6px 0;outline:none;font-family:inherit;text-align:center">
-      <span style="font-size:0.74rem;color:#888;padding:0 4px">%</span>
-      <select id="bulkTierBand"
-              style="background:#0f1117;border:none;border-left:1px solid #6d5fa8;color:#c4b5fd;font-size:0.72rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
-        <option value="breakout_r3s3">BREAKOUT R3S3</option>
-        <option value="breakout_r4s4">BREAKOUT R4S4</option>
-        <option value="reversal_r3s3">REVERSAL R3S3</option>
-        <option value="reversal_r4s4">REVERSAL R4S4</option>
-        <option value="breakout">All breakouts</option>
-        <option value="reversal">All reversals</option>
-        <option value="">All strategies</option>
-      </select>
-      <button onclick="bulkSetTrailTier()"
-              style="background:transparent;border:none;border-left:1px solid #6d5fa8;color:#c4b5fd;padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap">
-        tighten → band
-      </button>
-    </div>
-    <button onclick="bulkClearTrailTier()"
-            style="background:transparent;border:1px solid #555;color:#666;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove the dynamic trail tiers from the selected band (revert to a single flat trail)">
-      clear tighten
-    </button>
-    <button onclick="bulkRemovePaperAll()"
-            style="background:transparent;border:1px solid #c0392b;color:#e74c3c;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove the Paper All (acct1) broker from every rule so TV stops routing there — use when the engine owns Paper All via ENGINE_PILOT_EXTRA">
-      ✕ Paper All off TV
-    </button>
-    <div style="display:inline-flex;align-items:center;gap:4px;border:1px solid #7FE098;border-radius:6px;overflow:hidden">
-      <input id="bulkHoursStart" type="time" value="09:30"
-             style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
-                    padding:6px 4px;outline:none;font-family:inherit;text-align:center"
-             title="Session start time">
-      <span style="font-size:0.78rem;color:#555">–</span>
-      <input id="bulkHoursEnd" type="time" value="15:55"
-             style="width:76px;background:transparent;border:none;color:#7FE098;font-size:0.78rem;
-                    padding:6px 4px;outline:none;font-family:inherit;text-align:center"
-             title="Session end time">
-      <select id="bulkHoursTz"
-              style="background:transparent;border:none;border-left:1px solid #2a4a35;color:#7FE098;
-                     font-size:0.78rem;padding:6px 4px;outline:none;font-family:inherit;cursor:pointer">
-        <option value="America/New_York">ET</option>
-        <option value="America/Chicago">CT</option>
-        <option value="America/Denver">MT</option>
-        <option value="America/Los_Angeles">PT</option>
-        <option value="UTC">UTC</option>
-      </select>
-      <button onclick="bulkSetHours()"
-              style="background:transparent;border:none;border-left:1px solid #7FE098;color:#7FE098;
-                     padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Set trading hours on all matching pipelines (adds node if missing)">
-        hours to all
-      </button>
-    </div>
-    <button onclick="bulkRemoveExitParams()"
-            style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;
-                   padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-            title="Remove Exit Params node from every pipeline">
-      remove exit nodes
-    </button>
   </div>
 
   <!-- Per-strategy exit params chips -->
