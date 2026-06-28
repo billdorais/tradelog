@@ -385,6 +385,10 @@
              oninput="filterStratTable()"
              style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
                     padding:5px 10px;font-size:0.78rem;outline:none;width:240px">
+      <button id="crewOnlyBtn" onclick="toggleCrewOnly()"
+              title="Show only the strategies wired to Crew Paper (alpaca-paper-4)"
+              style="background:transparent;border:1px solid #2a4a35;color:#7FE098;border-radius:6px;
+                     padding:5px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">Crew</button>
       <span id="stratFilterCount" style="font-size:0.72rem;color:#666"></span>
       <div style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">
         <span style="font-size:0.72rem;color:#666">click column headers to sort</span>
@@ -877,23 +881,32 @@
   // Populated each time load() runs so renderStratTable can star "live" strategies.
   // Map value: 'refined' if rule routes to alpaca-paper-2, otherwise 'paper'.
   let _liveStrategies = new Map();
+  let _crewStrategies = new Set();   // upper-case strategies wired to Crew Paper (alpaca-paper-4/-live-4)
+  let _crewOnly       = false;       // when true, the strategy leaderboard shows only crew picks
 
   async function _refreshLiveStrategies() {
     try {
       const res   = await fetch('/api/routing/rules');
       const rules = await res.json();
       const map   = new Map();
+      const crew  = new Set();
       for (const r of rules || []) {
         if (!r.enabled) continue;
         const nodes = r.nodes || [];
         const stratNode = nodes.find(n => n.type === 'strategy');
         if (!stratNode || !stratNode.value) continue;
+        const su = String(stratNode.value).toUpperCase();
         const isRefined = nodes.some(n =>
           n.type === 'broker' && (n.value === 'alpaca-paper-2' || n.value === 'alpaca-live-2')
         );
-        map.set(String(stratNode.value).toUpperCase(), isRefined ? 'refined' : 'paper');
+        map.set(su, isRefined ? 'refined' : 'paper');
+        if (nodes.some(n => n.type === 'broker' &&
+            (n.value === 'alpaca-paper-4' || n.value === 'alpaca-live-4'))) {
+          crew.add(su);
+        }
       }
       _liveStrategies = map;
+      _crewStrategies = crew;
     } catch(e) { console.warn('refreshLiveStrategies failed:', e); }
   }
 
@@ -2161,6 +2174,20 @@
   let _lastTickerMap = {};
 
   function filterStratTable()  { renderStratTable(_lastStratMap); }
+  function toggleCrewOnly() {
+    _crewOnly = !_crewOnly;
+    if (_crewOnly && _crewStrategies.size === 0) {
+      alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
+      _crewOnly = false;
+      return;
+    }
+    const btn = document.getElementById('crewOnlyBtn');
+    if (btn) {
+      btn.style.background = _crewOnly ? 'rgba(127,224,152,0.15)' : 'transparent';
+      btn.style.borderColor = _crewOnly ? '#7FE098' : '#2a4a35';
+    }
+    renderStratTable(_lastStratMap);
+  }
   function filterTickerTable() { renderTickerTable(_lastTickerMap); }
 
   // Composite ranking score — must stay in sync with _composite_score in app.py.
@@ -2400,11 +2427,13 @@
                        && !_excludedTickers.has(_strategyTicker(name)))
       .sort((a, b) => _refinedScore(b[1], maxPnl) - _refinedScore(a[1], maxPnl));
     const q    = (document.getElementById('stratFilter')?.value || '').trim().toLowerCase();
-    const rows = q ? all.filter(([name]) => name.toLowerCase().includes(q)) : all;
+    let rows   = q ? all.filter(([name]) => name.toLowerCase().includes(q)) : all;
+    if (_crewOnly) rows = rows.filter(([name]) => _crewStrategies.has(name.toUpperCase()));
     const countEl = document.getElementById('stratFilterCount');
-    if (countEl) countEl.textContent = q
-      ? `${rows.length} of ${all.length} match`
-      : (all.length ? `${all.length} strategies` : '');
+    if (countEl) countEl.textContent = _crewOnly
+      ? `${rows.length} crew${q ? ` matching "${esc(q)}"` : ''}`
+      : (q ? `${rows.length} of ${all.length} match`
+           : (all.length ? `${all.length} strategies` : ''));
     if (!all.length) { body.innerHTML = '<tr><td colspan="12" class="empty">No closed trades yet.</td></tr>'; return; }
     if (!rows.length) { body.innerHTML = `<tr><td colspan="12" class="empty">No strategies match "${esc(q)}".</td></tr>`; return; }
     body.innerHTML = rows.map(([name, s]) => {
