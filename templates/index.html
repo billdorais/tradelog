@@ -99,7 +99,8 @@
     .strat-picker-panel {
       display: none; position: absolute; right: 0; top: calc(100% + 4px);
       background: #26201C; border: 1px solid #2a2d3e; border-radius: 8px; padding: 8px;
-      min-width: 240px; z-index: 200; max-height: 360px; overflow-y: auto;
+      min-width: 240px; max-width: min(440px, calc(100vw - 16px));
+      z-index: 200; max-height: 360px; overflow-y: auto; overflow-x: hidden;
       box-shadow: 0 4px 24px rgba(0,0,0,0.6);
     }
     .strat-picker-row {
@@ -695,10 +696,11 @@
             <span style="color:#666;font-size:0.7rem">▼</span>
           </button>
           <div class="strat-picker-panel" id="stratPickerPanel">
-            <div style="display:flex;gap:14px;padding:2px 8px 8px;border-bottom:1px solid #1e2130;margin-bottom:4px">
+            <div style="display:flex;flex-wrap:wrap;gap:10px 14px;padding:2px 8px 8px;border-bottom:1px solid #1e2130;margin-bottom:4px">
               <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">All</span>
               <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">None</span>
               <span onclick="selectIndices(event)" title="Select index/ETF strategies (SPY, QQQ, IWM, SMH)" style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Indices</span>
+              <span onclick="selectCrew(event)" title="Select the strategies wired to Crew Paper (alpaca-paper-4)" style="font-size:0.75rem;color:#7FE098;cursor:pointer;font-weight:600">Crew</span>
               <span onclick="selectTopN(3,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 3</span>
               <span onclick="selectTopN(5,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 5</span>
               <span onclick="selectTopN(10,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 10</span>
@@ -1329,6 +1331,27 @@
         return;
       }
       selectedStrategies = new Set(refined);
+      _tabSelections[activeTab] = selectedStrategies;
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    // Select exactly the strategies wired to Crew Paper (rules carrying the
+    // alpaca-paper-4/-live-4 broker), so you can isolate the crew book's picks.
+    async function selectCrew(e) {
+      if (e) e.stopPropagation();
+      if (!_crewStrategies || _crewStrategies.size === 0) {
+        alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
+        return;
+      }
+      const crew = _allStrategyNames.filter(s => _crewStrategies.has(s.toUpperCase()));
+      if (!crew.length) {
+        alert('None of the Crew Paper strategies have traded in this view yet.');
+        return;
+      }
+      selectedStrategies = new Set(crew);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
@@ -3463,6 +3486,7 @@
     let _refinedTickers    = new Set();   // ticker has any refined strategy
     let _routedTickers     = new Set();   // ticker has any routing rule
     let _refinedStrategies = new Set();   // upper-case strategy names with alpaca-paper-2/-live-2 broker
+    let _crewStrategies    = new Set();   // upper-case strategy names wired to Crew Paper (alpaca-paper-4/-live-4)
     let _refinedRank       = {};          // upper-case strategy name → Refined leaderboard rank (1-based)
 
     // Leaderboard animal badge for an open position's strategy, by Refined rank.
@@ -3598,6 +3622,7 @@
           const refinedT = new Set();
           const routedS  = new Set();
           const refinedS = new Set();
+          const crewS    = new Set();
           for (const r of rules) {
             if (!r.enabled) continue;
             const stratNode = (r.nodes || []).find(n => n.type === 'strategy');
@@ -3614,11 +3639,16 @@
               refinedT.add(ticker);
               refinedS.add(stratUpper);
             }
+            const hasCrewBroker = (r.nodes || []).some(n =>
+              n.type === 'broker' && (n.value === 'alpaca-paper-4' || n.value === 'alpaca-live-4')
+            );
+            if (hasCrewBroker) crewS.add(stratUpper);
           }
           _routedTickers     = routedT;
           _refinedTickers    = refinedT;
           _routedStrategies  = routedS;
           _refinedStrategies = refinedS;
+          _crewStrategies    = crewS;
         }
         if (d.error) return;
         document.getElementById('accountSection').style.display = '';
