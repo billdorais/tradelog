@@ -217,6 +217,7 @@
         title="Append the latest crew report's 'Next Month — Crew Paper' picks as routing rules targeting the Crew Paper account (alpaca-paper-4). Existing Crew Paper rules are kept; only new strategies are added.">
         ⚡ Wire Crew Picks → Crew Paper
       </button>
+      <span id="crewStatus" style="font-size:0.78rem;color:#666;align-self:center"></span>
       <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
     </div>
   </div>
@@ -1629,6 +1630,7 @@
     const res = await fetch('/api/routing/rules');
     rules = await res.json();
     renderAll();
+    renderCrewStatus();
     renderExitParamsTable();
     await loadRisk();
     setInterval(loadRisk, 5000);  // refresh P&L + status every 5s
@@ -2016,6 +2018,16 @@
       alert(`Updated ${data.updated.length} pipeline(s).\nSkipped ${data.skipped.length} already set to Kairos.\nIneligible (non-Cam strategies): ${data.ineligible.length}.`);
       await load();
     } catch (e) { alert('Bulk apply failed: ' + e.message); }
+  }
+
+  function renderCrewStatus() {
+    const el = document.getElementById('crewStatus');
+    if (!el) return;
+    const n = (rules || []).filter(r =>
+      (r.nodes || []).some(nd => nd.type === 'broker' &&
+        ['alpaca-paper-4', 'alpaca-live-4'].includes((nd.value || '').toLowerCase()))
+    ).length;
+    el.textContent = n ? `Crew Paper: ${n} rule${n === 1 ? '' : 's'} wired` : 'Crew Paper: none wired yet';
   }
 
   async function wireCrewToRouter() {
