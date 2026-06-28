@@ -1148,11 +1148,11 @@ _STRAT_SLUG_RE = re.compile(
 
 def _parse_next_month_card(report):
     """Extract the wire-able picks from a crew report's "Next Month — Crew Paper"
-    decision card. Returns {picks:[{strategy, side}], entry_source, sizing, daytype}.
-    Strategy names are pulled ONLY from the 'Top 5 to run' row so the Detail
-    section's pause/demote mentions never get wired by mistake."""
+    decision card. Returns {picks:[{strategy, side}], entry_source, sizing,
+    size_dollars, daytype}. Strategy names are pulled ONLY from the 'Top 5 to run'
+    row so the Detail section's pause/demote mentions never get wired by mistake."""
     picks, seen = [], set()
-    entry_source, sizing, daytype = "tv", "equal", None
+    entry_source, sizing, size_dollars, daytype = "tv", "equal", None, None
     for line in (report or "").splitlines():
         low = line.lower()
         if "top 5 to run" in low or ("top 5" in low and "_cam_" in low):
@@ -1166,15 +1166,33 @@ def _parse_next_month_card(report):
                 side = ("short" if "SHORT" in tail else
                         "long"  if "LONG"  in tail else "both")
                 picks.append({"strategy": slug, "side": side})
-        if "entries" in low and ("kairos" in low or "engine" in low):
-            entry_source = "kairos"
-        if "sizing" in low and "scaled" in low:
-            sizing = "scaled"
+        if "entries" in low:
+            # First mention wins: whichever of TV / Kairos(engine) the cell names
+            # FIRST is the recommendation. Prevents flipping to engine just because
+            # the justification text mentions the word "engine" (e.g. "TV as primary
+            # — the engine is net worse").
+            i_tv   = low.find("tv")
+            _cands = [p for p in (low.find("kairos"), low.find("engine")) if p >= 0]
+            i_eng  = min(_cands) if _cands else -1
+            entry_source = "kairos" if (i_eng >= 0 and (i_tv < 0 or i_eng < i_tv)) else "tv"
+        if "sizing" in low:
+            if "scaled" in low:
+                sizing = "scaled"
+            # First "$N[k]" in the row → the flat per-trade dollar size (e.g. $1.5k).
+            m = re.search(r"\$\s*([\d][\d,.]*)\s*([kK])?", line)
+            if m:
+                try:
+                    val = float(m.group(1).replace(",", ""))
+                    if m.group(2):
+                        val *= 1000
+                    size_dollars = val
+                except ValueError:
+                    pass
         if "day-type gate" in low or "day type gate" in low:
             if re.search(r"\byes\b", low):  daytype = True
             elif re.search(r"\bno\b", low): daytype = False
-    return {"picks": picks, "entry_source": entry_source,
-            "sizing": sizing, "daytype": daytype}
+    return {"picks": picks, "entry_source": entry_source, "sizing": sizing,
+            "size_dollars": size_dollars, "daytype": daytype}
 
 
 @crew_bp.route("/api/crew/wire_to_router", methods=["POST"])
@@ -1237,6 +1255,30 @@ def api_crew_wire_to_router():
                 if n.get("type") == "strategy" and n.get("value"):
                     existing_acct4.add(n["value"].strip().upper())
 
+    # 2b) Sizing — honor the card's flat per-trade dollar size (e.g. "$1.5k/trade
+    # flat" = equal risk). Convert to shares per ticker via a live price fetch so
+    # every pick risks ~the same dollars. Falls back to a flat share count (qty)
+    # when no dollar size is parsed or a price is unavailable. Request body may
+    # override via size_dollars / qty.
+    size_dollars = parsed.get("size_dollars")
+    if data.get("size_dollars") not in (None, ""):
+        try:    size_dollars = max(1.0, float(data["size_dollars"]))
+        except (TypeError, ValueError): pass
+    prices = {}
+    if size_dollars:
+        try:
+            _tks = [pk["strategy"].split("_", 1)[0].upper() for pk in picks]
+            prices = _kairos._fetch_alpaca_last_prices(_tks) or {}
+        except Exception as _pe:
+            _kairos.log.debug("crew wire price fetch failed: %s", _pe)
+            prices = {}
+
+    def _rule_qty(slug):
+        tk = slug.split("_", 1)[0].upper()
+        if size_dollars and prices.get(tk):
+            return max(1, round(size_dollars / prices[tk]))
+        return qty
+
     # 3) Append new rules
     p  = _kairos.placeholder()
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -1247,7 +1289,8 @@ def api_crew_wire_to_router():
             skipped.append(slug)
             continue
         nodes_json = _json.dumps(
-            _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"], qty=qty))
+            _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"],
+                                        qty=_rule_qty(slug)))
         rule_name  = f"{slug} · Crew"
         if _kairos.DATABASE_URL:
             cur.execute(
@@ -1268,7 +1311,7 @@ def api_crew_wire_to_router():
     return jsonify({
         "created": created, "skipped": skipped,
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
-        "daytype_gate": parsed["daytype"], "qty": qty,
+        "size_dollars": size_dollars, "daytype_gate": parsed["daytype"], "qty": qty,
         "source_report_week": week, "source_report_at": created_at,
         "sides": {pk["strategy"]: pk["side"] for pk in picks},
     })

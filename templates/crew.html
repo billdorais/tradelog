@@ -714,9 +714,10 @@
       } else {
         out.style.color = '#7FE098';
         const c = (d.created || []).length, s = (d.skipped || []).length;
+        const sizeTxt = d.size_dollars ? `~$${Math.round(d.size_dollars).toLocaleString()}/trade` : `qty ${d.qty}`;
         out.innerHTML = `✓ Wired ${c} new rule${c===1?'':'s'} to Crew Paper`
           + (s ? ` · skipped ${s} already wired` : '')
-          + ` · entries: ${d.entry_source} · qty ${d.qty}`
+          + ` · entries: ${d.entry_source} · ${sizeTxt}`
           + (d.created && d.created.length ? `<br><span style="color:#666">${d.created.join(', ')}</span>` : '')
           + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`;
       }
