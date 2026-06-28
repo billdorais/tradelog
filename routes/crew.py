@@ -1153,33 +1153,44 @@ def _parse_next_month_card(report):
     row so the Detail section's pause/demote mentions never get wired by mistake."""
     picks, seen = [], set()
     entry_source, sizing, size_dollars, daytype = "tv", "equal", None, None
-    for line in (report or "").splitlines():
-        low = line.lower()
-        if "top 5 to run" in low or ("top 5" in low and "_cam_" in low):
-            for m in _STRAT_SLUG_RE.findall(line):
+    for raw in (report or "").splitlines():
+        line = raw.strip()
+        # Only parse the decision-card TABLE ROWS (| Label | Recommendation |).
+        # Detail-section prose mentions "sizing", "$5k", "engine entries" etc. and
+        # would otherwise clobber the card's real values (last write wins).
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        label = cells[0].replace("*", "").strip().lower()
+        value = cells[1]
+        low_v = value.lower()
+        if label.startswith("top 5"):
+            for m in _STRAT_SLUG_RE.findall(value):
                 slug = m.upper()
                 if slug in seen:
                     continue
                 seen.add(slug)
                 # Best-effort side tag from the text just after the slug.
-                tail = line.upper().split(slug, 1)[1][:24]
+                tail = value.upper().split(slug, 1)[1][:24]
                 side = ("short" if "SHORT" in tail else
                         "long"  if "LONG"  in tail else "both")
                 picks.append({"strategy": slug, "side": side})
-        if "entries" in low:
+        elif label == "entries":
             # First mention wins: whichever of TV / Kairos(engine) the cell names
             # FIRST is the recommendation. Prevents flipping to engine just because
-            # the justification text mentions the word "engine" (e.g. "TV as primary
-            # — the engine is net worse").
-            i_tv   = low.find("tv")
-            _cands = [p for p in (low.find("kairos"), low.find("engine")) if p >= 0]
+            # the justification mentions the word "engine" (e.g. "TV as primary —
+            # the engine is net worse").
+            i_tv   = low_v.find("tv")
+            _cands = [p for p in (low_v.find("kairos"), low_v.find("engine")) if p >= 0]
             i_eng  = min(_cands) if _cands else -1
             entry_source = "kairos" if (i_eng >= 0 and (i_tv < 0 or i_eng < i_tv)) else "tv"
-        if "sizing" in low:
-            if "scaled" in low:
+        elif label == "sizing":
+            if "scaled" in low_v:
                 sizing = "scaled"
-            # First "$N[k]" in the row → the flat per-trade dollar size (e.g. $1.5k).
-            m = re.search(r"\$\s*([\d][\d,.]*)\s*([kK])?", line)
+            # First "$N[k]" in the cell → the flat per-trade dollar size (e.g. $1.5k).
+            m = re.search(r"\$\s*([\d][\d,.]*)\s*([kK])?", value)
             if m:
                 try:
                     val = float(m.group(1).replace(",", ""))
@@ -1188,9 +1199,9 @@ def _parse_next_month_card(report):
                     size_dollars = val
                 except ValueError:
                     pass
-        if "day-type gate" in low or "day type gate" in low:
-            if re.search(r"\byes\b", low):  daytype = True
-            elif re.search(r"\bno\b", low): daytype = False
+        elif label.startswith("day-type") or label.startswith("day type"):
+            if re.search(r"\byes\b", low_v):  daytype = True
+            elif re.search(r"\bno\b", low_v): daytype = False
     return {"picks": picks, "entry_source": entry_source, "sizing": sizing,
             "size_dollars": size_dollars, "daytype": daytype}
 
