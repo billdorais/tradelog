@@ -13341,6 +13341,7 @@ def api_alpaca_analysis():
                     "pnl":          c["pnl"],
                     "ticker":       c["ticker"],
                     "strategy":     c["strategy"],
+                    "side":         (c.get("side") or "").lower(),
                     "both_matched": True,
                 })
 
@@ -13355,6 +13356,7 @@ def api_alpaca_analysis():
                     "pnl":           c["pnl"],
                     "ticker":        c["ticker"],
                     "strategy":      c.get("strategy", "Unknown"),
+                    "side":          (c.get("side") or "").lower(),
                     "both_matched":  _is_matched(c.get("entry_strategy")) and _is_matched(c.get("exit_strategy")),
                 })
 
