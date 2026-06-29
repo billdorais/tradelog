@@ -10641,18 +10641,26 @@ def api_tp_sweep():
 # nothing is sent to a broker. Run it alongside TradingView and diff.
 
 def _parse_engine_accounts(spec):
-    """Parse a "tag:shares,..." spec into [(broker_tag, flat_shares)]."""
+    """Parse a "tag:size,..." spec into [(broker_tag, amount, unit)].
+    `size` is flat SHARES by default ("alpaca:10"). Prefix with $ (or suffix d) for
+    an equal-DOLLAR target, converted to shares ÷ price at entry ("alpaca:$5000")."""
     out = []
     for part in (spec or "").split(","):
         part = part.strip()
         if not part or ":" not in part:
             continue
-        tag, _, sh = part.partition(":")
+        tag, _, sz = part.partition(":")
         tag = tag.strip().lower()
-        try:    sh = int(float(sh))
+        sz  = sz.strip()
+        unit = "shares"
+        if sz.startswith("$"):
+            unit, sz = "dollars", sz[1:]
+        elif sz[-1:].lower() == "d":
+            unit, sz = "dollars", sz[:-1]
+        try:    amt = int(float(sz))
         except (TypeError, ValueError): continue
-        if tag in ACCOUNTS_BY_TAG and sh >= 1:
-            out.append((tag, sh))
+        if tag in ACCOUNTS_BY_TAG and amt >= 1:
+            out.append((tag, amt, unit))
     return out
 
 def _engine_extra_accounts():
@@ -10715,11 +10723,18 @@ def _entry_engine_setups():
                 snap = json.loads(stored)
         except Exception:
             snap = {}
-    _extra = _engine_extra_accounts()   # e.g. [("alpaca", 10)] — flat-sized extra books
+    _extra = _engine_extra_accounts()   # e.g. [("alpaca", 10, "shares")] / [("alpaca", 5000, "dollars")]
+    def _add_sized_target(su, tag, amt, unit):
+        # dollars → qty_node (engine converts ÷ price); shares → flat qty_override.
+        if unit == "dollars":
+            t = _add_target(su, tag, qty_override=None)
+            t.setdefault("qty_node", {"amount": amt, "unit": "dollars"})
+        else:
+            _add_target(su, tag, qty_override=amt)
     def _add_snapshot_targets(su):
         _add_target(su, "alpaca3")                       # acct3 = score-band (qty_override=None)
-        for xtag, xsh in _extra:
-            _add_target(su, xtag, qty_override=xsh)       # extra accounts = flat shares
+        for xtag, xamt, xunit in _extra:
+            _add_sized_target(su, xtag, xamt, xunit)      # extra accounts = flat shares or $ target
     # acct3 mirrors Refined EXACTLY: only the current top-N leaderboard (refreshed
     # daily at 4:15 PM ET). We intentionally do NOT include "everything that traded
     # on Refined recently" — a demoted strategy goes cold on acct3 the same day it
@@ -10774,8 +10789,9 @@ def _entry_engine_setups():
         log.debug("entry engine kairos rules: %s", _e)
 
     # Source 3: ENGINE_PILOT_ALL accounts fire EVERY enabled breakout/reversal
-    # pipeline (not just the leaderboard) at flat sizing — e.g. Paper All trades
-    # all pipelines @ 10 shares. Only full per-ticker strategy names (skip patterns).
+    # pipeline (not just the leaderboard). Sizing per the spec: "alpaca:10" = flat
+    # 10 shares, "alpaca:$5000" = equal $5k/trade (shares = $5k ÷ price). Only full
+    # per-ticker strategy names (skip patterns).
     _all_accts = _engine_all_accounts()
     if _all_accts:
         try:
@@ -10787,8 +10803,8 @@ def _entry_engine_setups():
                     if nd.get("type") == "strategy":
                         su = (nd.get("value") or "").strip().upper()
                         if su and "*" not in su and ("BREAKOUT" in su or "REVERSAL" in su):
-                            for xtag, xsh in _all_accts:
-                                _add_target(su, xtag, qty_override=xsh)
+                            for xtag, xamt, xunit in _all_accts:
+                                _add_sized_target(su, xtag, xamt, xunit)
             _rc2.close()
         except Exception as _e:
             log.debug("entry engine all-pipelines: %s", _e)
