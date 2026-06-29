@@ -481,6 +481,16 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                     lines.append(f"{label} by side: " + " · ".join(
                         f"{r.get('side')} ${r.get('pnl', 0):.2f} ({r.get('trades', 0)}t {r.get('win_rate', 0)}%)"
                         for r in ss))
+            for label, key in (("Refined acct2", "side_gated_refined"), ("Kairos acct3", "side_gated_kairos")):
+                cands = cd.get(key) or []
+                if cands:
+                    lines.append(
+                        f"SIDE-GATED CANDIDATES on {label} (would score higher gated to one side — "
+                        f"score is /100, candidates for a Top-5 slot with a side gate): " + " · ".join(
+                            f"{c.get('strategy')} {c.get('best_side')}-only "
+                            f"{c.get('best_side_score')} vs both {c.get('both_sides_score')} "
+                            f"(${c.get('pnl', 0):.0f}, {c.get('trades', 0)}t {c.get('win_rate', 0)}%)"
+                            for c in cands[:6]))
             return "\n".join(lines)
 
         card_block = _fmt_card_inputs(card_data)
@@ -605,7 +615,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
-                "| Top 5 to run | five strategy names (your best risk-adjusted picks across acct2/acct3), each tagged long / short / both per the side data |\n"
+                "| Top 5 to run | five strategy names ranked by each strategy's BEST side. Tag each long / short / both. A strategy may earn a slot on its single-side record — use the SIDE-GATED CANDIDATES in the card inputs (best_side score vs both-sides score): if a name scores clearly higher gated to one side, include it tagged that side. The tag is a REAL gate (long = long-only, short = short-only). |\n"
                 "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
                 "| Day-type gate | Yes / No |\n"
                 "| Entries | Refined TV OR Kairos engine — per the engine-vs-TV read |\n"
@@ -614,7 +624,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
-                "or demote. Give specific reasons tied to numbers.\n\n"
+                "or demote. Give specific reasons tied to numbers. Include a **Side-gated callouts** "
+                "line: any strategy from the SIDE-GATED CANDIDATES that you'd run one-sided (e.g. "
+                "'X is negative both-sided but +$Y short-only — run it short-only'), and note the "
+                "hindsight caveat (a side's edge can flip).\n\n"
                 "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
                 "the journal, are current trailing stops appropriate? Reference specific sweep "
                 "results and the trader's own notes if they offer relevant observations.\n\n"
@@ -746,10 +759,12 @@ _CREW_TOOLS = [
     {
         "name": "side_breakdown",
         "description": "Long vs Short performance for an account over a date range: overall per "
-                       "side, plus band×side and side×day-type (trades, win%, P&L). Use for 'what "
-                       "if I only traded shorts' / 'are my longs the problem'. Hindsight caveat: a "
-                       "side's past edge can flip — 'shorts-only would have made $X' is what "
-                       "happened, not a forward guarantee.",
+                       "side, band×side, side×day-type, PER-STRATEGY×side, AND side_gated_candidates "
+                       "— strategies whose best single side scores higher than trading both sides "
+                       "(i.e. would rank better if gated long- or short-only). Use for 'what if I "
+                       "only traded shorts' and to find strategies that would make the top 5 if "
+                       "side-gated. Hindsight caveat: a side's past edge can flip — 'shorts-only "
+                       "would have made $X' is what happened, not a forward guarantee.",
         "input_schema": {"type": "object", "properties": {
             "account": {"type": "string", "enum": ["1", "2", "3"],
                         "description": "1=Paper All, 2=Refined, 3=Kairos (default 3)"},
@@ -878,10 +893,12 @@ def _run_crew_tool(name: str, args: dict) -> str:
                 "overall_side": d.get("overall_side"),
                 "by_band_side": d.get("by_band_side"),
                 "by_side_daytype": d.get("by_side_daytype"),
+                "by_strategy_side": d.get("by_strategy_side"),
+                "side_gated_candidates": d.get("side_gated_candidates"),
                 "caveat": "Hindsight/descriptive: 'shorts-only would have made $X' is what "
                           "happened, not a forward guarantee — a side's edge can flip, and you "
                           "didn't know in advance which side would win.",
-            })[:6500]
+            })[:8000]
         if name == "band_fill_quality":
             band = (args.get("band") or "").strip().lower()
             kind = "breakout" if "breakout" in band else "reversal" if "reversal" in band else ""
@@ -1041,10 +1058,12 @@ def api_crew_chat():
         "FORMAT — FORWARD / NEXT-MONTH RECOMMENDATIONS: when the user asks what to run next month "
         "or for a new paper account, FIRST pull the data (cross_account, side_breakdown, "
         "band_fill_quality, rank_compare), then LEAD your reply with exactly this card (Markdown "
-        "table), every value from a tool result — never invented:\n\n"
+        "table), every value from a tool result — never invented. Use side_breakdown's "
+        "side_gated_candidates to rank by each strategy's BEST side — a strong one-sided record can "
+        "earn a Top-5 slot, tagged with that side (the tag is a real long/short gate):\n\n"
         "## 📋 Next Month — Crew Paper Account\n"
         "| Decision | Recommendation |\n|---|---|\n"
-        "| Top 5 to run | five strategy names, each tagged long / short / both |\n"
+        "| Top 5 to run | five strategy names, each tagged long / short / both (a name may earn its slot on its best single side) |\n"
         "| Sizing | Equal risk OR Scaled-by-score — one-line why |\n"
         "| Day-type gate | Yes / No |\n"
         "| Entries | Refined TV OR Kairos engine |\n"
@@ -1302,13 +1321,16 @@ def api_crew_wire_to_router():
             return max(1, round(size_dollars / prices[tk]))
         return qty
 
-    def _build_nodes(slug, q):
+    def _build_nodes(slug, q, side):
         """Clone the strategy's top-performer pipeline (tuned exit_params, hours,
-        instrument) and swap in the Crew broker, dollar-sized quantity, and the
-        card's entry source. Falls back to a generic default if no source rule."""
+        instrument) and swap in the Crew broker, dollar-sized quantity, the card's
+        entry source, and a long/short side_gate per the pick (both = none). Falls
+        back to a generic default if no source rule."""
+        gate = side if (side or "").lower() in ("long", "short") else None
         src = source_nodes.get(slug)
         if not src:
-            return _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"], qty=q)
+            return _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"],
+                                               qty=q, side_gate=gate)
         out, have_broker, have_entry = [], False, False
         for n in _copy.deepcopy(src[1]):
             t = n.get("type")
@@ -1322,12 +1344,16 @@ def api_crew_wire_to_router():
             elif t == "entry_source":
                 out.append({"type": "entry_source", "value": parsed["entry_source"]})
                 have_entry = True
+            elif t == "side_gate":
+                continue                          # re-applied below from the card's pick
             else:
                 out.append(n)                     # strategy, instrument, hours, exit_params, ...
         if not have_broker:
             out.append({"type": "broker", "value": "alpaca-paper-4"})
         if not have_entry:
             out.append({"type": "entry_source", "value": parsed["entry_source"]})
+        if gate:
+            out.append({"type": "side_gate", "value": gate})
         return out
 
     # 3) Upsert: update an existing Crew rule in place, else insert a new one. This
@@ -1337,7 +1363,7 @@ def api_crew_wire_to_router():
     created, updated, cloned = [], [], []
     for pick in picks:
         slug = pick["strategy"]
-        nodes_json = _json.dumps(_build_nodes(slug, _rule_qty(slug)))
+        nodes_json = _json.dumps(_build_nodes(slug, _rule_qty(slug), pick.get("side")))
         if slug in source_nodes:
             cloned.append(slug)
         rid = existing_crew.get(slug)
@@ -1440,6 +1466,9 @@ def api_crew_run():
                 "indices_paper_all": _idx_sum(_pa.get("per_strategy")),
                 "side_refined": (_s2 or {}).get("overall_side"),
                 "side_kairos":  (_s3 or {}).get("overall_side"),
+                # Strategies that would rank better gated to one side (acct2 / acct3).
+                "side_gated_refined": (_s2 or {}).get("side_gated_candidates"),
+                "side_gated_kairos":  (_s3 or {}).get("side_gated_candidates"),
             }
         except Exception:
             pass

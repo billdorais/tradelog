@@ -88,6 +88,8 @@
     .node-exit_params     { background: #231810; border-color: #c86428; color: #F2C07A; min-width: 110px; height: auto; min-height: 52px; }
     .node-entry_source-tv     { background: #1a1d2e; border-color: #4a5568; color: #888; min-width: 90px; }
     .node-entry_source-kairos { background: #2a2310; border-color: #F2C07A; color: #F2E7AC; min-width: 90px; }
+    .node-side_gate-long      { background: #0c2417; border-color: #7FE098; color: #7FE098; min-width: 90px; }
+    .node-side_gate-short     { background: #2a1414; border-color: #ef5350; color: #ef5350; min-width: 90px; }
 
     .add-node-btn { width: 36px; height: 36px; border-radius: 50%; border: 2px dashed #2a2d3e; background: transparent; color: #555; font-size: 1.1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 6px; }
     .add-node-btn:hover { border-color: #7FE098; color: #7FE098; }
@@ -889,6 +891,7 @@
   <div class="palette-item" onclick="addNode('crypto_qty')"><span class="palette-dot" style="background:#c8a500"></span>Crypto Dollar Qty (BTC/ETH…)</div>
   <div class="palette-item" onclick="addNode('exit_params')"><span class="palette-dot" style="background:#c86428"></span>Exit Params (Stop / Trail)</div>
   <div class="palette-item" onclick="addNode('entry_source')"><span class="palette-dot" style="background:#F2C07A"></span>⚡ Entry Source (TV / Kairos)</div>
+  <div class="palette-item" onclick="addNode('side_gate')"><span class="palette-dot" style="background:#7FE098"></span>⇅ Side Gate (Long / Short only)</div>
 </div>
 
 <!-- Edit modal -->
@@ -1963,6 +1966,7 @@
       case 'crypto_qty':     return 'node-crypto_qty';
       case 'exit_params':    return 'node-exit_params';
       case 'entry_source':   return `node-entry_source-${(node.value || 'tv') === 'kairos' ? 'kairos' : 'tv'}`;
+      case 'side_gate':      return `node-side_gate-${(node.value || 'long') === 'short' ? 'short' : 'long'}`;
       default:               return 'node-strategy';
     }
   }
@@ -1972,7 +1976,7 @@
       strategy: 'Strategy', quantity: 'Quantity', instrument: 'Instrument',
       mode: 'Mode', broker: 'Broker', ticker: 'Ticker', options_config: 'Options',
       trading_hours: 'Hours', crypto_qty: 'Crypto $', exit_params: 'Exit',
-      entry_source: 'Entry',
+      entry_source: 'Entry', side_gate: 'Side',
     };
     return map[node.type] || node.type;
   }
@@ -2028,6 +2032,8 @@
       }
       case 'entry_source':
         return (node.value || 'tv') === 'kairos' ? '⚡ Kairos engine' : 'TradingView (default)';
+      case 'side_gate':
+        return (node.value || 'long') === 'short' ? 'Short only' : 'Long only';
       default: return '—';
     }
   }
@@ -2806,6 +2812,24 @@
           </p>`;
       }
 
+      case 'side_gate': {
+        const sv = (v.value || 'long') === 'short' ? 'short' : 'long';
+        return `
+          <div class="form-group">
+            <label>Side Gate</label>
+            <select id="f_value">
+              <option value="long"  ${sv==='long'  ? 'selected':''}>Long only — drop short entries</option>
+              <option value="short" ${sv==='short' ? 'selected':''}>Short only — drop long entries</option>
+            </select>
+          </div>
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">
+            Restricts this pipeline to one direction: entries on the other side are skipped
+            (the TV alert is received but no order is placed; the Kairos engine won't arm that side).
+            <strong style="color:#7FE098">Exits always pass</strong>, so an open position can still close.
+            Remove this node to trade both sides.
+          </p>`;
+      }
+
       default: return '';
     }
   }
@@ -2844,6 +2868,7 @@
       case 'broker':
       case 'ticker':
       case 'entry_source':
+      case 'side_gate':
         node.value = document.getElementById('f_value').value.trim();
         // Preserve qty_override (set by the Refined refresh) when manually editing a
         // broker node — otherwise clicking through the editor wipes the override.
@@ -2900,9 +2925,9 @@
     if (!rule) { closeModal(); return; }
 
     if (activeNodeIdx === -1) {
-      // entry_source is conceptually a trigger swap, so it reads naturally right
-      // after the strategy match — slot it there rather than at the chain's tail.
-      if (node.type === 'entry_source') {
+      // entry_source / side_gate are conceptually trigger swaps, so they read
+      // naturally right after the strategy match — slot there, not at the tail.
+      if (node.type === 'entry_source' || node.type === 'side_gate') {
         const stratIdx = rule.nodes.findIndex(n => n.type === 'strategy');
         if (stratIdx >= 0) rule.nodes.splice(stratIdx + 1, 0, node);
         else               rule.nodes.unshift(node);

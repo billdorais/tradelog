@@ -268,7 +268,15 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     ep_max_hold_mins = None
     entry_source_kairos = False   # set by entry_source node; suppresses TV entry order
 
+    # Side-gate support: classify this signal so a side_gate node can drop entries on
+    # the wrong side. Exits (EXIT_*/flat) are never gated — you must always be able to close.
+    _gate_is_exit    = raw_action in ("EXIT_LONG", "EXIT_SHORT") or (data.get("sentiment") == "flat")
+    _gate_entry_side = (None if _gate_is_exit else
+                        "long"  if order_action == "BUY"  else
+                        "short" if order_action == "SELL" else None)
+
     matched_rule_id   = None  # set when a routing rule matches; used to flip tv_alert_created
+    _side_gated_any   = False  # True if a matched rule was skipped by its long/short gate
     _routing_rule_count = 0   # total enabled rules; used for whitelist enforcement below
     try:
         rconn = app.get_db()
@@ -296,7 +304,17 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                         matched = True
                 if not matched:
                     continue
-            # Pipeline matched — apply node settings
+            # Pipeline matched — apply node settings.
+            # Per-rule long/short gate: skip this rule entirely (no targets/settings)
+            # when it's gated to the opposite side of an ENTRY. Exits always pass.
+            _rule_side_gate = next(((n.get("value") or "").lower()
+                                    for n in nodes if n.get("type") == "side_gate"), None)
+            if _rule_side_gate in ("long", "short") and _gate_entry_side and _rule_side_gate != _gate_entry_side:
+                _side_gated_any = True
+                matched_rule_id = rule_id   # a rule DID match — it was gated, not absent
+                app.log.info("Side gate: %s %s entry skipped on a %s-only rule",
+                             _gate_entry_side, strategy_name or ticker, _rule_side_gate)
+                continue
             for n in nodes:
                 ntype = n.get("type")
                 if ntype == "broker":
@@ -571,7 +589,11 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     exec_status = None
     exec_detail = None
 
-    if not broker_targets:
+    if not broker_targets and _side_gated_any and not _is_exit:
+        exec_status = "skipped"
+        exec_detail = f"Side gate: {_gate_entry_side} entry skipped — the matched pipeline(s) are gated to the other side only."
+        app.log.info("Webhook: %s entry on '%s' skipped by side gate", _gate_entry_side, strategy_name)
+    elif not broker_targets:
         exec_status = "error"
         exec_detail = f"No routing pipeline matched strategy '{strategy_name}' — signal logged but no order placed. Check your Signal Router for a typo in the strategy name."
         app.log.warning("Webhook: no broker resolved for strategy '%s' — signal logged only", strategy_name)

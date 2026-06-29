@@ -5852,11 +5852,12 @@ def _progress_default_nodes(name):
     ]
 
 
-def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares"):
+def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares", side_gate=None):
     """Routing-rule nodes for a crew-wired Crew Paper (acct4) pipeline. Mirrors
     _progress_default_nodes but targets alpaca-paper-4 and pins the entry source
-    (tv = fan the existing TV alert out to acct4; kairos = server-side engine)."""
-    return [
+    (tv = fan the existing TV alert out to acct4; kairos = server-side engine).
+    `side_gate` ('long'|'short') restricts the rule to that side; None/'both' = no gate."""
+    nodes = [
         {"type": "strategy",      "value": name},
         {"type": "quantity",      "amount": qty, "unit": unit},
         {"type": "instrument",    "value": "STK"},
@@ -5865,6 +5866,9 @@ def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares"):
         {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
         {"type": "exit_params",   "stop_loss": None, "trail_trigger": None, "trail_offset": 0.15, "mode": "percent"},
     ]
+    if (side_gate or "").lower() in ("long", "short"):
+        nodes.append({"type": "side_gate", "value": side_gate.lower()})
+    return nodes
 
 
 @app.route("/api/progress/add_ticker", methods=["POST"])
@@ -10737,6 +10741,10 @@ def _entry_engine_setups():
             if not any(n.get("type") == "entry_source"
                        and (n.get("value") or "").lower() == "kairos" for n in nodes):
                 continue
+            _side_gate = next(((nd.get("value") or "").lower()
+                               for nd in nodes if nd.get("type") == "side_gate"), None)
+            if _side_gate not in ("long", "short"):
+                _side_gate = None
             qty_node = None
             for nd in nodes:
                 if nd.get("type") == "quantity":
@@ -10759,6 +10767,8 @@ def _entry_engine_setups():
                 tgt = _add_target(rname, btag, qov)
                 if qty_node is not None:
                     tgt["qty_node"] = qty_node
+                if _side_gate:
+                    tgt["side_gate"] = _side_gate
         _rc.close()
     except Exception as _e:
         log.debug("entry engine kairos rules: %s", _e)
@@ -11408,6 +11418,10 @@ def _engine_pilot_tick(now_et, today):
             else (s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}])
         for tgt in targets:
             broker_tag   = tgt["broker_tag"]
+            # Per-rule long/short gate: a side-gated kairos rule only arms its side.
+            _tgt_gate = tgt.get("side_gate")
+            if _tgt_gate in ("long", "short") and _tgt_gate != side.lower():
+                continue
             qty_override = tgt.get("qty_override")
             broker_inst  = broker_inst_by_tag.get(broker_tag)
             if broker_inst is None:
@@ -12964,11 +12978,70 @@ def api_alpaca_ls_breakdown():
         out.sort(key=lambda r: r["pnl"])   # worst first — surface the bleed
         return out
 
+    # ── Per-strategy × side ranking ─────────────────────────────────────────
+    # Find strategies that would rank better (and maybe into the top-N) if traded
+    # ONE side only — e.g. a name that's flat/negative both-sided but strong short.
+    strat_side, strat_all = defaultdict(list), defaultdict(list)
+    for t in trades:
+        side = (t.get("side") or "").upper()
+        if side not in ("LONG", "SHORT"):
+            continue
+        strat = t.get("strategy") or "Unknown"
+        strat_side[(strat, side)].append(t)
+        strat_all[strat].append(t)
+
+    def _side_stats(tl):
+        pnls = [float(x.get("pnl") or 0) for x in tl]
+        wins = [p for p in pnls if p > 0]
+        gl   = abs(sum(p for p in pnls if p <= 0))
+        gw   = sum(wins)
+        return {
+            "trades":        len(tl),
+            "win_rate":      round(len(wins) / len(tl) * 100, 1) if tl else 0.0,
+            "profit_factor": round(gw / gl, 2) if gl > 0 else None,
+            "pnl":           round(gw - gl, 2),
+            "sharpe":        _sharpe_from_pnls([float(x.get("pnl") or 0) /
+                                                max(float(x.get("qty") or 1), 0.01) for x in tl]),
+        }
+
+    by_strategy_side = []
+    for (strat, side), tl in strat_side.items():
+        st = _side_stats(tl)
+        by_strategy_side.append({"strategy": strat, "side": side, "trades": st["trades"],
+                                 "win_rate": st["win_rate"], "profit_factor": st["profit_factor"],
+                                 "pnl": st["pnl"]})
+    by_strategy_side.sort(key=lambda r: r["pnl"])   # worst first — surface the bleed
+
+    candidates = []
+    for strat, tl_all in strat_all.items():
+        both       = _side_stats(tl_all)
+        both_score = _composite_score(both, 0) if both["trades"] >= _REFINED_MIN_TRADES else 0.0
+        best = None
+        for side in ("LONG", "SHORT"):
+            tl = strat_side.get((strat, side)) or []
+            if len(tl) < _REFINED_MIN_TRADES:
+                continue
+            st = _side_stats(tl); sc = _composite_score(st, 0)
+            if best is None or sc > best["score"]:
+                best = {"side": side, "score": sc, **st}
+        # Flag only when restricting to one side BEATS the both-sides score.
+        if best and best["score"] > both_score:
+            candidates.append({
+                "strategy": strat, "best_side": best["side"],
+                "best_side_score": round(best["score"] * 100),
+                "both_sides_score": round(both_score * 100),
+                "trades": best["trades"], "win_rate": best["win_rate"],
+                "profit_factor": best["profit_factor"], "pnl": best["pnl"],
+            })
+    candidates.sort(key=lambda r: r["best_side_score"], reverse=True)
+
     return jsonify({
         "account": _label, "trades": n_total,
         "by_band_side":    _fmt(bs, ("band", "side")),
         "by_side_daytype": _fmt(sd, ("side", "day_type")),
         "overall_side":    _fmt(ov, ("side",)),
+        "by_strategy_side":      by_strategy_side,
+        "side_gated_candidates": candidates,
     })
 
 
