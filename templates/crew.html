@@ -425,7 +425,7 @@
         while (i < lines.length && lines[i].includes('|') && lines[i].trim()) { rows.push(row(lines[i])); i++; }
         html += '<table class="md-table"><thead><tr>' + hdr.map(h => '<th>' + _mdInline(h) + '</th>').join('') +
                 '</tr></thead><tbody>' +
-                rows.map(r => '<tr>' + r.map(c => '<td>' + _mdInline(c) + '</td>').join('') + '</tr>').join('') +
+                rows.map(r => '<tr>' + r.map(c => '<td>' + _mdInline(c).replace(/&lt;br\s*\/?&gt;/gi, '<br>') + '</td>').join('') + '</tr>').join('') +
                 '</tbody></table>';
         continue;
       }
