@@ -3535,12 +3535,16 @@
 
     // Leaderboard animal badge for an open position's strategy, by Refined rank.
     function _rankEmoji(stratU) {
+      // White dove marks Crew Paper strategies (additive — shown alongside the band animal).
+      let out = '';
+      if (stratU && _crewStrategies && _crewStrategies.has(stratU)) {
+        out += '<span title="Crew strategy — wired to Crew Paper" style="margin-right:3px">🕊️</span>';
+      }
       const r = stratU && _refinedRank[stratU];
-      if (!r) return '';
-      if (r <= 5)  return '<span title="GOAT — Refined top 5" style="margin-right:3px">🐐</span>';
-      if (r <= 10) return '<span title="Workhorse — Refined 6–10" style="margin-right:3px">🐎</span>';
-      if (r <= 20) return '<span class="bee-buzz" title="Busy Bee — Refined 11–20" style="margin-right:3px">🐝</span>';
-      return '';
+      if (r <= 5)       out += '<span title="GOAT — Refined top 5" style="margin-right:3px">🐐</span>';
+      else if (r <= 10) out += '<span title="Workhorse — Refined 6–10" style="margin-right:3px">🐎</span>';
+      else if (r <= 20) out += '<span class="bee-buzz" title="Busy Bee — Refined 11–20" style="margin-right:3px">🐝</span>';
+      return out;
     }
     let _routedStrategies  = new Set();   // upper-case strategy names with any enabled rule
 
