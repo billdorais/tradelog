@@ -615,7 +615,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
-                "| Top 5 to run | five strategy names ranked by each strategy's BEST side. Tag each long / short / both. A strategy may earn a slot on its single-side record — use the SIDE-GATED CANDIDATES in the card inputs (best_side score vs both-sides score): if a name scores clearly higher gated to one side, include it tagged that side. The tag is a REAL gate (long = long-only, short = short-only). |\n"
+                "| Top 10 to run | ten strategy names ranked by each strategy's BEST side. Tag each long / short / both. A strategy may earn a slot on its single-side record — use the SIDE-GATED CANDIDATES in the card inputs (best_side score vs both-sides score): if a name scores clearly higher gated to one side, include it tagged that side. The tag is a REAL gate (long = long-only, short = short-only). |\n"
                 "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
                 "| Day-type gate | Yes / No |\n"
                 "| Entries | Refined TV OR Kairos engine — per the engine-vs-TV read |\n"
@@ -762,7 +762,7 @@ _CREW_TOOLS = [
                        "side, band×side, side×day-type, PER-STRATEGY×side, AND side_gated_candidates "
                        "— strategies whose best single side scores higher than trading both sides "
                        "(i.e. would rank better if gated long- or short-only). Use for 'what if I "
-                       "only traded shorts' and to find strategies that would make the top 5 if "
+                       "only traded shorts' and to find strategies that would make the top 10 if "
                        "side-gated. Hindsight caveat: a side's past edge can flip — 'shorts-only "
                        "would have made $X' is what happened, not a forward guarantee.",
         "input_schema": {"type": "object", "properties": {
@@ -1063,7 +1063,7 @@ def api_crew_chat():
         "earn a Top-5 slot, tagged with that side (the tag is a real long/short gate):\n\n"
         "## 📋 Next Month — Crew Paper Account\n"
         "| Decision | Recommendation |\n|---|---|\n"
-        "| Top 5 to run | five strategy names, each tagged long / short / both (a name may earn its slot on its best single side) |\n"
+        "| Top 10 to run | ten strategy names, each tagged long / short / both (a name may earn its slot on its best single side) |\n"
         "| Sizing | Equal risk OR Scaled-by-score — one-line why |\n"
         "| Day-type gate | Yes / No |\n"
         "| Entries | Refined TV OR Kairos engine |\n"
@@ -1168,7 +1168,7 @@ _STRAT_SLUG_RE = re.compile(
 def _parse_next_month_card(report):
     """Extract the wire-able picks from a crew report's "Next Month — Crew Paper"
     decision card. Returns {picks:[{strategy, side}], entry_source, sizing,
-    size_dollars, daytype}. Strategy names are pulled ONLY from the 'Top 5 to run'
+    size_dollars, daytype}. Strategy names are pulled ONLY from the 'Top N to run'
     row so the Detail section's pause/demote mentions never get wired by mistake."""
     picks, seen = [], set()
     entry_source, sizing, size_dollars, daytype = "tv", "equal", None, None
@@ -1185,7 +1185,7 @@ def _parse_next_month_card(report):
         label = cells[0].replace("*", "").strip().lower()
         value = cells[1]
         low_v = value.lower()
-        if label.startswith("top 5"):
+        if label.startswith("top") and "run" in label:
             for m in _STRAT_SLUG_RE.findall(value):
                 slug = m.upper()
                 if slug in seen:
