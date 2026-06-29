@@ -1118,7 +1118,9 @@
     // ── Alpaca trade exclusion + filter helpers ────────────────────────────
     const _EXCL_KEY = 'alpaca_excluded_trades';
     let _signalsOnly = false;
-    let _sideFilter  = '';   // '' = both, 'long', or 'short' — filters the equity chart by trade side
+    // '' = both, 'long', or 'short' — filters the equity chart by trade side.
+    // Persisted so the 30s auto-refresh (and reloads) never silently drops it.
+    let _sideFilter  = localStorage.getItem('alpaca_side_filter') || '';
 
     function _loadExclusions() {
       try { return new Set(JSON.parse(localStorage.getItem(_EXCL_KEY) || '[]')); }
@@ -1424,6 +1426,7 @@
     }
     function toggleSideFilter(side) {
       _sideFilter = (_sideFilter === side) ? '' : side;
+      try { localStorage.setItem('alpaca_side_filter', _sideFilter); } catch (_) {}
       _syncSideButtons();
       _cachedFullStats = null;
       const fromDate = document.getElementById('equityFromDate').value;
@@ -1441,6 +1444,7 @@
     // ───────────────────────────────────────────────────────────────────────
 
     async function renderAlpacaStats(fromDate, toDate, account) {
+      _syncSideButtons();   // keep the Long/Short buttons lit after every refresh
       let url = '/api/alpaca/analysis';
       const params = new URLSearchParams();
       if (fromDate)    params.set('from_date',    fromDate);
@@ -1483,15 +1487,28 @@
       });
       const _stratSubset = selectedStrategies.size > 0;
       const tvSel = _stratSubset ? tvForRange.filter(t => selectedStrategies.has(t.strategy)) : tvForRange;
+      // The Long/Short chart filter also scopes the count cards (EXECUTED, TICKERS)
+      // so you can compare executions per side. Long/Short cards always show the
+      // full split so the "difference between categories" stays visible.
+      const tvSelSide = _sideFilter ? tvSel.filter(t => (t.sentiment || '').toLowerCase() === _sideFilter) : tvSel;
+      const curveSide = _sideFilter ? (equityCurve || []).filter(p => (p.side || '') === _sideFilter) : (equityCurve || []);
       document.getElementById('statLongs').textContent    = tvSel.filter(t => (t.sentiment || '').toLowerCase() === 'long').length;
       document.getElementById('statShorts').textContent   = tvSel.filter(t => (t.sentiment || '').toLowerCase() === 'short').length;
       if (_stratSubset) {
-        document.getElementById('statTotal').textContent    = tvSel.length;
-        document.getElementById('statBuys').textContent     = tvSel.filter(t => canonAction(t.action) === 'BUY').length;
-        document.getElementById('statSells').textContent    = tvSel.filter(t => canonAction(t.action) === 'SELL').length;
-        document.getElementById('statTickers').textContent  = new Set(tvSel.map(t => t.ticker).filter(Boolean)).size;
-        document.getElementById('statExecuted').textContent = tvSel.filter(t => t.exec_status === 'ok').length;
-        document.getElementById('statErrors').textContent   = tvSel.filter(t => t.exec_status === 'error').length;
+        document.getElementById('statTotal').textContent    = tvSelSide.length;
+        document.getElementById('statBuys').textContent     = tvSelSide.filter(t => canonAction(t.action) === 'BUY').length;
+        document.getElementById('statSells').textContent    = tvSelSide.filter(t => canonAction(t.action) === 'SELL').length;
+        document.getElementById('statTickers').textContent  = new Set(tvSelSide.map(t => t.ticker).filter(Boolean)).size;
+        document.getElementById('statExecuted').textContent = tvSelSide.filter(t => t.exec_status === 'ok').length;
+        document.getElementById('statErrors').textContent   = tvSelSide.filter(t => t.exec_status === 'error').length;
+      } else if (_sideFilter) {
+        // Side filter on, no strategy subset: count cards reflect that side's closed round-trips.
+        document.getElementById('statTotal').textContent    = curveSide.length;
+        document.getElementById('statBuys').textContent     = '—';
+        document.getElementById('statSells').textContent    = '—';
+        document.getElementById('statTickers').textContent  = new Set(curveSide.map(p => p.ticker).filter(Boolean)).size;
+        document.getElementById('statExecuted').textContent = curveSide.length;
+        document.getElementById('statErrors').textContent   = '—';
       } else {
         document.getElementById('statTotal').textContent    = deduped.length;
         document.getElementById('statBuys').textContent     = deduped.filter(e => e.side === 'BOT').length;
@@ -1548,7 +1565,9 @@
         const _acctUrl = account ? '/api/alpaca/account?account=' + account : '/api/alpaca/account';
         const _acct    = await fetch(_acctUrl).then(r => r.json()).catch(() => ({}));
         if (_acct && _acct.daily_pnl != null) _todayLivePnl = _acct.daily_pnl;
-        if (fromDate === _today && (!toDate || toDate === _today)) {
+        // Don't override Net P&L with the account-level (both-sides) daily number
+        // when a Long/Short filter is active — keep the side-filtered figure.
+        if (!_sideFilter && fromDate === _today && (!toDate || toDate === _today)) {
           if (_todayLivePnl != null) {
             const _el = document.getElementById('perfTotalPnl');
             if (_el) {
