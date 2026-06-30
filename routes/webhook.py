@@ -275,9 +275,15 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                         "long"  if order_action == "BUY"  else
                         "short" if order_action == "SELL" else None)
 
-    matched_rule_id   = None  # set when a routing rule matches; used to flip tv_alert_created
-    _side_gated_any   = False  # True if a matched rule was skipped by its long/short gate
-    _routing_rule_count = 0   # total enabled rules; used for whitelist enforcement below
+    matched_rule_id     = None       # first matching rule (kept for back-compat / logging)
+    matched_rule_ids    = []         # ALL matching rules — used to flip tv_alert_created on each
+    _side_gated_any     = False      # True if any matched rule was skipped by its long/short gate
+    _routing_rule_count = 0          # total enabled rules; used for whitelist enforcement below
+    # Multi-pipeline support: each matching rule produces its own settings bundle.
+    # broker_targets becomes a list of (target_name, qty_override, rule_settings_bundle)
+    # 3-tuples so the downstream dispatch loops can apply each rule's own quantity,
+    # exit_params, trading_hours, and entry_source independently. Without this, a
+    # 'first matching rule wins' break stopped Crew-style sibling rules from firing.
     try:
         rconn = app.get_db()
         rcur  = rconn.cursor()
@@ -311,31 +317,54 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                     for n in nodes if n.get("type") == "side_gate"), None)
             if _rule_side_gate in ("long", "short") and _gate_entry_side and _rule_side_gate != _gate_entry_side:
                 _side_gated_any = True
-                matched_rule_id = rule_id   # a rule DID match — it was gated, not absent
+                if matched_rule_id is None:
+                    matched_rule_id = rule_id   # a rule DID match — it was gated, not absent
+                matched_rule_ids.append(rule_id)
                 app.log.info("Side gate: %s %s entry skipped on a %s-only rule",
                              _gate_entry_side, strategy_name or ticker, _rule_side_gate)
                 continue
+            # Per-rule settings bundle — defaults from the body, overridden by each
+            # node so siblings can have different quantity/exit_params/hours/etc.
+            _rs = {
+                "rule_id":             rule_id,
+                "quantity":            data.get("quantity", 1),
+                "sec_type":            data.get("sec_type", "STK"),
+                "currency":            data.get("currency", "USD"),
+                "use_live_broker":     False,
+                "ep_stop_loss":        None,
+                "ep_hard_stop":        None,
+                "ep_trail_trigger":    None,
+                "ep_trail_offset":     None,
+                "ep_trail_mode":       "dollars",
+                "ep_max_hold_mins":    None,
+                "th_start":            None,
+                "th_end":              None,
+                "th_tz":               "America/New_York",
+                "entry_source_kairos": False,
+                "opt_broker_mode":     "alpaca",
+                "opt_target_prem":     None,
+                "opt_expiry_type":     "friday",
+                "opt_right_ovr":       None,
+                "opt_contracts":       1,
+                "ticker":              ticker,
+            }
+            _rule_brokers = []   # (raw_bv, qty_override) for this rule's broker nodes
             for n in nodes:
                 ntype = n.get("type")
                 if ntype == "broker":
-                    # Support combined values (ib-paper, ib-live, alpaca-paper, alpaca-live)
-                    # as well as legacy bare values (ib, alpaca, coinbase).
-                    # Optional qty_override is set per-broker by the Refined refresh,
-                    # so the same routing rule can size Paper and Refined differently.
                     raw_bv      = (n.get("value") or "ib-paper").lower()
                     qty_ovr_raw = n.get("qty_override")
                     try:
                         qty_ovr = int(qty_ovr_raw) if qty_ovr_raw not in (None, "") else None
                     except (TypeError, ValueError):
                         qty_ovr = None
-                    broker_targets.append((raw_bv, qty_ovr))
-                    # Combined values also set use_live_broker for IB
+                    _rule_brokers.append((raw_bv, qty_ovr))
                     if raw_bv == "ib-live":
-                        use_live_broker = True
+                        _rs["use_live_broker"] = True
                 elif ntype == "mode":
-                    use_live_broker = (n.get("value") or "").lower() == "live"
+                    _rs["use_live_broker"] = (n.get("value") or "").lower() == "live"
                 elif ntype == "quantity":
-                    quantity = n.get("amount", quantity)
+                    _rs["quantity"] = n.get("amount", _rs["quantity"])
                 elif ntype == "crypto_qty":
                     _dollars = float(n.get("dollars") or 10)
                     try:
@@ -344,75 +373,76 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                         _sym = (n.get("symbol") or "BTC").upper()
                         with _ur.urlopen(f"https://api.coinbase.com/v2/prices/{_sym}-USD/spot", timeout=5) as _r:
                             _price = float(_jx.loads(_r.read())["data"]["amount"])
-                        quantity = round(_dollars / _price, 8)
-                        app.log.info("crypto_qty: $%.2f / $%.2f = %.8f %s", _dollars, _price, quantity, _sym)
+                        _rs["quantity"] = round(_dollars / _price, 8)
+                        app.log.info("crypto_qty: $%.2f / $%.2f = %.8f %s",
+                                     _dollars, _price, _rs["quantity"], _sym)
                     except Exception as _e:
                         app.log.error("crypto_qty price fetch failed: %s", _e)
                 elif ntype == "instrument":
-                    sec_type = n.get("value") or sec_type
+                    _rs["sec_type"] = n.get("value") or _rs["sec_type"]
                 elif ntype == "ticker":
-                    ticker = (n.get("value") or ticker or "").upper() or None
+                    _rs["ticker"] = (n.get("value") or _rs["ticker"] or "").upper() or None
                 elif ntype == "options_config":
-                    opt_broker_mode = n.get("broker_mode") or "alpaca"
-                    if opt_broker_mode == "ib":
-                        opt_target_prem = float(n.get("ib_target_premium") or 2.0)
-                        _ib_exp         = n.get("ib_expiry_type") or "weekly"
-                        opt_right_ovr   = n.get("ib_right_override") or None
-                        opt_contracts   = int(n.get("ib_contracts") or 1)
-                        sec_type        = "OPT"   # trigger IB options path
+                    _rs["opt_broker_mode"] = n.get("broker_mode") or "alpaca"
+                    if _rs["opt_broker_mode"] == "ib":
+                        _rs["opt_target_prem"] = float(n.get("ib_target_premium") or 2.0)
+                        _ib_exp                = n.get("ib_expiry_type") or "weekly"
+                        _rs["opt_right_ovr"]   = n.get("ib_right_override") or None
+                        _rs["opt_contracts"]   = int(n.get("ib_contracts") or 1)
+                        _rs["sec_type"]        = "OPT"   # trigger IB options path
                         if _ib_exp == "0dte":
-                            opt_expiry_type = "weekly"   # fallback if no 0dte listed
-                            # pass today as explicit override so IB uses 0DTE chain
+                            _rs["opt_expiry_type"] = "weekly"
                             import datetime as _dt_mod
-                            _today_str = _dt_mod.date.today().strftime("%Y%m%d")
-                            # store in data dict so _place_async picks it up
-                            data["option_expiry"] = _today_str
+                            data["option_expiry"]  = _dt_mod.date.today().strftime("%Y%m%d")
                         else:
-                            opt_expiry_type = _ib_exp   # "weekly" or "monthly"
+                            _rs["opt_expiry_type"] = _ib_exp
                     else:
-                        opt_target_prem = float(n.get("target_premium") or 2.0)
-                        opt_expiry_type = n.get("expiry_type") or "friday"
-                        opt_right_ovr   = n.get("right_override") or None
-                        opt_contracts   = int(n.get("contracts") or 1)
+                        _rs["opt_target_prem"] = float(n.get("target_premium") or 2.0)
+                        _rs["opt_expiry_type"] = n.get("expiry_type") or "friday"
+                        _rs["opt_right_ovr"]   = n.get("right_override") or None
+                        _rs["opt_contracts"]   = int(n.get("contracts") or 1)
                 elif ntype == "trading_hours":
-                    th_start = n.get("start") or "09:30"
-                    th_end   = n.get("end")   or "16:00"
-                    th_tz    = n.get("tz")    or "America/New_York"
+                    _rs["th_start"] = n.get("start") or "09:30"
+                    _rs["th_end"]   = n.get("end")   or "16:00"
+                    _rs["th_tz"]    = n.get("tz")    or "America/New_York"
                 elif ntype == "exit_params":
-                    ep_stop_loss     = n.get("stop_loss")
-                    ep_trail_trigger = n.get("trail_trigger")
-                    ep_trail_offset  = n.get("trail_offset")
-                    ep_trail_mode    = n.get("mode", "dollars")
-                    # Per-pipeline override of the global MAX_POSITION_LOSS.
-                    # Always in DOLLARS — not affected by exit_params mode.
-                    ep_hard_stop     = n.get("hard_stop")
+                    _rs["ep_stop_loss"]     = n.get("stop_loss")
+                    _rs["ep_trail_trigger"] = n.get("trail_trigger")
+                    _rs["ep_trail_offset"]  = n.get("trail_offset")
+                    _rs["ep_trail_mode"]    = n.get("mode", "dollars")
+                    _rs["ep_hard_stop"]     = n.get("hard_stop")
                     _mhm = n.get("max_hold_mins")
-                    ep_max_hold_mins = float(_mhm) if _mhm else None
+                    _rs["ep_max_hold_mins"] = float(_mhm) if _mhm else None
                 elif ntype == "entry_source":
-                    # `kairos` → suppress this rule's TV entry signal; the
-                    # server-side engine fires entries instead. `tv` (default)
-                    # is the legacy behavior.
-                    entry_source_kairos = (n.get("value") or "tv").lower() == "kairos"
-            if broker_targets:
-                broker_name = ",".join(t[0] for t in broker_targets)
-            app.log.info("Routing rule matched for strategy '%s' — broker=%s live=%s qty=%s sec=%s",
-                         strategy_name, broker_name, use_live_broker, quantity, sec_type)
-            matched_rule_id = rule_id
-            break  # first matching pipeline wins
+                    _rs["entry_source_kairos"] = (n.get("value") or "tv").lower() == "kairos"
+            # Each broker node in THIS rule gets the rule's bundle.
+            for (raw_bv, qty_ovr) in _rule_brokers:
+                broker_targets.append((raw_bv, qty_ovr, _rs))
+            if matched_rule_id is None:
+                matched_rule_id = rule_id
+            matched_rule_ids.append(rule_id)
+            _broker_csv = ",".join(t[0] for t in _rule_brokers) or "(none)"
+            app.log.info("Routing rule matched for strategy '%s' [#%s] — broker=%s live=%s qty=%s sec=%s",
+                         strategy_name, rule_id, _broker_csv,
+                         _rs["use_live_broker"], _rs["quantity"], _rs["sec_type"])
+            # NO BREAK — keep collecting sibling rules so e.g. a Crew Paper rule
+            # fires alongside the original Paper All rule on the same TV signal.
     except Exception as e:
         app.log.warning("Routing rule lookup failed: %s", e)
 
-    # First webhook for a rule means the TV alert is wired up — flip the progress flag.
-    if matched_rule_id is not None:
+    # First webhook for a rule means the TV alert is wired up — flip the
+    # progress flag for EVERY matched rule (Crew/sibling rules each get marked).
+    if matched_rule_ids:
         try:
             fconn = app.get_db()
             fcur  = fconn.cursor()
             fp    = app.placeholder()
-            fcur.execute(
-                f"UPDATE routing_rules SET tv_alert_created=1 "
-                f"WHERE id={fp} AND (tv_alert_created IS NULL OR tv_alert_created=0)",
-                (matched_rule_id,),
-            )
+            for _rid in set(matched_rule_ids):
+                fcur.execute(
+                    f"UPDATE routing_rules SET tv_alert_created=1 "
+                    f"WHERE id={fp} AND (tv_alert_created IS NULL OR tv_alert_created=0)",
+                    (_rid,),
+                )
             fconn.commit()
             fconn.close()
         except Exception as _fe:
@@ -445,23 +475,62 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                       "Check the Routing Strategy ID in your TradingView Pine script inputs.",
         }), 200
 
-    # If no broker nodes fired from pipeline, fall back to the single broker_name from request body
+    # If no broker nodes fired from any pipeline, fall back to the single
+    # broker_name from request body — wrap a default settings bundle so the
+    # downstream 3-tuple unpacking still works.
     if not broker_targets and broker_name:
-        broker_targets = [(broker_name, None)]
+        _fallback_rs = {
+            "rule_id":             None,
+            "quantity":            quantity,
+            "sec_type":            sec_type,
+            "currency":            currency,
+            "use_live_broker":     use_live_broker,
+            "ep_stop_loss":        ep_stop_loss,
+            "ep_hard_stop":        ep_hard_stop,
+            "ep_trail_trigger":    ep_trail_trigger,
+            "ep_trail_offset":     ep_trail_offset,
+            "ep_trail_mode":       ep_trail_mode,
+            "ep_max_hold_mins":    ep_max_hold_mins,
+            "th_start":            th_start,
+            "th_end":              th_end,
+            "th_tz":               th_tz,
+            "entry_source_kairos": entry_source_kairos,
+            "opt_broker_mode":     "alpaca",
+            "opt_target_prem":     opt_target_prem,
+            "opt_expiry_type":     opt_expiry_type,
+            "opt_right_ovr":       opt_right_ovr,
+            "opt_contracts":       opt_contracts,
+            "ticker":              ticker,
+        }
+        broker_targets = [(broker_name, None, _fallback_rs)]
 
-    # Enforce trading hours if a trading_hours node was found in the matched pipeline
-    if th_start and th_end:
-        try:
-            _now = datetime.now(ZoneInfo(th_tz))
-            _now_t = _now.strftime("%H:%M")
-            if not (th_start <= _now_t < th_end):
-                app.log.info(
-                    "Signal for '%s' dropped — outside trading hours (%s–%s %s, now %s)",
-                    strategy_name, th_start, th_end, th_tz, _now_t,
-                )
-                return jsonify({"status": "skipped", "reason": f"outside trading hours ({th_start}–{th_end} {th_tz})"}), 200
-        except Exception as e:
-            app.log.warning("Trading hours check failed: %s", e)
+    # Per-target trading hours check: filter out targets whose rule's hours
+    # don't include now. With multi-rule support, each bundle has its own
+    # th_start/th_end — we can't kill the whole signal globally anymore.
+    if broker_targets:
+        _kept_hours = []
+        _dropped_hours = []
+        for _bt in broker_targets:
+            _rs_bt = _bt[2]
+            _ths   = _rs_bt.get("th_start")
+            _the   = _rs_bt.get("th_end")
+            _thtz  = _rs_bt.get("th_tz") or "America/New_York"
+            if not _ths or not _the:
+                _kept_hours.append(_bt)
+                continue
+            try:
+                _now_t = datetime.now(ZoneInfo(_thtz)).strftime("%H:%M")
+                if _ths <= _now_t < _the:
+                    _kept_hours.append(_bt)
+                else:
+                    _dropped_hours.append((_bt[0], f"{_ths}-{_the} {_thtz}, now {_now_t}"))
+            except Exception as e:
+                app.log.warning("Trading hours check failed for %s: %s — allowing target", _bt[0], e)
+                _kept_hours.append(_bt)
+        if _dropped_hours:
+            app.log.info("Trading hours gate: dropped %s for '%s'",
+                         ", ".join(f"{t} ({why})" for t, why in _dropped_hours), strategy_name)
+        broker_targets = _kept_hours
 
     # Duplicate signal filter — drop retries / double-fires within cooldown window
     if app.SIGNAL_COOLDOWN_SECS > 0 and order_action in ("BUY", "SELL"):
@@ -541,8 +610,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             try:
                 limit  = max(1, int(getattr(app, "STRIKES_PER_LEVEL", 2)))
                 counts = app._get_strike_counts()
-                accts  = {_alpaca_broker_name(t) for (t, _o) in broker_targets
-                          if _broker_family(t) == "alpaca"}
+                accts  = {_alpaca_broker_name(_bt[0]) for _bt in broker_targets
+                          if _broker_family(_bt[0]) == "alpaca"}
                 hit = [a for a in accts
                        if counts.get((a, ticker.upper(), level), 0) >= limit]
                 if hit:
@@ -559,31 +628,40 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             except Exception as _se:
                 app.log.warning("Strikes gate check failed: %s — allowing order", _se)
 
-    # If the matched pipeline has an exit_params node the broker-side trailing stop
-    # manages the exit — suppress the TV exit signal so it doesn't close the position
-    # before the stop has a chance to fire.
-    if _is_exit and ep_trail_offset is not None:
-        _suppress_msg = (
-            f"TV exit suppressed — pipeline has exit_params "
-            f"(trail {ep_trail_offset}%), broker-side trailing stop controls exit"
-        )
-        app.log.info("%s: %s %s", _suppress_msg, strategy_name, ticker)
-        if conn:
-            app._update_exec(cur, trade_id, "skipped", _suppress_msg)
-            conn.commit()
-            conn.close()
-        return jsonify({"status": "skipped", "reason": "exit_params_controls_exit"}), 200
-
-    # entry_source=kairos: the server-side engine fires entries for this rule;
-    # drop the TV entry signal so we don't double-enter. Exits still flow.
-    if not _is_exit and entry_source_kairos:
-        _suppress_msg = "TV entry suppressed — pipeline has entry_source=kairos, server-side engine controls entries"
-        app.log.info("%s: %s %s", _suppress_msg, strategy_name, ticker)
-        if conn:
-            app._update_exec(cur, trade_id, "skipped", _suppress_msg)
-            conn.commit()
-            conn.close()
-        return jsonify({"status": "skipped", "reason": "kairos_controls_entry"}), 200
+    # Per-target suppression:
+    #   - Exits: drop targets whose rule has ep_trail_offset set (broker-side
+    #     trailing stop owns the exit). Targets without exit_params still fire.
+    #   - Entries: drop targets whose rule has entry_source=kairos (the engine
+    #     owns entries). Targets with entry_source=tv still fire.
+    # Globally returning a skip would block sibling rules that didn't set those.
+    if broker_targets:
+        _kept_sup = []
+        _dropped_exit_kairos = []
+        for _bt in broker_targets:
+            _rs_bt = _bt[2]
+            if _is_exit and _rs_bt.get("ep_trail_offset") is not None:
+                _dropped_exit_kairos.append((_bt[0], "exit_params"))
+                continue
+            if (not _is_exit) and _rs_bt.get("entry_source_kairos"):
+                _dropped_exit_kairos.append((_bt[0], "entry_source=kairos"))
+                continue
+            _kept_sup.append(_bt)
+        if _dropped_exit_kairos:
+            app.log.info("Suppressed targets for '%s': %s", strategy_name,
+                         ", ".join(f"{t} ({why})" for t, why in _dropped_exit_kairos))
+        broker_targets = _kept_sup
+        # If ALL targets were suppressed by exit_params/kairos, log a skip on the trade
+        # row so the trade feed shows why nothing fired.
+        if not broker_targets and _dropped_exit_kairos:
+            _reason = "exit_params_controls_exit" if _is_exit else "kairos_controls_entry"
+            _msg    = ("TV exit suppressed — all matched pipelines own the exit broker-side"
+                       if _is_exit else
+                       "TV entry suppressed — all matched pipelines use entry_source=kairos")
+            if conn:
+                app._update_exec(cur, trade_id, "skipped", _msg)
+                conn.commit()
+                conn.close()
+            return jsonify({"status": "skipped", "reason": _reason}), 200
 
     # 2. Route to broker(s) — supports single or multi-broker pipelines
     exec_status = None
@@ -600,20 +678,20 @@ def _webhook_locked(data, received_at, broker_name, ticker):
 
     # All broker targets are now async — Alpaca/Coinbase fire in a background
     # thread so the webhook returns immediately and TradingView never times out.
-    # broker_targets is a list of (broker_name, qty_override_or_None) tuples.
-    coinbase_targets = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "coinbase"]
-    alpaca_targets   = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "alpaca"]
-    ib_targets       = [(t, o) for (t, o) in broker_targets if _broker_family(t) == "ib"]
+    # broker_targets is a list of (broker_name, qty_override_or_None, rule_settings_bundle).
+    coinbase_targets = [bt for bt in broker_targets if _broker_family(bt[0]) == "coinbase"]
+    alpaca_targets   = [bt for bt in broker_targets if _broker_family(bt[0]) == "alpaca"]
+    ib_targets       = [bt for bt in broker_targets if _broker_family(bt[0]) == "ib"]
 
     # Per-account trading-hours gate (entries only) — drop the Alpaca targets whose
     # account is outside its configured window, while letting in-window accounts
     # through. Lets Paper trade all day while Refined only trades the open, etc.
     if not _is_exit and alpaca_targets:
-        _in_hours = [(t, o) for (t, o) in alpaca_targets
-                     if app._account_hours_ok(_alpaca_broker_name(t))]
+        _in_hours = [bt for bt in alpaca_targets
+                     if app._account_hours_ok(_alpaca_broker_name(bt[0]))]
         if len(_in_hours) != len(alpaca_targets):
-            _dropped = {_alpaca_broker_name(t) for (t, o) in alpaca_targets} \
-                       - {_alpaca_broker_name(t) for (t, o) in _in_hours}
+            _dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
+                       - {_alpaca_broker_name(bt[0]) for bt in _in_hours}
             app.log.info("Account-hours gate: %s %s — skipped %s (outside trading window)",
                          order_action, ticker, ",".join(sorted(_dropped)))
             if not _in_hours and conn:
@@ -632,13 +710,13 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             _gate_today = datetime.now(timezone.utc).date().isoformat()
         _kept = []
         _gate_dropped = []
-        for (t, o) in alpaca_targets:
+        for bt in alpaca_targets:
             _blk, _why = app._daytype_gate_block(
-                strategy_name, ticker, _gate_today, _alpaca_broker_name(t))
+                strategy_name, ticker, _gate_today, _alpaca_broker_name(bt[0]))
             if _blk:
-                _gate_dropped.append((t, _why))
+                _gate_dropped.append((bt[0], _why))
             else:
-                _kept.append((t, o))
+                _kept.append(bt)
         if _gate_dropped:
             _reason = _gate_dropped[0][1]
             app.log.info("Day-type gate: %s %s — skipped %s (%s)", order_action, ticker,
@@ -649,8 +727,10 @@ def _webhook_locked(data, received_at, broker_name, ticker):
         alpaca_targets = _kept
 
     # --- Coinbase (sync-only; typically sub-second) ---
-    for target, qty_override in coinbase_targets:
-        _qty = qty_override if qty_override is not None else quantity
+    for target, qty_override, _rs_cb in coinbase_targets:
+        _qty       = qty_override if qty_override is not None else _rs_cb["quantity"]
+        _sec_type  = _rs_cb["sec_type"]
+        _currency  = _rs_cb["currency"]
         if app.coinbase_broker is None:
             exec_status = "error"
             exec_detail = "Coinbase broker not initialised — set COINBASE_KEY + COINBASE_SECRET env vars"
@@ -665,8 +745,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     action   = order_action,
                     quantity = _qty,
                     price    = data.get("price") if data.get("order_type") == "LMT" else None,
-                    sec_type = sec_type,
-                    currency = currency,
+                    sec_type = _sec_type,
+                    currency = _currency,
                 )
                 exec_status = "ok" if result.get("success") else "error"
                 exec_detail = json.dumps(result)
@@ -682,7 +762,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
         conn.commit()
 
     # --- Alpaca (async — order placement can take 1–3 s; we return 200 first) ---
-    for target, qty_override in alpaca_targets:
+    for target, qty_override, _rs_alp in alpaca_targets:
         _broker_inst = _resolve_alpaca_broker(target)
         if _broker_inst is None:
             if conn:
@@ -702,29 +782,29 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.close()
                 conn = None
 
-            # Capture loop variables for the closure
-            _ticker      = ticker
+            # Capture loop variables for the closure — from this target's per-rule bundle
+            _ticker      = _rs_alp.get("ticker") or ticker
             _action      = order_action
             _raw_action  = raw_action
             # Per-broker qty_override (set by the Refined refresh) wins over the rule's default.
-            _qty         = qty_override if qty_override is not None else quantity
+            _qty         = qty_override if qty_override is not None else _rs_alp["quantity"]
             _price       = data.get("price") if data.get("order_type") == "LMT" else None
-            _sec_type    = sec_type
-            _currency    = currency
+            _sec_type    = _rs_alp["sec_type"]
+            _currency    = _rs_alp["currency"]
             _trade_id    = trade_id
-            _opt_prem    = opt_target_prem
-            _opt_exp     = opt_expiry_type
-            _opt_right   = opt_right_ovr
-            _opt_ctrs    = opt_contracts
+            _opt_prem    = _rs_alp["opt_target_prem"]
+            _opt_exp     = _rs_alp["opt_expiry_type"]
+            _opt_right   = _rs_alp["opt_right_ovr"]
+            _opt_ctrs    = _rs_alp["opt_contracts"]
 
             _strategy         = strategy_name
             _is_entry         = not _is_exit
-            _ep_stop_loss     = ep_stop_loss
-            _ep_trail_trigger = ep_trail_trigger
-            _ep_trail_offset  = ep_trail_offset
-            _ep_trail_mode    = ep_trail_mode
-            _ep_hard_stop     = ep_hard_stop
-            _ep_max_hold_mins = ep_max_hold_mins
+            _ep_stop_loss     = _rs_alp["ep_stop_loss"]
+            _ep_trail_trigger = _rs_alp["ep_trail_trigger"]
+            _ep_trail_offset  = _rs_alp["ep_trail_offset"]
+            _ep_trail_mode    = _rs_alp["ep_trail_mode"]
+            _ep_hard_stop     = _rs_alp["ep_hard_stop"]
+            _ep_max_hold_mins = _rs_alp["ep_max_hold_mins"]
             _broker_captured  = _broker_inst
 
             # Session-based trail overrides (entry orders with percent-mode trail only)
@@ -743,6 +823,10 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     # Afternoon: tighten — use whichever is smaller
                     _ep_trail_offset = min(_ep_trail_offset, _aftern_pct)
 
+            # Stable broker_tag for this target (alpaca / alpaca2 / alpaca3 /
+            # alpaca4) — used to register the max-hold timer under the right
+            # account. Previously hardcoded to a two-account guess.
+            _broker_tag_outer = _alpaca_broker_name(target)
             def _place_alpaca_async(
                 ticker=_ticker, action=_action, qty=_qty, price=_price,
                 sec_type=_sec_type, currency=_currency, trade_id=_trade_id,
@@ -751,7 +835,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 ep_stop_loss=_ep_stop_loss, ep_trail_trigger=_ep_trail_trigger,
                 ep_trail_offset=_ep_trail_offset, ep_trail_mode=_ep_trail_mode,
                 ep_hard_stop=_ep_hard_stop, ep_max_hold_mins=_ep_max_hold_mins,
-                broker=_broker_captured,
+                broker=_broker_captured, broker_tag=_broker_tag_outer,
             ):
                 _exec_status = _exec_detail = None
                 try:
@@ -884,10 +968,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     # global MAX_HOLD_MINS backstop so no entry can run uncapped.
                     _eff_mhm = ep_max_hold_mins or (app.MAX_HOLD_MINS if app.MAX_HOLD_MINS > 0 else None)
                     if is_entry and result.get("success") and _eff_mhm:
-                        _broker_tag = "alpaca2" if broker is app.alpaca_broker2 else "alpaca"
-                        _entry_ts   = datetime.now(timezone.utc)
+                        _entry_ts = datetime.now(timezone.utc)
                         with app._risk_lock:
-                            app._max_hold_positions[(_broker_tag, ticker.upper())] = {
+                            app._max_hold_positions[(broker_tag, ticker.upper())] = {
                                 "entry_time":    _entry_ts,
                                 "max_hold_mins": _eff_mhm,
                             }
@@ -896,9 +979,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                             # _check_position_stops which doesn't run when risk limits
                             # are disabled — without this discard, every second-and-later
                             # trade in the same ticker is silently skipped by max hold.
-                            app._auto_closed_symbols.discard((_broker_tag, ticker.upper()))
-                        app._persist_max_hold(_broker_tag, ticker.upper(), _entry_ts, _eff_mhm)
-                        app.log.info("Max hold registered: %s [%s] — %.0f min%s", ticker, _broker_tag,
+                            app._auto_closed_symbols.discard((broker_tag, ticker.upper()))
+                        app._persist_max_hold(broker_tag, ticker.upper(), _entry_ts, _eff_mhm)
+                        app.log.info("Max hold registered: %s [%s] — %.0f min%s", ticker, broker_tag,
                                      _eff_mhm, "" if ep_max_hold_mins else " (global backstop)")
                     # If we cancelled a pending BUY, mark the original BUY trade record
                     # as "cancelled" so it doesn't appear as an orphaned/open trade.
@@ -934,13 +1017,19 @@ def _webhook_locked(data, received_at, broker_name, ticker):
 
             _enqueue_alpaca_task(_alpaca_broker_name(target), _ticker, _place_alpaca_async)
 
-    for target, qty_override in ib_targets:
-        _live = (target == "ib-live") or (use_live_broker and target != "ib-paper")
+    for target, qty_override, _rs_ib in ib_targets:
+        _use_live_ib   = _rs_ib["use_live_broker"]
+        _live = (target == "ib-live") or (_use_live_ib and target != "ib-paper")
         active_broker  = app.ib_broker_live if (_live and app.ib_broker_live) else app.ib_broker
         submit_task    = app._submit_ib_live_task if (_live and app.ib_broker_live) else app._submit_ib_task
         mode_label     = "live" if (_live and app.ib_broker_live) else "paper"
         # Per-broker qty_override (set by the Refined refresh) wins over the rule's default.
-        ib_qty         = qty_override if qty_override is not None else quantity
+        ib_qty         = qty_override if qty_override is not None else _rs_ib["quantity"]
+        _ib_sec_type      = _rs_ib["sec_type"]
+        _ib_currency      = _rs_ib["currency"]
+        _ib_opt_prem      = _rs_ib["opt_target_prem"]
+        _ib_opt_expiry    = _rs_ib["opt_expiry_type"]
+        _ib_opt_right_ovr = _rs_ib["opt_right_ovr"]
 
         if active_broker is None:
             if conn:
@@ -961,7 +1050,12 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.close()
                 conn = None
 
-            def _place_async(_qty=ib_qty):
+            def _place_async(
+                _qty=ib_qty,
+                sec_type=_ib_sec_type, currency=_ib_currency,
+                opt_target_prem=_ib_opt_prem, opt_expiry_type=_ib_opt_expiry,
+                opt_right_ovr=_ib_opt_right_ovr,
+            ):
                 _exec_status = _exec_detail = None
                 try:
                     if sec_type.upper() == "OPT":
