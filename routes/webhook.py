@@ -279,6 +279,11 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     matched_rule_ids    = []         # ALL matching rules — used to flip tv_alert_created on each
     _side_gated_any     = False      # True if any matched rule was skipped by its long/short gate
     _routing_rule_count = 0          # total enabled rules; used for whitelist enforcement below
+    # Rules that matched but contributed NO broker node — their settings still
+    # apply (quantity, exit_params, etc.), they just need the body-fallback
+    # broker to fire. Without this, a rule like 'SPY_CAM_*: quantity 10' with
+    # no broker silently lets TV's payload quantity through to the broker.
+    _matched_no_broker_bundles = []
     # Multi-pipeline support: each matching rule produces its own settings bundle.
     # broker_targets becomes a list of (target_name, qty_override, rule_settings_bundle)
     # 3-tuples so the downstream dispatch loops can apply each rule's own quantity,
@@ -416,8 +421,14 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 elif ntype == "entry_source":
                     _rs["entry_source_kairos"] = (n.get("value") or "tv").lower() == "kairos"
             # Each broker node in THIS rule gets the rule's bundle.
-            for (raw_bv, qty_ovr) in _rule_brokers:
-                broker_targets.append((raw_bv, qty_ovr, _rs))
+            if _rule_brokers:
+                for (raw_bv, qty_ovr) in _rule_brokers:
+                    broker_targets.append((raw_bv, qty_ovr, _rs))
+            else:
+                # Rule matched but specified no broker — keep its bundle so the
+                # body-fallback below can honor THIS rule's quantity / exit_params
+                # instead of TV's payload defaults.
+                _matched_no_broker_bundles.append(_rs)
             if matched_rule_id is None:
                 matched_rule_id = rule_id
             matched_rule_ids.append(rule_id)
@@ -477,31 +488,36 @@ def _webhook_locked(data, received_at, broker_name, ticker):
 
     # If no broker nodes fired from any pipeline, fall back to the single
     # broker_name from request body — wrap a default settings bundle so the
-    # downstream 3-tuple unpacking still works.
+    # downstream 3-tuple unpacking still works. Prefer the FIRST matched
+    # no-broker rule's bundle (so its quantity/exit_params apply) over the
+    # raw body defaults; otherwise fall back to TV's payload values.
     if not broker_targets and broker_name:
-        _fallback_rs = {
-            "rule_id":             None,
-            "quantity":            quantity,
-            "sec_type":            sec_type,
-            "currency":            currency,
-            "use_live_broker":     use_live_broker,
-            "ep_stop_loss":        ep_stop_loss,
-            "ep_hard_stop":        ep_hard_stop,
-            "ep_trail_trigger":    ep_trail_trigger,
-            "ep_trail_offset":     ep_trail_offset,
-            "ep_trail_mode":       ep_trail_mode,
-            "ep_max_hold_mins":    ep_max_hold_mins,
-            "th_start":            th_start,
-            "th_end":              th_end,
-            "th_tz":               th_tz,
-            "entry_source_kairos": entry_source_kairos,
-            "opt_broker_mode":     "alpaca",
-            "opt_target_prem":     opt_target_prem,
-            "opt_expiry_type":     opt_expiry_type,
-            "opt_right_ovr":       opt_right_ovr,
-            "opt_contracts":       opt_contracts,
-            "ticker":              ticker,
-        }
+        if _matched_no_broker_bundles:
+            _fallback_rs = _matched_no_broker_bundles[0]
+        else:
+            _fallback_rs = {
+                "rule_id":             None,
+                "quantity":            quantity,
+                "sec_type":            sec_type,
+                "currency":            currency,
+                "use_live_broker":     use_live_broker,
+                "ep_stop_loss":        ep_stop_loss,
+                "ep_hard_stop":        ep_hard_stop,
+                "ep_trail_trigger":    ep_trail_trigger,
+                "ep_trail_offset":     ep_trail_offset,
+                "ep_trail_mode":       ep_trail_mode,
+                "ep_max_hold_mins":    ep_max_hold_mins,
+                "th_start":            th_start,
+                "th_end":              th_end,
+                "th_tz":               th_tz,
+                "entry_source_kairos": entry_source_kairos,
+                "opt_broker_mode":     "alpaca",
+                "opt_target_prem":     opt_target_prem,
+                "opt_expiry_type":     opt_expiry_type,
+                "opt_right_ovr":       opt_right_ovr,
+                "opt_contracts":       opt_contracts,
+                "ticker":              ticker,
+            }
         broker_targets = [(broker_name, None, _fallback_rs)]
 
     # Per-target trading hours check: filter out targets whose rule's hours
