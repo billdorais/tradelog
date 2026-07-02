@@ -1357,11 +1357,12 @@
         alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
         return;
       }
-      const crew = _allStrategyNames.filter(s => _crewStrategies.has(s.toUpperCase()));
-      if (!crew.length) {
-        alert('None of the Crew Paper strategies have traded in this view yet.');
-        return;
-      }
+      // Select ALL wired Crew Paper strategies (the crew's current Top-N), including
+      // picks that haven't traded yet — so the filter reflects the full crew set, not
+      // just the ones that have already fired. Surface any missing names in the picker.
+      const crew = [..._crewStrategies];
+      for (const s of crew) if (!_allStrategyNames.includes(s)) _allStrategyNames.push(s);
+      _allStrategyNames.sort();
       selectedStrategies = new Set(crew);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
