@@ -598,6 +598,18 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             conn.close()
             return jsonify({"status": "blocked", "reason": "daily_loss_limit"}), 200
 
+    # Profit lock — once armed, halt NEW entries after profit gives back below the floor
+    if getattr(app, "PROFIT_LOCK_DOLLARS", 0) > 0 and order_action in ("BUY", "SELL") and not _is_exit:
+        with app._risk_lock:
+            _pl_halt = app._profit_lock_halted
+        if _pl_halt:
+            app.log.warning("Profit lock halt — order blocked: %s %s %s", order_action, ticker, strategy_name)
+            app._update_exec(cur, trade_id, "blocked",
+                             f"Profit lock: gave back below ${app.PROFIT_LOCK_DOLLARS:g} — trading halted for the day")
+            conn.commit()
+            conn.close()
+            return jsonify({"status": "blocked", "reason": "profit_lock"}), 200
+
     # Per-strategy block (set by position stop monitor) — exits bypass this too
     if strategy_name and order_action in ("BUY", "SELL") and not _is_exit:
         with app._risk_lock:

@@ -263,6 +263,24 @@
         <div class="risk-hint">Negative value halts &amp; liquidates all positions (e.g. -500). 0 = disabled.</div>
       </div>
 
+      <div class="risk-divider"></div>
+
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Profit Lock — Halt After Give-Back
+          <span id="plStatusBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="plStatusDot"></span>
+            <span id="plStatusText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <input class="risk-input" id="profitLockInput" type="number" step="1" min="0" placeholder="e.g. 150">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveProfitLock()">Set</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearProfitLock()" title="Disable profit lock">Off</button>
+        </div>
+        <div class="risk-hint" id="plStatusHint">Once daily P&amp;L reaches this, halts NEW entries for the day if it later falls back below it (locks in the gain). Keeps trading while above. 0 = disabled.</div>
+      </div>
+
       <div id="riskResetSection" style="display:none;margin-left:auto">
         <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
       </div>
@@ -984,6 +1002,31 @@
       if (document.activeElement !== input && data.max_daily_loss !== null) {
         input.value = data.max_daily_loss;
       }
+
+      // Profit lock — input + armed/halted status
+      const plInput = document.getElementById('profitLockInput');
+      if (plInput && document.activeElement !== plInput) {
+        plInput.value = data.profit_lock_enabled ? data.profit_lock_dollars : '';
+      }
+      const plBadge = document.getElementById('plStatusBadge');
+      const plDot   = document.getElementById('plStatusDot');
+      const plText  = document.getElementById('plStatusText');
+      const plHint  = document.getElementById('plStatusHint');
+      if (plBadge && plDot && plText) {
+        const plAmt = data.profit_lock_dollars;
+        if (!data.profit_lock_enabled) {
+          plBadge.className = 'risk-status-badge disabled'; plDot.className = 'risk-dot grey'; plText.textContent = 'Disabled';
+        } else if (data.profit_lock_halted) {
+          plBadge.className = 'risk-status-badge halted'; plDot.className = 'risk-dot red'; plText.textContent = 'HALTED — gave back';
+          if (plHint) plHint.textContent = `Daily P&L fell back below $${plAmt} — new entries halted for the day. Use "Clear Halt & Resume Trading".`;
+        } else if (data.profit_lock_armed) {
+          plBadge.className = 'risk-status-badge active'; plDot.className = 'risk-dot green'; plText.textContent = `Armed @ $${plAmt}`;
+          if (plHint) plHint.textContent = `Floor armed — trading continues while daily P&L stays above $${plAmt}; halts if it drops below.`;
+        } else {
+          plBadge.className = 'risk-status-badge active'; plDot.className = 'risk-dot grey'; plText.textContent = `Waiting → $${plAmt}`;
+          if (plHint) plHint.textContent = `Arms once daily P&L reaches $${plAmt}, then halts if it later falls back below.`;
+        }
+      }
       const posInput = document.getElementById('posLimitInput');
       if (document.activeElement !== posInput) {
         const posVal = data.max_position_loss_pct ?? null;
@@ -1264,6 +1307,8 @@
         panel.classList.remove('halted');
         resetSec.style.display = 'none';
       }
+      // Profit lock halt also surfaces the "Clear Halt & Resume" button.
+      if (data.profit_lock_halted) resetSec.style.display = 'block';
       // Blocked strategies + positions detail row
       const blocked   = data.blocked_strategies || {};
       const positions = data.positions || [];
@@ -1303,6 +1348,23 @@
     document.getElementById('riskLimitInput').value = '';
     try { await _postLimit({max_daily_loss: 0}); }
     catch(e) { console.error('clearRiskLimit failed:', e); }
+  }
+
+  async function saveProfitLock() {
+    const input = document.getElementById('profitLockInput');
+    const raw = input.value.trim();
+    if (raw === '') { await clearProfitLock(); return; }
+    const val = parseFloat(raw);
+    if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({profit_lock_dollars: val}); }
+    catch(e) { console.error('saveProfitLock failed:', e); }
+  }
+
+  async function clearProfitLock() {
+    document.getElementById('profitLockInput').value = '';
+    try { await _postLimit({profit_lock_dollars: 0}); }
+    catch(e) { console.error('clearProfitLock failed:', e); }
   }
 
   async function savePositionLimit() {
