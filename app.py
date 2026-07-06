@@ -4570,7 +4570,9 @@ def api_journal_generate():
         if _tag_match:
             _labels = [_re.sub(r'[^a-z0-9-]', '', t.strip().lower()) for t in _tag_match.group(1).split(',') if t.strip()]
             _labels = [l for l in _labels if l]  # drop empty after sanitize
-            _clean_summary = summary[:_tag_match.start()].rstrip()
+            # Strip the TAGS line wherever it sits (the prompt puts it FIRST) and keep
+            # the rest of the report — not just the text before it, which would be empty.
+            _clean_summary = (summary[:_tag_match.start()] + summary[_tag_match.end():]).strip()
 
         # Grade is pre-computed from trade_stats before the stream
         _grade = _init_grade

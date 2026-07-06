@@ -383,20 +383,19 @@
       // only need to send what we have.
       let finalGrade   = donePayload?.grade  || null;
       let finalLabels  = donePayload?.labels || null;
-      let finalSummary = donePayload?.summary ?? text;
+      // Prefer the backend's clean summary, but fall back to the streamed text with
+      // the TAGS line stripped (wherever it sits — the prompt puts it FIRST). Using
+      // `??` alone kept an empty string; deriving from `text` guards against that.
+      let finalSummary = (donePayload?.summary && donePayload.summary.trim())
+        ? donePayload.summary
+        : text.replace(/TAGS:\s*[^\n]*\n?/i, '').trim();
 
       if (finalLabels === null) {
         // Parse TAGS from raw accumulated text
         const tagMatch = text.match(/TAGS:\s*([^\n]+)/i);
-        if (tagMatch) {
-          finalLabels  = tagMatch[1].split(',')
-            .map(t => t.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
-            .filter(Boolean);
-          finalSummary = text.slice(0, text.search(/TAGS:\s/i)).trimEnd();
-        } else {
-          finalLabels  = [];
-          finalSummary = text;
-        }
+        finalLabels = tagMatch
+          ? tagMatch[1].split(',').map(t => t.trim().toLowerCase().replace(/[^a-z0-9-]/g, '')).filter(Boolean)
+          : [];
       }
 
       // Build tags object — include grade only if we have it (backend merges)
