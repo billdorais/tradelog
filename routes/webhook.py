@@ -598,18 +598,6 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             conn.close()
             return jsonify({"status": "blocked", "reason": "daily_loss_limit"}), 200
 
-    # Profit lock — once armed, halt NEW entries after profit gives back below the floor
-    if getattr(app, "PROFIT_LOCK_DOLLARS", 0) > 0 and order_action in ("BUY", "SELL") and not _is_exit:
-        with app._risk_lock:
-            _pl_halt = app._profit_lock_halted
-        if _pl_halt:
-            app.log.warning("Profit lock halt — order blocked: %s %s %s", order_action, ticker, strategy_name)
-            app._update_exec(cur, trade_id, "blocked",
-                             f"Profit lock: gave back below ${app.PROFIT_LOCK_DOLLARS:g} — trading halted for the day")
-            conn.commit()
-            conn.close()
-            return jsonify({"status": "blocked", "reason": "profit_lock"}), 200
-
     # Per-strategy block (set by position stop monitor) — exits bypass this too
     if strategy_name and order_action in ("BUY", "SELL") and not _is_exit:
         with app._risk_lock:
@@ -753,6 +741,24 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 app._update_exec(cur, trade_id, "skipped", _reason)
                 conn.commit()
         alpaca_targets = _kept
+
+    # Profit-lock gate (entries only): drop Alpaca targets whose account has halted
+    # after giving back its daily profit floor. Per-account — a halted book (e.g.
+    # Refined) is skipped while others (e.g. Kairos) keep trading. Exits always pass.
+    if not _is_exit and alpaca_targets and getattr(app, "PROFIT_LOCK_DOLLARS", 0) > 0:
+        _pl_kept = [bt for bt in alpaca_targets
+                    if not app._profit_lock_halted_for(_alpaca_broker_name(bt[0]))]
+        if len(_pl_kept) != len(alpaca_targets):
+            _pl_dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
+                          - {_alpaca_broker_name(bt[0]) for bt in _pl_kept}
+            app.log.info("Profit lock gate: %s %s — skipped %s (gave back below $%g)",
+                         order_action, ticker, ",".join(sorted(_pl_dropped)), app.PROFIT_LOCK_DOLLARS)
+            if not _pl_kept and conn:
+                app._update_exec(cur, trade_id, "blocked",
+                                 f"Profit lock: {', '.join(sorted(_pl_dropped))} gave back below "
+                                 f"${app.PROFIT_LOCK_DOLLARS:g} — halted for the day")
+                conn.commit()
+        alpaca_targets = _pl_kept
 
     # --- Coinbase (sync-only; typically sub-second) ---
     for target, qty_override, _rs_cb in coinbase_targets:

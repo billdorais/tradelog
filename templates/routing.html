@@ -1014,17 +1014,21 @@
       const plHint  = document.getElementById('plStatusHint');
       if (plBadge && plDot && plText) {
         const plAmt = data.profit_lock_dollars;
+        const plAccts = data.profit_lock_accounts || [];
         if (!data.profit_lock_enabled) {
           plBadge.className = 'risk-status-badge disabled'; plDot.className = 'risk-dot grey'; plText.textContent = 'Disabled';
-        } else if (data.profit_lock_halted) {
-          plBadge.className = 'risk-status-badge halted'; plDot.className = 'risk-dot red'; plText.textContent = 'HALTED — gave back';
-          if (plHint) plHint.textContent = `Daily P&L fell back below $${plAmt} — new entries halted for the day. Use "Clear Halt & Resume Trading".`;
-        } else if (data.profit_lock_armed) {
-          plBadge.className = 'risk-status-badge active'; plDot.className = 'risk-dot green'; plText.textContent = `Armed @ $${plAmt}`;
-          if (plHint) plHint.textContent = `Floor armed — trading continues while daily P&L stays above $${plAmt}; halts if it drops below.`;
+          if (plHint) plHint.textContent = 'Per account: once a book’s daily P&L reaches this, halts ITS new entries for the day if it later falls back below (others keep trading). 0 = disabled.';
         } else {
-          plBadge.className = 'risk-status-badge active'; plDot.className = 'risk-dot grey'; plText.textContent = `Waiting → $${plAmt}`;
-          if (plHint) plHint.textContent = `Arms once daily P&L reaches $${plAmt}, then halts if it later falls back below.`;
+          const anyHalt = plAccts.some(a => a.halted);
+          const anyArm  = plAccts.some(a => a.armed && !a.halted);
+          plDot.className = 'risk-dot ' + (anyHalt ? 'red' : anyArm ? 'green' : 'grey');
+          plBadge.className = 'risk-status-badge ' + (anyHalt ? 'halted' : 'active');
+          plText.textContent = `$${plAmt} / account`;
+          if (plHint) {
+            const parts = plAccts.map(a => `${a.label}: ${a.halted ? '⛔ halted' : a.armed ? '✓ armed' : '⏳ waiting'}`);
+            plHint.innerHTML = `Per-account floor $${plAmt} — ` + (parts.length ? parts.join(' · ') : 'no accounts')
+              + (anyHalt ? ' · use “Clear Halt & Resume” to reset.' : '');
+          }
         }
       }
       const posInput = document.getElementById('posLimitInput');

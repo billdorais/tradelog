@@ -181,8 +181,8 @@ ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS
                           else _accounts_with("retest"))
 
 _risk_halted          = False   # True when daily loss limit is breached
-_profit_lock_armed    = False   # daily P&L reached PROFIT_LOCK_DOLLARS today
-_profit_lock_halted   = False   # armed AND gave back below the floor → new entries blocked
+_profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
+_profit_lock_halted   = {}      # {account_tag: bool} — armed then gave back → its new entries blocked
 _profit_lock_day      = None    # ET date the arm/halt state applies to (auto-resets daily)
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
 _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
@@ -987,13 +987,12 @@ def _risk_monitor_loop():
             except Exception as _e:
                 log.warning("Risk monitor error: %s", _e)
 
-        # Profit lock — arm a floor once daily P&L reaches PROFIT_LOCK_DOLLARS, then
-        # halt NEW entries for the day if a later trade drags P&L back below it.
-        # Halt-only (no liquidation); auto-resets at the ET day boundary.
+        # Profit lock — PER ACCOUNT. Once an account's daily P&L reaches the floor,
+        # arm it; if a later trade drags that account back below the floor, halt its
+        # NEW entries for the day (others keep trading). Halt-only; resets at ET midnight.
         if PROFIT_LOCK_DOLLARS > 0:
             try:
                 global _profit_lock_armed, _profit_lock_halted, _profit_lock_day
-                _pl_pnl = _compute_daily_pnl()   # cached — cheap even alongside the loss check
                 try:
                     _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
                 except Exception:
@@ -1001,22 +1000,41 @@ def _risk_monitor_loop():
                     _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
                 with _risk_lock:
                     if _profit_lock_day != _today:
-                        _profit_lock_day, _profit_lock_armed, _profit_lock_halted = _today, False, False
-                    if _pl_pnl is not None:
-                        if not _profit_lock_armed and _pl_pnl >= PROFIT_LOCK_DOLLARS:
-                            _profit_lock_armed = True
-                            log.info("Profit lock ARMED: daily P&L $%.2f reached floor $%.2f",
-                                     _pl_pnl, PROFIT_LOCK_DOLLARS)
-                        if _profit_lock_armed and not _profit_lock_halted and _pl_pnl < PROFIT_LOCK_DOLLARS:
-                            _profit_lock_halted = True
-                            log.warning("PROFIT LOCK HALT: daily P&L $%.2f fell back below floor $%.2f "
-                                        "— new entries halted for the day", _pl_pnl, PROFIT_LOCK_DOLLARS)
+                        _profit_lock_day, _profit_lock_armed, _profit_lock_halted = _today, {}, {}
+                for _acct in ALPACA_ACCOUNTS:
+                    _tag, _br = _acct["tag"], _acct["broker"]
+                    if _br is None:
+                        continue
+                    try:
+                        _apnl = _br.daily_pnl()
+                    except Exception as _de:
+                        log.debug("Profit lock: daily_pnl failed for %s: %s", _tag, _de)
+                        continue
+                    if _apnl is None:
+                        continue
+                    with _risk_lock:
+                        if not _profit_lock_armed.get(_tag) and _apnl >= PROFIT_LOCK_DOLLARS:
+                            _profit_lock_armed[_tag] = True
+                            log.info("Profit lock ARMED [%s]: daily P&L $%.2f reached floor $%.2f",
+                                     _tag, _apnl, PROFIT_LOCK_DOLLARS)
+                        if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _apnl < PROFIT_LOCK_DOLLARS:
+                            _profit_lock_halted[_tag] = True
+                            log.warning("PROFIT LOCK HALT [%s]: daily P&L $%.2f fell back below floor $%.2f "
+                                        "— its new entries halted for the day", _tag, _apnl, PROFIT_LOCK_DOLLARS)
             except Exception as _e:
                 log.warning("Profit lock monitor error: %s", _e)
         time.sleep(60)
 
 
 threading.Thread(target=_risk_monitor_loop, daemon=True).start()
+
+
+def _profit_lock_halted_for(tag):
+    """True if the profit lock is active AND this account gave back below its floor."""
+    if PROFIT_LOCK_DOLLARS <= 0:
+        return False
+    with _risk_lock:
+        return bool(_profit_lock_halted.get(tag))
 
 
 def _check_position_stops():
@@ -2437,8 +2455,8 @@ def risk_status():
     pnl = _compute_daily_pnl()
     with _risk_lock:
         halted          = _risk_halted
-        pl_armed        = _profit_lock_armed
-        pl_halted       = _profit_lock_halted
+        pl_armed        = dict(_profit_lock_armed)
+        pl_halted       = dict(_profit_lock_halted)
         blocked         = dict(_blocked_strategies)
         positions       = [dict(p) for p in _latest_positions]  # copy for mutation
         peaks_snap      = dict(_position_peaks)
@@ -2504,8 +2522,12 @@ def risk_status():
         "enabled":              MAX_DAILY_LOSS < 0,
         "profit_lock_dollars":  PROFIT_LOCK_DOLLARS if PROFIT_LOCK_DOLLARS > 0 else None,
         "profit_lock_enabled":  PROFIT_LOCK_DOLLARS > 0,
-        "profit_lock_armed":    pl_armed,
-        "profit_lock_halted":   pl_halted,
+        "profit_lock_halted":   any(pl_halted.values()),          # any account halted (for reset btn)
+        "profit_lock_accounts": [
+            {"tag": a["tag"], "label": a["label"],
+             "armed": bool(pl_armed.get(a["tag"])), "halted": bool(pl_halted.get(a["tag"]))}
+            for a in ALPACA_ACCOUNTS
+        ],
         "max_position_loss":          MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
         "max_position_loss_pct":      MAX_POSITION_LOSS_PCT if MAX_POSITION_LOSS_PCT != 0 else None,
         "max_position_loss_refined":  MAX_POSITION_LOSS_REFINED if MAX_POSITION_LOSS_REFINED != 0 else None,
@@ -2614,10 +2636,10 @@ def risk_set_limit():
             PROFIT_LOCK_DOLLARS = max(0.0, float(data["profit_lock_dollars"]))
         except (TypeError, ValueError):
             return jsonify({"error": "profit_lock_dollars must be a number"}), 400
-        # Changing/clearing the floor resets today's arm/halt state.
+        # Changing/clearing the floor resets today's per-account arm/halt state.
         with _risk_lock:
-            _profit_lock_armed = False
-            _profit_lock_halted = False
+            _profit_lock_armed = {}
+            _profit_lock_halted = {}
         _update_env_file("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
         _save_setting("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
         log.info("PROFIT_LOCK_DOLLARS updated to %g", PROFIT_LOCK_DOLLARS)
@@ -2767,10 +2789,10 @@ def risk_reset():
     global _risk_halted, _profit_lock_armed, _profit_lock_halted
     with _risk_lock:
         _risk_halted = False
-        # Also clear the profit-lock halt (but not the day marker) so trading resumes;
-        # it re-arms if P&L climbs back above the floor.
-        _profit_lock_armed = False
-        _profit_lock_halted = False
+        # Also clear the per-account profit-lock halts (but not the day marker) so
+        # trading resumes; each account re-arms if its P&L climbs back above the floor.
+        _profit_lock_armed = {}
+        _profit_lock_halted = {}
     log.info("Risk halt manually cleared (incl. profit lock)")
     return jsonify({"halted": False})
 
@@ -11486,12 +11508,6 @@ def _engine_pilot_tick(now_et, today):
         the target broker → arm max-hold → log. Loops the setup's targets so a
         setup that lives in both the Refined snapshot AND a routing rule with
         entry_source=kairos fires on alpaca3 AND the rule's broker."""
-        # Profit lock — halt engine entries (Paper All / Kairos) once the day's
-        # profit floor gave back, same as the webhook gate for TV entries.
-        if PROFIT_LOCK_DOLLARS > 0:
-            with _risk_lock:
-                if _profit_lock_halted:
-                    return
         tk, side, lvl_name = s["ticker"], s["side"], s["level_name"]
         strat, kind = s["strategy"], s.get("kind", "breakout")
         is_long = side == "LONG"
@@ -11501,6 +11517,9 @@ def _engine_pilot_tick(now_et, today):
             else (s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}])
         for tgt in targets:
             broker_tag   = tgt["broker_tag"]
+            # Profit lock — skip this account's entries if it gave back below its floor.
+            if _profit_lock_halted_for(broker_tag):
+                continue
             # Per-rule long/short gate: a side-gated kairos rule only arms its side.
             _tgt_gate = tgt.get("side_gate")
             if _tgt_gate in ("long", "short") and _tgt_gate != side.lower():
