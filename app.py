@@ -143,13 +143,13 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 #                 crew page, never the snapshot/engine auto-sources.
 ACCOUNT_META = {
     "1": {"tag": "alpaca",  "label": "Paper All",     "color": "#9aa0b5",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False},
     "2": {"tag": "alpaca2", "label": "Refined",       "color": "#c4b5fd",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True},
     "3": {"tag": "alpaca3", "label": "Kairos engine", "color": "#F2C07A",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True},
     "4": {"tag": "alpaca4", "label": "Crew Paper",    "color": "#7FE098",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -716,6 +716,7 @@ for _num in _ALPACA_NUMS:
         "reversal_gate": _meta.get("reversal_gate", True),
         "retest":        _meta.get("retest", True),
         "auto_source":   _meta.get("auto_source", True),
+        "profit_lock":   _meta.get("profit_lock", True),
     }
     ALPACA_ACCOUNTS.append(_rec)
     ACCOUNTS_BY_NUM[_num]        = _rec
@@ -1003,8 +1004,8 @@ def _risk_monitor_loop():
                         _profit_lock_day, _profit_lock_armed, _profit_lock_halted = _today, {}, {}
                 for _acct in ALPACA_ACCOUNTS:
                     _tag, _br = _acct["tag"], _acct["broker"]
-                    if _br is None:
-                        continue
+                    if _br is None or not _acct.get("profit_lock", True):
+                        continue   # Paper All (audition pool) trades unlocked
                     try:
                         _apnl = _br.daily_pnl()
                     except Exception as _de:
@@ -2526,7 +2527,7 @@ def risk_status():
         "profit_lock_accounts": [
             {"tag": a["tag"], "label": a["label"],
              "armed": bool(pl_armed.get(a["tag"])), "halted": bool(pl_halted.get(a["tag"]))}
-            for a in ALPACA_ACCOUNTS
+            for a in ALPACA_ACCOUNTS if a.get("profit_lock", True)
         ],
         "max_position_loss":          MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
         "max_position_loss_pct":      MAX_POSITION_LOSS_PCT if MAX_POSITION_LOSS_PCT != 0 else None,
