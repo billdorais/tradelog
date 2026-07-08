@@ -58,6 +58,10 @@ To surface account N in the UI, follow the acct-4 ("crew") pattern:
 - **Routing** [templates/routing.html](../templates/routing.html): broker `<option>`s,
   the broker-label map, and a `.node-broker-alpaca-paper-N` colour.
 
+The **Replay** page ([templates/simulate.html](../templates/simulate.html)) is
+registry-driven — its Account dropdown renders from `ALPACA_ACCOUNTS` (passed by the
+`/simulate` route), so a new account appears there automatically with no edit.
+
 The Refined-vs-Kairos A/B tools ([templates/journal.html](../templates/journal.html),
 [templates/entry_engine.html](../templates/entry_engine.html)) are pilot-specific
 comparisons, not per-account views, and are intentionally left at two columns.

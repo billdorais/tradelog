@@ -4995,7 +4995,10 @@ def about():
 
 @app.route("/simulate")
 def simulate():
-    return render_template("simulate.html")
+    # Registry-driven account dropdown — every configured paper account (incl.
+    # Crew Paper and any future one added via env + ACCOUNT_META) shows up here.
+    _accts = [{"num": a["num"], "label": a["label"]} for a in ALPACA_ACCOUNTS]
+    return render_template("simulate.html", accounts=_accts)
 
 
 def _resolve_strategy_trail(strategy_name: str, overrides: dict, default_trail: float) -> float:

@@ -283,9 +283,9 @@
       <div class="field">
         <label>Account</label>
         <select id="account">
-          <option value="2">Refined (account 2)</option>
-          <option value="1">Paper All (account 1)</option>
-          <option value="3">⚡ Kairos engine (account 3)</option>
+          {% for a in accounts %}
+          <option value="{{ a.num }}"{% if a.num == '2' %} selected{% endif %}>{{ a.label }} (account {{ a.num }})</option>
+          {% endfor %}
         </select>
       </div>
     </div>
