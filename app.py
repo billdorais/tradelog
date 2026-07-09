@@ -180,6 +180,17 @@ ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS
                           if os.environ.get("ENGINE_RETEST_ACCOUNTS")
                           else _accounts_with("retest"))
 
+# Tickers the broker won't let you sell short (SPACs, hard-to-borrow, etc.). A
+# short ENTRY on one of these just errors at Alpaca ("cannot be sold short"), so
+# we skip it cleanly instead — in both the webhook and the engine. Comma-list,
+# env-overridable. Exits are never affected. See webhook non-shortable guard.
+NON_SHORTABLE = {t.strip().upper()
+                 for t in os.environ.get("NON_SHORTABLE_TICKERS", "SPCX").split(",")
+                 if t.strip()}
+
+def _is_non_shortable(ticker: str) -> bool:
+    return (ticker or "").strip().upper() in NON_SHORTABLE
+
 _risk_halted          = False   # True when daily loss limit is breached
 _profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
 _profit_lock_halted   = {}      # {account_tag: bool} — armed then gave back → its new entries blocked
@@ -11228,6 +11239,8 @@ def _entry_engine_setups():
         for side in ("LONG", "SHORT"):
             if _gate in ("long", "short") and _gate != side.lower():
                 continue   # side-gated strategy: this side is suppressed on ALL accounts
+            if side == "SHORT" and _is_non_shortable(tk):
+                continue   # broker can't short this ticker — don't arm the short
             # breakout: LONG breaks up through R, SHORT down through S.
             # reversal: LONG bounces off S, SHORT rejects at R (inverted).
             if kind == "breakout":

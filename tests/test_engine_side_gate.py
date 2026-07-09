@@ -44,6 +44,12 @@ def engine_env(tmp_path):
             {"type": "strategy", "value": "GLD_CAM_REVERSAL_R4S4_V02_5MIN"},
         ])),
     )
+    conn.execute(
+        "INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
+        ("SPCX brk R3S3 (non-shortable)", json.dumps([
+            {"type": "strategy", "value": "SPCX_CAM_BREAKOUT_R3S3_V02_5MIN"},
+        ])),
+    )
     conn.commit()
     conn.close()
 
@@ -79,3 +85,9 @@ def test_side_gate_suppresses_gated_side_on_all_pipelines(engine_env):
 def test_ungated_strategy_keeps_both_sides(engine_env):
     setups = engine_env._entry_engine_setups()
     assert _sides(setups, "GLD_CAM_REVERSAL_R4S4_V02_5MIN") == ["LONG", "SHORT"]
+
+
+def test_non_shortable_ticker_is_long_only(engine_env):
+    # SPCX can't be sold short at the broker → the engine must not arm its short.
+    setups = engine_env._entry_engine_setups()
+    assert _sides(setups, "SPCX_CAM_BREAKOUT_R3S3_V02_5MIN") == ["LONG"]

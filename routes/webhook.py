@@ -275,6 +275,49 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                         "long"  if order_action == "BUY"  else
                         "short" if order_action == "SELL" else None)
 
+    # Template-alert guard: an unsubstituted TradingView {{ticker}} placeholder
+    # leaves the literal "CAM_TICKER" (or braces) in the strategy id. It can never
+    # match a routing rule, so flag it clearly instead of the generic "no rule"
+    # block — the fix is on the TV alert, not the router.
+    _su = strategy_name.upper()
+    if "CAM_TICKER" in _su or "{{" in strategy_name or "}}" in strategy_name:
+        app.log.info("Ignoring template alert (unsubstituted placeholder): strategy=%r ticker=%s",
+                     strategy_name, ticker)
+        try:
+            _tc = app.get_db(); _tcur = _tc.cursor()
+            _tid = app._insert_trade(_tcur, (
+                ticker, raw_action, data.get("sentiment"), data.get("quantity"),
+                data.get("price"), data.get("time"), data.get("interval"),
+                received_at, strategy_name, broker_name,
+            ))
+            app._update_exec(_tcur, _tid, "skipped",
+                "Template alert: unsubstituted {{ticker}} placeholder — fix or delete the TradingView alert")
+            _tc.commit(); _tc.close()
+        except Exception as _te:
+            app.log.debug("Failed to log template alert: %s", _te)
+        return jsonify({"status": "ignored",
+                        "reason": "Template alert with an unsubstituted placeholder — fix the TradingView alert."}), 200
+
+    # Non-shortable guard: a short ENTRY on a ticker the broker won't let you short
+    # (e.g. SPCX) just errors at Alpaca. Skip it cleanly. Exits always pass so an
+    # existing position can still be closed.
+    if _gate_entry_side == "short" and app._is_non_shortable(ticker):
+        app.log.info("Skipping short entry on non-shortable ticker %s (strategy=%s)", ticker, strategy_name)
+        try:
+            _nc = app.get_db(); _ncur = _nc.cursor()
+            _nid = app._insert_trade(_ncur, (
+                ticker, raw_action, data.get("sentiment"), data.get("quantity"),
+                data.get("price"), data.get("time"), data.get("interval"),
+                received_at, strategy_name, broker_name,
+            ))
+            app._update_exec(_ncur, _nid, "skipped",
+                f"{ticker} cannot be sold short at the broker — short entry skipped")
+            _nc.commit(); _nc.close()
+        except Exception as _ne:
+            app.log.debug("Failed to log non-shortable skip: %s", _ne)
+        return jsonify({"status": "skipped",
+                        "reason": f"{ticker} is not shortable at the broker — short entry skipped."}), 200
+
     matched_rule_id     = None       # first matching rule (kept for back-compat / logging)
     matched_rule_ids    = []         # ALL matching rules — used to flip tv_alert_created on each
     _side_gated_any     = False      # True if any matched rule was skipped by its long/short gate
