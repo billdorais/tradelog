@@ -5508,6 +5508,84 @@ def api_regime_backtest():
     })
 
 
+@app.route("/api/alpaca/reversal_breakdown")
+def api_reversal_breakdown():
+    """Drill into ONE strategy family's real round-trips (read-only). The regime
+    backtest showed reversals bleed in every regime; this splits them by level
+    (R3S3/R4S4), side (long/short), level×side, and ticker so we can tell whether
+    the book is uniformly unprofitable (kill it) or concentrated (gate the losing
+    subset). Defaults to REVERSAL; ?kind=breakout inspects the other book.
+
+    Query: ?account=1&from=YYYY-MM-DD&to=YYYY-MM-DD&kind=reversal
+    """
+    account   = str(request.args.get("account", "1"))
+    from_date = request.args.get("from", "")
+    to_date   = request.args.get("to",   "")
+    kind      = (request.args.get("kind", "reversal") or "reversal").upper()
+    if kind not in ("REVERSAL", "BREAKOUT"):
+        kind = "REVERSAL"
+
+    broker, _tag, _label, _fills_fn = _alpaca_account_ctx(account)
+    if broker is None:
+        return jsonify({"error": f"Alpaca {_label} not configured"}), 400
+
+    fills         = _fills_fn()
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
+                                            signal_lookup=signal_lookup)
+    trades = [t for t in paired["closed_clean"] if kind in (t.get("strategy") or "").upper()]
+    if not trades:
+        return jsonify({"error": f"No completed {kind.lower()} round-trips in the selected period"}), 404
+
+    from collections import defaultdict as _dd
+    by_level      = _dd(list)
+    by_side       = _dd(list)
+    by_level_side = _dd(list)
+    by_ticker     = _dd(list)
+    all_pnls      = []
+    for t in trades:
+        pnl  = float(t.get("pnl") or 0)
+        side = (t.get("side") or "").upper() or "?"
+        tk   = (t.get("ticker") or "?").upper()
+        # level = the "R3S3"/"R4S4" token from "<TK>_CAM_REVERSAL_R3S3_..."
+        tl    = _strategy_type_level(t.get("strategy", ""))     # e.g. "REVERSAL R3S3"
+        level = tl.split(" ")[1] if " " in tl else tl
+        by_level[level].append(pnl)
+        by_side[side].append(pnl)
+        by_level_side[f"{level} {side}"].append(pnl)
+        by_ticker[tk].append(pnl)
+        all_pnls.append(pnl)
+
+    def _stats(pnls):
+        n = len(pnls)
+        if n == 0:
+            return None
+        wins = sum(1 for p in pnls if p > 0)
+        return {"trades": n, "total_pnl": round(sum(pnls), 2),
+                "avg_pnl": round(sum(pnls) / n, 2), "win_rate": round(wins / n * 100, 1)}
+
+    def _dictstats(d):
+        return {k: _stats(v) for k, v in sorted(d.items())}
+
+    # Tickers ranked worst-total-first so the biggest bleeders surface at the top.
+    tickers_ranked = sorted(
+        ({"ticker": tk, **_stats(pnls)} for tk, pnls in by_ticker.items()),
+        key=lambda r: r["total_pnl"])
+
+    return jsonify({
+        "account":       account,
+        "account_label": _label,
+        "kind":          kind,
+        "from":          from_date,
+        "to":            to_date,
+        "overall":       _stats(all_pnls),
+        "by_level":      _dictstats(by_level),
+        "by_side":       _dictstats(by_side),
+        "by_level_side": _dictstats(by_level_side),
+        "by_ticker":     tickers_ranked,
+    })
+
+
 @app.route("/api/simulate/sweep", methods=["POST"])
 def simulate_sweep():
     """Parameter sweep: grid-search trail/trigger combos, return ranked results."""

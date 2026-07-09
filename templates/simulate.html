@@ -551,6 +551,24 @@
     <div id="regimeResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Reversal / strategy-book breakdown -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Book Breakdown
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— is the losing book uniformly bad, or concentrated in a side / level / ticker?</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Book</label>
+        <select id="bkKind" style="padding:6px 8px">
+          <option value="reversal">Reversals</option>
+          <option value="breakout">Breakouts</option>
+        </select>
+      </div>
+      <button class="run-btn" onclick="runBookBreakdown()" style="padding:8px 18px">&#9654; Break Down</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Splits real round-trip P&amp;L by level (R3S3/R4S4), side, level×side, and ticker.</span>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Real round-trip P&amp;L (actual fills). Tickers ranked worst-total first.</div>
+    <div id="bookResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- AI Chat panel -->
   <div id="chatPanel" class="chat-panel" style="display:none">
     <div class="chat-header">
@@ -952,6 +970,55 @@
         + row('Reversals', d.reversal_by_regime || {})
         + row('All',       d.all_by_regime || {})
         + `</tbody></table></div>`;
+    } catch (e) { out.innerHTML = '<div style="color:#c66">Error: ' + e.message + '</div>'; }
+  }
+
+  // Book breakdown: split one strategy family's real round-trips by level/side/ticker.
+  async function runBookBreakdown() {
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    const out = document.getElementById('bookResult');
+    const kind = document.getElementById('bkKind').value;
+    const qs  = new URLSearchParams({
+      account: document.getElementById('account').value,
+      from:    document.getElementById('fromDate').value,
+      to:      document.getElementById('toDate').value,
+      kind:    kind,
+    });
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running…</div>';
+    try {
+      const r = await fetch('/api/alpaca/reversal_breakdown?' + qs);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+
+      const pnlC = v => v >= 0 ? '#7FE098' : '#e08a8a';
+      const sRow = (label, s) => s
+        ? `<tr><td style="color:#ccc">${label}</td>`
+          + `<td style="text-align:right;color:${pnlC(s.total_pnl)}">${money(s.total_pnl)}</td>`
+          + `<td style="text-align:right;color:#aaa">${money(s.avg_pnl)}</td>`
+          + `<td style="text-align:right;color:#aaa">${s.trades}</td>`
+          + `<td style="text-align:right;color:#aaa">${s.win_rate}%</td></tr>`
+        : '';
+      const tbl = (title, obj) => {
+        const rows = Object.entries(obj).map(([k, s]) => sRow(k, s)).join('');
+        if (!rows) return '';
+        return `<div style="margin-top:12px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">${title}</div>`
+          + `<table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+          + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left"></th><th style="text-align:right">P&L</th><th style="text-align:right">avg</th><th style="text-align:right">n</th><th style="text-align:right">win</th></tr></thead>`
+          + `<tbody>${rows}</tbody></table></div>`;
+      };
+      const tkRows = (d.by_ticker || []).map(t => sRow(t.ticker, t)).join('');
+
+      const o = d.overall || {};
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account_label} · ${d.kind} book · ${o.trades} round-trips · ${d.from || '—'} → ${d.to || '—'} · `
+        + `<span style="color:${pnlC(o.total_pnl)}">${money(o.total_pnl)}</span> total (avg ${money(o.avg_pnl)}/trade · ${o.win_rate}% win)</div>`
+        + tbl('By side', d.by_side || {})
+        + tbl('By level', d.by_level || {})
+        + tbl('By level × side', d.by_level_side || {})
+        + (tkRows ? `<div style="margin-top:12px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">By ticker (worst first)</div>`
+            + `<div style="max-height:320px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Ticker</th><th style="text-align:right">P&L</th><th style="text-align:right">avg</th><th style="text-align:right">n</th><th style="text-align:right">win</th></tr></thead>`
+            + `<tbody>${tkRows}</tbody></table></div></div>` : '');
     } catch (e) { out.innerHTML = '<div style="color:#c66">Error: ' + e.message + '</div>'; }
   }
 
