@@ -538,6 +538,19 @@
     <div id="reversalTestResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Regime backtest -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Regime Backtest
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— do the losses cluster on days the <em>index</em> is choppy (not Outside)?</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Regime ticker</label><div class="input-wrap"><input type="text" id="regTicker" value="SPY" style="width:70px;text-transform:uppercase"></div></div>
+      <button class="run-btn" onclick="runRegimeBacktest()" style="padding:8px 18px">&#9654; Run Backtest</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Tags every real round-trip with the regime ticker's day-type on that date, then splits P&amp;L by regime.</span>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Real round-trip P&amp;L (your actual fills, not simulated). The live day-type gate classifies each ticker individually; this checks whether a single <em>market-wide</em> signal (index not-Outside) separates the loss days.</div>
+    <div id="regimeResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- AI Chat panel -->
   <div id="chatPanel" class="chat-panel" style="display:none">
     <div class="chat-header">
@@ -878,6 +891,68 @@
         + sweepTable('Both families combined', '#7bb3d6', d.sweep_overall || [])
         + `<div style="font-size:0.85rem;margin-top:12px">${verdict}</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  // Regime backtest: split real round-trip P&L by the index's day-type per date.
+  async function runRegimeBacktest() {
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    const out = document.getElementById('regimeResult');
+    const reg = (document.getElementById('regTicker').value || 'SPY').toUpperCase();
+    const qs  = new URLSearchParams({
+      account: document.getElementById('account').value,
+      from:    document.getElementById('fromDate').value,
+      to:      document.getElementById('toDate').value,
+      regime:  reg,
+    });
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running…</div>';
+    try {
+      const r = await fetch('/api/alpaca/regime_backtest?' + qs);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+
+      const cell = s => s
+        ? `<td style="text-align:right;color:${s.total_pnl >= 0 ? '#7FE098' : '#e08a8a'}">${money(s.total_pnl)}</td>`
+          + `<td style="text-align:right;color:#aaa">${money(s.avg_pnl)}</td>`
+          + `<td style="text-align:right;color:#aaa">${s.trades}</td>`
+          + `<td style="text-align:right;color:#aaa">${s.win_rate}%</td>`
+        : '<td style="text-align:right;color:#555" colspan="4">—</td>';
+      const row = (label, by) =>
+        `<tr><td style="color:#ccc">${label}</td>`
+        + ['Outside', 'Inside', 'Neutral'].map(rg => cell(by[rg])).join('') + '</tr>';
+
+      const hdr = `<tr><th style="text-align:left">Strategy</th>`
+        + ['Outside <span style="color:#7FE098">(breakouts OK)</span>', 'Inside', 'Neutral']
+            .map(rg => `<th colspan="4" style="text-align:center;border-left:1px solid #2a2d3e">${rg}</th>`).join('')
+        + `</tr><tr style="font-size:0.65rem;color:#666"><th></th>`
+        + ['','',''].map(() => `<th style="text-align:right;border-left:1px solid #2a2d3e">P&L</th><th style="text-align:right">avg</th><th style="text-align:right">n</th><th style="text-align:right">win</th>`).join('')
+        + `</tr>`;
+
+      const v = d.verdict || {};
+      const bo = v.breakout_outside, bc = v.breakout_choppy;
+      let verdict = '';
+      if (bo && bc) {
+        const edge = (bo.avg_pnl || 0) - (bc.avg_pnl || 0);
+        const holds = edge > 0 && (bc.total_pnl || 0) < 0;
+        verdict = `<div style="margin-bottom:12px;padding:10px 12px;border-radius:6px;background:${holds ? '#1e2b22' : '#2b2320'};border:1px solid ${holds ? '#3a5a44' : '#5a463a'};font-size:0.85rem;color:#ddd">`
+          + `<b>${holds ? '✓ Signal holds' : '⚠ Weak / inverted'}:</b> ${reg}-Outside breakouts avg ${money(bo.avg_pnl)}/trade `
+          + `(${money(bo.total_pnl)} total) vs ${reg}-choppy breakouts avg ${money(bc.avg_pnl)}/trade (${money(bc.total_pnl)} total). `
+          + (holds
+              ? `Gating breakouts to ${reg}-Outside days would have skipped ${bc.trades} trades worth ${money(bc.total_pnl)}.`
+              : `The index regime does not cleanly separate breakout wins from losses here.`)
+          + `</div>`;
+      }
+
+      const days = d.days_by_regime || {};
+      out.innerHTML = verdict
+        + `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account_label} · ${d.n_trades} round-trips across ${d.n_days} days · ${d.from} → ${d.to} · regime = ${d.regime_ticker} `
+        + `(Outside ${days.Outside || 0}d · Inside ${days.Inside || 0}d · Neutral ${days.Neutral || 0}d)</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+        + `<thead style="color:#888">${hdr}</thead><tbody>`
+        + row('Breakouts', d.breakout_by_regime || {})
+        + row('Reversals', d.reversal_by_regime || {})
+        + row('All',       d.all_by_regime || {})
+        + `</tbody></table></div>`;
+    } catch (e) { out.innerHTML = '<div style="color:#c66">Error: ' + e.message + '</div>'; }
   }
 
   // Push a retest window straight into the Signal Router — sets retest_bars on the

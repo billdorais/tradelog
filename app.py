@@ -5388,6 +5388,126 @@ def api_simulate_stops():
     })
 
 
+@app.route("/api/alpaca/regime_backtest")
+def api_regime_backtest():
+    """Market-wide regime backtest (read-only). Answers: do days when the *index*
+    (default SPY) is a non-Outside (Inside/Neutral) day account for the losses?
+
+    The live day-type gate classifies EACH ticker and allows breakouts only on that
+    ticker's Outside days. That misses market-wide chop: a single ticker can be
+    Outside while the tape ranges (the Jul-8 UNH/V/UBER breakouts). Here we take
+    every historical round-trip, tag it with the REGIME ticker's day-type on that
+    date, and split P&L by regime — separately for breakouts vs reversals — so we
+    can see whether "SPY not-Outside" reliably marks the loss days before wiring
+    any gate.
+
+    Query: ?account=1&from=YYYY-MM-DD&to=YYYY-MM-DD&regime=SPY
+    """
+    account       = str(request.args.get("account", "1"))
+    from_date     = request.args.get("from", "")
+    to_date       = request.args.get("to",   "")
+    regime_ticker = (request.args.get("regime", "SPY") or "SPY").upper()
+
+    broker, _tag, _label, _fills_fn = _alpaca_account_ctx(account)
+    if broker is None:
+        return jsonify({"error": f"Alpaca {_label} not configured"}), 400
+
+    fills         = _fills_fn()
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    paired        = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date,
+                                            signal_lookup=signal_lookup)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No completed round-trips found for the selected period"}), 404
+
+    # Regime day-type for each trading date (one daily-bar fetch per date, cached).
+    dates = sorted({(t.get("entry_time") or "")[:10] for t in trades if t.get("entry_time")})
+    regime_by_date = {}
+    for d in dates:
+        if not d:
+            continue
+        try:
+            regime_by_date[d] = (_get_day_classification(regime_ticker, d) or {}).get("day_type") or "Unknown"
+        except Exception:
+            regime_by_date[d] = "Unknown"
+
+    def _kind(strategy):
+        s = (strategy or "").upper()
+        if "BREAKOUT" in s: return "breakout"
+        if "REVERSAL" in s: return "reversal"
+        return "other"
+
+    # Bucket round-trips by (kind, regime day-type); also track per-day totals.
+    from collections import defaultdict as _dd
+    buckets   = _dd(list)              # (kind, regime) -> [pnl,...]
+    day_pnl   = _dd(float)            # date -> total pnl
+    day_count = _dd(int)             # date -> n trades
+    for t in trades:
+        d    = (t.get("entry_time") or "")[:10]
+        pnl  = float(t.get("pnl") or 0)
+        reg  = regime_by_date.get(d, "Unknown")
+        buckets[(_kind(t.get("strategy")), reg)].append(pnl)
+        day_pnl[d]   += pnl
+        day_count[d] += 1
+
+    def _stats(pnls):
+        n = len(pnls)
+        if n == 0:
+            return None
+        wins = sum(1 for p in pnls if p > 0)
+        return {
+            "trades":        n,
+            "total_pnl":     round(sum(pnls), 2),
+            "avg_pnl":       round(sum(pnls) / n, 2),
+            "win_rate":      round(wins / n * 100, 1),
+        }
+
+    regimes = ["Outside", "Inside", "Neutral", "Unknown"]
+    def _by_regime(kind):
+        return {r: _stats(buckets.get((kind, r), [])) for r in regimes}
+
+    # Days per regime (distinct trading days classified that way).
+    days_by_regime = _dd(int)
+    for d, r in regime_by_date.items():
+        days_by_regime[r] += 1
+
+    # Actionable verdict: breakouts on regime-Outside vs regime not-Outside. The
+    # live thesis allows breakouts only on Outside days — does the index confirm it?
+    brk = buckets
+    brk_outside  = brk.get(("breakout", "Outside"), [])
+    brk_choppy   = brk.get(("breakout", "Inside"), []) + brk.get(("breakout", "Neutral"), [])
+    rev_outside  = brk.get(("reversal", "Outside"), [])
+    rev_choppy   = brk.get(("reversal", "Inside"), []) + brk.get(("reversal", "Neutral"), [])
+
+    per_day = [{"date": d, "regime": regime_by_date.get(d, "Unknown"),
+                "trades": day_count[d], "pnl": round(day_pnl[d], 2)}
+               for d in dates]
+
+    return jsonify({
+        "account":       account,
+        "account_label": _label,
+        "regime_ticker": regime_ticker,
+        "from":          from_date or (dates[0]  if dates else ""),
+        "to":            to_date   or (dates[-1] if dates else ""),
+        "n_trades":      len(trades),
+        "n_days":        len(dates),
+        "days_by_regime":  dict(days_by_regime),
+        "breakout_by_regime": _by_regime("breakout"),
+        "reversal_by_regime": _by_regime("reversal"),
+        "all_by_regime": {
+            r: _stats(sum((buckets.get((k, r), []) for k in ("breakout", "reversal", "other")), []))
+            for r in regimes
+        },
+        "verdict": {
+            "breakout_outside": _stats(brk_outside),
+            "breakout_choppy":  _stats(brk_choppy),   # Inside + Neutral
+            "reversal_outside": _stats(rev_outside),
+            "reversal_choppy":  _stats(rev_choppy),
+        },
+        "per_day": per_day,
+    })
+
+
 @app.route("/api/simulate/sweep", methods=["POST"])
 def simulate_sweep():
     """Parameter sweep: grid-search trail/trigger combos, return ranked results."""
