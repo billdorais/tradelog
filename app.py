@@ -7561,6 +7561,104 @@ def bulk_entry_source():
                     "updated": updated, "skipped": skipped, "ineligible": ineligible})
 
 
+@app.route("/api/routing/rules/apply_reversal_cut", methods=["POST"])
+def apply_reversal_cut():
+    """One-click reversal cut, from the Book Breakdown evidence (long reversals bled
+    -$451, only R4S4-short made money). Over the REVERSAL rules:
+      • keep_level (R4S4) rules  → add side_gate=<side> (short) + ensure enabled
+      • other-level reversals    → disable (no profitable side)
+    Breakouts are never touched. Reversible via /revert_reversal_cut. Pass
+    {"dry_run": true} to preview counts without writing.
+
+    Body: {"side":"short","keep_level":"R4S4","dry_run":false}
+    """
+    data       = request.get_json(silent=True) or {}
+    side       = (data.get("side") or "short").lower()
+    keep_level = (data.get("keep_level") or "R4S4").upper()
+    dry_run    = bool(data.get("dry_run"))
+    if side not in ("long", "short"):
+        return jsonify({"error": "side must be 'long' or 'short'"}), 400
+    if keep_level not in ("R4S4", "R3S3"):
+        return jsonify({"error": "keep_level must be 'R4S4' or 'R3S3'"}), 400
+    other_level = "R3S3" if keep_level == "R4S4" else "R4S4"
+
+    def _rule_level(nodes):
+        for n in nodes:
+            if n.get("type") == "strategy":
+                v = (n.get("value") or "").upper()
+                if "R4S4" in v: return "R4S4"
+                if "R3S3" in v: return "R3S3"
+        return None
+    def _is_reversal(nodes):
+        return any(n.get("type") == "strategy" and "REVERSAL" in (n.get("value") or "").upper()
+                   for n in nodes)
+
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, name, nodes, enabled FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    gated, disabled, skipped = [], [], []
+    for row in rows:
+        rid     = row[0] if DATABASE_URL else row["id"]
+        rname   = row[1] if DATABASE_URL else row["name"]
+        nraw    = row[2] if DATABASE_URL else row["nodes"]
+        enabled = row[3] if DATABASE_URL else row["enabled"]
+        try:    nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
+        except Exception: nodes = []
+        if not _is_reversal(nodes):
+            continue                          # breakouts + non-strategy rules untouched
+        lvl = _rule_level(nodes)
+        if lvl == keep_level:
+            # ensure a single side_gate=<side> node + enabled
+            nodes = [n for n in nodes if n.get("type") != "side_gate"]
+            new_node  = {"type": "side_gate", "value": side}
+            strat_idx = next((i for i, n in enumerate(nodes) if n.get("type") == "strategy"), -1)
+            nodes.insert(strat_idx + 1 if strat_idx >= 0 else 0, new_node)
+            if not dry_run:
+                cur.execute(f"UPDATE routing_rules SET nodes={p}, enabled=1 WHERE id={p}",
+                            (json.dumps(nodes), rid))
+            gated.append(rname)
+        elif lvl == other_level:
+            if not dry_run:
+                cur.execute(f"UPDATE routing_rules SET enabled=0 WHERE id={p}", (rid,))
+            disabled.append(rname)
+        else:
+            skipped.append(rname)             # reversal with no R3S3/R4S4 level
+    if not dry_run:
+        conn.commit()
+    conn.close()
+    log.info("apply_reversal_cut: side=%s keep=%s dry_run=%s gated=%d disabled=%d skipped=%d",
+             side, keep_level, dry_run, len(gated), len(disabled), len(skipped))
+    return jsonify({"side": side, "keep_level": keep_level, "dry_run": dry_run,
+                    "gated": gated, "disabled": disabled, "skipped": skipped,
+                    "gated_n": len(gated), "disabled_n": len(disabled)})
+
+
+@app.route("/api/routing/rules/revert_reversal_cut", methods=["POST"])
+def revert_reversal_cut():
+    """Undo apply_reversal_cut: remove side_gate nodes from all REVERSAL rules and
+    re-enable them. Breakouts are never touched."""
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, name, nodes FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    reverted = []
+    for row in rows:
+        rid   = row[0] if DATABASE_URL else row["id"]
+        rname = row[1] if DATABASE_URL else row["name"]
+        nraw  = row[2] if DATABASE_URL else row["nodes"]
+        try:    nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
+        except Exception: nodes = []
+        if not any(n.get("type") == "strategy" and "REVERSAL" in (n.get("value") or "").upper()
+                   for n in nodes):
+            continue
+        clean = [n for n in nodes if n.get("type") != "side_gate"]
+        cur.execute(f"UPDATE routing_rules SET nodes={p}, enabled=1 WHERE id={p}",
+                    (json.dumps(clean), rid))
+        reverted.append(rname)
+    conn.commit(); conn.close()
+    log.info("revert_reversal_cut: reverted=%d rules", len(reverted))
+    return jsonify({"reverted": reverted, "reverted_n": len(reverted)})
+
+
 @app.route("/api/routing/rules/bulk_add_exit_params", methods=["POST"])
 def bulk_add_exit_params():
     """Add a default exit_params node to every routing rule that doesn't already have one."""
