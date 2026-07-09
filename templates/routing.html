@@ -230,6 +230,11 @@
         title="Undo the reversal cut: removes side_gate from all REVERSAL pipelines and re-enables them. Breakouts untouched.">
         Undo Cut
       </button>
+      <button class="btn" onclick="cloneTicker()"
+        style="background:transparent;border:1px solid #6ea8fe;color:#6ea8fe;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
+        title="Wire a NEW ticker by cloning an existing ticker's full rule set (broker targets, sizing, exits, any side-gate/cut). You still create the matching TradingView alert.">
+        ⎘ Clone Ticker
+      </button>
       <button class="btn" onclick="wireCrewToRouter()"
         style="background:transparent;border:1px solid #7FE098;color:#7FE098;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
         title="Append the latest crew report's 'Next Month — Crew Paper' picks as routing rules targeting the Crew Paper account (alpaca-paper-4). Existing Crew Paper rules are kept; only new strategies are added.">
@@ -2179,6 +2184,42 @@
       alert(`Reverted ${data.reverted_n} reversal pipeline(s).`);
       await load();
     } catch (e) { alert('Undo failed: ' + e.message); }
+  }
+
+  async function cloneTicker() {
+    const target = (prompt('New ticker to wire (e.g. GOOG):') || '').trim().toUpperCase();
+    if (!target) return;
+    const source = (prompt(`Clone ${target}'s rules FROM which existing ticker? (e.g. AMZN)`) || '').trim().toUpperCase();
+    if (!source) return;
+    let prev;
+    try {
+      const res = await fetch('/api/routing/rules/clone_ticker', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source, target, dry_run: true }),
+      });
+      prev = await res.json();
+      if (!res.ok) throw new Error(prev.error || 'request failed');
+    } catch (e) { alert('Preview failed: ' + e.message); return; }
+    if (!prev.created_n && !prev.skipped_n) { alert(`Nothing to clone — no rules found for ${source}.`); return; }
+    if (!confirm(
+      `Clone ${prev.created_n} rule(s) from ${source} → ${target}?\n\n` +
+      (prev.created || []).map(n => '  • ' + n).join('\n') +
+      (prev.skipped_n ? `\n\n(${prev.skipped_n} already exist for ${target}, skipped)` : '') +
+      `\n\nAll settings (broker targets, sizing, exits, any side-gate/cut) are copied.\n` +
+      `You still need to create the matching ${target} alert in TradingView.`
+    )) return;
+    try {
+      const res = await fetch('/api/routing/rules/clone_ticker', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source, target }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'request failed');
+      alert(`Wired ${data.created_n} ${target} rule(s) from ${source}.` +
+            (data.skipped_n ? ` ${data.skipped_n} already existed.` : '') +
+            `\n\nRedeploy/restart for the engine to pick them up.`);
+      await load();
+    } catch (e) { alert('Clone failed: ' + e.message); }
   }
 
   function renderCrewStatus() {

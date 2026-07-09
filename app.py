@@ -7670,6 +7670,93 @@ def revert_reversal_cut():
     return jsonify({"reverted": reverted, "reverted_n": len(reverted)})
 
 
+@app.route("/api/routing/rules/clone_ticker", methods=["POST"])
+def clone_ticker():
+    """Wire a NEW ticker by cloning an existing (proven) ticker's routing rules.
+    Every rule whose strategy node belongs to `source` (prefix before _CAM_) is
+    duplicated for `target`: the strategy-node ticker prefix and the rule name are
+    swapped, all other nodes (broker, quantity, exit_params, hours, side_gate) are
+    copied as-is — so `target` inherits the same accounts, sizing, exits, and any
+    applied cut. Idempotent (skips a target rule that already exists). Enabled
+    state is copied; tv_alert_created resets (you still create the TV alert).
+
+    Body: {"source":"AMZN","target":"GOOG","dry_run":false}
+    """
+    data    = request.get_json(silent=True) or {}
+    source  = (data.get("source") or "").strip().upper()
+    target  = (data.get("target") or "").strip().upper()
+    dry_run = bool(data.get("dry_run"))
+    if not source or not target:
+        return jsonify({"error": "source and target tickers are required"}), 400
+    if source == target:
+        return jsonify({"error": "source and target must differ"}), 400
+    if not target.isalnum() or len(target) > 6:
+        return jsonify({"error": "target must be a plain ticker symbol"}), 400
+
+    def _strat_ticker(val):
+        u = (val or "").upper()
+        i = u.find("_CAM_")
+        return u[:i] if i > 0 else None
+    def _swap(val):
+        u = val or ""
+        i = u.upper().find("_CAM_")
+        return target + u[i:] if i > 0 else u
+
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT id, name, nodes, enabled FROM routing_rules ORDER BY id")
+    rows = cur.fetchall()
+    # existing target strategy values → skip duplicates
+    existing_target = set()
+    src_rules = []
+    for row in rows:
+        rname = row[1] if DATABASE_URL else row["name"]
+        nraw  = row[2] if DATABASE_URL else row["nodes"]
+        enb   = row[3] if DATABASE_URL else row["enabled"]
+        try:    nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
+        except Exception: nodes = []
+        for n in nodes:
+            if n.get("type") == "strategy" and _strat_ticker(n.get("value")) == target:
+                existing_target.add((n.get("value") or "").upper())
+        if any(n.get("type") == "strategy" and _strat_ticker(n.get("value")) == source for n in nodes):
+            src_rules.append((rname, nodes, enb))
+
+    if not src_rules:
+        conn.close()
+        return jsonify({"error": f"No routing rules found for source ticker {source}"}), 404
+
+    created, skipped = [], []
+    import re as _re
+    for rname, nodes, enb in src_rules:
+        new_nodes = []
+        for n in nodes:
+            n2 = dict(n)
+            if n2.get("type") == "strategy":
+                n2["value"] = _swap(n2.get("value"))
+            new_nodes.append(n2)
+        # skip if target already has this strategy wired
+        strat_vals = {(n.get("value") or "").upper() for n in new_nodes if n.get("type") == "strategy"}
+        if strat_vals & existing_target:
+            skipped.append(rname)
+            continue
+        new_name = _re.sub(_re.escape(source), target, rname, count=1, flags=_re.IGNORECASE)
+        if new_name == rname:
+            new_name = f"{rname} ({target})"
+        if not dry_run:
+            cur.execute(
+                f"INSERT INTO routing_rules (name, enabled, nodes, tv_alert_created) VALUES ({p},{p},{p},0)",
+                (new_name, enb, json.dumps(new_nodes)))
+        created.append(new_name)
+        existing_target |= strat_vals
+    if not dry_run:
+        conn.commit()
+    conn.close()
+    log.info("clone_ticker: %s -> %s dry_run=%s created=%d skipped=%d",
+             source, target, dry_run, len(created), len(skipped))
+    return jsonify({"source": source, "target": target, "dry_run": dry_run,
+                    "created": created, "skipped": skipped,
+                    "created_n": len(created), "skipped_n": len(skipped)})
+
+
 @app.route("/api/routing/rules/bulk_add_exit_params", methods=["POST"])
 def bulk_add_exit_params():
     """Add a default exit_params node to every routing rule that doesn't already have one."""
