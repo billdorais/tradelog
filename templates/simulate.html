@@ -563,10 +563,18 @@
         </select>
       </div>
       <button class="run-btn" onclick="runBookBreakdown()" style="padding:8px 18px">&#9654; Break Down</button>
+      <button class="run-btn" onclick="buildReversalGateReport()" style="padding:8px 18px;background:#3f5170">&#9112; Reversal Gate Report (copy/paste)</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Splits real round-trip P&amp;L by level (R3S3/R4S4), side, level×side, and ticker.</span>
     </div>
-    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Real round-trip P&amp;L (actual fills). Tickers ranked worst-total first.</div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Real round-trip P&amp;L (actual fills). Tickers ranked worst-total first. The Gate Report pulls <b>Refined, Kairos, and Crew Paper</b> (excludes Paper All by design) into a copyable text block.</div>
     <div id="bookResult" style="margin-top:14px"></div>
+    <div id="gateReportWrap" style="margin-top:14px;display:none">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+        <button class="run-btn" onclick="copyGateReport()" style="padding:6px 14px;background:#517356">&#9112; Copy to clipboard</button>
+        <span id="gateReportNote" style="font-size:0.72rem;color:#888"></span>
+      </div>
+      <textarea id="gateReportText" readonly style="width:100%;height:340px;background:#0d0f18;color:#cbd3e6;border:1px solid #2a2d3e;border-radius:6px;padding:10px;font-family:monospace;font-size:0.76rem;white-space:pre;overflow:auto"></textarea>
+    </div>
   </div>
 
   <!-- AI Chat panel -->
@@ -1020,6 +1028,68 @@
             + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Ticker</th><th style="text-align:right">P&L</th><th style="text-align:right">avg</th><th style="text-align:right">n</th><th style="text-align:right">win</th></tr></thead>`
             + `<tbody>${tkRows}</tbody></table></div></div>` : '');
     } catch (e) { out.innerHTML = '<div style="color:#c66">Error: ' + e.message + '</div>'; }
+  }
+
+  // Build a copy/paste reversal report across the gate-eligible accounts
+  // (Refined, Kairos, Crew Paper) — Paper All is excluded by design.
+  async function buildReversalGateReport() {
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
+    const from  = document.getElementById('fromDate').value;
+    const to    = document.getElementById('toDate').value;
+    const wrap  = document.getElementById('gateReportWrap');
+    const ta    = document.getElementById('gateReportText');
+    const note  = document.getElementById('gateReportNote');
+    // Gate-eligible accounts = every dropdown option EXCEPT Paper All (value "1").
+    const accts = Array.from(document.getElementById('account').options)
+      .map(o => ({ num: o.value, label: o.textContent.trim() }))
+      .filter(a => a.num !== '1');
+    wrap.style.display = 'block';
+    ta.value = 'Running…';
+    note.textContent = '';
+
+    const pad = (s, n) => (s + ' '.repeat(n)).slice(0, n);
+    const line = (label, s) => s
+      ? `  ${pad(label, 12)} ${pad(money(s.total_pnl), 11)} | avg ${pad(money(s.avg_pnl), 9)} | n=${pad(String(s.trades), 4)} | ${s.win_rate}% win`
+      : `  ${pad(label, 12)} —`;
+    const block = obj => Object.entries(obj || {}).map(([k, s]) => line(k, s)).join('\n');
+
+    const parts = [];
+    parts.push(`REVERSAL GATE CHECK — ${from || '?'} → ${to || '?'}`);
+    parts.push(`(Refined / Kairos / Crew Paper — Paper All excluded by design)`);
+    parts.push('');
+
+    for (const a of accts) {
+      const qs = new URLSearchParams({ account: a.num, from, to, kind: 'reversal' });
+      try {
+        const r = await fetch('/api/alpaca/reversal_breakdown?' + qs);
+        const d = await r.json();
+        parts.push(`=== ${a.label} ===`);
+        if (!r.ok) { parts.push(`  (${d.error || ('HTTP ' + r.status)})`, ''); continue; }
+        const o = d.overall || {};
+        parts.push(`  Overall: ${money(o.total_pnl)} | avg ${money(o.avg_pnl)}/trade | n=${o.trades} | ${o.win_rate}% win`);
+        parts.push(`  By side:`);
+        parts.push(block(d.by_side));
+        parts.push(`  By level x side:`);
+        parts.push(block(d.by_level_side));
+        parts.push('');
+      } catch (e) {
+        parts.push(`=== ${a.label} ===`, `  Error: ${e.message}`, '');
+      }
+    }
+    ta.value = parts.join('\n');
+    note.textContent = `${accts.length} account(s) · generated ${new Date().toLocaleTimeString()}`;
+  }
+
+  function copyGateReport() {
+    const ta = document.getElementById('gateReportText');
+    ta.select();
+    try {
+      navigator.clipboard.writeText(ta.value);
+      document.getElementById('gateReportNote').textContent = 'Copied ✓';
+    } catch (e) {
+      document.execCommand('copy');   // fallback for older browsers
+      document.getElementById('gateReportNote').textContent = 'Copied ✓';
+    }
   }
 
   // Push a retest window straight into the Signal Router — sets retest_bars on the
