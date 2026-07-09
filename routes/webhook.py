@@ -785,6 +785,28 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _kept
 
+    # Per-account reversal-side gate (entries only): drop targets whose account
+    # restricts REVERSALS to one side (e.g. Refined = short-only). Accounts with no
+    # policy (Kairos, Crew Paper, Paper All) pass. Per-target, so gating Refined
+    # never touches Kairos. Exits always pass.
+    if not _is_exit and alpaca_targets and _gate_entry_side in ("long", "short"):
+        _rev_kept, _rev_dropped = [], []
+        for bt in alpaca_targets:
+            _acct_tag = _alpaca_broker_name(bt[0])
+            if app._reversal_gate_block(strategy_name, _gate_entry_side, _acct_tag):
+                _rev_dropped.append(_acct_tag)
+            else:
+                _rev_kept.append(bt)
+        if _rev_dropped:
+            app.log.info("Reversal-side gate: %s %s — skipped %s (reversal not %s-side)",
+                         order_action, ticker, ",".join(_rev_dropped), _gate_entry_side)
+            if not _rev_kept and conn:
+                app._update_exec(cur, trade_id, "skipped",
+                    f"Reversal-side gate: {', '.join(sorted(set(_rev_dropped)))} trades reversals "
+                    f"one-side only — this {_gate_entry_side} reversal skipped")
+                conn.commit()
+        alpaca_targets = _rev_kept
+
     # Profit-lock gate (entries only): drop Alpaca targets whose account has halted
     # after giving back its daily profit floor. Per-account — a halted book (e.g.
     # Refined) is skipped while others (e.g. Kairos) keep trading. Exits always pass.

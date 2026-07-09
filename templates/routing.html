@@ -220,16 +220,6 @@
         title="Revert all rules to TV entries (sets entry_source=tv on every rule that has one). Undoes the Apply Kairos bulk action.">
         Revert to TV
       </button>
-      <button class="btn" onclick="applyReversalCut()"
-        style="background:transparent;border:1px solid #ef5350;color:#ef5350;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
-        title="From the Book Breakdown evidence: long reversals bled and only R4S4-short made money. Gates every R4S4 REVERSAL pipeline to SHORT-only and disables every R3S3 REVERSAL pipeline. Breakouts untouched. Applies to ALL paper accounts (webhook + engine). Reversible.">
-        ⇅ Reversals → Short + R4S4
-      </button>
-      <button class="btn" onclick="revertReversalCut()"
-        style="background:transparent;border:1px solid #4a5568;color:#888;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
-        title="Undo the reversal cut: removes side_gate from all REVERSAL pipelines and re-enables them. Breakouts untouched.">
-        Undo Cut
-      </button>
       <button class="btn" onclick="cloneTicker()"
         style="background:transparent;border:1px solid #6ea8fe;color:#6ea8fe;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
         title="Wire a NEW ticker by cloning an existing ticker's full rule set (broker targets, sizing, exits, any side-gate/cut). You still create the matching TradingView alert.">
@@ -2140,50 +2130,6 @@
       alert(`Updated ${data.updated.length} pipeline(s).\nSkipped ${data.skipped.length} already set to Kairos.\nIneligible (non-Cam strategies): ${data.ineligible.length}.`);
       await load();
     } catch (e) { alert('Bulk apply failed: ' + e.message); }
-  }
-
-  async function applyReversalCut() {
-    // Preview first (dry run), then confirm with real counts.
-    let prev;
-    try {
-      const res = await fetch('/api/routing/rules/apply_reversal_cut', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ side: 'short', keep_level: 'R4S4', dry_run: true }),
-      });
-      prev = await res.json();
-      if (!res.ok) throw new Error(prev.error || 'request failed');
-    } catch (e) { alert('Preview failed: ' + e.message); return; }
-    if (!confirm(
-      `Apply the reversal cut across ALL paper accounts?\n\n` +
-      `• ${prev.gated_n} R4S4 reversal pipeline(s) → SHORT-only (side_gate=short)\n` +
-      `• ${prev.disabled_n} R3S3 reversal pipeline(s) → DISABLED\n` +
-      `Breakouts are untouched.\n\n` +
-      `Enforced in both the webhook and the engine, so Paper All honors it too.\n` +
-      `Reversible with "Undo Cut".`
-    )) return;
-    try {
-      const res = await fetch('/api/routing/rules/apply_reversal_cut', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ side: 'short', keep_level: 'R4S4' }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'request failed');
-      alert(`Reversal cut applied:\n• ${data.gated_n} R4S4 reversals gated short\n• ${data.disabled_n} R3S3 reversals disabled\n\nRedeploy/restart for the engine to pick up the change.`);
-      await load();
-    } catch (e) { alert('Apply failed: ' + e.message); }
-  }
-
-  async function revertReversalCut() {
-    if (!confirm('Undo the reversal cut?\n\nRemoves side_gate from ALL reversal pipelines and re-enables them. Breakouts untouched.')) return;
-    try {
-      const res = await fetch('/api/routing/rules/revert_reversal_cut', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'request failed');
-      alert(`Reverted ${data.reverted_n} reversal pipeline(s).`);
-      await load();
-    } catch (e) { alert('Undo failed: ' + e.message); }
   }
 
   async function cloneTicker() {

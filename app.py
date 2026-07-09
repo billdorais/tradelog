@@ -141,15 +141,20 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 #   auto_source — receives auto-generated entries (Refined snapshot / engine pilot).
 #                 Crew Paper (acct4) is False: it trades ONLY rules wired from the
 #                 crew page, never the snapshot/engine auto-sources.
+# reversal_side — restrict this account's REVERSAL entries to one side ("long"/
+# "short"/None). Evidence (Book Breakdown, Jun–Jul '26): Refined's reversals bleed
+# long-side (short-only edge), while Kairos's are profitable both sides — so only
+# Refined is gated. Env override per account: REVERSAL_SIDE_<TAG> (e.g.
+# REVERSAL_SIDE_ALPACA2=short). Enforced by target account in webhook + engine.
 ACCOUNT_META = {
     "1": {"tag": "alpaca",  "label": "Paper All",     "color": "#9aa0b5",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None},
     "2": {"tag": "alpaca2", "label": "Refined",       "color": "#c4b5fd",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "short"},
     "3": {"tag": "alpaca3", "label": "Kairos engine", "color": "#F2C07A",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None},
     "4": {"tag": "alpaca4", "label": "Crew Paper",    "color": "#7FE098",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -190,6 +195,29 @@ NON_SHORTABLE = {t.strip().upper()
 
 def _is_non_shortable(ticker: str) -> bool:
     return (ticker or "").strip().upper() in NON_SHORTABLE
+
+# Per-account reversal-side policy (tag → "long"/"short"/None), from ACCOUNT_META
+# with an optional REVERSAL_SIDE_<TAG> env override. Config-static, so it resolves
+# even for accounts that aren't currently configured (fails open to None).
+def _reversal_side_cfg(tag, meta):
+    env = os.environ.get("REVERSAL_SIDE_" + (tag or "").upper())
+    val = env.strip().lower() if env is not None else meta.get("reversal_side")
+    return val if val in ("long", "short") else None
+
+_REVERSAL_SIDE_BY_TAG = {_meta_tag(n): _reversal_side_cfg(_meta_tag(n), m)
+                         for n, m in ACCOUNT_META.items()}
+
+def _reversal_gate_block(strategy: str, side: str, account_tag: str) -> bool:
+    """True if a REVERSAL ENTRY on `side` ('long'/'short') is disallowed for this
+    account by its reversal_side policy. Non-reversals and unknown sides pass;
+    accounts with no policy pass. Callers must exempt exits."""
+    if "REVERSAL" not in (strategy or "").upper():
+        return False
+    pol = _REVERSAL_SIDE_BY_TAG.get(account_tag)
+    s   = (side or "").lower()
+    if pol not in ("long", "short") or s not in ("long", "short"):
+        return False
+    return s != pol
 
 _risk_halted          = False   # True when daily loss limit is breached
 _profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
@@ -728,6 +756,7 @@ for _num in _ALPACA_NUMS:
         "retest":        _meta.get("retest", True),
         "auto_source":   _meta.get("auto_source", True),
         "profit_lock":   _meta.get("profit_lock", True),
+        "reversal_side": _REVERSAL_SIDE_BY_TAG.get(_meta_tag(_num)),
     }
     ALPACA_ACCOUNTS.append(_rec)
     ACCOUNTS_BY_NUM[_num]        = _rec
@@ -11947,6 +11976,12 @@ def _engine_pilot_tick(now_et, today):
             # Per-rule long/short gate: a side-gated kairos rule only arms its side.
             _tgt_gate = tgt.get("side_gate")
             if _tgt_gate in ("long", "short") and _tgt_gate != side.lower():
+                continue
+            # Per-account reversal-side policy (e.g. Refined = short-only). Kairos
+            # and others with no policy pass; only affects this account's targets.
+            if _reversal_gate_block(strat, side, broker_tag):
+                log.info("Reversal-side gate: skip %s %s [%s] — reversal %s-only",
+                         side, tk, broker_tag, _REVERSAL_SIDE_BY_TAG.get(broker_tag))
                 continue
             qty_override = tgt.get("qty_override")
             broker_inst  = broker_inst_by_tag.get(broker_tag)
