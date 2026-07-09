@@ -11094,6 +11094,27 @@ def _entry_engine_setups():
         except Exception as _e:
             log.debug("entry engine all-pipelines: %s", _e)
 
+    # Uniform side-gate: a rule's side_gate node must apply to EVERY engine source
+    # (snapshot / kairos / all-pipelines), so Paper All (Source 3) and Refined-
+    # snapshot targets honor it too — not just entry_source=kairos rules (Source 2,
+    # which also attaches it per-target). We map strategy → gate once and drop the
+    # gated-out side at setup generation, so no account arms it.
+    _sg_by_strat = {}
+    try:
+        _rcsg = get_db()
+        for _row in _rcsg.execute("SELECT nodes FROM routing_rules WHERE enabled=1").fetchall():
+            try:    _nds = json.loads(_row[0] or "[]")
+            except Exception: continue
+            _sname = next(((n.get("value") or "").strip().upper()
+                           for n in _nds if n.get("type") == "strategy"), None)
+            _sg    = next(((n.get("value") or "").lower()
+                           for n in _nds if n.get("type") == "side_gate"), None)
+            if _sname and "*" not in _sname and _sg in ("long", "short"):
+                _sg_by_strat[_sname] = _sg
+        _rcsg.close()
+    except Exception as _e:
+        log.debug("engine side-gate lookup: %s", _e)
+
     out, seen = [], set()
     for s, targets in targets_by_strategy.items():
         is_rev = "REVERSAL" in s
@@ -11105,7 +11126,10 @@ def _entry_engine_setups():
         pair = "R4S4" if "R4S4" in s else ("R3S3" if "R3S3" in s else None)
         if not pair or not tk or len(tk) > 6:   # guard against pattern-only names
             continue
+        _gate = _sg_by_strat.get(s)
         for side in ("LONG", "SHORT"):
+            if _gate in ("long", "short") and _gate != side.lower():
+                continue   # side-gated strategy: this side is suppressed on ALL accounts
             # breakout: LONG breaks up through R, SHORT down through S.
             # reversal: LONG bounces off S, SHORT rejects at R (inverted).
             if kind == "breakout":
