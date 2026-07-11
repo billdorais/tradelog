@@ -1038,9 +1038,11 @@
           plBadge.className = 'risk-status-badge ' + (anyHalt ? 'halted' : 'active');
           plText.textContent = `$${plAmt} / account`;
           if (plHint) {
-            const parts = plAccts.map(a => `${a.label}: ${a.halted ? '⛔ halted' : a.armed ? '✓ armed' : '⏳ waiting'}`);
-            plHint.innerHTML = `Per-account floor $${plAmt} — ` + (parts.length ? parts.join(' · ') : 'no accounts')
-              + (anyHalt ? ' · use “Clear Halt & Resume” to reset.' : '');
+            const parts = plAccts.map(a =>
+              `&nbsp;&nbsp;${a.label}: ${a.halted ? '⛔ halted' : a.armed ? '✓ armed' : '⏳ waiting'}`);
+            plHint.innerHTML = `Per-account floor $${plAmt}:<br>`
+              + (parts.length ? parts.join('<br>') : '&nbsp;&nbsp;no accounts')
+              + (anyHalt ? '<br>use “Clear Halt &amp; Resume” to reset.' : '');
           }
         }
       }
