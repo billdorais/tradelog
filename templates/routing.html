@@ -265,7 +265,8 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRiskLimit()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRiskLimit()" title="Disable risk guard">Off</button>
         </div>
-        <div class="risk-hint">Negative value halts &amp; liquidates all positions (e.g. -500). 0 = disabled.</div>
+        <div class="risk-hint">Per account: a negative limit halts &amp; liquidates that book independently when its OWN daily P&amp;L hits it (e.g. -125). Paper All exempt. 0 = disabled.</div>
+        <div class="risk-hint" id="dlStatusHint" style="margin-top:4px"></div>
       </div>
 
       <div class="risk-divider"></div>
@@ -1012,6 +1013,22 @@
         input.value = data.max_daily_loss;
       }
 
+      // Max daily loss — per-account halted status (one line each)
+      const dlHint = document.getElementById('dlStatusHint');
+      if (dlHint) {
+        const dlAccts = data.daily_loss_accounts || [];
+        if (!data.enabled || !dlAccts.length) {
+          dlHint.innerHTML = '';
+        } else {
+          const anyDl = dlAccts.some(a => a.halted);
+          const parts = dlAccts.map(a =>
+            `&nbsp;&nbsp;${a.label}: ${a.halted ? '⛔ halted' : '✓ trading'}`);
+          dlHint.innerHTML = `Per-account limit $${Number(data.max_daily_loss).toFixed(0)}:<br>`
+            + parts.join('<br>')
+            + (anyDl ? '<br>use “Clear Halt &amp; Resume” to reset.' : '');
+        }
+      }
+
       // Profit lock — input + armed/halted status
       const plInput = document.getElementById('profitLockInput');
       if (plInput && document.activeElement !== plInput) {
@@ -1308,7 +1325,7 @@
         badge.className = 'risk-status-badge halted';
         dot.className   = 'risk-dot red';
         text.textContent = 'HALTED';
-        hint.textContent = 'All orders are blocked. Resolve the loss condition then clear the halt.';
+        hint.textContent = 'An account hit its daily loss limit and was liquidated (see per-account status). Clear the halt to resume it.';
         panel.classList.add('halted');
         resetSec.style.display = 'block';
       } else if (data.enabled) {

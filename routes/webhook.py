@@ -630,16 +630,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     _is_exit = (raw_action in ("EXIT_LONG", "EXIT_SHORT")
                 or (data.get("sentiment") or "").strip().lower() == "flat")
 
-    # Daily max loss circuit breaker — block NEW entries only, never exits
-    if app.MAX_DAILY_LOSS < 0 and order_action in ("BUY", "SELL") and not _is_exit:
-        with app._risk_lock:
-            _halted = app._risk_halted
-        if _halted:
-            app.log.warning("Risk halt active — order blocked: %s %s %s", order_action, quantity, ticker)
-            app._update_exec(cur, trade_id, "blocked", "Daily max loss limit reached — orders halted")
-            conn.commit()
-            conn.close()
-            return jsonify({"status": "blocked", "reason": "daily_loss_limit"}), 200
+    # Daily max loss is now enforced PER ACCOUNT below (per-target, alongside the
+    # profit-lock gate), so a halted account is dropped while others keep trading.
 
     # Per-strategy block (set by position stop monitor) — exits bypass this too
     if strategy_name and order_action in ("BUY", "SELL") and not _is_exit:
@@ -824,6 +816,24 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                  f"${app.PROFIT_LOCK_DOLLARS:g} — halted for the day")
                 conn.commit()
         alpaca_targets = _pl_kept
+
+    # Daily-loss gate (entries only): drop Alpaca targets whose account hit its
+    # MAX_DAILY_LOSS today and was halted + liquidated. Per-account — a halted book
+    # is skipped while others keep trading. Exits always pass (must be able to close).
+    if not _is_exit and alpaca_targets and getattr(app, "MAX_DAILY_LOSS", 0) < 0:
+        _dl_kept = [bt for bt in alpaca_targets
+                    if not app._daily_loss_halted_for(_alpaca_broker_name(bt[0]))]
+        if len(_dl_kept) != len(alpaca_targets):
+            _dl_dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
+                          - {_alpaca_broker_name(bt[0]) for bt in _dl_kept}
+            app.log.warning("Daily-loss gate: %s %s — skipped %s (hit $%g daily loss)",
+                            order_action, ticker, ",".join(sorted(_dl_dropped)), app.MAX_DAILY_LOSS)
+            if not _dl_kept and conn:
+                app._update_exec(cur, trade_id, "blocked",
+                                 f"Daily loss limit: {', '.join(sorted(_dl_dropped))} hit "
+                                 f"${app.MAX_DAILY_LOSS:g} — halted for the day")
+                conn.commit()
+        alpaca_targets = _dl_kept
 
     # --- Coinbase (sync-only; typically sub-second) ---
     for target, qty_override, _rs_cb in coinbase_targets:

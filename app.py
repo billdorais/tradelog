@@ -151,13 +151,13 @@ ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
 # REVERSAL_SIDE_ALPACA2=short). Enforced by target account in webhook + engine.
 ACCOUNT_META = {
     "1": {"tag": "alpaca",  "label": "Paper All",     "color": "#9aa0b5",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
     "2": {"tag": "alpaca2", "label": "Refined",       "color": "#c4b5fd",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "short"},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "short", "daily_loss_guard": True},
     "3": {"tag": "alpaca3", "label": "Kairos engine", "color": "#F2C07A",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
     "4": {"tag": "alpaca4", "label": "Crew Paper",    "color": "#7FE098",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -222,7 +222,9 @@ def _reversal_gate_block(strategy: str, side: str, account_tag: str) -> bool:
         return False
     return s != pol
 
-_risk_halted          = False   # True when daily loss limit is breached
+_risk_halted          = False   # True when ANY account's daily-loss guard is halted (back-compat badge)
+_daily_loss_halted    = {}      # {account_tag: bool} — that account hit MAX_DAILY_LOSS → halted + liquidated
+_daily_loss_day       = None    # ET date the daily-loss halt state applies to (auto-resets daily)
 _profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
 _profit_lock_halted   = {}      # {account_tag: bool} — armed then gave back → its new entries blocked
 _profit_lock_day      = None    # ET date the arm/halt state applies to (auto-resets daily)
@@ -760,6 +762,7 @@ for _num in _ALPACA_NUMS:
         "auto_source":   _meta.get("auto_source", True),
         "profit_lock":   _meta.get("profit_lock", True),
         "reversal_side": _REVERSAL_SIDE_BY_TAG.get(_meta_tag(_num)),
+        "daily_loss_guard": _meta.get("daily_loss_guard", True),
     }
     ALPACA_ACCOUNTS.append(_rec)
     ACCOUNTS_BY_NUM[_num]        = _rec
@@ -989,47 +992,55 @@ def _compute_daily_pnl():
 def _risk_monitor_loop():
     """Background thread: poll daily P&L every 60s.
     When P&L hits MAX_DAILY_LOSS, set _risk_halted and close all positions."""
-    global _risk_halted
+    global _risk_halted, _daily_loss_day
     time.sleep(20)  # wait for broker connections to establish
     while True:
+        # Max daily loss — PER ACCOUNT. Each guarded account (Refined/Kairos/Crew;
+        # Paper All exempt) halts + liquidates INDEPENDENTLY when its OWN daily P&L
+        # hits MAX_DAILY_LOSS. The halt blocks that account's new entries (webhook +
+        # engine) and closes its open positions once; resets at ET midnight.
         if MAX_DAILY_LOSS < 0:
             try:
-                pnl = _compute_daily_pnl()
-                if pnl is not None and pnl <= MAX_DAILY_LOSS:
+                try:
+                    _dl_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+                except Exception:
+                    from datetime import timedelta as _td
+                    _dl_today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+                with _risk_lock:
+                    if _daily_loss_day != _dl_today:
+                        _daily_loss_day = _dl_today
+                        _daily_loss_halted.clear()   # new trading day → clear per-account halts
+                _any_dl_halt = False
+                for _acct in ALPACA_ACCOUNTS:
+                    _tag, _br = _acct["tag"], _acct["broker"]
+                    if _br is None or not _acct.get("daily_loss_guard", True):
+                        continue   # Paper All exempt
+                    try:
+                        _apnl = _br.daily_pnl()
+                    except Exception as _de:
+                        log.debug("Daily-loss guard: daily_pnl failed for %s: %s", _tag, _de)
+                        continue
+                    if _apnl is None:
+                        continue
+                    _just_halted = False
                     with _risk_lock:
-                        already_halted = _risk_halted
-                        _risk_halted = True
-                    if not already_halted:
-                        log.error(
-                            "RISK HALT: daily P&L $%.2f reached limit $%.2f — liquidating all positions",
-                            pnl, MAX_DAILY_LOSS,
-                        )
-                        for _broker, _label in [
-                            (alpaca_broker,   "Alpaca"),
-                            (alpaca_broker2,  "Alpaca Refined"),
-                            (coinbase_broker, "Coinbase"),
-                        ]:
-                            if _broker:
-                                try:
-                                    _broker.close_all_positions()
-                                    log.info("Risk liquidation: %s positions closed", _label)
-                                except Exception as _e:
-                                    log.error("Risk liquidation %s failed: %s", _label, _e)
-                        # IB close must run on the background IB thread
-                        if _ib_task_queue is not None and ib_broker:
-                            try:
-                                _submit_ib_task(ib_broker.close_all_positions, _timeout=60)
-                                log.info("Risk liquidation: IB positions closed")
-                            except Exception as _e:
-                                log.error("Risk liquidation IB failed: %s", _e)
-                        if _ib_live_task_queue is not None and ib_broker_live:
-                            try:
-                                _submit_ib_live_task(ib_broker_live.close_all_positions, _timeout=60)
-                                log.info("Risk liquidation: IB Live positions closed")
-                            except Exception as _e:
-                                log.error("Risk liquidation IB Live failed: %s", _e)
+                        if not _daily_loss_halted.get(_tag) and _apnl <= MAX_DAILY_LOSS:
+                            _daily_loss_halted[_tag] = True
+                            _just_halted = True
+                        if _daily_loss_halted.get(_tag):
+                            _any_dl_halt = True
+                    if _just_halted:
+                        log.error("DAILY LOSS HALT [%s]: P&L $%.2f reached limit $%.2f — liquidating this account",
+                                  _tag, _apnl, MAX_DAILY_LOSS)
+                        try:
+                            _br.close_all_positions()
+                            log.info("Daily-loss liquidation: %s positions closed", _tag)
+                        except Exception as _le:
+                            log.error("Daily-loss liquidation failed [%s]: %s", _tag, _le)
+                with _risk_lock:
+                    _risk_halted = _any_dl_halt   # back-compat: "any account halted" badge
             except Exception as _e:
-                log.warning("Risk monitor error: %s", _e)
+                log.warning("Daily-loss monitor error: %s", _e)
 
         # Profit lock — PER ACCOUNT. Once an account's daily P&L reaches the floor,
         # arm it; if a later trade drags that account back below the floor, halt its
@@ -1091,6 +1102,14 @@ def _profit_lock_halted_for(tag):
         return False
     with _risk_lock:
         return bool(_profit_lock_halted.get(tag))
+
+
+def _daily_loss_halted_for(tag):
+    """True if the daily-loss guard is active AND this account hit its limit today."""
+    if MAX_DAILY_LOSS >= 0:
+        return False
+    with _risk_lock:
+        return bool(_daily_loss_halted.get(tag))
 
 
 def _check_position_stops():
@@ -2511,6 +2530,7 @@ def risk_status():
     pnl = _compute_daily_pnl()
     with _risk_lock:
         halted          = _risk_halted
+        dl_halted       = dict(_daily_loss_halted)
         pl_armed        = dict(_profit_lock_armed)
         pl_halted       = dict(_profit_lock_halted)
         blocked         = dict(_blocked_strategies)
@@ -2576,6 +2596,10 @@ def risk_status():
         "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,
         "current_pnl":          round(pnl, 2) if pnl is not None else None,
         "enabled":              MAX_DAILY_LOSS < 0,
+        "daily_loss_accounts": [
+            {"tag": a["tag"], "label": a["label"], "halted": bool(dl_halted.get(a["tag"]))}
+            for a in ALPACA_ACCOUNTS if a.get("daily_loss_guard", True)
+        ],
         "profit_lock_dollars":  PROFIT_LOCK_DOLLARS if PROFIT_LOCK_DOLLARS > 0 else None,
         "profit_lock_enabled":  PROFIT_LOCK_DOLLARS > 0,
         "profit_lock_flatten":  PROFIT_LOCK_FLATTEN,              # close positions on breach, not just halt
@@ -2852,11 +2876,13 @@ def risk_reset():
     global _risk_halted, _profit_lock_armed, _profit_lock_halted
     with _risk_lock:
         _risk_halted = False
+        # Clear the per-account daily-loss halts so those accounts resume trading.
+        _daily_loss_halted.clear()
         # Also clear the per-account profit-lock halts (but not the day marker) so
         # trading resumes; each account re-arms if its P&L climbs back above the floor.
         _profit_lock_armed = {}
         _profit_lock_halted = {}
-    log.info("Risk halt manually cleared (incl. profit lock)")
+    log.info("Risk halt manually cleared (incl. daily-loss + profit lock)")
     return jsonify({"halted": False})
 
 
@@ -11994,6 +12020,9 @@ def _engine_pilot_tick(now_et, today):
             broker_tag   = tgt["broker_tag"]
             # Profit lock — skip this account's entries if it gave back below its floor.
             if _profit_lock_halted_for(broker_tag):
+                continue
+            # Daily-loss guard — skip this account's entries if it hit its daily limit.
+            if _daily_loss_halted_for(broker_tag):
                 continue
             # Per-rule long/short gate: a side-gated kairos rule only arms its side.
             _tgt_gate = tgt.get("side_gate")
