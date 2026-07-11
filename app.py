@@ -58,9 +58,12 @@ eod_close_enabled   = True
 MAX_DAILY_LOSS              = float(os.environ.get("MAX_DAILY_LOSS", "0"))
 # PROFIT_LOCK_DOLLARS: once daily P&L reaches this, ARM a floor. If a later trade
 # drags daily P&L back below it, HALT new entries for the rest of the day (locks in
-# the gain). Keeps trading while you stay above the floor. 0 = disabled. Halt-only —
-# it does NOT liquidate open positions (they keep their own exits).
+# the gain). Keeps trading while you stay above the floor. 0 = disabled.
+# PROFIT_LOCK_FLATTEN: when the floor breaks, also CLOSE all of that account's open
+# positions (not just halt entries) so the gain is genuinely locked — otherwise open
+# positions keep bleeding to their own exits. Default on.
 PROFIT_LOCK_DOLLARS         = float(os.environ.get("PROFIT_LOCK_DOLLARS", "0"))
+PROFIT_LOCK_FLATTEN         = os.environ.get("PROFIT_LOCK_FLATTEN", "1") == "1"
 MAX_POSITION_LOSS           = float(os.environ.get("MAX_POSITION_LOSS", "0"))       # dollar stop — Paper All only
 MAX_POSITION_LOSS_PCT       = float(os.environ.get("MAX_POSITION_LOSS_PCT", "0"))   # % stop — Refined only
 MAX_POSITION_LOSS_REFINED   = float(os.environ.get("MAX_POSITION_LOSS_REFINED", "0"))  # dollar cap — Refined only, fires alongside %
@@ -1053,6 +1056,7 @@ def _risk_monitor_loop():
                         continue
                     if _apnl is None:
                         continue
+                    _just_halted = False
                     with _risk_lock:
                         if not _profit_lock_armed.get(_tag) and _apnl >= PROFIT_LOCK_DOLLARS:
                             _profit_lock_armed[_tag] = True
@@ -1060,8 +1064,19 @@ def _risk_monitor_loop():
                                      _tag, _apnl, PROFIT_LOCK_DOLLARS)
                         if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _apnl < PROFIT_LOCK_DOLLARS:
                             _profit_lock_halted[_tag] = True
+                            _just_halted = True
                             log.warning("PROFIT LOCK HALT [%s]: daily P&L $%.2f fell back below floor $%.2f "
                                         "— its new entries halted for the day", _tag, _apnl, PROFIT_LOCK_DOLLARS)
+                    # Flatten on breach: close this account's open positions once, at the
+                    # moment it trips, so the gain is locked instead of leaking to exits.
+                    # Runs outside the lock (network call); only the breaching account's
+                    # own broker, so other books are untouched.
+                    if _just_halted and PROFIT_LOCK_FLATTEN:
+                        try:
+                            _br.close_all_positions()
+                            log.warning("PROFIT LOCK FLATTEN [%s]: closed all open positions to lock the floor", _tag)
+                        except Exception as _fe:
+                            log.error("Profit lock flatten failed [%s]: %s", _tag, _fe)
             except Exception as _e:
                 log.warning("Profit lock monitor error: %s", _e)
         time.sleep(60)
@@ -2563,6 +2578,7 @@ def risk_status():
         "enabled":              MAX_DAILY_LOSS < 0,
         "profit_lock_dollars":  PROFIT_LOCK_DOLLARS if PROFIT_LOCK_DOLLARS > 0 else None,
         "profit_lock_enabled":  PROFIT_LOCK_DOLLARS > 0,
+        "profit_lock_flatten":  PROFIT_LOCK_FLATTEN,              # close positions on breach, not just halt
         "profit_lock_halted":   any(pl_halted.values()),          # any account halted (for reset btn)
         "profit_lock_accounts": [
             {"tag": a["tag"], "label": a["label"],
@@ -2648,7 +2664,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, _profit_lock_armed, _profit_lock_halted
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -2685,6 +2701,12 @@ def risk_set_limit():
         _save_setting("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
         log.info("PROFIT_LOCK_DOLLARS updated to %g", PROFIT_LOCK_DOLLARS)
         changed.append("profit_lock_dollars")
+    if "profit_lock_flatten" in data:
+        PROFIT_LOCK_FLATTEN = bool(data["profit_lock_flatten"])
+        _update_env_file("PROFIT_LOCK_FLATTEN", "1" if PROFIT_LOCK_FLATTEN else "0")
+        _save_setting("PROFIT_LOCK_FLATTEN", "1" if PROFIT_LOCK_FLATTEN else "0")
+        log.info("PROFIT_LOCK_FLATTEN updated to %s", PROFIT_LOCK_FLATTEN)
+        changed.append("profit_lock_flatten")
     if "max_position_loss" in data:
         try:
             MAX_POSITION_LOSS = float(data["max_position_loss"])
@@ -14388,7 +14410,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -14403,6 +14425,10 @@ def _restore_risk_settings():
             log.info("Restored PROFIT_LOCK_DOLLARS=%g from DB", PROFIT_LOCK_DOLLARS)
         except (TypeError, ValueError):
             pass
+    stored = _load_setting("PROFIT_LOCK_FLATTEN")
+    if stored is not None:
+        PROFIT_LOCK_FLATTEN = str(stored) == "1"
+        log.info("Restored PROFIT_LOCK_FLATTEN=%s from DB", PROFIT_LOCK_FLATTEN)
     stored = _load_setting("MAX_POSITION_LOSS")
     if stored is not None:
         try:

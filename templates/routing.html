@@ -284,6 +284,10 @@
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearProfitLock()" title="Disable profit lock">Off</button>
         </div>
         <div class="risk-hint" id="plStatusHint">Once daily P&amp;L reaches this, halts NEW entries for the day if it later falls back below it (locks in the gain). Keeps trading while above. 0 = disabled.</div>
+        <label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:0.8rem;color:#ccc;cursor:pointer">
+          <input type="checkbox" id="profitLockFlatten" onchange="saveProfitLockFlatten()">
+          Flatten on breach — also <b>close open positions</b> when the floor breaks (not just halt entries)
+        </label>
       </div>
 
       <div id="riskResetSection" style="display:none;margin-left:auto">
@@ -1013,6 +1017,10 @@
       if (plInput && document.activeElement !== plInput) {
         plInput.value = data.profit_lock_enabled ? data.profit_lock_dollars : '';
       }
+      const plFlat = document.getElementById('profitLockFlatten');
+      if (plFlat && document.activeElement !== plFlat) {
+        plFlat.checked = !!data.profit_lock_flatten;
+      }
       const plBadge = document.getElementById('plStatusBadge');
       const plDot   = document.getElementById('plStatusDot');
       const plText  = document.getElementById('plStatusText');
@@ -1368,6 +1376,12 @@
     input.classList.remove('invalid');
     try { await _postLimit({profit_lock_dollars: val}); }
     catch(e) { console.error('saveProfitLock failed:', e); }
+  }
+
+  async function saveProfitLockFlatten() {
+    const on = document.getElementById('profitLockFlatten').checked;
+    try { await _postLimit({profit_lock_flatten: on}); }
+    catch(e) { console.error('saveProfitLockFlatten failed:', e); }
   }
 
   async function clearProfitLock() {

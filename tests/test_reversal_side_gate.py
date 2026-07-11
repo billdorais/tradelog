@@ -62,6 +62,7 @@ def webhook_client(tmp_path):
     conn.close()
 
     saved_db = a.get_db
+    saved_hours = a._account_hours_ok
 
     def _fake_db():
         c = sqlite3.connect(db)
@@ -69,8 +70,12 @@ def webhook_client(tmp_path):
         return c
 
     a.get_db = _fake_db
+    # Neutralize the trading-hours gate so it can't pre-empt the reversal-side gate
+    # (Refined has a 09:30-11:00 ET window; otherwise the test is wall-clock dependent).
+    a._account_hours_ok = lambda tag: True
     yield a.app.test_client(), db
     a.get_db = saved_db
+    a._account_hours_ok = saved_hours
 
 
 def _last_exec(db):
