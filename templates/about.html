@@ -123,9 +123,10 @@
       Kairos Automata is an automated trade execution, logging, and analysis platform built by Bill Dorais.
       TradingView alerts are received as webhooks and routed through a configurable Signal Router pipeline
       before being forwarded to a supported broker — Alpaca, Interactive Brokers, or Coinbase — for execution.
-      Kairos runs up to <strong>four parallel Alpaca paper accounts</strong> — <strong style="color:#9aa0b5">Paper All</strong>,
+      Kairos runs up to <strong>five parallel Alpaca paper accounts</strong> — <strong style="color:#9aa0b5">Paper All</strong>,
       <strong style="color:#c4b5fd">Refined</strong>, <strong style="color:#F2C07A">Kairos engine</strong>, and
-      <strong style="color:#7FE098">Crew Paper</strong> — each an A/B on a different entry mechanism or strategy set,
+      <strong style="color:#7FE098">Crew Paper</strong>, and
+      <strong style="color:#5FC8D4">Engine Farm</strong> — each an A/B on a different entry mechanism or strategy set,
       with independent <a href="#gating" style="color:#70a8f5">per-account gating</a> (see below). The dashboard
       equity chart has a tab per account, each with a multi-select strategy visibility picker
       (Top 10/15/20, eye-toggle per strategy), and the trade feed below the chart syncs to whichever
@@ -151,7 +152,7 @@
       Alerts can be renamed, tickers deleted, and progress checked off as alerts go live.
     </p>
 
-    <h2 id="accounts">The Four Paper Accounts</h2>
+    <h2 id="accounts">The Five Paper Accounts</h2>
     <p>
       Each account is a separate Alpaca login/API key, added purely by setting env vars
       (<code style="font-size:0.82rem;color:#aaa">ALPACA_KEY</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_KEY2</code>…).
@@ -163,9 +164,10 @@
       <tr><th>Account</th><th>Role</th></tr>
       <tr>
         <td style="color:#9aa0b5">Paper All<br><span style="color:#888;font-size:0.78rem">alpaca</span></td>
-        <td>The full-sample <strong>audition pool</strong>. Trades every enabled strategy on every signal and is
-          exempt from the profit-lock and daily-loss guards — the widest, unclipped record of what the system
-          would do. This is why it's the reference book for the Replay backtests.</td>
+        <td>The full-sample <strong>TV-entry audition pool</strong> ("TV farm"). Trades every enabled strategy on
+          every TradingView signal and is exempt from the profit-lock and daily-loss guards — the widest,
+          unclipped record of what the system would do with TV bar-close entries. The Refined top-N is
+          selected from this book, so its selection pool matches Refined's execution mechanism.</td>
       </tr>
       <tr>
         <td style="color:#c4b5fd">Refined<br><span style="color:#888;font-size:0.78rem">alpaca2</span></td>
@@ -183,15 +185,24 @@
         <td>Trades only the picks <strong>wired from the Crew advisor</strong> page — never the auto snapshot or
           engine. A separate Alpaca login (Alpaca caps paper accounts at 3 per login).</td>
       </tr>
+      <tr>
+        <td style="color:#5FC8D4">Engine Farm<br><span style="color:#888;font-size:0.78rem">alpaca5</span></td>
+        <td>The <strong>engine-entry twin of Paper All</strong>: the full-sample audition pool fired by the
+          server-side engine (<code style="font-size:0.82rem;color:#aaa">ENGINE_PILOT_ALL=alpaca5:$1000</code>)
+          instead of TV alerts. Same farm exemptions as Paper All. Splitting the farm by entry mechanism keeps
+          each selection pool honest — the entry is part of the strategy (Refined vs Kairos showed opposite
+          edges on the same names), so a mixed farm's leaderboard estimates neither mechanism cleanly.</td>
+      </tr>
     </table>
 
     <h2 id="gating">Per-Account Gating</h2>
     <p>
       Every gate is evaluated <strong>per target account</strong>, enforced in both the webhook (TV entries) and
       the Kairos engine (server-side entries). So one book can halt or be side-restricted while the others keep
-      trading the same signal. <strong style="color:#9aa0b5">Paper All</strong> is deliberately exempt from the
-      risk guards — as the unfiltered audition pool you want to see its full sample, so profit-lock and daily-loss
-      protect the candidate books (Refined / Kairos / Crew) without clipping it.
+      trading the same signal. The two farms — <strong style="color:#9aa0b5">Paper All</strong> (TV entries) and
+      <strong style="color:#5FC8D4">Engine Farm</strong> (engine entries) — are deliberately exempt from the
+      risk guards: as unfiltered audition pools you want their full samples, so profit-lock and daily-loss
+      protect the candidate books (Refined / Kairos / Crew) without clipping them.
     </p>
     <table>
       <tr>
@@ -200,35 +211,36 @@
         <th style="color:#c4b5fd">Refined</th>
         <th style="color:#F2C07A">Kairos</th>
         <th style="color:#7FE098">Crew Paper</th>
+        <th style="color:#5FC8D4">Engine Farm</th>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Day-type gate — <strong>breakouts</strong><br>
           <span style="color:#888;font-size:0.8rem">blocks BREAKOUT entries on non-Outside days</span></td>
-        <td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
+        <td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Day-type gate — <strong>reversals</strong><br>
           <span style="color:#888;font-size:0.8rem">blocks REVERSAL entries on non-Inside days; the reversal
           day-type gate itself defaults OFF globally (toggle on Routing)</span></td>
-        <td>eligible</td><td style="color:#666">—</td><td>eligible</td><td>eligible</td>
+        <td>eligible</td><td style="color:#666">—</td><td>eligible</td><td>eligible</td><td>eligible</td>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Reversal-side policy<br>
           <span style="color:#888;font-size:0.8rem">restricts reversal entries to one side</span></td>
         <td style="color:#666">free</td>
         <td style="color:#F2C07A"><strong>SHORT-only</strong></td>
-        <td style="color:#666">free</td><td style="color:#666">free</td>
+        <td style="color:#666">free</td><td style="color:#666">free</td><td style="color:#666">free</td>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Profit lock<br>
           <span style="color:#888;font-size:0.8rem">arms at the daily $ floor; halts (and flattens) the book if it
           gives the gain back</span></td>
-        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
+        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Daily-loss guard<br>
           <span style="color:#888;font-size:0.8rem">halts + liquidates the book when its own daily P&amp;L hits the limit</span></td>
-        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
+        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td>
       </tr>
     </table>
     <p style="font-size:0.86rem;color:#888">

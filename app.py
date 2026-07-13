@@ -158,6 +158,13 @@ ACCOUNT_META = {
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
     "4": {"tag": "alpaca4", "label": "Crew Paper",    "color": "#7FE098",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
+    # Engine Farm — the engine-entry twin of Paper All. Full-sample audition pool
+    # fired by ENGINE_PILOT_ALL (set it to alpaca5:$1000 and DROP alpaca from it, so
+    # acct1 becomes a clean TV farm and acct5 a clean engine farm — the selection
+    # pool then matches each execution book's entry mechanism). Farm exemptions
+    # mirror Paper All: no profit lock, no daily-loss guard, no reversal-side gate.
+    "5": {"tag": "alpaca5", "label": "Engine Farm",   "color": "#5FC8D4",
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 

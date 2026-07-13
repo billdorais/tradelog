@@ -237,6 +237,10 @@
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
           Crew Paper
         </button>
+        <button id="srcAlpaca5" onclick="switchSource('alpaca5')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+          Engine Farm
+        </button>
       </div>
     </div>
   </div>
@@ -763,13 +767,13 @@
   // ── Source toggle ──────────────────────────────────────────────────────────
   function switchSource(src) {
     activeSource = src;
-    const tabs = { signals: 'srcSignals', alpaca: 'srcAlpaca', alpaca2: 'srcAlpaca2', alpaca3: 'srcAlpaca3', alpaca4: 'srcAlpaca4' };
+    const tabs = { signals: 'srcSignals', alpaca: 'srcAlpaca', alpaca2: 'srcAlpaca2', alpaca3: 'srcAlpaca3', alpaca4: 'srcAlpaca4', alpaca5: 'srcAlpaca5' };
     Object.entries(tabs).forEach(([key, id]) => {
       const el = document.getElementById(id);
       if (!el) return;
       const active = src === key;
-      const activeBg  = key === 'alpaca2' ? '#1a1030' : key === 'alpaca3' ? '#2a1a08' : key === 'alpaca4' ? '#0c2417' : '#1a1d2e';
-      const activeCol = key === 'alpaca2' ? '#c4b5fd' : key === 'alpaca3' ? '#F2C07A' : key === 'alpaca4' ? '#7FE098' : '#e0e0e0';
+      const activeBg  = key === 'alpaca2' ? '#1a1030' : key === 'alpaca3' ? '#2a1a08' : key === 'alpaca4' ? '#0c2417' : key === 'alpaca5' ? '#0e2426' : '#1a1d2e';
+      const activeCol = key === 'alpaca2' ? '#c4b5fd' : key === 'alpaca3' ? '#F2C07A' : key === 'alpaca4' ? '#7FE098' : key === 'alpaca5' ? '#5FC8D4' : '#e0e0e0';
       el.style.background = active ? activeBg  : 'transparent';
       el.style.color      = active ? activeCol : '#666';
     });
@@ -923,7 +927,8 @@
     const isAlpaca2 = activeSource === 'alpaca2';
     const isAlpaca3 = activeSource === 'alpaca3';
     const isAlpaca4 = activeSource === 'alpaca4';
-    let endpoint = (isAlpaca || isAlpaca2 || isAlpaca3 || isAlpaca4) ? '/api/alpaca/analysis' : '/api/analysis';
+    const isAlpaca5 = activeSource === 'alpaca5';
+    let endpoint = (isAlpaca || isAlpaca2 || isAlpaca3 || isAlpaca4 || isAlpaca5) ? '/api/alpaca/analysis' : '/api/analysis';
     const params = new URLSearchParams();
     if (fromDate) params.set('from_date', fromDate);
     if (toDate)   params.set('to_date',   toDate);
@@ -932,6 +937,7 @@
     if (isAlpaca2) params.set('account', '2');
     if (isAlpaca3) params.set('account', '3');
     if (isAlpaca4) params.set('account', '4');
+    if (isAlpaca5) params.set('account', '5');
     if (isAlpaca) {
       try {
         const excl = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]');
@@ -956,7 +962,7 @@
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
-    const srcLabel = isAlpaca2 ? 'Alpaca Refined fills' : isAlpaca3 ? 'Kairos engine fills' : isAlpaca4 ? 'Crew Paper fills' : isAlpaca ? 'Alpaca fills' : 'signal trades';
+    const srcLabel = isAlpaca2 ? 'Alpaca Refined fills' : isAlpaca3 ? 'Kairos engine fills' : isAlpaca4 ? 'Crew Paper fills' : isAlpaca5 ? 'Engine Farm fills' : isAlpaca ? 'Alpaca fills' : 'signal trades';
     const exclNote = isAlpaca ? (() => {
       try {
         const n = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]').length;
@@ -1014,6 +1020,8 @@
         ? ' · stats reflect the Kairos engine account (acct 3) for current date range'
         : (activeSource === 'alpaca4')
         ? ' · stats reflect the Crew Paper account (acct 4) for current date range'
+        : (activeSource === 'alpaca5')
+        ? ' · stats reflect the Engine Farm account (acct 5) for current date range'
         : '';
       meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}${overlayNote}`;
 
@@ -1079,7 +1087,7 @@
       // Overlay: when on Paper Refined tab, replace the Trades/Win%/PF/Total P&L
       // columns with stats from analysisData.per_strategy so the rows reflect what
       // the user actually sees in their Refined account (date-range scoped).
-      const useTabStats = (activeSource === 'alpaca2' || activeSource === 'alpaca3' || activeSource === 'alpaca4') && analysisData && analysisData.per_strategy;
+      const useTabStats = (activeSource === 'alpaca2' || activeSource === 'alpaca3' || activeSource === 'alpaca4' || activeSource === 'alpaca5') && analysisData && analysisData.per_strategy;
       rows.innerHTML = scored.map((r, i) => {
         const ps = useTabStats ? analysisData.per_strategy[r.name] : null;
         const trades  = useTabStats ? (ps ? ps.trades        : 0)    : r.trades;
@@ -1264,6 +1272,7 @@
     const accountLabel = activeSource === 'alpaca2' ? 'Paper Refined'
                        : activeSource === 'alpaca3' ? 'Kairos engine'
                        : activeSource === 'alpaca4' ? 'Crew Paper'
+                       : activeSource === 'alpaca5' ? 'Engine Farm'
                        : activeSource === 'alpaca'  ? 'Paper All'
                        :                              'TV Signals';
     document.getElementById('topNBreakdownNote').textContent =
@@ -1338,7 +1347,7 @@
     const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
     const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
     const orphanPnl = s.orphan_pnl;
-    const orphanCard = ((activeSource === 'alpaca' || activeSource === 'alpaca2' || activeSource === 'alpaca3' || activeSource === 'alpaca4') && orphanPnl != null && orphanPnl !== 0)
+    const orphanCard = ((activeSource === 'alpaca' || activeSource === 'alpaca2' || activeSource === 'alpaca3' || activeSource === 'alpaca4' || activeSource === 'alpaca5') && orphanPnl != null && orphanPnl !== 0)
       ? card(`Orphan P&L (${s.orphan_count || 0})`,
              fmt(orphanPnl),
              orphanPnl >= 0 ? 'pos' : 'neg',
@@ -2076,7 +2085,7 @@
     _renderTimeOfDayBreakdown(clean);
     // Load current stop settings for this strategy (only for strategy-level drills)
     if (kind === 'strategy') {
-      const acct = activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca' ? '1' : '2';
+      const acct = activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca5' ? '5' : activeSource === 'alpaca' ? '1' : '2';
       _loadStrategyStops(key, acct);
       _load20dStats(key, acct);
     } else {
@@ -2331,7 +2340,7 @@
 
   async function loadLsBreakdown() {
     const wrap = document.getElementById('lsBreakdownWrap');
-    const acct = activeSource === 'alpaca2' ? '2' : activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : '1';
+    const acct = activeSource === 'alpaca2' ? '2' : activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca5' ? '5' : '1';
     const fromDate = document.getElementById('analysisFrom').value;
     const toDate   = document.getElementById('analysisTo').value;
     const p = new URLSearchParams({ account: acct });

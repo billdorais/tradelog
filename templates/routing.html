@@ -73,6 +73,7 @@
     .node-broker-alpaca-paper-3 { background: #2a1a08; border-color: #F2C07A; color: #F2C07A; }
     .node-broker-alpaca-live-3  { background: #2a1a08; border-color: #F2C07A; color: #F2C07A; }
     .node-broker-alpaca-paper-4 { background: #0c2417; border-color: #7FE098; color: #7FE098; }
+    .node-broker-alpaca-paper-5 { background: #0e2426; border-color: #5FC8D4; color: #5FC8D4; }
     .node-broker-alpaca-live-4  { background: #0c2417; border-color: #7FE098; color: #7FE098; }
     /* Bulk-actions toolbar — grouped, labeled rows */
     .bulk-card    { background:#0d0f16; border:1px solid #1e2130; border-radius:10px; padding:12px 14px; margin-bottom:10px; display:flex; flex-direction:column; gap:9px; }
@@ -2098,6 +2099,7 @@
           'alpaca-paper-2': 'Alpaca Refined', 'alpaca-live-2': 'Alpaca Refined Live',
           'alpaca-paper-3': 'Alpaca Kairos', 'alpaca-live-3': 'Alpaca Kairos Live',
           'alpaca-paper-4': 'Alpaca Crew', 'alpaca-live-4': 'Alpaca Crew Live',
+          'alpaca-paper-5': 'Engine Farm', 'alpaca-live-5': 'Engine Farm Live',
           'coinbase': 'Coinbase',
         };
         return bmap[node.value] || node.value || 'IB Paper';
@@ -2730,6 +2732,8 @@
               <option value="alpaca-live-3"  ${bv==='alpaca-live-3'  ? 'selected':''}>Alpaca Live — Kairos engine (account 3)</option>
               <option value="alpaca-paper-4" ${bv==='alpaca-paper-4' ? 'selected':''}>Alpaca Paper — Crew Paper (account 4)</option>
               <option value="alpaca-live-4"  ${bv==='alpaca-live-4'  ? 'selected':''}>Alpaca Live — Crew Paper (account 4)</option>
+              <option value="alpaca-paper-5" ${bv==='alpaca-paper-5' ? 'selected':''}>Alpaca Paper — Engine Farm (account 5)</option>
+              <option value="alpaca-live-5"  ${bv==='alpaca-live-5'  ? 'selected':''}>Alpaca Live — Engine Farm (account 5)</option>
               <option value="coinbase"     ${bv==='coinbase'     ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;
