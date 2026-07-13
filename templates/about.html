@@ -122,11 +122,12 @@
     <p>
       Kairos Automata is an automated trade execution, logging, and analysis platform built by Bill Dorais.
       TradingView alerts are received as webhooks and routed through a configurable Signal Router pipeline
-      before being forwarded to a supported broker — Alpaca (with an optional second "Refined" account),
-      Interactive Brokers, or Coinbase — for execution.
-      The dashboard equity chart has two tabs: <strong>Paper All</strong> (every fill from the primary Alpaca paper
-      account) and <strong>Paper Refined</strong> (fills from the secondary Alpaca account that only runs the
-      current top-performing strategies). Each tab includes a multi-select strategy visibility picker
+      before being forwarded to a supported broker — Alpaca, Interactive Brokers, or Coinbase — for execution.
+      Kairos runs up to <strong>four parallel Alpaca paper accounts</strong> — <strong style="color:#9aa0b5">Paper All</strong>,
+      <strong style="color:#c4b5fd">Refined</strong>, <strong style="color:#F2C07A">Kairos engine</strong>, and
+      <strong style="color:#7FE098">Crew Paper</strong> — each an A/B on a different entry mechanism or strategy set,
+      with independent <a href="#gating" style="color:#70a8f5">per-account gating</a> (see below). The dashboard
+      equity chart has a tab per account, each with a multi-select strategy visibility picker
       (Top 10/15/20, eye-toggle per strategy), and the trade feed below the chart syncs to whichever
       tab is active.
     </p>
@@ -148,6 +149,95 @@
       convention <code style="font-size:0.82rem;color:#aaa">CAM_TICKER_STRAT_LEVEL_TFMIN</code>
       (e.g. <code style="font-size:0.82rem;color:#aaa">CAM_SPY_BREAKOUT_R4S4_05MIN</code>).
       Alerts can be renamed, tickers deleted, and progress checked off as alerts go live.
+    </p>
+
+    <h2 id="accounts">The Four Paper Accounts</h2>
+    <p>
+      Each account is a separate Alpaca login/API key, added purely by setting env vars
+      (<code style="font-size:0.82rem;color:#aaa">ALPACA_KEY</code>, <code style="font-size:0.82rem;color:#aaa">ALPACA_KEY2</code>…).
+      The app is <strong>registry-driven</strong>: every dashboard tab, analysis view, and gate loops over whatever
+      accounts are configured, so adding a fifth is just another key. They run in parallel on the same live
+      signals to A/B different entry mechanisms and strategy sets against each other.
+    </p>
+    <table>
+      <tr><th>Account</th><th>Role</th></tr>
+      <tr>
+        <td style="color:#9aa0b5">Paper All<br><span style="color:#888;font-size:0.78rem">alpaca</span></td>
+        <td>The full-sample <strong>audition pool</strong>. Trades every enabled strategy on every signal and is
+          exempt from the profit-lock and daily-loss guards — the widest, unclipped record of what the system
+          would do. This is why it's the reference book for the Replay backtests.</td>
+      </tr>
+      <tr>
+        <td style="color:#c4b5fd">Refined<br><span style="color:#888;font-size:0.78rem">alpaca2</span></td>
+        <td>Only the daily <strong>top-N leaderboard</strong> by realised P&amp;L (refreshed 4:15&nbsp;PM ET).
+          Entries come from <strong>TradingView bar-close</strong> alerts.</td>
+      </tr>
+      <tr>
+        <td style="color:#F2C07A">Kairos engine<br><span style="color:#888;font-size:0.78rem">alpaca3</span></td>
+        <td>The same top-N leaderboard, but entries are generated <strong>server-side by the Kairos engine</strong>
+          (enters at the Camarilla level with a buffer / retest) instead of TV bar-close. Refined vs Kairos is the
+          entry-mechanism A/B — same strategies, different fills.</td>
+      </tr>
+      <tr>
+        <td style="color:#7FE098">Crew Paper<br><span style="color:#888;font-size:0.78rem">alpaca4</span></td>
+        <td>Trades only the picks <strong>wired from the Crew advisor</strong> page — never the auto snapshot or
+          engine. A separate Alpaca login (Alpaca caps paper accounts at 3 per login).</td>
+      </tr>
+    </table>
+
+    <h2 id="gating">Per-Account Gating</h2>
+    <p>
+      Every gate is evaluated <strong>per target account</strong>, enforced in both the webhook (TV entries) and
+      the Kairos engine (server-side entries). So one book can halt or be side-restricted while the others keep
+      trading the same signal. <strong style="color:#9aa0b5">Paper All</strong> is deliberately exempt from the
+      risk guards — as the unfiltered audition pool you want to see its full sample, so profit-lock and daily-loss
+      protect the candidate books (Refined / Kairos / Crew) without clipping it.
+    </p>
+    <table>
+      <tr>
+        <th>Gate</th>
+        <th style="color:#9aa0b5">Paper All</th>
+        <th style="color:#c4b5fd">Refined</th>
+        <th style="color:#F2C07A">Kairos</th>
+        <th style="color:#7FE098">Crew Paper</th>
+      </tr>
+      <tr>
+        <td style="font-family:inherit;white-space:normal">Day-type gate — <strong>breakouts</strong><br>
+          <span style="color:#888;font-size:0.8rem">blocks BREAKOUT entries on non-Outside days</span></td>
+        <td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
+      </tr>
+      <tr>
+        <td style="font-family:inherit;white-space:normal">Day-type gate — <strong>reversals</strong><br>
+          <span style="color:#888;font-size:0.8rem">blocks REVERSAL entries on non-Inside days; the reversal
+          day-type gate itself defaults OFF globally (toggle on Routing)</span></td>
+        <td>eligible</td><td style="color:#666">—</td><td>eligible</td><td>eligible</td>
+      </tr>
+      <tr>
+        <td style="font-family:inherit;white-space:normal">Reversal-side policy<br>
+          <span style="color:#888;font-size:0.8rem">restricts reversal entries to one side</span></td>
+        <td style="color:#666">free</td>
+        <td style="color:#F2C07A"><strong>SHORT-only</strong></td>
+        <td style="color:#666">free</td><td style="color:#666">free</td>
+      </tr>
+      <tr>
+        <td style="font-family:inherit;white-space:normal">Profit lock<br>
+          <span style="color:#888;font-size:0.8rem">arms at the daily $ floor; halts (and flattens) the book if it
+          gives the gain back</span></td>
+        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
+      </tr>
+      <tr>
+        <td style="font-family:inherit;white-space:normal">Daily-loss guard<br>
+          <span style="color:#888;font-size:0.8rem">halts + liquidates the book when its own daily P&amp;L hits the limit</span></td>
+        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
+      </tr>
+    </table>
+    <p style="font-size:0.86rem;color:#888">
+      On top of these, four <strong>universal</strong> guards apply to every account: the reversal
+      <em>retest</em> window (enter on the pullback/2nd touch), <em>2-strikes-per-level</em> (a level goes cold
+      after 2 losses that day), a <em>non-shortable skip</em> (short entries on tickers the broker won't short,
+      e.g. SPCX, are dropped cleanly), and the per-account <em>trading-hours</em> window plus a duplicate-signal
+      cooldown. The whole matrix lives in one <code style="font-size:0.82rem;color:#aaa">ACCOUNT_META</code> table
+      in <code style="font-size:0.82rem;color:#aaa">app.py</code> — flip a flag to change a book's policy.
     </p>
 
     <h2>Supported Brokers</h2>
@@ -192,7 +282,7 @@
       &nbsp;&nbsp;│&nbsp; 5. Duplicate signal filter — drops if same strategy+ticker+action fired within cooldown<br>
       &nbsp;&nbsp;│&nbsp; 6. Whitelist enforcement — blocks &amp; logs the signal if NO enabled rule matches (old TV alerts surface in the Routing UI for fixing)<br>
       &nbsp;&nbsp;│&nbsp; 7. Logs signal to PostgreSQL<br>
-      &nbsp;&nbsp;│&nbsp; 8. Daily max loss check — blocks &amp; records if account P&amp;L hit MAX_DAILY_LOSS<br>
+      &nbsp;&nbsp;│&nbsp; 8. Per-account gates — drops the target accounts halted by day-type, reversal-side, profit-lock, or daily-loss (others still fire)<br>
       &nbsp;&nbsp;│&nbsp; 9. Strategy block check — blocks if strategy was position-stopped earlier today<br>
       &nbsp;&nbsp;▼<br>
       Broker selection (from Broker node or "broker" field in payload)<br>
@@ -217,12 +307,24 @@
         <td>Daily Max Loss</td>
         <td><code style="font-size:0.82rem;color:#aaa">MAX_DAILY_LOSS</code></td>
         <td>
-          A background thread polls account P&amp;L every 60 seconds. When today's total
-          (realized + unrealized) drops to or below this value, two things happen simultaneously:
-          all open positions are liquidated across every active broker, and an account-wide halt
-          is set that blocks every subsequent incoming order until manually cleared.
-          The halt is cleared with the <em>Clear Halt &amp; Resume Trading</em> button in the risk panel.
-          Set to a negative dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">-500</code>). Default: disabled.
+          <strong>Per account.</strong> A background thread polls each guarded account's own daily P&amp;L every
+          60 seconds. When a book's P&amp;L drops to or below this value, that book <em>independently</em> liquidates
+          its open positions and halts its new entries for the day — the others keep trading. Paper All is exempt
+          (audition pool). The routing risk panel shows a per-account ⛔&nbsp;halted / ✓&nbsp;trading line; clear
+          with <em>Clear Halt &amp; Resume Trading</em>. Set a negative dollar value to enable
+          (e.g. <code style="font-size:0.82rem;color:#aaa">-125</code>). Default: disabled.
+        </td>
+      </tr>
+      <tr>
+        <td>Profit Lock</td>
+        <td><code style="font-size:0.82rem;color:#aaa">PROFIT_LOCK_DOLLARS</code></td>
+        <td>
+          <strong>Per account.</strong> Once a book's daily P&amp;L reaches this floor it <em>arms</em>; if a later
+          trade drags that book back below the floor, it halts that book's new entries for the day (others keep
+          trading) — locking in the gain while you stay above it. With
+          <code style="font-size:0.82rem;color:#aaa">PROFIT_LOCK_FLATTEN</code> on (default), it also closes the
+          book's open positions on breach so the profit doesn't leak to exits. Paper All is exempt. Set a positive
+          dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">100</code>). Default: disabled.
         </td>
       </tr>
       <tr>
@@ -352,9 +454,9 @@
         <td>Daily Max Loss Halt</td>
         <td><code style="font-size:0.82rem;color:#aaa">MAX_DAILY_LOSS</code></td>
         <td>
-          Nuclear option — when today's total P&amp;L (realized + unrealized) hits the limit,
-          all open positions across all brokers are liquidated immediately and an account-wide halt
-          blocks all new entries until manually cleared from the Risk panel.
+          Per-account circuit breaker — when a guarded book's own daily P&amp;L hits the limit, that book's
+          open positions are liquidated immediately and its new entries are halted for the day, while the other
+          books keep trading. Cleared from the Risk panel. Paper All is exempt.
         </td>
       </tr>
     </table>
