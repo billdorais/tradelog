@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -495,6 +495,32 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
 
         card_block = _fmt_card_inputs(card_data)
 
+        def _fmt_scorecard(sc):
+            """The advisor's out-of-sample feedback loop: last report's picks vs
+            what they ACTUALLY did on Crew Paper after wiring."""
+            if not sc or not sc.get("picks"):
+                return ""
+            lines = [
+                f"=== PREVIOUS PICKS SCORECARD — your last Top-{sc.get('n_picks')} "
+                f"(report {sc.get('report_week')}, wired since {sc.get('since')}) vs ACTUAL Crew Paper results ===",
+                f"Traded: {sc.get('n_traded')}/{sc.get('n_picks')} | "
+                f"Positive: {sc.get('n_positive')}/{sc.get('n_traded') or 0} | "
+                f"Net P&L: ${sc.get('total_pnl', 0):.2f}",
+                "",
+            ]
+            for r in sc.get("picks", []):
+                if r.get("trades"):
+                    lines.append(f"  {r['strategy']} ({r.get('side')}): {r['trades']} trades | "
+                                 f"${r['pnl']:.2f} | {r['win_rate']:.0f}% win")
+                else:
+                    lines.append(f"  {r['strategy']} ({r.get('side')}): no trades yet")
+            lines.append("")
+            lines.append("This is the OUT-OF-SAMPLE test of your own selection method — the picks were "
+                         "chosen on lookback data, this is what they did afterwards. Grade it honestly.")
+            return "\n".join(lines)
+
+        scorecard_block = _fmt_scorecard(scorecard_data)
+
         # ── Load knowledge base ───────────────────────────────────────────────
         knowledge_block = ""
         try:
@@ -602,7 +628,8 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
             description=(
                 f"Here is the Kairos account data"
                 + (f" for: {period}" if period else "") + ":\n\n"
-                f"{strategy_block}\n\n"
+                + (f"{scorecard_block}\n\n" if scorecard_block else "")
+                + f"{strategy_block}\n\n"
                 f"{engine_strat_block}\n\n"
                 f"{card_block}\n\n"
                 f"{journal_block}\n\n"
@@ -620,7 +647,15 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "| Day-type gate | Yes / No |\n"
                 "| Entries | Refined TV OR Kairos engine — per the engine-vs-TV read |\n"
                 "| Best indices | top index tickers · indices-only P&L from Paper All: $X (from the card inputs) |\n\n"
-                "Then continue with the six detailed sections:\n\n"
+                "Then continue with the detailed sections:\n\n"
+                "0. **Last Picks — Grade Yourself** — If a PREVIOUS PICKS SCORECARD block is "
+                "present above, review it FIRST and let it shape this month's Top 10: state "
+                "plainly how the last picks did out-of-sample (X/N traded, Y positive, net $Z), "
+                "name the picks that validated vs the ones that flopped, and say whether the "
+                "selection method (best-side composite ranking) is showing forward edge or "
+                "picking in-sample flukes. Drop or down-weight repeat offenders; keep validated "
+                "picks. If there is no scorecard (first run, or picks never wired/traded), say "
+                "so in one line and move on.\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
@@ -694,6 +729,71 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+# ── Pick scorecard — grade the last report's Top-N against reality ─────────────
+
+def _pick_scorecard(prev_report=None):
+    """Grade the LAST crew report's Top-N picks against what they actually did on
+    Crew Paper (acct4) since the report was written. Picks are chosen on lookback
+    data, so their forward Crew Paper record is the only honest, out-of-sample
+    test of the selection method — this closes that feedback loop. Returns {}
+    when there is no prior report or no parseable picks."""
+    import app as _kairos
+    if prev_report is None:
+        try:
+            conn = _kairos.get_db(); cur = conn.cursor()
+            cur.execute("SELECT week, created_at, report FROM crew_reports "
+                        "ORDER BY created_at DESC LIMIT 1")
+            row = cur.fetchone()
+            conn.close()
+        except Exception:
+            row = None
+        if not row:
+            return {}
+        prev_report = {"week":       row[0] if _kairos.DATABASE_URL else row["week"],
+                       "created_at": row[1] if _kairos.DATABASE_URL else row["created_at"],
+                       "report":     row[2] if _kairos.DATABASE_URL else row["report"]}
+    parsed = _parse_next_month_card(prev_report.get("report") or "")
+    picks  = parsed.get("picks") or []
+    if not picks:
+        return {}
+    since = (prev_report.get("created_at") or "")[:10]
+    per_strat = {}
+    try:
+        with _kairos.app.test_client() as _c:
+            d = _c.get(f"/api/alpaca/analysis?account=4&from_date={since}").get_json() or {}
+            per_strat = {k.upper(): v for k, v in (d.get("per_strategy") or {}).items()}
+    except Exception:
+        per_strat = {}
+    rows, traded, positive, total = [], 0, 0, 0.0
+    for p in picks:
+        s = per_strat.get((p.get("strategy") or "").upper())
+        if s and (s.get("trades") or 0) > 0:
+            pnl = round(s.get("total_pnl", 0) or 0, 2)
+            rows.append({"strategy": p["strategy"], "side": p.get("side", "both"),
+                         "trades": s.get("trades", 0), "pnl": pnl,
+                         "win_rate": s.get("win_rate", 0)})
+            traded   += 1
+            positive += 1 if pnl > 0 else 0
+            total    += pnl
+        else:
+            rows.append({"strategy": p["strategy"], "side": p.get("side", "both"),
+                         "trades": 0, "pnl": None, "win_rate": None})
+    return {"report_week": prev_report.get("week"), "since": since,
+            "n_picks": len(picks), "n_traded": traded, "n_positive": positive,
+            "total_pnl": round(total, 2), "picks": rows,
+            "caveat": "FORWARD / out-of-sample: these picks were chosen on lookback data; "
+                      "this is how they actually performed on Crew Paper after wiring."}
+
+
+@crew_bp.route("/api/crew/scorecard")
+def api_crew_scorecard():
+    """Standalone view of the pick scorecard (also fed into reports + chat tool)."""
+    sc = _pick_scorecard()
+    if not sc:
+        return jsonify({"error": "No previous crew report with parseable picks"}), 404
+    return jsonify(sc)
+
 
 # ── Chat tools — let the advisor pull LIVE Kairos data on demand ───────────────
 
@@ -783,6 +883,15 @@ _CREW_TOOLS = [
             "band": {"type": "string",
                      "description": "breakout_r3s3 | breakout_r4s4 | reversal_r3s3 | reversal_r4s4"}},
             "required": ["band"]},
+    },
+    {
+        "name": "pick_scorecard",
+        "description": "Grade the LAST crew report's Top-N picks against their ACTUAL Crew Paper "
+                       "(acct4) results since that report was written — the out-of-sample test of "
+                       "the selection method. Returns per-pick trades/P&L/win% plus a summary "
+                       "(traded X/N, Y positive, net $Z). ALWAYS pull this before making new "
+                       "next-month picks, and use it for 'how did my last picks do'.",
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "cross_account",
@@ -880,6 +989,11 @@ def _run_crew_tool(name: str, args: dict) -> str:
                           "out-of-sample stability — fewer flukes, less promote/demote churn.",
                 "top_by_pnl": by_pnl, "top_by_score": by_score,
             })[:6500]
+        if name == "pick_scorecard":
+            sc = _pick_scorecard()
+            if not sc:
+                return json.dumps({"error": "No previous crew report with parseable picks yet."})
+            return json.dumps(sc)[:6000]
         if name == "side_breakdown":
             acct = str(args.get("account") or "3")
             qs = f"account={acct}"
@@ -1042,7 +1156,9 @@ def api_crew_chat():
         "band_fill_quality (one band: Refined-TV vs Kairos-engine P&L + the engine's slippage — "
         "for 'is the engine degrading R3S3 breakout'), and cross_account (strategies positive on "
         "BOTH books + divergent ones + an index SPY/QQQ/IWM/SMH rollup — for 'which strategies "
-        "work in both' and 'how did the indices do'). "
+        "work in both' and 'how did the indices do'), and pick_scorecard (how your LAST report's "
+        "Top-N picks actually did on Crew Paper since wiring — the out-of-sample grade of your "
+        "own selection method). "
         "USE them whenever the user asks about anything current, specific, or "
         "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
         "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
@@ -1056,7 +1172,8 @@ def api_crew_chat():
         "it would plausibly hold OUT of sample, and prefer the risk-adjusted composite score for "
         "selection.\n\n"
         "FORMAT — FORWARD / NEXT-MONTH RECOMMENDATIONS: when the user asks what to run next month "
-        "or for a new paper account, FIRST pull the data (cross_account, side_breakdown, "
+        "or for a new paper account, FIRST pull the data (pick_scorecard — grade your last picks "
+        "before making new ones — then cross_account, side_breakdown, "
         "band_fill_quality, rank_compare), then LEAD your reply with exactly this card (Markdown "
         "table), every value from a tool result — never invented. Use side_breakdown's "
         "side_gated_candidates to rank by each strategy's BEST side — a strong one-sided record can "
@@ -1487,9 +1604,17 @@ def api_crew_run():
             _conn.close()
         except Exception:
             pass
+        # Grade the LAST report's picks against actual Crew Paper results — the
+        # advisor's out-of-sample feedback loop, embedded at the top of the report.
+        scorecard_data = {}
+        try:
+            if prev_reports:
+                scorecard_data = _pick_scorecard(prev_reports[0])
+        except Exception:
+            pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data),
             daemon=True,
         ).start()
     else:
