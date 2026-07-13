@@ -642,10 +642,22 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
-                "| Top 10 to run | ten strategy names ranked by each strategy's BEST side. Tag each long / short / both. A strategy may earn a slot on its single-side record — use the SIDE-GATED CANDIDATES in the card inputs (best_side score vs both-sides score): if a name scores clearly higher gated to one side, include it tagged that side. The tag is a REAL gate (long = long-only, short = short-only). FORMAT: put each numbered pick on its OWN line, separated by <br> (one ticker per line) — e.g. `1. SMH_CAM_... — SHORT-only (...)<br>2. SPY_CAM_... — ...<br>3. ...`. |\n"
+                "| Top 10 to run | ten strategy names sourced from BOTH books, ranked by each strategy's BEST side. "
+                "SOURCING RULES: (a) names positive on BOTH Refined (acct2) and Kairos (acct3) are first-class picks; "
+                "(b) a name positive on only ONE book is an ENTRY-SPECIFIC bet — the entry mechanism is part of the "
+                "strategy (the two books have shown OPPOSITE edges on the same names) — include it only with a decent "
+                "sample on that book (≥15 trades) and it MUST carry that book's entry tag. "
+                "Tag each pick's ENTRY as [TV] (earned on Refined) or [Engine] (earned on Kairos) — the tag is REAL: "
+                "the wire button sets that rule's entry source per pick. "
+                "Tag each pick's SIDE long / short / both. A strategy may earn a slot on its single-side record — use "
+                "the SIDE-GATED CANDIDATES in the card inputs (best_side score vs both-sides score): if a name scores "
+                "clearly higher gated to one side, include it tagged that side. The side tag is a REAL gate "
+                "(long = long-only, short = short-only). "
+                "FORMAT: put each numbered pick on its OWN line, separated by <br> (one ticker per line) — e.g. "
+                "`1. SMH_CAM_... — SHORT-only [Engine] (...)<br>2. SPY_CAM_... — both [TV] (...)<br>3. ...`. |\n"
                 "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
                 "| Day-type gate | Yes / No |\n"
-                "| Entries | Refined TV OR Kairos engine — per the engine-vs-TV read |\n"
+                "| Entries | Default for UNTAGGED picks only: Refined TV OR Kairos engine — per the engine-vs-TV read. Per-pick [TV]/[Engine] tags override this default. |\n"
                 "| Best indices | top index tickers · indices-only P&L from Paper All: $X (from the card inputs) |\n\n"
                 "Then continue with the detailed sections:\n\n"
                 "0. **Last Picks — Grade Yourself** — If a PREVIOUS PICKS SCORECARD block is "
@@ -1177,13 +1189,17 @@ def api_crew_chat():
         "band_fill_quality, rank_compare), then LEAD your reply with exactly this card (Markdown "
         "table), every value from a tool result — never invented. Use side_breakdown's "
         "side_gated_candidates to rank by each strategy's BEST side — a strong one-sided record can "
-        "earn a Top-5 slot, tagged with that side (the tag is a real long/short gate):\n\n"
+        "earn a Top-5 slot, tagged with that side (the tag is a real long/short gate). Source picks "
+        "from BOTH books: names positive on BOTH Refined and Kairos are first-class; a name positive "
+        "on only ONE book is an entry-specific bet (the books have shown OPPOSITE edges on the same "
+        "names) — needs ≥15 trades on that book and MUST carry that book's entry tag, [TV] (Refined) "
+        "or [Engine] (Kairos); the tag is real — the wire button sets that rule's entry source:\n\n"
         "## 📋 Next Month — Crew Paper Account\n"
         "| Decision | Recommendation |\n|---|---|\n"
-        "| Top 10 to run | ten strategy names, each tagged long / short / both (a name may earn its slot on its best single side). FORMAT: each numbered pick on its OWN line, separated by <br> (one ticker per line). |\n"
+        "| Top 10 to run | ten strategy names, each tagged long / short / both AND [TV] / [Engine] (a name may earn its slot on its best single side or single book). FORMAT: each numbered pick on its OWN line, separated by <br> (one ticker per line). |\n"
         "| Sizing | Equal risk OR Scaled-by-score — one-line why |\n"
         "| Day-type gate | Yes / No |\n"
-        "| Entries | Refined TV OR Kairos engine |\n"
+        "| Entries | Default for untagged picks: Refined TV OR Kairos engine (per-pick [TV]/[Engine] tags override) |\n"
         "| Best indices | tickers · indices-only P&L from Paper All: $X |\n\n"
         "Then a `## Detail` section with the reasoning, samples and caveats. Keep the card to "
         "those five rows; put everything else under Detail.\n\n"
@@ -1303,16 +1319,29 @@ def _parse_next_month_card(report):
         value = cells[1]
         low_v = value.lower()
         if label.startswith("top") and "run" in label:
-            for m in _STRAT_SLUG_RE.findall(value):
-                slug = m.upper()
+            matches = list(_STRAT_SLUG_RE.finditer(value))
+            for i, m in enumerate(matches):
+                slug = m.group(0).upper()
                 if slug in seen:
                     continue
                 seen.add(slug)
-                # Best-effort side tag from the text just after the slug.
-                tail = value.upper().split(slug, 1)[1][:24]
+                # This pick's tail = text up to the NEXT slug, so one pick's
+                # annotations can't bleed into the next pick's tags.
+                nxt  = matches[i + 1].start() if i + 1 < len(matches) else len(value)
+                tail = value[m.end():nxt].upper()
                 side = ("short" if "SHORT" in tail else
                         "long"  if "LONG"  in tail else "both")
-                picks.append({"strategy": slug, "side": side})
+                # Per-pick entry source ([TV] / [Engine] tag) — the entry mechanism
+                # is part of the strategy (Refined vs Kairos have shown OPPOSITE
+                # edges on the same names), so a Kairos-book pick keeps engine
+                # entries even when the card's global Entries row says TV. First
+                # mention wins, mirroring the Entries-row disambiguation.
+                i_tv   = tail.find("TV")
+                _cands = [p for p in (tail.find("KAIROS"), tail.find("ENGINE")) if p >= 0]
+                i_eng  = min(_cands) if _cands else -1
+                entry  = ("kairos" if (i_eng >= 0 and (i_tv < 0 or i_eng < i_tv)) else
+                          "tv"     if i_tv >= 0 else None)
+                picks.append({"strategy": slug, "side": side, "entry": entry})
         elif label == "entries":
             # First mention wins: whichever of TV / Kairos(engine) the cell names
             # FIRST is the recommendation. Prevents flipping to engine just because
@@ -1338,6 +1367,10 @@ def _parse_next_month_card(report):
         elif label.startswith("day-type") or label.startswith("day type"):
             if re.search(r"\byes\b", low_v):  daytype = True
             elif re.search(r"\bno\b", low_v): daytype = False
+    # Untagged picks inherit the card's global Entries recommendation.
+    for p in picks:
+        if not p.get("entry"):
+            p["entry"] = entry_source
     return {"picks": picks, "entry_source": entry_source, "sizing": sizing,
             "size_dollars": size_dollars, "daytype": daytype}
 
@@ -1438,15 +1471,19 @@ def api_crew_wire_to_router():
             return max(1, round(size_dollars / prices[tk]))
         return qty
 
-    def _build_nodes(slug, q, side):
+    def _build_nodes(slug, q, side, entry):
         """Clone the strategy's top-performer pipeline (tuned exit_params, hours,
-        instrument) and swap in the Crew broker, dollar-sized quantity, the card's
-        entry source, and a long/short side_gate per the pick (both = none). Falls
-        back to a generic default if no source rule."""
-        gate = side if (side or "").lower() in ("long", "short") else None
+        instrument) and swap in the Crew broker, dollar-sized quantity, the PICK's
+        entry source ([TV]/[Engine] tag — falls back to the card's global Entries
+        row), and a long/short side_gate per the pick (both = none). Per-pick entry
+        matters: a name that earned its slot on the Kairos book keeps engine
+        entries even when the card's default is TV. Falls back to a generic
+        default if no source rule."""
+        gate  = side if (side or "").lower() in ("long", "short") else None
+        entry = entry if entry in ("tv", "kairos") else parsed["entry_source"]
         src = source_nodes.get(slug)
         if not src:
-            return _kairos._crew_default_nodes(slug, entry_source=parsed["entry_source"],
+            return _kairos._crew_default_nodes(slug, entry_source=entry,
                                                qty=q, side_gate=gate)
         out, have_broker, have_entry = [], False, False
         for n in _copy.deepcopy(src[1]):
@@ -1459,7 +1496,7 @@ def api_crew_wire_to_router():
             elif t == "quantity":
                 out.append({"type": "quantity", "amount": q, "unit": (n.get("unit") or "shares")})
             elif t == "entry_source":
-                out.append({"type": "entry_source", "value": parsed["entry_source"]})
+                out.append({"type": "entry_source", "value": entry})
                 have_entry = True
             elif t == "side_gate":
                 continue                          # re-applied below from the card's pick
@@ -1468,7 +1505,7 @@ def api_crew_wire_to_router():
         if not have_broker:
             out.append({"type": "broker", "value": "alpaca-paper-4"})
         if not have_entry:
-            out.append({"type": "entry_source", "value": parsed["entry_source"]})
+            out.append({"type": "entry_source", "value": entry})
         if gate:
             out.append({"type": "side_gate", "value": gate})
         return out
@@ -1480,7 +1517,7 @@ def api_crew_wire_to_router():
     created, updated, cloned = [], [], []
     for pick in picks:
         slug = pick["strategy"]
-        nodes_json = _json.dumps(_build_nodes(slug, _rule_qty(slug), pick.get("side")))
+        nodes_json = _json.dumps(_build_nodes(slug, _rule_qty(slug), pick.get("side"), pick.get("entry")))
         if slug in source_nodes:
             cloned.append(slug)
         rid = existing_crew.get(slug)
@@ -1503,7 +1540,8 @@ def api_crew_wire_to_router():
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
         "size_dollars": size_dollars, "daytype_gate": parsed["daytype"], "qty": qty,
         "source_report_week": week, "source_report_at": created_at,
-        "sides": {pk["strategy"]: pk["side"] for pk in picks},
+        "sides":   {pk["strategy"]: pk["side"] for pk in picks},
+        "entries": {pk["strategy"]: pk.get("entry") for pk in picks},
     })
 
 
