@@ -50,11 +50,21 @@ def engine_env(tmp_path):
             {"type": "strategy", "value": "SPCX_CAM_BREAKOUT_R3S3_V02_5MIN"},
         ])),
     )
+    # Crew-named rule with engine entries (Source 2): the rule NAME is not a
+    # strategy slug, so setups must key on the strategy NODE value.
+    conn.execute(
+        "INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
+        ("SMH_CAM_BREAKOUT_R4S4_V02_5MIN · Crew", json.dumps([
+            {"type": "strategy",     "value": "SMH_CAM_BREAKOUT_R4S4_V02_5MIN"},
+            {"type": "entry_source", "value": "kairos"},
+            {"type": "broker",       "value": "alpaca-paper-4"},
+        ])),
+    )
     conn.commit()
     conn.close()
 
     # Save + monkeypatch the module globals the engine reads.
-    saved = (a.get_db, a._refined_last_result, a.ACCOUNTS_BY_TAG,
+    saved = (a.get_db, a._refined_last_result, a.ACCOUNTS_BY_TAG, a.ALPACA_ACCOUNTS,
              a.ENGINE_PILOT_ALL, a.ENGINE_PILOT_EXTRA)
 
     def _fake_db():
@@ -65,10 +75,13 @@ def engine_env(tmp_path):
     a.get_db = _fake_db
     a._refined_last_result = {}
     a.ACCOUNTS_BY_TAG = {"alpaca": {"tag": "alpaca"}}   # let the Source-3 parser accept 'alpaca'
+    # Registry entry so Source 2 can resolve the Crew broker target (alpaca-paper-4).
+    a.ALPACA_ACCOUNTS = [{"tag": "alpaca4", "target_paper": "alpaca-paper-4",
+                          "target_live": "alpaca-live-4"}]
     a.ENGINE_PILOT_ALL = "alpaca:$1000"                  # Paper All fires ALL pipelines (Source 3)
     a.ENGINE_PILOT_EXTRA = ""
     yield a
-    (a.get_db, a._refined_last_result, a.ACCOUNTS_BY_TAG,
+    (a.get_db, a._refined_last_result, a.ACCOUNTS_BY_TAG, a.ALPACA_ACCOUNTS,
      a.ENGINE_PILOT_ALL, a.ENGINE_PILOT_EXTRA) = saved
 
 
@@ -91,3 +104,14 @@ def test_non_shortable_ticker_is_long_only(engine_env):
     # SPCX can't be sold short at the broker → the engine must not arm its short.
     setups = engine_env._entry_engine_setups()
     assert _sides(setups, "SPCX_CAM_BREAKOUT_R3S3_V02_5MIN") == ["LONG"]
+
+
+def test_crew_named_kairos_rule_arms_on_strategy_key(engine_env):
+    # Source-2 regression: a rule named "<slug> · Crew" (not a strategy slug) with
+    # entry_source=kairos must still arm setups, keyed on its strategy NODE, and
+    # target the rule's broker account (alpaca4).
+    setups = engine_env._entry_engine_setups()
+    smh = [s for s in setups if s["strategy"] == "SMH_CAM_BREAKOUT_R4S4_V02_5MIN"]
+    assert smh, "crew-named kairos rule produced no setups"
+    tags = {t["broker_tag"] for s in smh for t in s["targets"]}
+    assert "alpaca4" in tags

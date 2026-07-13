@@ -11338,6 +11338,15 @@ def _entry_engine_setups():
             if not any(n.get("type") == "entry_source"
                        and (n.get("value") or "").lower() == "kairos" for n in nodes):
                 continue
+            # Key setups on the STRATEGY node value, not the rule name — rule names
+            # like "SMH_CAM_… · Crew" aren't parseable as setups (the ticker/pair
+            # extraction below runs on this key), so name-keyed crew rules silently
+            # never armed. Legacy rules named exactly after their strategy keep
+            # working via the rname fallback.
+            _strat_keys = [(n.get("value") or "").strip().upper()
+                           for n in nodes
+                           if n.get("type") == "strategy" and n.get("value")
+                           and "*" not in (n.get("value") or "")] or [rname]
             _side_gate = next(((nd.get("value") or "").lower()
                                for nd in nodes if nd.get("type") == "side_gate"), None)
             if _side_gate not in ("long", "short"):
@@ -11361,11 +11370,12 @@ def _entry_engine_setups():
                 qov = None
                 try:    qov = int(nd.get("qty_override")) if nd.get("qty_override") not in (None, "") else None
                 except (TypeError, ValueError): qov = None
-                tgt = _add_target(rname, btag, qov)
-                if qty_node is not None:
-                    tgt["qty_node"] = qty_node
-                if _side_gate:
-                    tgt["side_gate"] = _side_gate
+                for _sk in _strat_keys:
+                    tgt = _add_target(_sk, btag, qov)
+                    if qty_node is not None:
+                        tgt["qty_node"] = qty_node
+                    if _side_gate:
+                        tgt["side_gate"] = _side_gate
         _rc.close()
     except Exception as _e:
         log.debug("entry engine kairos rules: %s", _e)
