@@ -1032,6 +1032,7 @@ def _risk_monitor_loop():
                     if _just_halted:
                         log.error("DAILY LOSS HALT [%s]: P&L $%.2f reached limit $%.2f — liquidating this account",
                                   _tag, _apnl, MAX_DAILY_LOSS)
+                        _persist_risk_day_state()   # survive a mid-session restart
                         try:
                             _br.close_all_positions()
                             log.info("Daily-loss liquidation: %s positions closed", _tag)
@@ -1067,10 +1068,11 @@ def _risk_monitor_loop():
                         continue
                     if _apnl is None:
                         continue
-                    _just_halted = False
+                    _just_armed = _just_halted = False
                     with _risk_lock:
                         if not _profit_lock_armed.get(_tag) and _apnl >= PROFIT_LOCK_DOLLARS:
                             _profit_lock_armed[_tag] = True
+                            _just_armed = True
                             log.info("Profit lock ARMED [%s]: daily P&L $%.2f reached floor $%.2f",
                                      _tag, _apnl, PROFIT_LOCK_DOLLARS)
                         if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _apnl < PROFIT_LOCK_DOLLARS:
@@ -1078,6 +1080,8 @@ def _risk_monitor_loop():
                             _just_halted = True
                             log.warning("PROFIT LOCK HALT [%s]: daily P&L $%.2f fell back below floor $%.2f "
                                         "— its new entries halted for the day", _tag, _apnl, PROFIT_LOCK_DOLLARS)
+                    if _just_armed or _just_halted:
+                        _persist_risk_day_state()   # survive a mid-session restart
                     # Flatten on breach: close this account's open positions once, at the
                     # moment it trips, so the gain is locked instead of leaking to exits.
                     # Runs outside the lock (network call); only the breaching account's
@@ -1110,6 +1114,24 @@ def _daily_loss_halted_for(tag):
         return False
     with _risk_lock:
         return bool(_daily_loss_halted.get(tag))
+
+
+def _persist_risk_day_state():
+    """Snapshot today's per-account arm/halt state to the DB so a mid-session
+    restart/redeploy can't silently clear it. The profit lock especially cannot
+    self-heal from current P&L alone: a book that armed at the floor and halted
+    below it looks identical to one that never armed. Restored on boot (same-day
+    only) by _restore_risk_settings."""
+    try:
+        _save_setting("RISK_DAY_STATE", json.dumps({
+            "pl_day":    _profit_lock_day,
+            "pl_armed":  sorted(k for k, v in _profit_lock_armed.items() if v),
+            "pl_halted": sorted(k for k, v in _profit_lock_halted.items() if v),
+            "dl_day":    _daily_loss_day,
+            "dl_halted": sorted(k for k, v in _daily_loss_halted.items() if v),
+        }))
+    except Exception as _e:
+        log.debug("Risk day-state persist failed: %s", _e)
 
 
 def _check_position_stops():
@@ -2721,6 +2743,7 @@ def risk_set_limit():
         with _risk_lock:
             _profit_lock_armed = {}
             _profit_lock_halted = {}
+        _persist_risk_day_state()
         _update_env_file("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
         _save_setting("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
         log.info("PROFIT_LOCK_DOLLARS updated to %g", PROFIT_LOCK_DOLLARS)
@@ -2882,6 +2905,7 @@ def risk_reset():
         # trading resumes; each account re-arms if its P&L climbs back above the floor.
         _profit_lock_armed = {}
         _profit_lock_halted = {}
+    _persist_risk_day_state()
     log.info("Risk halt manually cleared (incl. daily-loss + profit lock)")
     return jsonify({"halted": False})
 
@@ -14439,7 +14463,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -14447,6 +14471,35 @@ def _restore_risk_settings():
             log.info("Restored MAX_DAILY_LOSS=%g from DB", MAX_DAILY_LOSS)
         except (TypeError, ValueError):
             pass
+    # Same-day arm/halt state (profit lock + daily loss). Without this, a mid-
+    # session restart clears an armed/halted book and the profit lock CANNOT
+    # self-heal (current P&L below the floor looks like "never armed", so the
+    # halted book would silently resume trading). Stale (previous-day) state is
+    # ignored — the monitors start the new day clean.
+    stored = _load_setting("RISK_DAY_STATE")
+    if stored:
+        try:
+            _st = json.loads(stored)
+            try:
+                _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+            except Exception:
+                from datetime import timedelta as _td
+                _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+            with _risk_lock:
+                if _st.get("pl_day") == _today:
+                    _profit_lock_day    = _st["pl_day"]
+                    _profit_lock_armed  = {k: True for k in (_st.get("pl_armed") or [])}
+                    _profit_lock_halted = {k: True for k in (_st.get("pl_halted") or [])}
+                    if _profit_lock_armed or _profit_lock_halted:
+                        log.warning("Restored same-day profit-lock state: armed=%s halted=%s",
+                                    sorted(_profit_lock_armed), sorted(_profit_lock_halted))
+                if _st.get("dl_day") == _today:
+                    _daily_loss_day = _st["dl_day"]
+                    _daily_loss_halted.update({k: True for k in (_st.get("dl_halted") or [])})
+                    if _daily_loss_halted:
+                        log.warning("Restored same-day daily-loss halts: %s", sorted(_daily_loss_halted))
+        except Exception as _e:
+            log.warning("RISK_DAY_STATE restore failed: %s", _e)
     stored = _load_setting("PROFIT_LOCK_DOLLARS")
     if stored is not None:
         try:
