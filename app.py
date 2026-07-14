@@ -1976,6 +1976,33 @@ def init_db():
     """)
     conn.commit()
 
+    # trade_hwm: bar-derived high-water mark per closed round-trip. Populated by
+    # the background backfill job after a trade closes. Uniqueness on
+    # (broker_tag, symbol, entry_time, exit_time) so re-running the backfill is
+    # idempotent.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS trade_hwm (
+            broker_tag       TEXT NOT NULL,
+            symbol           TEXT NOT NULL,
+            side             TEXT NOT NULL,
+            strategy         TEXT,
+            entry_time       TEXT NOT NULL,
+            entry_price      REAL NOT NULL,
+            exit_time        TEXT NOT NULL,
+            exit_price       REAL NOT NULL,
+            qty              REAL NOT NULL,
+            realized_pnl     REAL NOT NULL,
+            peak_price       REAL,
+            peak_time        TEXT,
+            peak_dollars     REAL,
+            giveback_dollars REAL,
+            source           TEXT,
+            computed_at      TEXT NOT NULL,
+            PRIMARY KEY (broker_tag, symbol, entry_time, exit_time)
+        )
+    """)
+    conn.commit()
+
     conn.close()
 
 
@@ -10674,6 +10701,266 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
     except Exception as _e:
         log.debug("fetch_5m_rth %s %s: %s", ticker, date_str, _e)
         return []
+
+
+# ── Trade high-water-mark (bar-derived) ──────────────────────────────────────
+# For every closed round-trip we walk 1-min bars during the hold window and
+# find the best favorable price the trade actually reached. Used to distinguish
+# 'giveback losers' (peaked positive, then reversed) from 'immediate losers'
+# (never went favorable) — critical input for stop-tightening decisions.
+_hwm_bar_cache = {}     # (ticker, date) -> [bars]  (session cache; TTL 5min)
+_hwm_bar_cache_ts = {}
+
+def _fetch_1m_rth_bars(ticker: str, date_str: str):
+    """1-min RTH bars for one ticker/date. Cached 5min in-process so a backfill
+    scanning 30 round-trips on the same day only hits Alpaca once per ticker.
+    IEX feed to match _fetch_5m_rth_objs (free-tier compatible)."""
+    key = (ticker.upper(), date_str)
+    now = time.time()
+    _ts = _hwm_bar_cache_ts.get(key, 0)
+    if _ts and (now - _ts) < 300 and key in _hwm_bar_cache:
+        return _hwm_bar_cache[key]
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from alpaca.data.enums import DataFeed
+        from types import SimpleNamespace
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        client = StockHistoricalDataClient(api_key=alpaca_broker._key,
+                                           secret_key=alpaca_broker._secret)
+        day = _dt.date.fromisoformat(date_str)
+        try:    et = ZoneInfo("America/New_York")
+        except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+        start = _dt.datetime(day.year, day.month, day.day, 9,  30, tzinfo=et)
+        end   = _dt.datetime(day.year, day.month, day.day, 16, 0,  tzinfo=et)
+        req   = StockBarsRequest(symbol_or_symbols=ticker.upper(),
+                                 timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+                                 start=start, end=end, feed=DataFeed.IEX)
+        raw   = list(client.get_stock_bars(req)[ticker.upper()])
+        out   = [SimpleNamespace(timestamp=b.timestamp,
+                                 high=float(b.high), low=float(b.low),
+                                 open=float(b.open), close=float(b.close))
+                 for b in sorted(raw, key=lambda x: x.timestamp)]
+        _hwm_bar_cache[key]    = out
+        _hwm_bar_cache_ts[key] = now
+        return out
+    except Exception as _e:
+        log.debug("fetch_1m_rth %s %s: %s", ticker, date_str, _e)
+        return []
+
+
+def _compute_trade_hwm(trade):
+    """Walk 1-min bars during the trade window and return the peak favorable
+    price + giveback dollars. Returns None if bars unavailable / trade
+    unparseable. Uses bar.high for LONG (best UP move) and bar.low for SHORT
+    (best DOWN move) so we capture the true intrabar high-water mark, not
+    just close-to-close."""
+    from datetime import datetime as _dt_c, timezone as _tz_c
+    ticker    = (trade.get("ticker") or "").upper()
+    side      = (trade.get("side")   or "").upper()
+    entry_iso = trade.get("entry_time")
+    exit_iso  = trade.get("exit_time")
+    entry_px  = float(trade.get("entry_price") or 0)
+    exit_px   = float(trade.get("exit_price")  or 0)
+    qty       = abs(float(trade.get("qty") or 0))
+    realized  = float(trade.get("pnl") or 0)
+    if not (ticker and side and entry_iso and exit_iso and entry_px and qty):
+        return None
+    try:
+        entry_dt = _dt_c.fromisoformat(entry_iso.replace("Z", "+00:00"))
+        exit_dt  = _dt_c.fromisoformat(exit_iso.replace("Z",  "+00:00"))
+    except Exception:
+        return None
+    date = entry_iso[:10]
+    bars = _fetch_1m_rth_bars(ticker, date)
+    if not bars:
+        return None
+    is_long = side == "LONG"
+    peak_px = entry_px
+    peak_ts = entry_dt
+    for b in bars:
+        _ts = b.timestamp
+        if _ts.tzinfo is None:
+            _ts = _ts.replace(tzinfo=_tz_c.utc)
+        if _ts < entry_dt or _ts > exit_dt:
+            continue
+        if is_long:
+            if b.high > peak_px:
+                peak_px = b.high
+                peak_ts = _ts
+        else:
+            if b.low < peak_px:
+                peak_px = b.low
+                peak_ts = _ts
+    peak_favor    = (peak_px - entry_px) if is_long else (entry_px - peak_px)
+    peak_dollars  = round(peak_favor * qty, 2)
+    # Giveback measures how much of the peak was returned to the market.
+    # Winners: peak - realized (usually small if trail was tight).
+    # Losers:  peak - realized (larger — captures 'was up X, closed down Y').
+    giveback = round(peak_dollars - realized, 2)
+    return {
+        "peak_price":       round(peak_px, 4),
+        "peak_time":        peak_ts.isoformat(),
+        "peak_dollars":     peak_dollars,
+        "giveback_dollars": max(0.0, giveback),
+        "source":           "bars_1m",
+    }
+
+
+def _hwm_key_exists(cur, broker_tag, symbol, entry_time, exit_time):
+    _p = placeholder()
+    cur.execute(
+        f"SELECT 1 FROM trade_hwm WHERE broker_tag={_p} AND symbol={_p} "
+        f"AND entry_time={_p} AND exit_time={_p} LIMIT 1",
+        (broker_tag, symbol, entry_time, exit_time),
+    )
+    return cur.fetchone() is not None
+
+
+def _persist_trade_hwm(broker_tag, trade, hwm):
+    """Idempotent upsert (PK = broker_tag+symbol+entry_time+exit_time)."""
+    import datetime as _dt_p
+    _p = placeholder()
+    conn = get_db(); cur = conn.cursor()
+    try:
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO trade_hwm (broker_tag, symbol, side, strategy, "
+                f"entry_time, entry_price, exit_time, exit_price, qty, realized_pnl, "
+                f"peak_price, peak_time, peak_dollars, giveback_dollars, source, computed_at) "
+                f"VALUES ({_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p}) "
+                f"ON CONFLICT (broker_tag, symbol, entry_time, exit_time) DO UPDATE SET "
+                f"peak_price=EXCLUDED.peak_price, peak_time=EXCLUDED.peak_time, "
+                f"peak_dollars=EXCLUDED.peak_dollars, giveback_dollars=EXCLUDED.giveback_dollars, "
+                f"source=EXCLUDED.source, computed_at=EXCLUDED.computed_at",
+                (broker_tag, (trade.get("ticker") or "").upper(),
+                 (trade.get("side") or "").upper(), trade.get("strategy") or None,
+                 trade.get("entry_time"), float(trade.get("entry_price") or 0),
+                 trade.get("exit_time"), float(trade.get("exit_price") or 0),
+                 abs(float(trade.get("qty") or 0)), float(trade.get("pnl") or 0),
+                 hwm["peak_price"], hwm["peak_time"], hwm["peak_dollars"],
+                 hwm["giveback_dollars"], hwm["source"],
+                 _dt_p.datetime.now(_dt_p.timezone.utc).isoformat()),
+            )
+        else:
+            cur.execute(
+                f"INSERT OR REPLACE INTO trade_hwm (broker_tag, symbol, side, strategy, "
+                f"entry_time, entry_price, exit_time, exit_price, qty, realized_pnl, "
+                f"peak_price, peak_time, peak_dollars, giveback_dollars, source, computed_at) "
+                f"VALUES ({_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p},{_p})",
+                (broker_tag, (trade.get("ticker") or "").upper(),
+                 (trade.get("side") or "").upper(), trade.get("strategy") or None,
+                 trade.get("entry_time"), float(trade.get("entry_price") or 0),
+                 trade.get("exit_time"), float(trade.get("exit_price") or 0),
+                 abs(float(trade.get("qty") or 0)), float(trade.get("pnl") or 0),
+                 hwm["peak_price"], hwm["peak_time"], hwm["peak_dollars"],
+                 hwm["giveback_dollars"], hwm["source"],
+                 _dt_p.datetime.now(_dt_p.timezone.utc).isoformat()),
+            )
+        conn.commit()
+    except Exception as _e:
+        try: conn.rollback()
+        except Exception: pass
+        log.warning("persist_trade_hwm failed: %s", _e)
+    finally:
+        conn.close()
+
+
+def _backfill_trade_hwm(lookback_days: int = 5, per_account_cap: int = 50):
+    """Sweep recent closed round-trips across all Alpaca accounts and compute
+    HWM for any missing rows. Called from a background timer + on-demand via API.
+    lookback_days scopes both the fills window and the DB dedup lookup."""
+    import datetime as _dt_bf
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt_bf.timezone(_dt_bf.timedelta(hours=-4))
+    to_d   = _dt_bf.datetime.now(et).date()
+    from_s = (to_d - _dt_bf.timedelta(days=lookback_days)).isoformat()
+    to_s   = to_d.isoformat()
+    total = 0
+    for _acct in ALPACA_ACCOUNTS:
+        if _acct.get("broker") is None:
+            continue
+        tag = _acct["tag"]
+        try:
+            fills  = _acct["fills_fn"]()
+            paired = _pair_alpaca_fills_lifo(fills, from_date=from_s, to_date=to_s)
+            trades = paired.get("closed_clean", [])
+        except Exception as _e:
+            log.debug("hwm backfill fills failed [%s]: %s", tag, _e)
+            continue
+        conn = get_db(); cur = conn.cursor()
+        try:
+            processed = 0
+            for t in reversed(trades):    # newest first — bar cache stays warm
+                if processed >= per_account_cap:
+                    break
+                entry_time = t.get("entry_time")
+                exit_time  = t.get("exit_time")
+                symbol     = (t.get("ticker") or "").upper()
+                if not (entry_time and exit_time and symbol):
+                    continue
+                if _hwm_key_exists(cur, tag, symbol, entry_time, exit_time):
+                    continue
+                hwm = _compute_trade_hwm(t)
+                if hwm is None:
+                    continue
+                _persist_trade_hwm(tag, t, hwm)
+                processed += 1
+                total     += 1
+        finally:
+            conn.close()
+        if processed:
+            log.info("HWM backfill [%s]: %d round-trips scored", tag, processed)
+    return total
+
+
+def _trade_hwm_loop():
+    """Every 5 min, backfill HWMs for any newly-closed trades. Runs quietly;
+    logs only when it actually writes rows."""
+    time.sleep(60)   # let the app finish booting + fills caches populate
+    while True:
+        try:
+            _backfill_trade_hwm(lookback_days=3, per_account_cap=100)
+        except Exception as _e:
+            log.debug("trade hwm loop: %s", _e)
+        time.sleep(300)
+
+threading.Thread(target=_trade_hwm_loop, daemon=True).start()
+
+
+@app.route("/api/trades/hwm")
+def api_trade_hwm():
+    """Return trade_hwm rows for a given account + date range. Optional
+    ?refresh=1 forces an on-demand backfill first."""
+    account = str(request.args.get("account") or "1")
+    days    = max(1, min(60, int(request.args.get("days") or 7)))
+    if request.args.get("refresh") == "1":
+        try:    _backfill_trade_hwm(lookback_days=days)
+        except Exception as _e: log.warning("hwm refresh failed: %s", _e)
+    _, tag, _, _ = _alpaca_account_ctx(account)
+    import datetime as _dt_h
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt_h.timezone(_dt_h.timedelta(hours=-4))
+    to_d   = _dt_h.datetime.now(et).date()
+    from_s = (to_d - _dt_h.timedelta(days=days)).isoformat()
+    _p = placeholder()
+    conn = get_db(); cur = conn.cursor()
+    cur.execute(
+        f"SELECT broker_tag, symbol, side, strategy, entry_time, entry_price, "
+        f"exit_time, exit_price, qty, realized_pnl, peak_price, peak_time, "
+        f"peak_dollars, giveback_dollars, source "
+        f"FROM trade_hwm WHERE broker_tag={_p} AND entry_time >= {_p} "
+        f"ORDER BY entry_time DESC",
+        (tag, from_s + "T00:00:00+00:00"),
+    )
+    cols = [c[0] for c in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    conn.close()
+    return jsonify({"account": account, "broker_tag": tag, "days": days,
+                    "rows": rows, "count": len(rows)})
 
 
 def _find_entry(bars, level, side, rule, buffer, ema_filter=True, start=1):
