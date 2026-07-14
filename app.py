@@ -1117,11 +1117,13 @@ def _risk_monitor_loop():
                     _tag, _br = _acct["tag"], _acct["broker"]
                     if _br is None or not _acct.get("profit_lock", True):
                         continue   # Paper All (audition pool) trades unlocked
-                    try:
-                        _apnl = _br.daily_pnl()
-                    except Exception as _de:
-                        log.debug("Profit lock: daily_pnl failed for %s: %s", _tag, _de)
-                        continue
+                    # REALIZED cumulative daily P&L only — sum of closed round-trips
+                    # today via LIFO pairing. Deliberately excludes unrealized so a
+                    # brief intraday equity spike (e.g. a fast wick that never
+                    # actually closed above the floor) can't arm-then-halt the account
+                    # while the position ultimately closes below floor. broker.daily_pnl()
+                    # (equity - last_equity) was the old source and included unrealized.
+                    _apnl = _realized_daily_pnl(_acct["fills_fn"])
                     if _apnl is None:
                         continue
                     _just_armed = _just_halted = False
@@ -1170,6 +1172,25 @@ def _daily_loss_halted_for(tag):
         return False
     with _risk_lock:
         return bool(_daily_loss_halted.get(tag))
+
+
+def _realized_daily_pnl(fills_fn):
+    """Sum of CLOSED round-trip P&L for today (ET), using the same LIFO pairing
+    as the analysis endpoints. Returns None on failure so the profit-lock loop
+    can skip this account instead of misreading it as $0 (which would look
+    below-floor and trigger a false halt for an already-armed account)."""
+    try:
+        _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        from datetime import timedelta as _td
+        _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+    try:
+        fills  = fills_fn()
+        paired = _pair_alpaca_fills_lifo(fills, from_date=_today, to_date=_today)
+        return round(sum(float(t.get("pnl") or 0) for t in paired.get("closed_clean", [])), 2)
+    except Exception as _e:
+        log.debug("Realized daily P&L calc failed: %s", _e)
+        return None
 
 
 def _persist_risk_day_state():
