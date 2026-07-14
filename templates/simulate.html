@@ -2130,31 +2130,27 @@
     } catch (e) { alert('Error: ' + e.message); }
   }
 
-  // Per-band (per-strategy) take-profit: set take_profit_pct on the exit_params of
-  // every pipeline in this band. The risk monitor reads it per-position in place of
-  // the global TP. NOT global, NOT the other bands — but it IS per-strategy, so it
-  // applies to that band's positions on whichever accounts trade them.
+  // Per-ACCOUNT take-profit: set this band's TP for ONLY the account the sweep was
+  // run on. The risk monitor reads it per-position (account-aware), ahead of any
+  // rule/global TP — so Kairos can carry a band TP that Refined doesn't.
   async function applyTpBand(bandKey, tp, label) {
     label = label || bandKey.replace(/_/g, ' ');
-    if (!confirm(`Set take-profit ${tp}% on the ${label} band?\n\n` +
-      `Applies ONLY to ${label} pipelines (not the other bands, not a global setting) — ` +
-      `but it is per-STRATEGY, so it affects that band's positions on whichever accounts ` +
-      `trade them, not just the account you swept.\n\n` +
-      `Restart/redeploy for the risk monitor to enforce it.`)) return;
+    const acctSel   = document.getElementById('account');
+    const account   = acctSel.value;
+    const acctLabel = (acctSel.selectedOptions[0]?.textContent || `account ${account}`).trim();
+    if (!confirm(`Set take-profit ${tp}% on ${label} for ${acctLabel} ONLY?\n\n` +
+      `Per-account: this affects only ${acctLabel}'s ${label} positions — not the other ` +
+      `paper accounts, not the other bands, not the global setting.\n\n` +
+      `Takes effect within ~60s (no redeploy needed).`)) return;
     try {
-      const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+      const res = await fetch('/api/routing/take_profit_band', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ take_profit_pct: tp, name_contains: bandKey }),
+        body: JSON.stringify({ account, band_key: bandKey, take_profit_pct: tp }),
       });
       const d = await res.json();
       if (!res.ok) { alert('Apply failed: ' + (d.error || res.status)); return; }
-      if (!d.updated) {
-        alert(`No ${label} pipelines matched — nothing changed. (Rules must have a strategy node for ${label}.)`);
-        return;
-      }
-      alert(`Done — take-profit ${tp}% set on ${d.updated} ${label} pipeline${d.updated !== 1 ? 's' : ''}`
-        + (d.added_node ? ` (added an exit_params node to ${d.added_node})` : '')
-        + `.\nRestart/redeploy for the monitor to enforce it.`);
+      const cur = Object.entries(d.account_tps || {}).map(([k, v]) => `${k}: ${v}%`).join(', ') || 'none';
+      alert(`Done — ${acctLabel}: ${label} take-profit set to ${tp}%.\n\n${acctLabel} per-band TPs now: ${cur}\nManage/clear on the Signal Router risk panel.`);
     } catch (e) { alert('Error: ' + e.message); }
   }
 

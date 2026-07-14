@@ -599,6 +599,14 @@
         </div>
         <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to both accounts.</div>
       </div>
+      <div class="risk-section" style="margin-top:10px" id="tpByAccountSection">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Per-account, per-band
+          <span style="color:#666;font-size:0.68rem">from the Replay TP sweep · overrides the above for that account+band</span>
+        </div>
+        <div id="tpByAccountList" style="margin-top:6px;font-size:0.8rem;color:#aaa"></div>
+        <div class="risk-hint">Set these from the <strong>Replay → TP Sweep</strong> per-band <em>apply</em> buttons (scoped to the account you sweep). Precedence: per-account → per-band rule → global.</div>
+      </div>
     </div>
 
     <!-- Blocked strategies + live positions (shown when there is data) -->
@@ -1205,6 +1213,26 @@
       }
       setRowState('tpPctInput', tppOn);
 
+      // Per-account, per-band take-profit (set from the Replay TP sweep)
+      const tpaList = document.getElementById('tpByAccountList');
+      if (tpaList) {
+        const tpa = data.take_profit_by_account || {};
+        const rows = [];
+        for (const [tag, bands] of Object.entries(tpa)) {
+          for (const [band, pct] of Object.entries(bands || {})) {
+            rows.push(`<div style="display:flex;align-items:center;gap:8px;padding:2px 0">
+              <span style="color:#7FE098;min-width:150px">${tag} · ${band.replace(/_/g,' ')}</span>
+              <span style="color:#ddd">${pct}%</span>
+              <button onclick="clearAccountTp('${tag}','${band}')"
+                style="background:transparent;border:1px solid #3a3d4e;color:#888;border-radius:4px;padding:1px 7px;font-size:0.72rem;cursor:pointer;font-family:inherit"
+                title="Remove this per-account take-profit">✕</button>
+            </div>`);
+          }
+        }
+        tpaList.innerHTML = rows.length ? rows.join('')
+          : '<span style="color:#666;font-size:0.76rem">none set</span>';
+      }
+
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
       const posDot   = document.getElementById('posStatusDot');
@@ -1575,6 +1603,17 @@
     document.getElementById('tpPctInput').value = '';
     try { await _postLimit({take_profit_pct: 0}); }
     catch(e) { console.error('clearTpPct failed:', e); }
+  }
+  async function clearAccountTp(tag, band) {
+    if (!confirm(`Remove the per-account take-profit for ${tag} · ${band.replace(/_/g,' ')}?`)) return;
+    try {
+      const res = await fetch('/api/routing/take_profit_band', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ account: tag, band_key: band, clear: true }),
+      });
+      if (!res.ok) { const d = await res.json().catch(()=>({})); alert('Clear failed: ' + (d.error || res.status)); return; }
+      await loadRisk();
+    } catch(e) { alert('Error: ' + e.message); }
   }
 
   async function saveMorningTrail() {

@@ -342,6 +342,55 @@ def _get_route_take_profit_pct(strategy_name: str):
     return None
 
 
+# Per-ACCOUNT take-profit — {account_tag: {band_or_strategy: tp_pct}}. Lets each
+# paper book carry its own take-profit for a band (e.g. Kairos BREAKOUT_R4S4 = 1.25%
+# while Refined's is 0), which the rule-based (cross-account) TP above cannot do —
+# and which engine-fed books (Kairos/Engine Farm) need, since they have no
+# per-strategy routing rule to attach a TP to. Persisted as ROUTE_TP_BY_ACCOUNT,
+# refreshed every 60s so a change on one gunicorn worker propagates to the others.
+_route_tp_acct_cache = {}
+_route_tp_acct_ts    = 0.0
+
+def _account_tp_map():
+    global _route_tp_acct_cache, _route_tp_acct_ts
+    import time as _rt
+    now = _rt.time()
+    if now - _route_tp_acct_ts > 60:
+        try:
+            _raw = _load_setting("ROUTE_TP_BY_ACCOUNT")
+            _route_tp_acct_cache = json.loads(_raw) if _raw else {}
+        except Exception:
+            _route_tp_acct_cache = {}
+        _route_tp_acct_ts = now
+    return _route_tp_acct_cache
+
+def _strategy_band(strategy: str):
+    """TYPE_LEVEL band key from a full strategy name (BREAKOUT_R4S4), else None."""
+    s = (strategy or "").upper()
+    i = s.find("_CAM_")
+    if i >= 0:
+        parts = s[i + 5:].split("_")
+        if len(parts) >= 2:
+            return f"{parts[0]}_{parts[1]}"
+    return None
+
+def _get_account_take_profit_pct(strategy: str, account_tag: str):
+    """This account's take-profit % for a strategy (exact name, then its band), or
+    None. Enforced ahead of the cross-account rule TP and the global TP."""
+    m = _account_tp_map().get(account_tag)
+    if not m:
+        return None
+    su = (strategy or "").upper()
+    if su in m:
+        try:    return float(m[su])
+        except (TypeError, ValueError): return None
+    band = _strategy_band(su)
+    if band and band in m:
+        try:    return float(m[band])
+        except (TypeError, ValueError): return None
+    return None
+
+
 _route_tiers_cache    = {}   # strategy_upper → [(gain_pct, trail_pct), ...] sorted asc
 _route_tiers_cache_ts = 0.0
 
@@ -1236,8 +1285,17 @@ def _check_position_stops():
         # exit_params carries a take_profit_pct (set on the Signal Router), otherwise it
         # falls back to the global TAKE_PROFIT_PCT. % measured against market value, the
         # same basis as the loss %.
-        _band_tp    = _get_route_take_profit_pct(_pos_strat) if _pos_strat else None
-        _eff_tp_pct = _band_tp if (_band_tp and _band_tp > 0) else (TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else 0.0)
+        # Precedence: this account's per-band TP → cross-account rule TP → global.
+        _acct_tp = _get_account_take_profit_pct(_pos_strat, broker) if _pos_strat else None
+        _band_tp = _get_route_take_profit_pct(_pos_strat) if _pos_strat else None
+        if _acct_tp and _acct_tp > 0:
+            _eff_tp_pct, _tp_src = _acct_tp, "account"
+        elif _band_tp and _band_tp > 0:
+            _eff_tp_pct, _tp_src = _band_tp, "band"
+        elif TAKE_PROFIT_PCT > 0:
+            _eff_tp_pct, _tp_src = TAKE_PROFIT_PCT, "global"
+        else:
+            _eff_tp_pct, _tp_src = 0.0, "global"
         triggered = None
         if TAKE_PROFIT_DOLLARS > 0 and upnl >= TAKE_PROFIT_DOLLARS:
             triggered = ("take-profit",
@@ -1246,7 +1304,6 @@ def _check_position_stops():
             _tp_mv = abs(float(pos.get("market_value") or 0))
             _tp_gp = (upnl / _tp_mv * 100) if _tp_mv > 0 else 0.0
             if _tp_gp >= _eff_tp_pct:
-                _tp_src = "band" if (_band_tp and _band_tp > 0) else "global"
                 triggered = ("take-profit-pct",
                              f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {_eff_tp_pct:.2f}% ({_tp_src})")
 
@@ -2671,6 +2728,7 @@ def risk_status():
         "max_hold_enforcement": MAX_HOLD_ENFORCEMENT,
         "take_profit_dollars": TAKE_PROFIT_DOLLARS if TAKE_PROFIT_DOLLARS > 0 else None,
         "take_profit_pct":     TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else None,
+        "take_profit_by_account": _account_tp_map(),
     })
 
 
@@ -7548,6 +7606,50 @@ def bulk_update_exit_params():
         "mode":         mode,
         "trail_offset": trail_offset,
     })
+
+
+@app.route("/api/routing/take_profit_band", methods=["POST"])
+def set_take_profit_band():
+    """Set (or clear) ONE account's take-profit % for a band/strategy. Unlike the
+    rule-based TP, this is per paper account — the TP sweep's per-band apply writes
+    here scoped to the account it was run on, so Kairos can carry a band TP that
+    Refined doesn't. Enforced ahead of the rule + global TP by the risk monitor.
+
+    Body: {account: "3"|"alpaca3", band_key: "BREAKOUT_R4S4", take_profit_pct: 1.25}
+          take_profit_pct <= 0 (or {clear: true}) removes it.
+    """
+    global _route_tp_acct_cache, _route_tp_acct_ts
+    data    = request.get_json(silent=True) or {}
+    account = str(data.get("account") or "").strip()
+    band    = (data.get("band_key") or data.get("strategy") or "").strip().upper()
+    clear   = bool(data.get("clear"))
+    try:    tp = float(data.get("take_profit_pct") or 0)
+    except (TypeError, ValueError): tp = 0.0
+    rec = ACCOUNTS_BY_NUM.get(account) or ACCOUNTS_BY_TAG.get(account.lower())
+    tag = rec["tag"] if rec else (account.lower() if account.lower().startswith("alpaca") else None)
+    if not tag or not band:
+        return jsonify({"error": "account and band_key are required"}), 400
+
+    _raw = _load_setting("ROUTE_TP_BY_ACCOUNT")
+    try:    _map = json.loads(_raw) if _raw else {}
+    except Exception: _map = {}
+    _acct = _map.setdefault(tag, {})
+    if clear or tp <= 0:
+        _acct.pop(band, None)
+        if not _acct:
+            _map.pop(tag, None)
+        action = "cleared"
+    else:
+        _acct[band] = tp
+        action = "set"
+    _save_setting("ROUTE_TP_BY_ACCOUNT", json.dumps(_map))
+    _route_tp_acct_cache = _map           # write-through for this worker
+    _route_tp_acct_ts    = time.time()
+    log.info("Per-account take-profit %s: %s / %s = %s%%", action, tag, band, tp if action == "set" else "-")
+    return jsonify({"action": action, "account": tag,
+                    "label": (rec or {}).get("label", tag), "band": band,
+                    "take_profit_pct": tp if action == "set" else None,
+                    "account_tps": _map.get(tag, {}), "all": _map})
 
 
 @app.route("/api/routing/rules/bulk_remove_broker", methods=["POST"])
