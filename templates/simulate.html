@@ -2101,8 +2101,9 @@
       + `<span style="color:${headerDelta >= 0 ? '#7FE098' : '#e74c3c'}">(${headerDelta >= 0 ? '+' : ''}$${headerDelta.toFixed(2)})</span>`;
     const sections = data.strategies.map(s => {
       const adopted = s.best_tp != null;
+      const bandApplyBtn = `<button class="sweep-apply-btn" onclick="applyTpBand('${s.band_key}', ${s.best_tp}, '${s.strategy}')" title="Set take-profit ${s.best_tp}% on the ${s.strategy} band only (per-strategy, not global)">★ apply ${s.best_tp}% → ${s.strategy}</button>`;
       const verdict = adopted
-        ? `<span style="color:#7FE098">best TP <strong>${s.best_tp}%</strong> → ${fmt(s.best_pnl)} (${fmt(s.delta)} vs no-TP)</span> ${applyBtn(s.best_tp)}`
+        ? `<span style="color:#7FE098">best TP <strong>${s.best_tp}%</strong> → ${fmt(s.best_pnl)} (${fmt(s.delta)} vs no-TP)</span> ${bandApplyBtn}`
         : `<span style="color:#888">no TP beats the baseline (${fmt(s.base_pnl)}) — leave it to the trail</span>`;
       const top = (s.top5 || []).map(x =>
         `<span style="color:#aaa;margin-right:12px">${x.tp}%: ${fmt(x.total_pnl)}</span>`).join('');
@@ -2126,6 +2127,34 @@
       const d = await res.json();
       if (!res.ok) { alert('Apply failed: ' + (d.error || res.status)); return; }
       alert(`Done — global take-profit set to ${tp}%. Manage it on the Signal Router page.`);
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  // Per-band (per-strategy) take-profit: set take_profit_pct on the exit_params of
+  // every pipeline in this band. The risk monitor reads it per-position in place of
+  // the global TP. NOT global, NOT the other bands — but it IS per-strategy, so it
+  // applies to that band's positions on whichever accounts trade them.
+  async function applyTpBand(bandKey, tp, label) {
+    label = label || bandKey.replace(/_/g, ' ');
+    if (!confirm(`Set take-profit ${tp}% on the ${label} band?\n\n` +
+      `Applies ONLY to ${label} pipelines (not the other bands, not a global setting) — ` +
+      `but it is per-STRATEGY, so it affects that band's positions on whichever accounts ` +
+      `trade them, not just the account you swept.\n\n` +
+      `Restart/redeploy for the risk monitor to enforce it.`)) return;
+    try {
+      const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ take_profit_pct: tp, name_contains: bandKey }),
+      });
+      const d = await res.json();
+      if (!res.ok) { alert('Apply failed: ' + (d.error || res.status)); return; }
+      if (!d.updated) {
+        alert(`No ${label} pipelines matched — nothing changed. (Rules must have a strategy node for ${label}.)`);
+        return;
+      }
+      alert(`Done — take-profit ${tp}% set on ${d.updated} ${label} pipeline${d.updated !== 1 ? 's' : ''}`
+        + (d.added_node ? ` (added an exit_params node to ${d.added_node})` : '')
+        + `.\nRestart/redeploy for the monitor to enforce it.`);
     } catch (e) { alert('Error: ' + e.message); }
   }
 

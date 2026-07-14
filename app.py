@@ -6083,7 +6083,8 @@ def simulate_tp_sweep():
         # Only adopt a TP if it actually beats the no-TP baseline for this band.
         adopt = best["total_pnl"] > base_strat + 0.01
         strategy_results.append({
-            "strategy": strat, "trades": len(tds),
+            "strategy": strat, "band_key": strat.upper().replace(" ", "_"),
+            "trades": len(tds),
             "base_pnl": base_strat,
             "best_tp": best["tp"] if adopt else None,
             "best_pnl": best["total_pnl"] if adopt else base_strat,
@@ -7491,10 +7492,16 @@ def bulk_update_exit_params():
         rid       = row[0] if DATABASE_URL else row["id"]
         rname     = (row[1] if DATABASE_URL else row["name"] or "").lower()
         nodes_raw = row[2] if DATABASE_URL else row["nodes"]
-        if name_contains and name_contains not in rname:
-            skipped += 1
-            continue
         nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+        # name_contains matches the rule NAME or any STRATEGY node value, so a band
+        # filter like "breakout_r4s4" targets that band even when a rule is named
+        # something else (e.g. a crew rule "V · Crew" whose strategy is R4S4).
+        if name_contains:
+            _strat_vals = " ".join((n.get("value") or "") for n in nodes
+                                   if n.get("type") == "strategy").lower()
+            if name_contains not in rname and name_contains not in _strat_vals:
+                skipped += 1
+                continue
         ep = next((n for n in nodes if n.get("type") == "exit_params"), None)
         # clear_trail_trigger only: skip rules with no existing exit_params (nothing to clear)
         if ep is None and clear_trail_trigger and trail_offset is None and trail_trigger is None and stop_loss is None and not clear_trail:
