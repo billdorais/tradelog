@@ -130,6 +130,12 @@ ENGINE_PILOT_EXTRA    = os.environ.get("ENGINE_PILOT_EXTRA", "")
 # the top-20 leaderboard), at FLAT share sizing. Same format. e.g. "alpaca:10" =
 # Paper All trades every pipeline at 10 shares via the engine. Empty = off.
 ENGINE_PILOT_ALL      = os.environ.get("ENGINE_PILOT_ALL", "")
+# TV twin of ENGINE_PILOT_ALL: accounts that receive EVERY enabled pipeline's TV
+# bar-close ENTRY, regardless of the rule's broker nodes — the full-sample TV farm.
+# Without this, Paper All only gets TV for rules with no broker node; the Refined
+# top-N (rules carrying an alpaca-paper-2 broker) would route to Refined ONLY and
+# never reach Paper All. Flat shares, e.g. "alpaca:10". Empty = off.
+TV_PILOT_ALL          = os.environ.get("TV_PILOT_ALL", "")
 # Day-type entry gate. The inside/outside-day test showed breakout entries only
 # pay on "Outside" days (narrow prior-day CPR → expansion/trend); they bleed on
 # Inside/Neutral days. When enabled, breakout entries are BLOCKED on non-Outside
@@ -11676,6 +11682,12 @@ def _engine_extra_accounts():
 def _engine_all_accounts():
     """Accounts that fire ALL enabled breakout/reversal pipelines at flat sizing."""
     return _parse_engine_accounts(ENGINE_PILOT_ALL)
+
+def _tv_pilot_accounts():
+    """Accounts that receive EVERY TV entry (the TV twin of ENGINE_PILOT_ALL),
+    flat shares — makes an account a full-sample TV farm. Parsed like the engine
+    pilots ('tag:shares'); the webhook adds these targets to every TV entry."""
+    return _parse_engine_accounts(TV_PILOT_ALL)
 
 
 def _routing_broker_to_tag(value):

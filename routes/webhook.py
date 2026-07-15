@@ -59,6 +59,43 @@ def _alpaca_broker_name(target: str) -> str:
     return _app._routing_broker_to_tag(target) or "alpaca"
 
 
+def _add_tv_pilot_targets(alpaca_targets, broker_targets, matched_no_broker_bundles, is_exit):
+    """Fan a TV ENTRY to the TV_PILOT_ALL account(s) — the TV twin of
+    ENGINE_PILOT_ALL. Appends each configured farm account (flat shares) to
+    alpaca_targets, regardless of the rule's own broker nodes, so the full-sample
+    audition pool + leaderboard source (Paper All) sees EVERY strategy's TV entry —
+    incl. the Refined top-N whose rules route only to alpaca-paper-2.
+
+    A fully kairos-suppressed signal returns a skip upstream, so a surviving
+    broker_target on an entry means this IS a real TV entry. Deduped against the
+    payload-broker fallback so Paper All never double-fires. Mutates alpaca_targets;
+    returns the list of (tag, shares) actually added."""
+    import app as _app
+    if is_exit or not broker_targets:
+        return []
+    pilots = _app._tv_pilot_accounts()
+    if not pilots:
+        return []
+    existing = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets}
+    # Reuse the matched strategy's own settings bundle (exit_params / hours),
+    # preferring a no-broker (base TV) rule, else the first surviving target.
+    src = (matched_no_broker_bundles[0] if matched_no_broker_bundles
+           else broker_targets[0][2])
+    added = []
+    for ptag, pshares, _unit in pilots:
+        if ptag in existing:
+            continue
+        rec = _app.ACCOUNTS_BY_TAG.get(ptag)
+        if rec is None:
+            continue
+        rs = dict(src)
+        rs["entry_source_kairos"] = False   # the farm always takes the TV entry
+        alpaca_targets.append((rec["target_paper"], pshares, rs))
+        existing.add(ptag)
+        added.append((ptag, pshares))
+    return added
+
+
 # Per-(broker, ticker) FIFO queue so entry + exit signals for the same symbol
 # can't race inside a single gunicorn worker. The worker thread drains the
 # queue serially; entry → submit → cancel-on-exit logic now always sees a
@@ -733,6 +770,12 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     coinbase_targets = [bt for bt in broker_targets if _broker_family(bt[0]) == "coinbase"]
     alpaca_targets   = [bt for bt in broker_targets if _broker_family(bt[0]) == "alpaca"]
     ib_targets       = [bt for bt in broker_targets if _broker_family(bt[0]) == "ib"]
+
+    # TV farm: fan every TV ENTRY to the TV_PILOT_ALL account(s) (the TV twin of
+    # ENGINE_PILOT_ALL). See _add_tv_pilot_targets. Entries only.
+    for _t, _sh in _add_tv_pilot_targets(alpaca_targets, broker_targets,
+                                         _matched_no_broker_bundles, _is_exit):
+        app.log.info("TV farm: added %s (%s sh) to %s %s", _t, _sh, order_action, ticker)
 
     # Per-account trading-hours gate (entries only) — drop the Alpaca targets whose
     # account is outside its configured window, while letting in-window accounts
