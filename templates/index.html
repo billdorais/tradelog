@@ -3866,7 +3866,13 @@
       try {
         const data = await fetch('/api/risk/status').then(r => r.json());
         if (typeof data.max_hold_enforcement === 'boolean') updateMaxHoldBtn(data.max_hold_enforcement);
-        const positions   = data.positions || [];
+        // Curated books (TV Refined, Kairos Refined, Crew) stacked ABOVE the farms
+        // (TV Farm, Kairos Farm). Stable sort keeps each group's existing order.
+        const _acctRank = { alpaca2: 0, alpaca3: 1, alpaca4: 2, alpaca: 3, alpaca5: 4 };
+        const positions   = (data.positions || [])
+          .map((p, i) => [p, i])
+          .sort((a, b) => (_acctRank[a[0].broker] ?? 9) - (_acctRank[b[0].broker] ?? 9) || a[1] - b[1])
+          .map(x => x[0]);
         const wrap        = document.getElementById('openPositionsSection');
         const tbody       = document.getElementById('openPositionsTbody');
         if (!positions.length) { wrap.style.display = 'none'; return; }
