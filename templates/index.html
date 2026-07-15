@@ -327,10 +327,10 @@
     .open-pos-table th { text-align: left; color: #555; font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 6px 0; border-bottom: 1px solid #1e2130; }
     .open-pos-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #16192a; vertical-align: middle; }
     .open-pos-table tr:last-child td { border-bottom: none; }
-    .open-pos-table tr.refined-row td { background: rgba(96,165,250,0.06); }
-    .open-pos-table tr.kairos-row  td { background: rgba(242,231,172,0.07); }
-    .open-pos-table tr.crew-row    td { background: rgba(127,224,152,0.07); }
-    .open-pos-table tr.farm-row    td { background: rgba(95,200,212,0.07); }
+    /* Curated books tinted (muted) to the tab pairing; farms (TV/Kairos) have no tint. */
+    .open-pos-table tr.refined-row td { background: rgba(167,139,250,0.05); }  /* TV Refined — purple */
+    .open-pos-table tr.kairos-row  td { background: rgba(242,192,122,0.05); }  /* Kairos Refined — amber */
+    .open-pos-table tr.crew-row    td { background: rgba(127,224,152,0.05); }  /* Crew — green */
 
     .open-pos-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .open-pos-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
@@ -3925,10 +3925,11 @@
           }
           const isKairos = p.broker === 'alpaca3';
           const isCrew   = p.broker === 'alpaca4';
-          const isFarm   = p.broker === 'alpaca5';
-          const rowCls = isKairos ? ' class="kairos-row"' : (isCrew ? ' class="crew-row"' : (isFarm ? ' class="farm-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : '')));
+          // Farms (alpaca / alpaca5) get no row tint; curated books tinted to the pairing.
+          const rowCls = isKairos ? ' class="kairos-row"' : (isCrew ? ' class="crew-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : ''));
           const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
-          const brokerLabel = isKairos ? 'kairos' : (isCrew ? 'crew' : (isFarm ? 'farm' : escHtml(p.broker)));
+          const brokerLabel = ({ 'alpaca': 'TV Farm', 'alpaca2': 'TV Refined', 'alpaca3': 'Kairos Refined',
+                                 'alpaca4': 'Crew Paper', 'alpaca5': 'Kairos Farm' })[p.broker] || escHtml(p.broker);
           return `<tr${rowCls}>
             <td style="font-weight:600;color:#ccc">${animal}${kairosBolt}${escHtml(p.symbol)}</td>
             <td style="color:#666;font-size:0.75rem">${brokerLabel}</td>
