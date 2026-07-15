@@ -59,41 +59,62 @@ def _alpaca_broker_name(target: str) -> str:
     return _app._routing_broker_to_tag(target) or "alpaca"
 
 
-def _add_tv_pilot_targets(alpaca_targets, broker_targets, matched_no_broker_bundles, is_exit):
+def _add_tv_pilot_targets(alpaca_targets, broker_targets, matched_no_broker_bundles,
+                          is_exit, price=None):
     """Fan a TV ENTRY to the TV_PILOT_ALL account(s) — the TV twin of
-    ENGINE_PILOT_ALL. Appends each configured farm account (flat shares) to
-    alpaca_targets, regardless of the rule's own broker nodes, so the full-sample
-    audition pool + leaderboard source (Paper All) sees EVERY strategy's TV entry —
-    incl. the Refined top-N whose rules route only to alpaca-paper-2.
+    ENGINE_PILOT_ALL. Ensures each configured farm account trades EVERY strategy's
+    TV entry regardless of the rule's own broker nodes, so the full-sample audition
+    pool + leaderboard source (Paper All) sees the whole book — incl. the Refined
+    top-N whose rules route only to alpaca-paper-2.
+
+    Sizing (`tag:10` flat shares OR `tag:$1000` equal-dollar) is AUTHORITATIVE for
+    the farm account: if the payload-broker fallback already put it in at the base
+    rule's shares, we OVERRIDE that qty so the whole farm is uniformly sized (dollar
+    → shares via the alert price, like the engine does ÷price). Non-farm targets
+    (e.g. Refined) are untouched.
 
     A fully kairos-suppressed signal returns a skip upstream, so a surviving
-    broker_target on an entry means this IS a real TV entry. Deduped against the
-    payload-broker fallback so Paper All never double-fires. Mutates alpaca_targets;
-    returns the list of (tag, shares) actually added."""
+    broker_target on an entry means this IS a real TV entry. Mutates alpaca_targets;
+    returns [(tag, shares, "added"|"resized")]."""
     import app as _app
     if is_exit or not broker_targets:
         return []
-    pilots = _app._tv_pilot_accounts()
+    pilots = _app._tv_pilot_accounts()          # [(tag, amount, unit)]
     if not pilots:
         return []
-    existing = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets}
-    # Reuse the matched strategy's own settings bundle (exit_params / hours),
-    # preferring a no-broker (base TV) rule, else the first surviving target.
+    try:    _px = float(price or 0)
+    except (TypeError, ValueError): _px = 0.0
+
+    def _shares(amount, unit):
+        if unit == "dollars":
+            return max(1, round(amount / _px)) if _px > 0 else None   # None → base rule qty
+        return amount
+
+    # First alpaca target index per resolved account tag (to override in place).
+    idx_by_tag = {}
+    for i, bt in enumerate(alpaca_targets):
+        idx_by_tag.setdefault(_alpaca_broker_name(bt[0]), i)
+    # Bundle to clone when ADDING (top-N case): the base TV rule, else first target.
     src = (matched_no_broker_bundles[0] if matched_no_broker_bundles
            else broker_targets[0][2])
-    added = []
-    for ptag, pshares, _unit in pilots:
-        if ptag in existing:
-            continue
+    out = []
+    for ptag, amount, unit in pilots:
         rec = _app.ACCOUNTS_BY_TAG.get(ptag)
         if rec is None:
             continue
-        rs = dict(src)
-        rs["entry_source_kairos"] = False   # the farm always takes the TV entry
-        alpaca_targets.append((rec["target_paper"], pshares, rs))
-        existing.add(ptag)
-        added.append((ptag, pshares))
-    return added
+        qov = _shares(amount, unit)
+        if ptag in idx_by_tag:                  # already present → override its sizing
+            i = idx_by_tag[ptag]
+            _t = alpaca_targets[i]
+            rs = dict(_t[2]); rs["entry_source_kairos"] = False
+            alpaca_targets[i] = (_t[0], qov, rs)
+            out.append((ptag, qov, "resized"))
+        else:                                   # top-N case → add the farm target
+            rs = dict(src); rs["entry_source_kairos"] = False
+            alpaca_targets.append((rec["target_paper"], qov, rs))
+            idx_by_tag[ptag] = len(alpaca_targets) - 1
+            out.append((ptag, qov, "added"))
+    return out
 
 
 # Per-(broker, ticker) FIFO queue so entry + exit signals for the same symbol
@@ -772,10 +793,12 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     ib_targets       = [bt for bt in broker_targets if _broker_family(bt[0]) == "ib"]
 
     # TV farm: fan every TV ENTRY to the TV_PILOT_ALL account(s) (the TV twin of
-    # ENGINE_PILOT_ALL). See _add_tv_pilot_targets. Entries only.
-    for _t, _sh in _add_tv_pilot_targets(alpaca_targets, broker_targets,
-                                         _matched_no_broker_bundles, _is_exit):
-        app.log.info("TV farm: added %s (%s sh) to %s %s", _t, _sh, order_action, ticker)
+    # ENGINE_PILOT_ALL). See _add_tv_pilot_targets. Entries only; dollar sizing uses
+    # the TV alert price.
+    for _t, _sh, _act in _add_tv_pilot_targets(alpaca_targets, broker_targets,
+                                               _matched_no_broker_bundles, _is_exit,
+                                               price=data.get("price")):
+        app.log.info("TV farm: %s %s (%s sh) to %s %s", _act, _t, _sh, order_action, ticker)
 
     # Per-account trading-hours gate (entries only) — drop the Alpaca targets whose
     # account is outside its configured window, while letting in-window accounts

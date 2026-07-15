@@ -44,30 +44,53 @@ def test_topn_rule_adds_paper_all(farm_app):
     # Rule routes ONLY to Refined (alpaca-paper-2) — the farm must add Paper All.
     rs = {"quantity": 76, "entry_source_kairos": False, "ep_trail_offset": 0.35}
     alpaca_targets = [("alpaca-paper-2", 76, rs)]
-    added = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=False)
-    assert added == [("alpaca", 10)]
+    out = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=False)
+    assert out == [("alpaca", 10, "added")]
     assert _tags(alpaca_targets) == ["alpaca-paper-2", "alpaca-paper"]
-    # farm target carries flat shares and never suppresses the TV entry
-    assert alpaca_targets[-1][1] == 10
+    assert alpaca_targets[-1][1] == 10                       # flat shares
     assert alpaca_targets[-1][2]["entry_source_kairos"] is False
 
 
-def test_no_double_when_fallback_already_paper_all(farm_app):
+def test_fallback_paper_all_is_resized_not_doubled(farm_app):
     a, wh = farm_app
-    # Non-top-N rule: the payload-broker fallback already put Paper All there.
+    # Non-top-N rule: the payload-broker fallback already put Paper All @ 10 shares.
     base = {"quantity": 10, "entry_source_kairos": False}
     alpaca_targets = [("alpaca-paper", None, base)]
-    added = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [dict(base)], is_exit=False)
-    assert added == []
+    out = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [dict(base)], is_exit=False)
+    # Overridden in place (not doubled) so the whole farm is uniformly sized.
+    assert out == [("alpaca", 10, "resized")]
     assert _tags(alpaca_targets) == ["alpaca-paper"]
+    assert alpaca_targets[0][1] == 10
+
+
+def test_dollar_sizing_uses_alert_price(farm_app):
+    a, wh = farm_app
+    a.TV_PILOT_ALL = "alpaca:$1000"
+    rs = {"quantity": 76, "entry_source_kairos": False}
+    alpaca_targets = [("alpaca-paper-2", 76, rs)]
+    # $1000 / $200 = 5 shares
+    out = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=False, price=200)
+    assert out == [("alpaca", 5, "added")]
+    assert alpaca_targets[-1][1] == 5
+
+
+def test_dollar_sizing_overrides_fallback_shares(farm_app):
+    a, wh = farm_app
+    a.TV_PILOT_ALL = "alpaca:$1000"
+    base = {"quantity": 10, "entry_source_kairos": False}
+    alpaca_targets = [("alpaca-paper", None, base)]
+    # fallback 10 shares must be replaced by the equal-dollar size ($1000/$50 = 20)
+    out = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [dict(base)], is_exit=False, price=50)
+    assert out == [("alpaca", 20, "resized")]
+    assert alpaca_targets[0][1] == 20
 
 
 def test_exit_never_adds_farm(farm_app):
     a, wh = farm_app
     rs = {"quantity": 76, "entry_source_kairos": False}
     alpaca_targets = [("alpaca-paper-2", 76, rs)]
-    added = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=True)
-    assert added == []
+    out = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=True)
+    assert out == []
     assert _tags(alpaca_targets) == ["alpaca-paper-2"]
 
 
@@ -76,13 +99,12 @@ def test_disabled_is_noop(farm_app):
     a.TV_PILOT_ALL = ""
     rs = {"quantity": 76, "entry_source_kairos": False}
     alpaca_targets = [("alpaca-paper-2", 76, rs)]
-    added = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=False)
-    assert added == []
+    out = wh._add_tv_pilot_targets(alpaca_targets, list(alpaca_targets), [], is_exit=False)
+    assert out == []
     assert _tags(alpaca_targets) == ["alpaca-paper-2"]
 
 
 def test_fully_suppressed_signal_adds_nothing(farm_app):
     a, wh = farm_app
-    # No surviving broker_targets (a fully kairos-suppressed entry) → no farm add.
     added = wh._add_tv_pilot_targets([], [], [], is_exit=False)
     assert added == []
