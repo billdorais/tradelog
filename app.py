@@ -10951,7 +10951,8 @@ def _hwm_summarize(rows, green_pct=0.001):
     (never went meaningfully green → an entry problem, not an exit problem)."""
     def _blank():
         return {"n": 0, "peak": 0.0, "realized": 0.0, "giveback": 0.0,
-                "gb_losers": 0, "gb_loss": 0.0, "im_losers": 0, "im_loss": 0.0, "winners": 0}
+                "gb_losers": 0, "gb_loss": 0.0, "im_losers": 0, "im_loss": 0.0, "winners": 0,
+                "gb_peak_pct_sum": 0.0, "win_peak_pct_sum": 0.0}
     tot = _blank()
     by_band = {}
     for r in rows:
@@ -10960,7 +10961,8 @@ def _hwm_summarize(rows, green_pct=0.001):
         give = max(0.0, float(r.get("giveback_dollars") or 0))
         ep   = float(r.get("entry_price") or 0)
         pp   = float(r.get("peak_price") or ep)
-        went_green = bool(ep) and (abs(pp - ep) / ep) >= green_pct
+        peak_pct   = (abs(pp - ep) / ep * 100) if ep else 0.0   # how far green it got
+        went_green = bool(ep) and (peak_pct / 100) >= green_pct
         b = by_band.setdefault(_strategy_band(r.get("strategy")) or "Other", _blank())
         for agg in (tot, b):
             agg["n"] += 1
@@ -10969,16 +10971,24 @@ def _hwm_summarize(rows, green_pct=0.001):
             if real > 0:
                 agg["winners"] += 1
                 agg["giveback"] += give            # winners: what the trail gave back
+                agg["win_peak_pct_sum"] += peak_pct
             elif real < 0:
                 if went_green:
                     agg["gb_losers"] += 1; agg["gb_loss"] += real
                     agg["giveback"] += give        # giveback losers: peak + the loss
+                    agg["gb_peak_pct_sum"] += peak_pct
                 else:
                     agg["im_losers"] += 1; agg["im_loss"] += real
     def _finish(a):
         a["capture_ratio"] = round(a["realized"] / a["peak"], 3) if a["peak"] > 0 else None
+        # Average peak favorable % — the level at which a take-profit would have
+        # caught the giveback losers (vs where winners peaked, for comparison).
+        a["gb_peak_pct"]  = round(a["gb_peak_pct_sum"]  / a["gb_losers"], 2) if a["gb_losers"] else None
+        a["win_peak_pct"] = round(a["win_peak_pct_sum"] / a["winners"],  2) if a["winners"]  else None
         for k in ("peak", "realized", "giveback", "gb_loss", "im_loss"):
             a[k] = round(a[k], 2)
+        for k in ("gb_peak_pct_sum", "win_peak_pct_sum"):
+            a.pop(k, None)
         return a
     _finish(tot)
     bands = {k: _finish(v) for k, v in by_band.items()}
