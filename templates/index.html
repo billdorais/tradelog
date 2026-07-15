@@ -617,6 +617,26 @@
 
   </div>
 
+  <!-- Curated accounts — today's P&L at a glance (no tabbing needed) -->
+  <div class="section-label" style="margin-top:8px">Today's P&amp;L · Curated Accounts</div>
+  <div class="stats" style="margin-bottom:8px">
+    <div class="stat-card">
+      <div class="label" style="color:#c4b5fd">TV Refined</div>
+      <div class="value" id="glance2">—</div>
+      <div id="glance2sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label" style="color:#F2C07A">Kairos Refined</div>
+      <div class="value" id="glance3">—</div>
+      <div id="glance3sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label" style="color:#7FE098">Crew Paper</div>
+      <div class="value" id="glance4">—</div>
+      <div id="glance4sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
+    </div>
+  </div>
+
   <!-- Signal stats -->
   <div class="section-label" style="margin-top:8px">Signals</div>
   <div class="stats">
@@ -3556,11 +3576,13 @@
 
     loadTrades();
     loadAccount();
+    loadGlancePnl();
     loadOpenPositionsTable();
     loadDashPerfSummary();
     loadDayTypeTape();
     setInterval(loadTrades,            30000);
     setInterval(loadAccount,           30000);
+    setInterval(loadGlancePnl,         30000);
     setInterval(loadOpenPositionsTable, 10000);
     setInterval(refreshLivePnl,        10000);
     setInterval(loadDashPerfSummary,  300000); // refresh every 5 min
@@ -3860,6 +3882,34 @@
           <span>${isLong ? '▲' : '▼'}</span>
         </div>
       </div>`;
+    }
+
+    // Today's P&L per curated account (TV Refined, Kairos Refined, Crew Paper) —
+    // visible at the top without tabbing. Raw paper-account daily P&L (unscaled).
+    async function loadGlancePnl() {
+      const money = v => (v < 0 ? '-$' : '+$') + Math.abs(Number(v || 0)).toFixed(2);
+      await Promise.all(['2', '3', '4'].map(async n => {
+        const el  = document.getElementById('glance' + n);
+        const sub = document.getElementById('glance' + n + 'sub');
+        if (!el) return;
+        try {
+          const d = await fetch('/api/alpaca/account?account=' + n).then(r => r.json());
+          if (d.error || d.daily_pnl == null) {
+            el.textContent = '—'; el.style.color = '#666';
+            if (sub) sub.textContent = 'not configured';
+            return;
+          }
+          el.textContent = money(d.daily_pnl);
+          el.style.color = d.daily_pnl < 0 ? '#ef5350' : (d.daily_pnl > 0 ? '#7FE098' : '#fff');
+          if (sub) {
+            const u = d.unrealized_pnl || 0;
+            sub.innerHTML = `${d.open_positions || 0} open · ${money(u)} unreal.`;
+          }
+        } catch (e) {
+          el.textContent = '—'; el.style.color = '#666';
+          if (sub) sub.textContent = '';
+        }
+      }));
     }
 
     async function loadOpenPositionsTable() {
