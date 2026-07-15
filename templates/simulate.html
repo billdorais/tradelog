@@ -498,6 +498,19 @@
     <div id="breakdownBody"></div>
   </div>
 
+  <!-- Trade High-Water Mark: peak & giveback diagnostic -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">High-Water Mark
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— of your realized trades, how much peak profit did you give back, and were losers green first?</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <button class="run-btn" onclick="runHwm(false)" style="padding:8px 18px">&#9650; Peak / Giveback</button>
+      <button class="run-btn" onclick="runHwm(true)" style="padding:8px 18px;background:#3f5170" title="Force a bar-by-bar backfill for the range first (slower)">&#8635; Rebuild from bars</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Bar-derived intrabar peak per closed round-trip. Diagnoses trails-too-loose vs entries-too-early.</span>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. <b>Giveback loser</b> = went ≥0.1% green then closed red (an exit problem). <b>Immediate loser</b> = never went green (an entry problem).</div>
+    <div id="hwmResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Entry-timing test -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Entry Test
@@ -1090,6 +1103,59 @@
       document.execCommand('copy');   // fallback for older browsers
       document.getElementById('gateReportNote').textContent = 'Copied ✓';
     }
+  }
+
+  // Trade high-water-mark: peak favorable move vs giveback per closed round-trip.
+  async function runHwm(refresh) {
+    const money = v => (v < 0 ? '-$' : '+$') + Math.abs(Number(v || 0)).toFixed(2);
+    const out = document.getElementById('hwmResult');
+    const account = document.getElementById('account').value;
+    const from = document.getElementById('fromDate').value;
+    const to   = document.getElementById('toDate').value;
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">' + (refresh ? 'Rebuilding from 1-min bars… (can take a bit)' : 'Loading…') + '</div>';
+    try {
+      const qs = new URLSearchParams({ account, from_date: from, to_date: to });
+      if (refresh) qs.set('refresh', '1');
+      const r = await fetch('/api/trades/hwm?' + qs);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+      const s = d.summary && d.summary.overall;
+      if (!s || !s.n) { out.innerHTML = '<div style="color:#888;font-size:0.85rem">No high-water-mark rows for this account/range yet — try “Rebuild from bars”.</div>'; return; }
+      const capTxt = s.capture_ratio == null ? '—' : (s.capture_ratio * 100).toFixed(0) + '%';
+      const card = (label, val, sub, col) => `<div style="flex:1;min-width:150px;background:#0d0f18;border:1px solid #2a2d3e;border-radius:8px;padding:12px 14px">
+        <div style="font-size:0.66rem;text-transform:uppercase;letter-spacing:0.05em;color:#666">${label}</div>
+        <div style="font-size:1.4rem;font-weight:700;color:${col};margin-top:4px">${val}</div>
+        <div style="font-size:0.68rem;color:#777;margin-top:2px">${sub}</div></div>`;
+      const gb = s.gb_losers, im = s.im_losers;
+      let verdict = '';
+      if (gb + im > 0) {
+        const exitProblem = gb >= im;
+        verdict = `<div style="margin:12px 0 0;padding:10px 12px;border-radius:6px;background:${exitProblem ? '#2b2320' : '#1e2430'};border:1px solid ${exitProblem ? '#5a463a' : '#3a4a5a'};font-size:0.85rem;color:#ddd">`
+          + (exitProblem
+              ? `<b>⚠ Exit-side leak:</b> ${gb} of ${gb + im} losers were GREEN first (${money(s.gb_loss)}) — trails too loose / no take-profit. Try the <b>Trail Sweep</b> or <b>TP Sweep</b> below.`
+              : `<b>⚠ Entry-side leak:</b> ${im} of ${gb + im} losers NEVER went green (${money(s.im_loss)}) — entries too early or wrong direction. Try the <b>Entry Test</b> below.`)
+          + `</div>`;
+      }
+      const bands = (d.summary && d.summary.by_band) || {};
+      const bandRows = Object.entries(bands).map(([b, v]) =>
+        `<tr><td style="color:#ccc">${b.replace(/_/g, ' ')}</td>
+          <td style="text-align:right;color:#e08a8a">${money(v.giveback)}</td>
+          <td style="text-align:right;color:#aaa">${v.capture_ratio == null ? '—' : (v.capture_ratio * 100).toFixed(0) + '%'}</td>
+          <td style="text-align:right;color:#aaa">${v.gb_losers}</td>
+          <td style="text-align:right;color:#aaa">${v.im_losers}</td></tr>`).join('');
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.broker_tag} · ${s.n} closed trades · ${d.from} → ${d.to || 'today'}</div>`
+        + `<div style="display:flex;gap:10px;flex-wrap:wrap">`
+        + card('Giveback', money(s.giveback), 'peak profit handed back', '#e08a8a')
+        + card('Capture', capTxt, 'of peak favorable move kept', (s.capture_ratio >= 0.5 ? '#7FE098' : '#F2C07A'))
+        + card('Giveback losers', s.gb_losers + ' · ' + money(s.gb_loss), 'green first, closed red', '#e08a8a')
+        + card('Immediate losers', s.im_losers + ' · ' + money(s.im_loss), 'never went green', '#e08a8a')
+        + `</div>` + verdict
+        + (bandRows ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">By band (most giveback first)</div>`
+            + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Giveback</th><th style="text-align:right">Capture</th><th style="text-align:right">GB losers</th><th style="text-align:right">Imm losers</th></tr></thead>`
+            + `<tbody>${bandRows}</tbody></table></div></div>` : '');
+    } catch (e) { out.innerHTML = '<div style="color:#c66">Error: ' + e.message + '</div>'; }
   }
 
   // Push a retest window straight into the Signal Router — sets retest_bars on the

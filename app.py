@@ -10944,36 +10944,87 @@ def _trade_hwm_loop():
 threading.Thread(target=_trade_hwm_loop, daemon=True).start()
 
 
+def _hwm_summarize(rows, green_pct=0.001):
+    """Aggregate trade_hwm rows into the peak/giveback diagnostic. A loser is a
+    'giveback loser' if it went at least `green_pct` (0.1% default) favorable before
+    reversing — i.e. it HAD profit to give back; else it's an 'immediate loser'
+    (never went meaningfully green → an entry problem, not an exit problem)."""
+    def _blank():
+        return {"n": 0, "peak": 0.0, "realized": 0.0, "giveback": 0.0,
+                "gb_losers": 0, "gb_loss": 0.0, "im_losers": 0, "im_loss": 0.0, "winners": 0}
+    tot = _blank()
+    by_band = {}
+    for r in rows:
+        peak = max(0.0, float(r.get("peak_dollars") or 0))
+        real = float(r.get("realized_pnl") or 0)
+        give = max(0.0, float(r.get("giveback_dollars") or 0))
+        ep   = float(r.get("entry_price") or 0)
+        pp   = float(r.get("peak_price") or ep)
+        went_green = bool(ep) and (abs(pp - ep) / ep) >= green_pct
+        b = by_band.setdefault(_strategy_band(r.get("strategy")) or "Other", _blank())
+        for agg in (tot, b):
+            agg["n"] += 1
+            agg["peak"] += peak
+            agg["realized"] += real
+            if real > 0:
+                agg["winners"] += 1
+                agg["giveback"] += give            # winners: what the trail gave back
+            elif real < 0:
+                if went_green:
+                    agg["gb_losers"] += 1; agg["gb_loss"] += real
+                    agg["giveback"] += give        # giveback losers: peak + the loss
+                else:
+                    agg["im_losers"] += 1; agg["im_loss"] += real
+    def _finish(a):
+        a["capture_ratio"] = round(a["realized"] / a["peak"], 3) if a["peak"] > 0 else None
+        for k in ("peak", "realized", "giveback", "gb_loss", "im_loss"):
+            a[k] = round(a[k], 2)
+        return a
+    _finish(tot)
+    bands = {k: _finish(v) for k, v in by_band.items()}
+    return {"overall": tot,
+            "by_band": dict(sorted(bands.items(), key=lambda kv: kv[1]["giveback"], reverse=True))}
+
+
 @app.route("/api/trades/hwm")
 def api_trade_hwm():
-    """Return trade_hwm rows for a given account + date range. Optional
-    ?refresh=1 forces an on-demand backfill first."""
-    account = str(request.args.get("account") or "1")
-    days    = max(1, min(60, int(request.args.get("days") or 7)))
+    """Trade high-water-mark diagnostic for an account + date range: per-trade rows
+    plus a peak/giveback summary. Accepts from_date/to_date (Replay) or a `days`
+    lookback. ?refresh=1 forces an on-demand backfill first."""
+    account   = str(request.args.get("account") or "1")
+    days      = max(1, min(90, int(request.args.get("days") or 7)))
+    from_date = (request.args.get("from_date") or "").strip()
+    to_date   = (request.args.get("to_date")   or "").strip()
     if request.args.get("refresh") == "1":
-        try:    _backfill_trade_hwm(lookback_days=days)
+        try:    _backfill_trade_hwm(lookback_days=max(days, 14))
         except Exception as _e: log.warning("hwm refresh failed: %s", _e)
     _, tag, _, _ = _alpaca_account_ctx(account)
     import datetime as _dt_h
     try:    et = ZoneInfo("America/New_York")
     except Exception: et = _dt_h.timezone(_dt_h.timedelta(hours=-4))
-    to_d   = _dt_h.datetime.now(et).date()
-    from_s = (to_d - _dt_h.timedelta(days=days)).isoformat()
+    if not from_date:
+        from_date = (_dt_h.datetime.now(et).date() - _dt_h.timedelta(days=days)).isoformat()
     _p = placeholder()
+    _clauses = [f"broker_tag={_p}", f"entry_time >= {_p}"]
+    _params  = [tag, from_date + "T00:00:00+00:00"]
+    if to_date:
+        _clauses.append(f"entry_time <= {_p}")
+        _params.append(to_date + "T23:59:59+00:00")
     conn = get_db(); cur = conn.cursor()
     cur.execute(
         f"SELECT broker_tag, symbol, side, strategy, entry_time, entry_price, "
         f"exit_time, exit_price, qty, realized_pnl, peak_price, peak_time, "
         f"peak_dollars, giveback_dollars, source "
-        f"FROM trade_hwm WHERE broker_tag={_p} AND entry_time >= {_p} "
-        f"ORDER BY entry_time DESC",
-        (tag, from_s + "T00:00:00+00:00"),
+        f"FROM trade_hwm WHERE {' AND '.join(_clauses)} ORDER BY entry_time DESC",
+        tuple(_params),
     )
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     conn.close()
-    return jsonify({"account": account, "broker_tag": tag, "days": days,
-                    "rows": rows, "count": len(rows)})
+    return jsonify({"account": account, "broker_tag": tag,
+                    "from": from_date, "to": to_date or None,
+                    "rows": rows, "count": len(rows),
+                    "summary": _hwm_summarize(rows)})
 
 
 def _find_entry(bars, level, side, rule, buffer, ema_filter=True, start=1):
