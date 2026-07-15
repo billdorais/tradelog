@@ -279,20 +279,21 @@
                cursor: pointer; border: 1px solid #2a2d3e; background: transparent;
                color: #888; border-bottom: 2px solid transparent; font-family: inherit; }
     .pnl-tab:hover { color: #ccc; }
-    .pnl-tab.active-alpaca  { border-color: #7FE098; background: rgba(136,191,139,0.15);
-                               color: #7FE098; border-bottom-color: #7FE098; }
+    /* Paired highlight colors: TV pair = purple, Kairos pair = amber, Crew = green. */
+    .pnl-tab.active-alpaca  { border-color: #a78bfa; background: rgba(167,139,250,0.12);
+                               color: #c4b5fd; border-bottom-color: #a78bfa; }   /* TV Farm */
+    .pnl-tab.active-refined { border-color: #a78bfa; background: rgba(167,139,250,0.12);
+                               color: #c4b5fd; border-bottom-color: #a78bfa; }   /* TV Refined */
+    .pnl-tab.active-farm    { border-color: #F2C07A; background: rgba(242,192,122,0.12);
+                               color: #F2C07A; border-bottom-color: #F2C07A; }   /* Kairos Farm */
+    .pnl-tab.active-kairos  { border-color: #F2C07A; background: rgba(242,192,122,0.12);
+                               color: #F2C07A; border-bottom-color: #F2C07A; }   /* Kairos Refined */
+    .pnl-tab.active-crew    { border-color: #7FE098; background: rgba(127,224,152,0.12);
+                               color: #7FE098; border-bottom-color: #7FE098; }   /* Crew */
     .pnl-tab.active-signals { border-color: #7FE098; background: rgba(139,217,150,0.12);
                                color: #7FE098; border-bottom-color: #7FE098; }
-    .pnl-tab.active-refined { border-color: #a78bfa; background: rgba(167,139,250,0.12);
-                               color: #c4b5fd; border-bottom-color: #a78bfa; }
     .pnl-tab.active-ib      { border-color: #7FE098; background: rgba(136,191,139,0.12);
                                color: #7FE098; border-bottom-color: #7FE098; }
-    .pnl-tab.active-kairos  { border-color: #F2C07A; background: rgba(242,192,122,0.12);
-                               color: #F2C07A; border-bottom-color: #F2C07A; }
-    .pnl-tab.active-crew    { border-color: #7FE098; background: rgba(127,224,152,0.12);
-                               color: #7FE098; border-bottom-color: #7FE098; }
-    .pnl-tab.active-farm    { border-color: #5FC8D4; background: rgba(95,200,212,0.12);
-                               color: #5FC8D4; border-bottom-color: #5FC8D4; }
 
     /* Equity-chart date preset buttons */
     .eq-date-btn        { background: transparent; color: #888; font-family: inherit; }
@@ -677,13 +678,13 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px;align-items:center">
-        <button id="tabAlpaca"   class="pnl-tab"                onclick="switchTab('alpaca')">Paper All</button>
+        <button id="tabAlpaca"   class="pnl-tab"                onclick="switchTab('alpaca')">TV Farm</button>
         <button id="tabSignals"  class="pnl-tab"                onclick="switchTab('signals')" style="display:none">Signals P&amp;L</button>
         <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')"      style="display:none">IB P&amp;L</button>
-        <button id="tabRefined"  class="pnl-tab active-refined" onclick="switchTab('refined')">Paper Refined</button>
-        <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos</button>
+        <button id="tabRefined"  class="pnl-tab active-refined" onclick="switchTab('refined')">TV Refined</button>
+        <button id="tabFarm"     class="pnl-tab"                onclick="switchTab('farm')">Kairos Farm</button>
+        <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos Refined</button>
         <button id="tabCrew"     class="pnl-tab"                onclick="switchTab('crew')">Crew Paper</button>
-        <button id="tabFarm"     class="pnl-tab"                onclick="switchTab('farm')">Engine Farm</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
                  border-top-color:#7FE098;border-radius:50%;
@@ -736,7 +737,7 @@
     <canvas id="equityChart" height="90"></canvas>
     <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
       <div id="ibEquityNote" style="display:none;font-size:0.75rem;color:#555">
-        Cumulative realized P&amp;L from Alpaca fills.
+        Cumulative realized P&amp;L from TV Farm fills.
       </div>
       <button id="alpacaSignalsOnly" onclick="toggleSignalsOnly()"
         title="Show only trades matched to a TradingView signal — hides manual/unrecognised fills"
@@ -827,19 +828,19 @@
     <div style="display:flex;gap:4px">
       <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        Paper All</button>
+        TV Farm</button>
       <button id="feedTabRefined" onclick="switchFeedTab('refined')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B">
-        Refined</button>
+        TV Refined</button>
+      <button id="feedTabFarm" onclick="switchFeedTab('farm')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
+        Kairos Farm</button>
       <button id="feedTabKairos" onclick="switchFeedTab('kairos')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        ⚡ Kairos</button>
+        ⚡ Kairos Refined</button>
       <button id="feedTabCrew" onclick="switchFeedTab('crew')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         Crew</button>
-      <button id="feedTabFarm" onclick="switchFeedTab('farm')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        Farm</button>
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Signals</button>
@@ -985,8 +986,8 @@
         if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined' || tab === 'kairos' || tab === 'crew' || tab === 'farm') ? 'flex' : 'none';
 
         if (tab === 'refined') {
-          if (label) label.textContent = 'Cumulative realized P&L from Alpaca Refined fills';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Alpaca Refined fills.';
+          if (label) label.textContent = 'Cumulative realized P&L from TV Refined fills';
+          if (note)  note.textContent  = 'Cumulative realized P&L from TV Refined fills.';
           const fromEl = document.getElementById('equityFromDate');
           if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
           const toEl = document.getElementById('equityToDate');
@@ -1002,8 +1003,8 @@
           _syncFeedTabButtons('refined');
           renderTable(allTrades, selectedStrategy);
         } else if (tab === 'kairos') {
-          if (label) label.textContent = 'Cumulative realized P&L from Kairos engine fills (acct 3)';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Kairos engine fills (paper account 3).';
+          if (label) label.textContent = 'Cumulative realized P&L from Kairos Refined fills (acct 3)';
+          if (note)  note.textContent  = 'Cumulative realized P&L from Kairos Refined fills (paper account 3).';
           const fromEl = document.getElementById('equityFromDate');
           if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
           const toEl = document.getElementById('equityToDate');
@@ -1036,8 +1037,8 @@
           _syncFeedTabButtons('crew');
           renderTable(allTrades, selectedStrategy);
         } else if (tab === 'farm') {
-          if (label) label.textContent = 'Cumulative realized P&L from Engine Farm fills (acct 5)';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Engine Farm fills (paper account 5 - engine-entry twin of Paper All).';
+          if (label) label.textContent = 'Cumulative realized P&L from Kairos Farm fills (acct 5)';
+          if (note)  note.textContent  = 'Cumulative realized P&L from Kairos Farm fills (paper account 5 - engine-entry twin of TV Farm).';
           const fromEl = document.getElementById('equityFromDate');
           if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
           const toEl = document.getElementById('equityToDate');
@@ -1060,8 +1061,8 @@
           _syncFeedTabButtons('tv');
           renderTVFeed();
         } else if (tab === 'alpaca') {
-          if (label) label.textContent = 'Cumulative realized P&L from Alpaca fills';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Alpaca fills.';
+          if (label) label.textContent = 'Cumulative realized P&L from TV Farm fills';
+          if (note)  note.textContent  = 'Cumulative realized P&L from TV Farm fills.';
           const fromEl = document.getElementById('equityFromDate');
           if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
           const toEl = document.getElementById('equityToDate');
@@ -2819,15 +2820,16 @@
     function _syncFeedTabButtons(tab) {
       const inactive = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888';
       const active   = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B';
+      // Paired highlights: TV pair (Farm+Refined) = purple, Kairos pair = amber.
+      const activeTV = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #a78bfa;background:rgba(167,139,250,0.12);color:#c4b5fd';
       const activeK  = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #F2C07A;background:rgba(242,192,122,0.12);color:#F2C07A';
-      document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? active  : inactive;
-      document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? active  : inactive;
-      document.getElementById('feedTabKairos').style.cssText  = tab === 'kairos'  ? activeK : inactive;
+      document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? activeTV : inactive;
+      document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? activeTV : inactive;
+      document.getElementById('feedTabKairos').style.cssText  = tab === 'kairos'  ? activeK  : inactive;
       const _fc = document.getElementById('feedTabCrew');
       if (_fc) _fc.style.cssText = tab === 'crew' ? active : inactive;
-      const activeF  = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #5FC8D4;background:rgba(95,200,212,0.12);color:#5FC8D4';
       const _ff = document.getElementById('feedTabFarm');
-      if (_ff) _ff.style.cssText = tab === 'farm' ? activeF : inactive;
+      if (_ff) _ff.style.cssText = tab === 'farm' ? activeK : inactive;
       document.getElementById('feedTabTV').style.cssText      = tab === 'tv'      ? active  : inactive;
     }
 
@@ -2864,14 +2866,14 @@
         } else {
           const acct = chartTab === 'kairos' ? '3' : chartTab === 'crew' ? '4' : chartTab === 'farm' ? '5' : chartTab === 'refined' ? '2' : null;
           const labelText = chartTab === 'kairos'
-            ? 'Cumulative realized P&L from Kairos engine fills (acct 3)'
+            ? 'Cumulative realized P&L from Kairos Refined fills (acct 3)'
             : chartTab === 'crew'
               ? 'Cumulative realized P&L from Crew Paper fills (acct 4)'
               : chartTab === 'farm'
-              ? 'Cumulative realized P&L from Engine Farm fills (acct 5)'
+              ? 'Cumulative realized P&L from Kairos Farm fills (acct 5)'
               : chartTab === 'refined'
-                ? 'Cumulative realized P&L from Alpaca Refined fills'
-                : 'Cumulative realized P&L from Alpaca fills';
+                ? 'Cumulative realized P&L from TV Refined fills'
+                : 'Cumulative realized P&L from TV Farm fills';
           document.getElementById('ibEquityNote').style.display = 'flex';
           document.getElementById('ibEquityNote').textContent   = labelText + '.';
           document.getElementById('equityChartLabel').textContent = labelText;
@@ -3119,11 +3121,11 @@
 
         // Render charts/stats for whichever tab is active
         if (activeTab === 'alpaca') {
-          document.getElementById('equityChartLabel').textContent = 'Cumulative realized P&L from Alpaca fills';
+          document.getElementById('equityChartLabel').textContent = 'Cumulative realized P&L from TV Farm fills';
           document.getElementById('equityFromDate').style.display = '';
           document.getElementById('equityToDate').style.display   = '';
           document.getElementById('ibEquityNote').style.display = 'flex';
-          document.getElementById('ibEquityNote').textContent = 'Cumulative realized P&L from Alpaca fills.';
+          document.getElementById('ibEquityNote').textContent = 'Cumulative realized P&L from TV Farm fills.';
           const fromEl = document.getElementById('equityFromDate');
           if (!fromEl.value) {
             const d30 = new Date(); d30.setDate(d30.getDate() - 30);

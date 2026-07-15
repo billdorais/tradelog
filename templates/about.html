@@ -123,10 +123,11 @@
       Kairos Automata is an automated trade execution, logging, and analysis platform built by Bill Dorais.
       TradingView alerts are received as webhooks and routed through a configurable Signal Router pipeline
       before being forwarded to a supported broker — Alpaca, Interactive Brokers, or Coinbase — for execution.
-      Kairos runs up to <strong>five parallel Alpaca paper accounts</strong> — <strong style="color:#9aa0b5">Paper All</strong>,
-      <strong style="color:#c4b5fd">Refined</strong>, <strong style="color:#F2C07A">Kairos engine</strong>, and
-      <strong style="color:#7FE098">Crew Paper</strong>, and
-      <strong style="color:#5FC8D4">Engine Farm</strong> — each an A/B on a different entry mechanism or strategy set,
+      Kairos runs up to <strong>five parallel Alpaca paper accounts</strong>, a symmetric 2×2 by entry mechanism:
+      <strong style="color:#9aa0b5">TV Farm</strong> → <strong style="color:#c4b5fd">TV Refined</strong> (TradingView
+      entries) and <strong style="color:#5FC8D4">Kairos Farm</strong> → <strong style="color:#F2C07A">Kairos
+      Refined</strong> (server-side engine entries), plus <strong style="color:#7FE098">Crew Paper</strong> —
+      each full-sample <em>farm</em> refines into its curated top-N account,
       with independent <a href="#gating" style="color:#70a8f5">per-account gating</a> (see below). The dashboard
       equity chart has a tab per account, each with a multi-select strategy visibility picker
       (Top 10/15/20, eye-toggle per strategy), and the trade feed below the chart syncs to whichever
@@ -163,21 +164,30 @@
     <table>
       <tr><th>Account</th><th>Role</th></tr>
       <tr>
-        <td style="color:#9aa0b5">Paper All<br><span style="color:#888;font-size:0.78rem">alpaca</span></td>
-        <td>The full-sample <strong>TV-entry audition pool</strong> ("TV farm"). Trades every enabled strategy on
-          every TradingView signal and is exempt from the profit-lock and daily-loss guards — the widest,
-          unclipped record of what the system would do with TV bar-close entries. The Refined top-N is
-          selected from this book, so its selection pool matches Refined's execution mechanism.</td>
+        <td style="color:#9aa0b5">TV Farm<br><span style="color:#888;font-size:0.78rem">alpaca</span></td>
+        <td>The full-sample <strong>TV-entry audition pool</strong>. Trades every enabled strategy on every
+          TradingView signal (<code style="font-size:0.82rem;color:#aaa">TV_PILOT_ALL=alpaca:$1000</code>) and is
+          exempt from the profit-lock and daily-loss guards — the widest, unclipped record of the system on TV
+          bar-close entries. TV Refined's top-N is selected from this book, so its selection pool matches its
+          execution mechanism.</td>
       </tr>
       <tr>
-        <td style="color:#c4b5fd">Refined<br><span style="color:#888;font-size:0.78rem">alpaca2</span></td>
-        <td>Only the daily <strong>top-N leaderboard</strong> by realised P&amp;L (refreshed 4:15&nbsp;PM ET).
-          Entries come from <strong>TradingView bar-close</strong> alerts.</td>
+        <td style="color:#c4b5fd">TV Refined<br><span style="color:#888;font-size:0.78rem">alpaca2</span></td>
+        <td>Only the daily <strong>top-N leaderboard</strong> by realised P&amp;L (refreshed 4:15&nbsp;PM ET),
+          selected from TV Farm. Entries come from <strong>TradingView bar-close</strong> alerts.</td>
       </tr>
       <tr>
-        <td style="color:#F2C07A">Kairos engine<br><span style="color:#888;font-size:0.78rem">alpaca3</span></td>
-        <td>The same top-N leaderboard, but entries are generated <strong>server-side by the Kairos engine</strong>
-          (enters at the Camarilla level with a buffer / retest) instead of TV bar-close. Refined vs Kairos is the
+        <td style="color:#5FC8D4">Kairos Farm<br><span style="color:#888;font-size:0.78rem">alpaca5</span></td>
+        <td>The <strong>engine-entry twin of TV Farm</strong>: the full-sample audition pool fired by the
+          server-side engine (<code style="font-size:0.82rem;color:#aaa">ENGINE_PILOT_ALL=alpaca5:$1000</code>)
+          instead of TV alerts. Same farm exemptions as TV Farm. Splitting the farm by entry mechanism keeps each
+          selection pool honest — the entry is part of the strategy (TV vs Kairos showed opposite edges on the
+          same names), so a mixed farm's leaderboard estimates neither mechanism cleanly.</td>
+      </tr>
+      <tr>
+        <td style="color:#F2C07A">Kairos Refined<br><span style="color:#888;font-size:0.78rem">alpaca3</span></td>
+        <td>The engine top-N, entries generated <strong>server-side by the Kairos engine</strong> (enters at the
+          Camarilla level with a buffer / retest) instead of TV bar-close. TV Refined vs Kairos Refined is the
           entry-mechanism A/B — same strategies, different fills.</td>
       </tr>
       <tr>
@@ -185,33 +195,25 @@
         <td>Trades only the picks <strong>wired from the Crew advisor</strong> page — never the auto snapshot or
           engine. A separate Alpaca login (Alpaca caps paper accounts at 3 per login).</td>
       </tr>
-      <tr>
-        <td style="color:#5FC8D4">Engine Farm<br><span style="color:#888;font-size:0.78rem">alpaca5</span></td>
-        <td>The <strong>engine-entry twin of Paper All</strong>: the full-sample audition pool fired by the
-          server-side engine (<code style="font-size:0.82rem;color:#aaa">ENGINE_PILOT_ALL=alpaca5:$1000</code>)
-          instead of TV alerts. Same farm exemptions as Paper All. Splitting the farm by entry mechanism keeps
-          each selection pool honest — the entry is part of the strategy (Refined vs Kairos showed opposite
-          edges on the same names), so a mixed farm's leaderboard estimates neither mechanism cleanly.</td>
-      </tr>
     </table>
 
     <h2 id="gating">Per-Account Gating</h2>
     <p>
       Every gate is evaluated <strong>per target account</strong>, enforced in both the webhook (TV entries) and
       the Kairos engine (server-side entries). So one book can halt or be side-restricted while the others keep
-      trading the same signal. The two farms — <strong style="color:#9aa0b5">Paper All</strong> (TV entries) and
-      <strong style="color:#5FC8D4">Engine Farm</strong> (engine entries) — are deliberately exempt from the
+      trading the same signal. The two farms — <strong style="color:#9aa0b5">TV Farm</strong> and
+      <strong style="color:#5FC8D4">Kairos Farm</strong> — are deliberately exempt from the
       risk guards: as unfiltered audition pools you want their full samples, so profit-lock and daily-loss
-      protect the candidate books (Refined / Kairos / Crew) without clipping them.
+      protect the curated books (TV Refined / Kairos Refined / Crew) without clipping them.
     </p>
     <table>
       <tr>
         <th>Gate</th>
-        <th style="color:#9aa0b5">Paper All</th>
-        <th style="color:#c4b5fd">Refined</th>
-        <th style="color:#F2C07A">Kairos</th>
+        <th style="color:#9aa0b5">TV Farm</th>
+        <th style="color:#c4b5fd">TV Refined</th>
+        <th style="color:#5FC8D4">Kairos Farm</th>
+        <th style="color:#F2C07A">Kairos Refined</th>
         <th style="color:#7FE098">Crew Paper</th>
-        <th style="color:#5FC8D4">Engine Farm</th>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Day-type gate — <strong>breakouts</strong><br>
@@ -235,12 +237,12 @@
         <td style="font-family:inherit;white-space:normal">Profit lock<br>
           <span style="color:#888;font-size:0.8rem">arms at the daily $ floor; halts (and flattens) the book if it
           gives the gain back</span></td>
-        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td>
+        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Daily-loss guard<br>
           <span style="color:#888;font-size:0.8rem">halts + liquidates the book when its own daily P&amp;L hits the limit</span></td>
-        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td>
+        <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
       </tr>
     </table>
     <p style="font-size:0.86rem;color:#888">
@@ -321,7 +323,7 @@
         <td>
           <strong>Per account.</strong> A background thread polls each guarded account's own daily P&amp;L every
           60 seconds. When a book's P&amp;L drops to or below this value, that book <em>independently</em> liquidates
-          its open positions and halts its new entries for the day — the others keep trading. Paper All is exempt
+          its open positions and halts its new entries for the day — the others keep trading. TV Farm and Kairos Farm are exempt
           (audition pool). The routing risk panel shows a per-account ⛔&nbsp;halted / ✓&nbsp;trading line; clear
           with <em>Clear Halt &amp; Resume Trading</em>. Set a negative dollar value to enable
           (e.g. <code style="font-size:0.82rem;color:#aaa">-125</code>). Default: disabled.
@@ -335,7 +337,7 @@
           trade drags that book back below the floor, it halts that book's new entries for the day (others keep
           trading) — locking in the gain while you stay above it. With
           <code style="font-size:0.82rem;color:#aaa">PROFIT_LOCK_FLATTEN</code> on (default), it also closes the
-          book's open positions on breach so the profit doesn't leak to exits. Paper All is exempt. Set a positive
+          book's open positions on breach so the profit doesn't leak to exits. TV Farm and Kairos Farm are exempt. Set a positive
           dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">100</code>). Default: disabled.
         </td>
       </tr>
@@ -447,7 +449,7 @@
         <td>
           Fixed dollar or percent stop on individual positions, checked every 3 seconds.
           The dollar stop (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code>) applies
-          to Paper All (alpaca) positions. The percent stop
+          to TV Farm (alpaca) positions. The percent stop
           (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code>) applies to Refined
           (alpaca2) positions only. The strategy remains free to re-enter on the next signal.
         </td>
@@ -468,7 +470,7 @@
         <td>
           Per-account circuit breaker — when a guarded book's own daily P&amp;L hits the limit, that book's
           open positions are liquidated immediately and its new entries are halted for the day, while the other
-          books keep trading. Cleared from the Risk panel. Paper All is exempt.
+          books keep trading. Cleared from the Risk panel. TV Farm and Kairos Farm are exempt.
         </td>
       </tr>
     </table>
@@ -506,9 +508,9 @@
 
     <h2>Dashboard — Equity Chart &amp; Trade Feed</h2>
     <p>
-      The equity chart has two tabs: <strong>Paper All</strong> (default — green, every fill from the
-      primary Alpaca paper account) and <strong>Paper Refined</strong> (purple, fills from the secondary
-      Alpaca account). Both tabs share a From/To date filter (persisted via
+      The equity chart has a tab per paper account — <strong>TV Farm</strong>, <strong>TV Refined</strong>,
+      <strong>Kairos Farm</strong>, <strong>Kairos Refined</strong>, and <strong>Crew Paper</strong> — paired by
+      entry mechanism (the TV pair highlights purple, the Kairos pair amber). Each shares a From/To date filter (persisted via
       <code style="font-size:0.82rem;color:#aaa">localStorage</code>) and support click-to-exclude on
       individual trades. The TV-Signals and IB-P&amp;L tabs are still wired up internally but hidden
       from the UI by default — the dashboard is now Alpaca-fills first.
@@ -665,13 +667,13 @@
         </td>
       </tr>
       <tr>
-        <td>Dashboard &amp; Analysis — Tab Rename</td>
+        <td>Dashboard &amp; Analysis — Account Tabs</td>
         <td>
-          The dashboard equity-chart tabs are now <strong>Paper All</strong> (green) and
-          <strong>Paper Refined</strong> (purple). The Signals and IB tabs are still wired up
-          but hidden by default. The Analysis page Source toggle uses the same
-          <strong>Paper All</strong> / <strong>Paper Refined</strong> labels, and the previously
-          visible <em>Signals</em> source is hidden.
+          The dashboard equity-chart and Analysis Source tabs show one tab per paper account —
+          <strong>TV Farm</strong>, <strong>TV Refined</strong>, <strong>Kairos Farm</strong>,
+          <strong>Kairos Refined</strong>, and <strong>Crew Paper</strong> — paired by entry
+          mechanism (TV pair highlights purple, Kairos pair amber). The Signals and IB tabs are
+          still wired up but hidden by default.
         </td>
       </tr>
       <tr>

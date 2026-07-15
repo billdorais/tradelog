@@ -266,7 +266,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRiskLimit()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRiskLimit()" title="Disable risk guard">Off</button>
         </div>
-        <div class="risk-hint">Per account: a negative limit halts &amp; liquidates that book independently when its OWN daily P&amp;L hits it (e.g. -125). Paper All exempt. 0 = disabled.</div>
+        <div class="risk-hint">Per account: a negative limit halts &amp; liquidates that book independently when its OWN daily P&amp;L hits it (e.g. -125). Both farms (TV/Kairos) exempt. 0 = disabled.</div>
         <div class="risk-hint" id="dlStatusHint" style="margin-top:4px"></div>
       </div>
 
@@ -358,7 +358,7 @@
 
       <!-- Paper All Account -->
       <div class="rg-card rg-card-paper">
-        <div class="rg-card-title" style="color:#7FE098">&#9670; Paper All Account</div>
+        <div class="rg-card-title" style="color:#7FE098">&#9670; TV Farm Account</div>
 
         <div class="risk-section">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -513,7 +513,7 @@
       <div class="risk-section">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
           Block breakout entries on Inside/Neutral days
-          <span style="color:#666;font-size:0.68rem">All three paper books (Paper All, Refined, Kairos)</span>
+          <span style="color:#666;font-size:0.68rem">The gated books (TV Farm, TV Refined, Kairos Refined, Kairos Farm)</span>
           <span id="dtGateBadge" class="risk-status-badge disabled">
             <span class="risk-dot grey" id="dtGateDot"></span>
             <span id="dtGateText">Disabled</span>
@@ -523,12 +523,12 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(true)">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(false)">Off</button>
         </div>
-        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all three paper books (Paper All now runs the Kairos engine entries too). Reversals are gated separately below. Fails open if a ticker can't be classified.</div>
+        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all gated books. Reversals are gated separately below. Reversals are gated separately below. Fails open if a ticker can't be classified.</div>
 
         <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
             Block reversal entries on Outside/Neutral days
-            <span style="color:#666;font-size:0.68rem">Paper All (acct1) + Kairos (acct3) only · Refined left alone</span>
+            <span style="color:#666;font-size:0.68rem">TV Farm (acct1) + Kairos Refined (acct3) only · TV Refined left alone</span>
             <span id="dtRevGateBadge" class="risk-status-badge disabled">
               <span class="risk-dot grey" id="dtRevGateDot"></span>
               <span id="dtRevGateText">Disabled</span>
@@ -538,7 +538,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setRevGate(true)">Enable</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setRevGate(false)">Off</button>
           </div>
-          <div class="risk-hint">Inside-day → reversals thesis. ⚠ Weaker than the breakout gate: in the test, R3S3 reversals win on Outside days too, so this can prune good trades — left OFF by default, enable to test. When on, reversal entries fire only on Inside days for Paper All + Kairos (Refined stays TV-driven and ungated). Fails open if a ticker can't be classified.</div>
+          <div class="risk-hint">Inside-day → reversals thesis. ⚠ Weaker than the breakout gate: in the test, R3S3 reversals win on Outside days too, so this can prune good trades — left OFF by default, enable to test. When on, reversal entries fire only on Inside days for the gated books (TV Refined stays ungated). Fails open if a ticker can't be classified.</div>
         </div>
       </div>
     </div>
@@ -832,8 +832,8 @@
       <button onclick="bulkRemovePaperAll()"
               style="background:transparent;border:1px solid #c0392b;color:#e74c3c;border-radius:6px;
                      padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;white-space:nowrap"
-              title="Remove the Paper All (acct1) broker from every rule so TV stops routing there — use when the engine owns Paper All via ENGINE_PILOT_EXTRA">
-        ✕ Paper All off TV
+              title="Remove the TV Farm (acct1) broker node from every rule so TV stops routing there">
+        ✕ TV Farm off TV
       </button>
     </div>
   </div>
@@ -876,7 +876,7 @@
   <!-- Exclude whole bands from the Refined leaderboard (→ off Refined acct2 + Kairos acct3) -->
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
     <span style="font-size:0.72rem;color:#888">Exclude bands from leaderboard
-      <span style="color:#555">— off Refined + Kairos; Paper All still trades them. Applies on next Refresh.</span></span>
+      <span style="color:#555">— off TV Refined + Kairos Refined; the farms still trade them. Applies on next Refresh.</span></span>
     <span id="excludeBandsChips" style="display:inline-flex;gap:6px;flex-wrap:wrap"></span>
   </div>
 
@@ -1118,7 +1118,7 @@
             + arr.map(_chip).join(' &nbsp;·&nbsp; ') + `</div>`;
         };
         const _sections = _section('Refined', '#a78bfa', 'alpaca2')
-                        + _section('Paper All', '#7FE098', 'alpaca');
+                        + _section('TV Farm', '#7FE098', 'alpaca');
         stActive.innerHTML = _sections || 'Today: no losses recorded yet.';
       } else {
         stBadge.className = 'risk-status-badge disabled';
@@ -1248,7 +1248,7 @@
         posBadge.className = 'risk-status-badge disabled';
         posDot.className   = 'risk-dot grey';
         posText.textContent = 'Disabled';
-        posHint.textContent = 'Applies to Paper Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
+        posHint.textContent = 'Applies to the TV Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
       }
 
       // Refined dollar cap badge
@@ -1281,12 +1281,12 @@
         paperBadge.className = 'risk-status-badge active';
         paperDot.className   = 'risk-dot green';
         paperText.textContent = 'Active';
-        paperHint.textContent = 'Paper All: auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
+        paperHint.textContent = 'TV Farm: auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
       } else {
         paperBadge.className = 'risk-status-badge disabled';
         paperDot.className   = 'risk-dot grey';
         paperText.textContent = 'Disabled';
-        paperHint.textContent = 'Applies to Paper All account only. Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.';
+        paperHint.textContent = 'Applies to the TV Farm account only. Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.';
       }
 
       // Trailing stop status badge
@@ -1841,7 +1841,7 @@
     } catch (e) { /* leave as-is */ }
   }
   async function toggleExcludedBand(band, excluded) {
-    if (excluded && !confirm(`Exclude ${band} from the Refined leaderboard?\n\nOn the next refresh it drops off Refined (acct2) and the Kairos engine (acct3). Paper All (acct1) keeps trading it as the audition pool. Reversible anytime.`)) return;
+    if (excluded && !confirm(`Exclude ${band} from the Refined leaderboard?\n\nOn the next refresh it drops off TV Refined (acct2) and Kairos Refined (acct3). The farms keep trading it as the audition pool. Reversible anytime.`)) return;
     try {
       await fetch('/api/leaderboard/excluded_bands', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2134,11 +2134,11 @@
       case 'broker': {
         const bmap = {
           'ib': 'IB Paper', 'ib-paper': 'IB Paper', 'ib-live': 'IB Live',
-          'alpaca': 'Alpaca Paper', 'alpaca-paper': 'Alpaca Paper', 'alpaca-live': 'Alpaca Live',
-          'alpaca-paper-2': 'Alpaca Refined', 'alpaca-live-2': 'Alpaca Refined Live',
-          'alpaca-paper-3': 'Alpaca Kairos', 'alpaca-live-3': 'Alpaca Kairos Live',
-          'alpaca-paper-4': 'Alpaca Crew', 'alpaca-live-4': 'Alpaca Crew Live',
-          'alpaca-paper-5': 'Engine Farm', 'alpaca-live-5': 'Engine Farm Live',
+          'alpaca': 'TV Farm', 'alpaca-paper': 'TV Farm', 'alpaca-live': 'TV Farm Live',
+          'alpaca-paper-2': 'TV Refined', 'alpaca-live-2': 'TV Refined Live',
+          'alpaca-paper-3': 'Kairos Refined', 'alpaca-live-3': 'Kairos Refined Live',
+          'alpaca-paper-4': 'Crew Paper', 'alpaca-live-4': 'Crew Paper Live',
+          'alpaca-paper-5': 'Kairos Farm', 'alpaca-live-5': 'Kairos Farm Live',
           'coinbase': 'Coinbase',
         };
         return bmap[node.value] || node.value || 'IB Paper';
@@ -2497,7 +2497,7 @@
   }
 
   async function bulkRemovePaperAll() {
-    if (!confirm('Remove the "Alpaca Paper" (Paper All / acct1) broker node from EVERY rule?\n\nUse this when the Kairos engine owns Paper All (via ENGINE_PILOT_EXTRA) so TV entries stop double-trading that account. Refined / Kairos broker nodes are untouched.')) return;
+    if (!confirm('Remove the "Alpaca Paper" (TV Farm / acct1) broker node from EVERY rule?\n\nTV Refined / Kairos broker nodes are untouched.')) return;
     const res = await fetch('/api/routing/rules/bulk_remove_broker', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tag: 'alpaca' }),
@@ -2505,7 +2505,7 @@
     if (!res.ok) { alert('Bulk update failed: HTTP ' + res.status); return; }
     const data = await res.json();
     await load();
-    alert(`Done — removed ${data.removed} Paper All broker node${data.removed !== 1 ? 's' : ''} from ${data.updated} rule${data.updated !== 1 ? 's' : ''}.`);
+    alert(`Done — removed ${data.removed} TV Farm broker node${data.removed !== 1 ? 's' : ''} from ${data.updated} rule${data.updated !== 1 ? 's' : ''}.`);
   }
 
   async function bulkSetHours() {
@@ -2763,16 +2763,16 @@
             <select id="f_value">
               <option value="ib-paper"     ${bv==='ib-paper'     ? 'selected':''}>Interactive Brokers — Paper</option>
               <option value="ib-live"      ${bv==='ib-live'      ? 'selected':''}>Interactive Brokers — Live</option>
-              <option value="alpaca-paper" ${bv==='alpaca-paper' ? 'selected':''}>Alpaca — Paper</option>
-              <option value="alpaca-live"  ${bv==='alpaca-live'  ? 'selected':''}>Alpaca — Live</option>
-              <option value="alpaca-paper-2" ${bv==='alpaca-paper-2' ? 'selected':''}>Alpaca Paper — Refined (account 2)</option>
-              <option value="alpaca-live-2"  ${bv==='alpaca-live-2'  ? 'selected':''}>Alpaca Live — Refined (account 2)</option>
-              <option value="alpaca-paper-3" ${bv==='alpaca-paper-3' ? 'selected':''}>Alpaca Paper — Kairos engine (account 3)</option>
-              <option value="alpaca-live-3"  ${bv==='alpaca-live-3'  ? 'selected':''}>Alpaca Live — Kairos engine (account 3)</option>
+              <option value="alpaca-paper" ${bv==='alpaca-paper' ? 'selected':''}>Alpaca Paper — TV Farm (account 1)</option>
+              <option value="alpaca-live"  ${bv==='alpaca-live'  ? 'selected':''}>Alpaca Live — TV Farm (account 1)</option>
+              <option value="alpaca-paper-2" ${bv==='alpaca-paper-2' ? 'selected':''}>Alpaca Paper — TV Refined (account 2)</option>
+              <option value="alpaca-live-2"  ${bv==='alpaca-live-2'  ? 'selected':''}>Alpaca Live — TV Refined (account 2)</option>
+              <option value="alpaca-paper-3" ${bv==='alpaca-paper-3' ? 'selected':''}>Alpaca Paper — Kairos Refined (account 3)</option>
+              <option value="alpaca-live-3"  ${bv==='alpaca-live-3'  ? 'selected':''}>Alpaca Live — Kairos Refined (account 3)</option>
               <option value="alpaca-paper-4" ${bv==='alpaca-paper-4' ? 'selected':''}>Alpaca Paper — Crew Paper (account 4)</option>
               <option value="alpaca-live-4"  ${bv==='alpaca-live-4'  ? 'selected':''}>Alpaca Live — Crew Paper (account 4)</option>
-              <option value="alpaca-paper-5" ${bv==='alpaca-paper-5' ? 'selected':''}>Alpaca Paper — Engine Farm (account 5)</option>
-              <option value="alpaca-live-5"  ${bv==='alpaca-live-5'  ? 'selected':''}>Alpaca Live — Engine Farm (account 5)</option>
+              <option value="alpaca-paper-5" ${bv==='alpaca-paper-5' ? 'selected':''}>Alpaca Paper — Kairos Farm (account 5)</option>
+              <option value="alpaca-live-5"  ${bv==='alpaca-live-5'  ? 'selected':''}>Alpaca Live — Kairos Farm (account 5)</option>
               <option value="coinbase"     ${bv==='coinbase'     ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;

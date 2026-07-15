@@ -420,7 +420,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             return "\n".join(lines)
 
         def _fmt_engine(data: dict) -> str:
-            """Kairos engine pilot (acct 3) vs TV Refined (acct 2) head-to-head."""
+            """Kairos Refined (acct 3) vs TV Refined (acct 2) head-to-head."""
             data = data or {}
             if not data.get("configured"):
                 return ("=== KAIROS ENGINE PILOT (account 3) ===\n"
@@ -458,7 +458,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             engine_strat_data,
             header="KAIROS ENGINE (account 3, server-side entries) — STRATEGY LEADERBOARD",
             empty_msg=("=== KAIROS ENGINE (account 3) — STRATEGY LEADERBOARD ===\n"
-                       "No per-strategy data yet — the engine book (acct3) has no closed round-trips "
+                       "No per-strategy data yet — Kairos Refined (acct3) has no closed round-trips "
                        "in this window. Treat the Kairos entries as not-yet-evaluable per strategy."),
         )
         journal_block  = _fmt_journal(journal_data)
@@ -471,17 +471,17 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             idx = cd.get("indices_paper_all") or {}
             if idx:
                 tot = round(sum(idx.values()), 2)
-                lines.append(f"Indices-only P&L on Paper All (acct1): ${tot:.2f} total — "
+                lines.append(f"Indices-only P&L on TV Farm (acct1): ${tot:.2f} total — "
                              + ", ".join(f"{k} ${v:.2f}" for k, v in sorted(idx.items(), key=lambda x: -x[1])))
             else:
-                lines.append("Indices-only P&L on Paper All: no index data in window.")
-            for label, key in (("Refined acct2 (TV)", "side_refined"), ("Kairos acct3 (engine)", "side_kairos")):
+                lines.append("Indices-only P&L on TV Farm: no index data in window.")
+            for label, key in (("TV TV Refined acct2", "side_refined"), ("Kairos Refined acct3", "side_kairos")):
                 ss = cd.get(key) or []
                 if ss:
                     lines.append(f"{label} by side: " + " · ".join(
                         f"{r.get('side')} ${r.get('pnl', 0):.2f} ({r.get('trades', 0)}t {r.get('win_rate', 0)}%)"
                         for r in ss))
-            for label, key in (("Refined acct2", "side_gated_refined"), ("Kairos acct3", "side_gated_kairos")):
+            for label, key in (("TV Refined acct2", "side_gated_refined"), ("Kairos Refined acct3", "side_gated_kairos")):
                 cands = cd.get(key) or []
                 if cands:
                     lines.append(
@@ -550,21 +550,27 @@ Example: PLTR_CAM_BREAKOUT_R4S4_V02_5MIN
 - REVERSAL = entry on level rejection (mean-reversion)
 - V02 = strategy version; 5MIN = bar timeframe
 
-THREE ALPACA ACCOUNTS:
-1. Paper All (account 1): ALL strategies run here, ~100+ active pipelines.
-2. Refined (account 2, alpaca-paper-2): TOP-20 only. THIS IS THE PRIMARY ACCOUNT UNDER REVIEW.
+THE ACCOUNTS — a symmetric 2x2 by entry mechanism (each full-sample FARM refines into a
+curated top-N account):
+1. TV Farm (account 1): ALL strategies run here via TradingView bar-close entries, ~100+
+   active pipelines. Full-sample audition pool + selection source for TV Refined.
+2. TV Refined (account 2, alpaca-paper-2): TOP-20 only, selected from TV Farm. TV entries.
+   THIS IS THE PRIMARY ACCOUNT UNDER REVIEW.
    - Daily 4:15 PM ET refresh selects top-20 by composite score:
      Sharpe 35% + Profit Factor 30% + Win Rate 20% + Trades 15%
    - 20-day rolling lookback with 10-day recency blend (60/40)
    - Min 5 trades to be eligible; 3+ consecutive losses = auto-demoted
    - Will transition to LIVE trading (PDT $25k floor no longer required — Alpaca moved to
      an intraday-margin model; ~$25k is now a comfort choice, not a regulation)
-3. Kairos Engine (account 3): a NEW server-side entry PILOT, running in parallel. It trades the
-   SAME Refined strategies, but Kairos generates the entries itself (fresh-cross buffered
-   breakouts; confirmed reversal rejects with wick >= 0.25*ATR) instead of relying on TradingView
-   alerts — entering a touch earlier on breakouts. Purpose: test whether server-side entries beat
-   TV entries, head-to-head, in a separate book. Earlier sim work was a mirage; the real edge is
+5. Kairos Farm (account 5): the engine-entry twin of TV Farm — ALL strategies via the
+   server-side Kairos engine. Full-sample pool + selection source for Kairos Refined.
+3. Kairos Refined (account 3): the engine-entry curated book. It trades the top strategies,
+   but the Kairos engine generates the entries itself (fresh-cross buffered breakouts;
+   confirmed reversal rejects with wick >= 0.25*ATR) instead of relying on TradingView alerts
+   — entering a touch earlier on breakouts. TV Refined vs Kairos Refined is the head-to-head:
+   do server-side entries beat TV entries? Earlier sim work was a mirage; the real edge is
    modest and per-share, so judge acct3-vs-acct2 on a multi-week trend, not single days.
+4. Crew Paper (account 4): trades only the picks wired from this advisor's Next-Month card.
 
 STOP SYSTEM (6 layers, first to fire wins):
 1. Alpaca broker trailing stop — placed immediately after entry fill
@@ -589,17 +595,17 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
         advisor = Agent(
             role="Professional Systematic Trading Advisor",
-            goal="Analyse the Kairos Refined account performance and deliver specific, actionable recommendations.",
+            goal="Analyse the TV Refined account performance and deliver specific, actionable recommendations.",
             backstory=(
                 "You are a seasoned systematic trading professional with 20 years of "
                 "experience managing algorithmic strategy portfolios on US equities.\n\n"
                 f"{KAIROS_SYSTEM_KNOWLEDGE}\n"
-                "Your PRIMARY focus is the Refined account (account 2), but you ALSO directly "
-                "analyse the Kairos engine book (account 3) — its own per-strategy leaderboard, "
+                "Your PRIMARY focus is the TV Refined account (account 2), but you ALSO directly "
+                "analyse the Kairos Refined book (account 3) — its own per-strategy leaderboard, "
                 "not just the aggregate head-to-head — since those server-side entries are the "
-                "live experiment. When the Kairos book has enough trades, call out which Kairos "
+                "live experiment. When the Kairos Refined book has enough trades, call out which Kairos "
                 "ENTRIES (by strategy) are pulling their weight vs which are bleeding, and how "
-                "that squares with the same strategy on the TV-driven Refined book. "
+                "that squares with the same strategy on the TV Refined book. "
                 "You are rigorous about sample size — you don't change parameters based on "
                 "two trades. You understand regime effects: reversals thrive in ranging "
                 "markets, breakouts in trending ones. A 44% win rate with PF > 2 is a GOOD "
@@ -643,7 +649,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
                 "| Top 10 to run | ten strategy names sourced from BOTH books, ranked by each strategy's BEST side. "
-                "SOURCING RULES: (a) names positive on BOTH Refined (acct2) and Kairos (acct3) are first-class picks; "
+                "SOURCING RULES: (a) names positive on BOTH TV Refined (acct2) and Kairos Refined (acct3) are first-class picks; "
                 "(b) a name positive on only ONE book is an ENTRY-SPECIFIC bet — the entry mechanism is part of the "
                 "strategy (the two books have shown OPPOSITE edges on the same names) — include it only with a decent "
                 "sample on that book (≥15 trades) and it MUST carry that book's entry tag. "
@@ -658,7 +664,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
                 "| Day-type gate | Yes / No |\n"
                 "| Entries | Default for UNTAGGED picks only: Refined TV OR Kairos engine — per the engine-vs-TV read. Per-pick [TV]/[Engine] tags override this default. |\n"
-                "| Best indices | top index tickers · indices-only P&L from Paper All: $X (from the card inputs) |\n\n"
+                "| Best indices | top index tickers · indices-only P&L from TV Farm: $X (from the card inputs) |\n\n"
                 "Then continue with the detailed sections:\n\n"
                 "0. **Last Picks — Grade Yourself** — If a PREVIOUS PICKS SCORECARD block is "
                 "present above, review it FIRST and let it shape this month's Top 10: state "
@@ -680,7 +686,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "results and the trader's own notes if they offer relevant observations.\n\n"
                 "4. **Engine vs TV Pilot** — Using BOTH the KAIROS ENGINE STRATEGY LEADERBOARD "
                 "(acct 3 per-strategy) and the head-to-head PILOT data, is the server-side engine "
-                "(acct 3) beating, matching, or lagging the TV-driven Refined account (acct 2)? "
+                "(acct 3) beating, matching, or lagging the TV Refined account (acct 2)? "
                 "Name the specific Kairos ENTRIES (by strategy) that are working vs the ones "
                 "dragging the book, and compare each to the same strategy on acct 2 where possible "
                 "(breakouts likely lead the edge, reversals are the new/risky part). If there isn't "
@@ -812,7 +818,7 @@ def api_crew_scorecard():
 _CREW_TOOLS = [
     {
         "name": "engine_vs_tv",
-        "description": "Head-to-head realized P&L: the Kairos engine (account 3, server-side "
+        "description": "Head-to-head realized P&L: Kairos Refined (account 3, server-side "
                        "entries) vs TV Refined (account 2) over the last N days — daily rows + "
                        "cumulative totals + per-account win rate. Use for 'is the engine beating TV'.",
         "input_schema": {"type": "object", "properties": {
@@ -820,7 +826,7 @@ _CREW_TOOLS = [
     },
     {
         "name": "day_recap",
-        "description": "One specific day's trades comparing TV Refined (acct2) vs Kairos engine "
+        "description": "One specific day's trades comparing TV Refined (acct2) vs Kairos Refined "
                        "(acct3): per-account P&L, win rate, and the round-trip list. Use for "
                        "questions about a particular day ('how did Wednesday go').",
         "input_schema": {"type": "object", "properties": {
@@ -832,7 +838,7 @@ _CREW_TOOLS = [
                        "an account over an optional date range.",
         "input_schema": {"type": "object", "properties": {
             "account": {"type": "string", "enum": ["1", "2", "3"],
-                        "description": "1=Paper All, 2=Refined, 3=Kairos engine (default 2)"},
+                        "description": "1=TV Farm, 2=TV Refined, 3=Kairos Refined (default 2)"},
             "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
             "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
     },
@@ -855,7 +861,7 @@ _CREW_TOOLS = [
     },
     {
         "name": "rank_compare",
-        "description": "Backtest the leaderboard SELECTION METHOD on Paper All (acct1 — the "
+        "description": "Backtest the leaderboard SELECTION METHOD on TV Farm (acct1 — the "
                        "audition pool the Refined leaderboard is built from) over N days: ranks "
                        "strategies by RAW P&L vs by the live COMPOSITE SCORE (Sharpe 35/PF 30/Win "
                        "20/Trades 15), takes the top N of each, and reports each set's combined "
@@ -879,13 +885,13 @@ _CREW_TOOLS = [
                        "would have made $X' is what happened, not a forward guarantee.",
         "input_schema": {"type": "object", "properties": {
             "account": {"type": "string", "enum": ["1", "2", "3"],
-                        "description": "1=Paper All, 2=Refined, 3=Kairos (default 3)"},
+                        "description": "1=TV Farm, 2=TV Refined, 3=Kairos Refined (default 3)"},
             "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
             "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
     },
     {
         "name": "band_fill_quality",
-        "description": "Compare ONE band across Refined (acct2, TV entries) vs Kairos (acct3, "
+        "description": "Compare ONE band across TV Refined (acct2, TV entries) vs Kairos Refined (acct3, "
                        "engine entries): trades, win%, P&L on each, PLUS the engine's measured "
                        "slippage on that band's fills. Use to confirm whether the server-side "
                        "engine is DEGRADING a band's edge that TV captures cleanly (acct3 P&L far "
@@ -907,7 +913,7 @@ _CREW_TOOLS = [
     },
     {
         "name": "cross_account",
-        "description": "Cross-validate strategies across Refined (acct2, TV entries) and Kairos "
+        "description": "Cross-validate strategies across TV Refined (acct2, TV entries) and Kairos Refined "
                        "(acct3, engine entries): returns strategies POSITIVE on BOTH books (the "
                        "most robust set — works on TV and the engine), the DIVERGENT ones "
                        "(positive on one, negative on the other), and an INDEX rollup (SPY/QQQ/"
@@ -973,9 +979,9 @@ def _run_crew_tool(name: str, args: dict) -> str:
         if name == "rank_compare":
             days = int(args.get("days") or 30)
             n    = int(args.get("n") or 20)
-            stats = _kairos._compute_strategy_stats(days=days)   # acct1 (Paper All) per-strategy
+            stats = _kairos._compute_strategy_stats(days=days)   # acct1 (TV Farm) per-strategy
             if not stats:
-                return json.dumps({"error": "No Paper All (acct1) stats available."})
+                return json.dumps({"error": "No TV Farm (acct1) stats available."})
             max_pnl = max((s.get("total_pnl", 0) or 0) for s in stats.values())
             rows = [{
                 "name": k, "pnl": round(s.get("total_pnl", 0) or 0, 2),
@@ -989,7 +995,7 @@ def _run_crew_tool(name: str, args: dict) -> str:
             by_score = sorted(elig, key=lambda r: -r["score"])[:n]
             sp = {r["name"] for r in by_pnl}; ss = {r["name"] for r in by_score}
             return json.dumps({
-                "account": "Paper All (1)", "days": days, "n": n, "eligible_pool": len(elig),
+                "account": "TV Farm (1)", "days": days, "n": n, "eligible_pool": len(elig),
                 "combined_pnl_top_by_pnl":   round(sum(r["pnl"] for r in by_pnl), 2),
                 "combined_pnl_top_by_score": round(sum(r["pnl"] for r in by_score), 2),
                 "overlap": len(sp & ss),
@@ -1099,7 +1105,7 @@ def _run_crew_tool(name: str, args: dict) -> str:
                 return {k: {"trades": v["trades"],
                             "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0,
                             "pnl": round(v["pnl"], 2)} for k, v in out.items()}
-            idx_all = _idx(_ps(1))   # Paper All — the full audition pool, for 'indices-only'
+            idx_all = _idx(_ps(1))   # TV Farm — the full audition pool, for 'indices-only'
             return json.dumps({
                 "window": {"from": fd or "default", "to": td or "now"},
                 "works_in_both": both_pos[:20],
@@ -1111,7 +1117,7 @@ def _run_crew_tool(name: str, args: dict) -> str:
                 "note": "works_in_both = net-positive on BOTH the TV (acct2) and engine (acct3) "
                         "books — the most cross-validated, robust set. divergent = positive on one, "
                         "negative on the other (usually engine timing/fill difference). "
-                        "indices_paper_all = SPY/QQQ/IWM/SMH on Paper All (acct1, full pool) — use "
+                        "indices_paper_all = SPY/QQQ/IWM/SMH on TV Farm (acct1, full pool) — use "
                         "for 'what if I just ran the indices'; its total is indices_paper_all_total_pnl. "
                         "Still in-sample; small per-strategy samples regress, so weight by trade count.",
             })[:7000]
@@ -1163,7 +1169,7 @@ def api_crew_chat():
         "specific day's trades on both accounts), strategy_stats (per-account leaderboard), "
         "open_positions, engine_fills (the engine's entry log with actual fill prices + "
         "slippage, for fill-quality questions), rank_compare (top-N by raw P&L vs by composite "
-        "score on Paper All — for 'would the top-20-by-P&L have beaten the leaderboard'), and "
+        "score on TV Farm — for 'would the top-20-by-P&L have beaten the leaderboard'), and "
         "side_breakdown (long vs short by band/day-type — for 'what if I only traded shorts'), and "
         "band_fill_quality (one band: Refined-TV vs Kairos-engine P&L + the engine's slippage — "
         "for 'is the engine degrading R3S3 breakout'), and cross_account (strategies positive on "
@@ -1172,8 +1178,8 @@ def api_crew_chat():
         "Top-N picks actually did on Crew Paper since wiring — the out-of-sample grade of your "
         "own selection method). "
         "USE them whenever the user asks about anything current, specific, or "
-        "not covered by the report — don't guess or say you lack data. Account map: 1=Paper All, "
-        "2=Refined (TV), 3=Kairos engine (server-side pilot). Resolve relative dates ('yesterday', "
+        "not covered by the report — don't guess or say you lack data. Account map: 1=TV Farm, "
+        "2=TV Refined, 3=Kairos Refined, 5=Kairos Farm (engine). Resolve relative dates ('yesterday', "
         "'Wednesday', 'this week') against today's date above.\n\n"
         "Stay honest about the engine pilot: the real edge is modest and per-share; never over-read "
         "a single day or a few trades. CRITICAL on backward-looking 'would it have been better' "
@@ -1200,7 +1206,7 @@ def api_crew_chat():
         "| Sizing | Equal risk OR Scaled-by-score — one-line why |\n"
         "| Day-type gate | Yes / No |\n"
         "| Entries | Default for untagged picks: Refined TV OR Kairos engine (per-pick [TV]/[Engine] tags override) |\n"
-        "| Best indices | tickers · indices-only P&L from Paper All: $X |\n\n"
+        "| Best indices | tickers · indices-only P&L from TV Farm: $X |\n\n"
         "Then a `## Detail` section with the reasoning, samples and caveats. Keep the card to "
         "those five rows; put everything else under Detail.\n\n"
         "Answer directly and specifically, citing strategy names and numbers that trace "

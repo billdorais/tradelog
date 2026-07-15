@@ -223,23 +223,23 @@
         </button>
         <button id="srcAlpaca" onclick="switchSource('alpaca')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
-          Paper All
+          TV Farm
         </button>
         <button id="srcAlpaca2" onclick="switchSource('alpaca2')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Paper Refined
+          TV Refined
+        </button>
+        <button id="srcAlpaca5" onclick="switchSource('alpaca5')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+          Kairos Farm
         </button>
         <button id="srcAlpaca3" onclick="switchSource('alpaca3')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Kairos
+          Kairos Refined
         </button>
         <button id="srcAlpaca4" onclick="switchSource('alpaca4')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
           Crew Paper
-        </button>
-        <button id="srcAlpaca5" onclick="switchSource('alpaca5')"
-          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Engine Farm
         </button>
       </div>
     </div>
@@ -405,7 +405,7 @@
                   style="background:transparent;border:none;border-left:1px solid #a78bfa;
                          color:#c4b5fd;padding:5px 10px;font-size:0.78rem;cursor:pointer;
                          font-family:inherit;white-space:nowrap">
-            → Alpaca Refined
+            → TV Refined
           </button>
         </div>
       </div>
@@ -502,7 +502,7 @@
 
   <!-- Refined cutoff impact: how Refined-eligible strategies did on Paper All after a cutoff -->
   <div class="section">
-    <div class="section-title">Refined Cutoff Impact <span>what a Refined trading-hours cutoff would skip — measured on Paper All (all-day control)</span></div>
+    <div class="section-title">Refined Cutoff Impact <span>what a Refined trading-hours cutoff would skip — measured on TV Farm (all-day control)</span></div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
       <label style="font-size:0.78rem;color:#888">Entries after (ET)</label>
       <input type="time" id="cutoffTime" value="11:30"
@@ -772,8 +772,8 @@
       const el = document.getElementById(id);
       if (!el) return;
       const active = src === key;
-      const activeBg  = key === 'alpaca2' ? '#1a1030' : key === 'alpaca3' ? '#2a1a08' : key === 'alpaca4' ? '#0c2417' : key === 'alpaca5' ? '#0e2426' : '#1a1d2e';
-      const activeCol = key === 'alpaca2' ? '#c4b5fd' : key === 'alpaca3' ? '#F2C07A' : key === 'alpaca4' ? '#7FE098' : key === 'alpaca5' ? '#5FC8D4' : '#e0e0e0';
+      const activeBg  = (key === 'alpaca2' || key === 'alpaca') ? '#1a1030' : (key === 'alpaca3' || key === 'alpaca5') ? '#2a1a08' : key === 'alpaca4' ? '#0c2417' : '#1a1d2e';
+      const activeCol = (key === 'alpaca2' || key === 'alpaca') ? '#c4b5fd' : (key === 'alpaca3' || key === 'alpaca5') ? '#F2C07A' : key === 'alpaca4' ? '#7FE098' : '#e0e0e0';
       el.style.background = active ? activeBg  : 'transparent';
       el.style.color      = active ? activeCol : '#666';
     });
@@ -962,7 +962,7 @@
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
-    const srcLabel = isAlpaca2 ? 'Alpaca Refined fills' : isAlpaca3 ? 'Kairos engine fills' : isAlpaca4 ? 'Crew Paper fills' : isAlpaca5 ? 'Engine Farm fills' : isAlpaca ? 'Alpaca fills' : 'signal trades';
+    const srcLabel = isAlpaca2 ? 'TV Refined fills' : isAlpaca3 ? 'Kairos Refined fills' : isAlpaca4 ? 'Crew Paper fills' : isAlpaca5 ? 'Kairos Farm fills' : isAlpaca ? 'TV Farm fills' : 'signal trades';
     const exclNote = isAlpaca ? (() => {
       try {
         const n = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]').length;
@@ -1015,13 +1015,13 @@
       const cnt = (d.top_strategies || []).length;
       const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
       const overlayNote = (activeSource === 'alpaca2')
-        ? ' · stats reflect Paper Refined account for current date range'
+        ? ' · stats reflect TV Refined account for current date range'
         : (activeSource === 'alpaca3')
-        ? ' · stats reflect the Kairos engine account (acct 3) for current date range'
+        ? ' · stats reflect the Kairos Refined account (acct 3) for current date range'
         : (activeSource === 'alpaca4')
         ? ' · stats reflect the Crew Paper account (acct 4) for current date range'
         : (activeSource === 'alpaca5')
-        ? ' · stats reflect the Engine Farm account (acct 5) for current date range'
+        ? ' · stats reflect the Kairos Farm account (acct 5) for current date range'
         : '';
       meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}${overlayNote}`;
 
@@ -1269,11 +1269,11 @@
     }
     section.style.display = '';
 
-    const accountLabel = activeSource === 'alpaca2' ? 'Paper Refined'
-                       : activeSource === 'alpaca3' ? 'Kairos engine'
+    const accountLabel = activeSource === 'alpaca'  ? 'TV Farm'
+                       : activeSource === 'alpaca2' ? 'TV Refined'
+                       : activeSource === 'alpaca5' ? 'Kairos Farm'
+                       : activeSource === 'alpaca3' ? 'Kairos Refined'
                        : activeSource === 'alpaca4' ? 'Crew Paper'
-                       : activeSource === 'alpaca5' ? 'Engine Farm'
-                       : activeSource === 'alpaca'  ? 'Paper All'
                        :                              'TV Signals';
     document.getElementById('topNBreakdownNote').textContent =
       `Top-N ranking from latest Refined snapshot · stats from ${accountLabel} · current date range`;
@@ -1785,7 +1785,7 @@
       if (!r.ok) { out.innerHTML = `<div style="color:#e74c3c">${d.error || 'Failed.'}</div>`; return; }
       const a = d.after, b = d.before;
       if (!a.trades) {
-        out.innerHTML = `<div style="color:#888;font-size:0.85rem">No Refined-routed trades entered after ${d.cutoff} on Paper All in this range (${d.n_refined_strategies} Refined strategies checked).</div>`;
+        out.innerHTML = `<div style="color:#888;font-size:0.85rem">No Refined-routed trades entered after ${d.cutoff} on TV Farm in this range (${d.n_refined_strategies} Refined strategies checked).</div>`;
         return;
       }
       const pnl = a.refined_pnl;   // headline = Refined-sized
@@ -2224,7 +2224,7 @@
       .sort((a, b) => b[2] - a[2]);
     const top = ranked.slice(0, n).map(([name]) => name);
     if (!top.length) { alert('No profitable strategies found in the current view.'); return; }
-    if (!confirm(`Add Alpaca Refined broker node to these ${top.length} strategies?\n\n${top.slice(0,10).join('\n')}${top.length > 10 ? `\n…and ${top.length - 10} more` : ''}`)) return;
+    if (!confirm(`Add TV Refined broker node to these ${top.length} strategies?\n\n${top.slice(0,10).join('\n')}${top.length > 10 ? `\n…and ${top.length - 10} more` : ''}`)) return;
     const res  = await fetch('/api/routing/rules/add_broker_node', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ strategies: top, broker: 'alpaca-paper-2' }),
@@ -2464,7 +2464,7 @@
         : `<span ${winCls}>${winStreak}d</span>`;
       const liveTag = _liveStrategies.get(name.toUpperCase());
       const star = liveTag === 'refined'
-        ? `<span title="Live in Signal Router — routed to Alpaca Refined" style="color:#60a5fa;margin-right:6px">★</span>`
+        ? `<span title="Live in Signal Router — routed to TV Refined" style="color:#60a5fa;margin-right:6px">★</span>`
         : liveTag === 'paper'
           ? `<span title="Live in Signal Router (Paper only)" style="color:#F2E7AC;margin-right:6px">★</span>`
           : '';

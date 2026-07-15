@@ -566,7 +566,7 @@
       <button class="run-btn" onclick="buildReversalGateReport()" style="padding:8px 18px;background:#3f5170">&#9112; Reversal Gate Report (copy/paste)</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Splits real round-trip P&amp;L by level (R3S3/R4S4), side, level×side, and ticker.</span>
     </div>
-    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Real round-trip P&amp;L (actual fills). Tickers ranked worst-total first. The Gate Report pulls <b>Refined, Kairos, and Crew Paper</b> (excludes Paper All by design) into a copyable text block.</div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Real round-trip P&amp;L (actual fills). Tickers ranked worst-total first. The Gate Report pulls <b>TV Refined, Kairos Refined, and Crew Paper</b> (excludes the farms by design) into a copyable text block.</div>
     <div id="bookResult" style="margin-top:14px"></div>
     <div id="gateReportWrap" style="margin-top:14px;display:none">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
@@ -1031,7 +1031,7 @@
   }
 
   // Build a copy/paste reversal report across the gate-eligible accounts
-  // (Refined, Kairos, Crew Paper) — Paper All is excluded by design.
+  // (TV Refined, Kairos Refined, Crew Paper) — the TV/Kairos farms are excluded by design.
   async function buildReversalGateReport() {
     const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
     const from  = document.getElementById('fromDate').value;
@@ -1039,10 +1039,10 @@
     const wrap  = document.getElementById('gateReportWrap');
     const ta    = document.getElementById('gateReportText');
     const note  = document.getElementById('gateReportNote');
-    // Gate-eligible accounts = every dropdown option EXCEPT Paper All (value "1").
+    // Gate-eligible accounts = every dropdown option EXCEPT the farms (TV Farm=1, Kairos Farm=5).
     const accts = Array.from(document.getElementById('account').options)
       .map(o => ({ num: o.value, label: o.textContent.trim() }))
-      .filter(a => a.num !== '1');
+      .filter(a => a.num !== '1' && a.num !== '5');   // exclude both farms (TV=1, Kairos=5)
     wrap.style.display = 'block';
     ta.value = 'Running…';
     note.textContent = '';
@@ -1055,7 +1055,7 @@
 
     const parts = [];
     parts.push(`REVERSAL GATE CHECK — ${from || '?'} → ${to || '?'}`);
-    parts.push(`(Refined / Kairos / Crew Paper — Paper All excluded by design)`);
+    parts.push(`(TV Refined / Kairos Refined / Crew Paper — farms excluded by design)`);
     parts.push('');
 
     for (const a of accts) {
@@ -2118,7 +2118,7 @@
   }
 
   async function applyTpGlobal(tp) {
-    if (!confirm(`Set the GLOBAL take-profit to ${tp}% (price move past entry)?\n\nThis applies to ALL accounts (Paper All, Refined, Kairos) — take-profit is a single global setting, not per-strategy.`)) return;
+    if (!confirm(`Set the GLOBAL take-profit to ${tp}% (price move past entry)?\n\nThis applies to ALL accounts (TV Farm, TV Refined, Kairos…) — take-profit is a single global setting, not per-strategy.`)) return;
     try {
       const res = await fetch('/api/risk/limit', {
         method: 'POST', headers: {'Content-Type':'application/json'},

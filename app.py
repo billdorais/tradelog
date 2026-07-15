@@ -155,21 +155,23 @@ TV_PILOT_ALL          = os.environ.get("TV_PILOT_ALL", "")
 # long-side (short-only edge), while Kairos's are profitable both sides — so only
 # Refined is gated. Env override per account: REVERSAL_SIDE_<TAG> (e.g.
 # REVERSAL_SIDE_ALPACA2=short). Enforced by target account in webhook + engine.
+#   The 2x2: a full-sample FARM (all pipelines) refines into a curated account,
+#   per entry mechanism — TV Farm -> TV Refined, Kairos Farm -> Kairos Refined.
+#   UI order (paired): TV Farm, TV Refined, Kairos Farm, Kairos Refined, Crew Paper.
 ACCOUNT_META = {
-    "1": {"tag": "alpaca",  "label": "Paper All",     "color": "#9aa0b5",
+    "1": {"tag": "alpaca",  "label": "TV Farm",        "color": "#9aa0b5",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
-    "2": {"tag": "alpaca2", "label": "Refined",       "color": "#c4b5fd",
+    "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd",
           "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "short", "daily_loss_guard": True},
-    "3": {"tag": "alpaca3", "label": "Kairos engine", "color": "#F2C07A",
+    "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
-    "4": {"tag": "alpaca4", "label": "Crew Paper",    "color": "#7FE098",
+    "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
-    # Engine Farm — the engine-entry twin of Paper All. Full-sample audition pool
-    # fired by ENGINE_PILOT_ALL (set it to alpaca5:$1000 and DROP alpaca from it, so
-    # acct1 becomes a clean TV farm and acct5 a clean engine farm — the selection
-    # pool then matches each execution book's entry mechanism). Farm exemptions
-    # mirror Paper All: no profit lock, no daily-loss guard, no reversal-side gate.
-    "5": {"tag": "alpaca5", "label": "Engine Farm",   "color": "#5FC8D4",
+    # Kairos Farm — the engine-entry twin of TV Farm. Full-sample audition pool
+    # fired by ENGINE_PILOT_ALL=alpaca5:$1000 (TV Farm gets TV via TV_PILOT_ALL), so
+    # each farm's selection pool matches its execution mechanism. Farm exemptions
+    # mirror TV Farm: no profit lock, no daily-loss guard, no reversal-side gate.
+    "5": {"tag": "alpaca5", "label": "Kairos Farm",    "color": "#5FC8D4",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
@@ -4752,7 +4754,8 @@ def api_journal_generate():
     spy_ret  = spy.get("weekly_return", 0) or 0
     qqq_ret  = qqq.get("weekly_return", 0) or 0
 
-    account_label = "Alpaca Refined (paper)" if use_acct2 else "Alpaca Paper All"
+    account_label = ACCOUNT_META.get(account, {}).get("label",
+                                     "TV Refined" if use_acct2 else "TV Farm")
     prompt = (
         f"You are a trading coach reviewing a systematic trader's weekly performance journal.\n\n"
         f"Week: {week} ({from_date} to {to_date}) · Account: {account_label}\n\n"
@@ -5226,9 +5229,13 @@ def about():
 
 @app.route("/simulate")
 def simulate():
-    # Registry-driven account dropdown — every configured paper account (incl.
-    # Crew Paper and any future one added via env + ACCOUNT_META) shows up here.
-    _accts = [{"num": a["num"], "label": a["label"]} for a in ALPACA_ACCOUNTS]
+    # Registry-driven account dropdown — every configured paper account shows up.
+    # Paired order (TV Farm, TV Refined, Kairos Farm, Kairos Refined, Crew, …) to
+    # match the dashboard; any account not in the preferred list falls in after.
+    _order = ["1", "2", "5", "3", "4"]
+    _rank  = {n: i for i, n in enumerate(_order)}
+    _accts = sorted(({"num": a["num"], "label": a["label"]} for a in ALPACA_ACCOUNTS),
+                    key=lambda a: (_rank.get(a["num"], 99), a["num"]))
     return render_template("simulate.html", accounts=_accts)
 
 
