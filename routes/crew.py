@@ -475,12 +475,25 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                              + ", ".join(f"{k} ${v:.2f}" for k, v in sorted(idx.items(), key=lambda x: -x[1])))
             else:
                 lines.append("Indices-only P&L on TV Farm: no index data in window.")
-            for label, key in (("TV TV Refined acct2", "side_refined"), ("Kairos Refined acct3", "side_kairos")):
+            for label, key in (("TV Refined acct2", "side_refined"), ("Kairos Refined acct3", "side_kairos")):
                 ss = cd.get(key) or []
                 if ss:
                     lines.append(f"{label} by side: " + " · ".join(
                         f"{r.get('side')} ${r.get('pnl', 0):.2f} ({r.get('trades', 0)}t {r.get('win_rate', 0)}%)"
                         for r in ss))
+            # Per-band x side P&L — band-level side edges (more robust than the
+            # per-strategy candidates). Only cells with >=5 trades, worst-first, so
+            # the advisor can side-gate a band whose one side bleeds.
+            for label, key in (("TV Refined acct2", "band_side_refined"), ("Kairos Refined acct3", "band_side_kairos")):
+                rows = [r for r in (cd.get(key) or []) if (r.get("trades", 0) or 0) >= 5]
+                if rows:
+                    rows = sorted(rows, key=lambda r: r.get("pnl", 0))[:8]
+                    lines.append(
+                        f"BAND x SIDE on {label} (>=5 trades, worst first — a band whose ONE side "
+                        f"bleeds is a side-gate candidate; a side that bleeds across ALL bands is regime, not strategy): "
+                        + " · ".join(
+                            f"{r.get('band')} {r.get('side')} ${r.get('pnl', 0):.0f} "
+                            f"({r.get('trades', 0)}t {r.get('win_rate', 0)}%)" for r in rows))
             for label, key in (("TV Refined acct2", "side_gated_refined"), ("Kairos Refined acct3", "side_gated_kairos")):
                 cands = cd.get(key) or []
                 if cands:
@@ -678,9 +691,15 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
                 "or demote. Give specific reasons tied to numbers. Include a **Side-gated callouts** "
-                "line: any strategy from the SIDE-GATED CANDIDATES that you'd run one-sided (e.g. "
-                "'X is negative both-sided but +$Y short-only — run it short-only'), and note the "
-                "hindsight caveat (a side's edge can flip).\n\n"
+                "line: use BOTH the SIDE-GATED CANDIDATES (per-strategy) AND the BAND x SIDE table "
+                "(band-level, more robust) to call out any cohort you'd run one-sided (e.g. "
+                "'BREAKOUT R3S3 shorts bleed −$X across the band — tag those picks LONG-only'). "
+                "IMPORTANT distinction: if ONE side of a specific band bleeds, that's a strategy "
+                "fix (side-gate it). But if the SAME side bleeds across ALL bands, that is REGIME "
+                "(e.g. shorts lost because the tape rose this month), NOT a persistent strategy "
+                "edge — do NOT hard-gate a whole side on one month's direction; note it as regime "
+                "and let the day-type/regime filter handle it. Always keep the hindsight caveat "
+                "(a side's edge can flip).\n\n"
                 "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
                 "the journal, are current trailing stops appropriate? Reference specific sweep "
                 "results and the trader's own notes if they offer relevant observations.\n\n"
@@ -924,6 +943,25 @@ _CREW_TOOLS = [
             "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
             "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
     },
+    {
+        "name": "entry_test",
+        "description": "Compare BREAKOUT entry TIMING over a date range, per-share, holding each "
+                       "strategy's live exits fixed so only the entry varies: confirmed (wait for a "
+                       "close beyond the level), immediate (fill at the level touch), buffered "
+                       "(level +/- buffer), retest (pullback to the level). Plus a buffer sweep. Use "
+                       "this to diagnose the immediate-loser problem and RECOMMEND how the Kairos "
+                       "ENGINE should enter breakouts (e.g. 'confirmed beats immediate by $X/share — "
+                       "make the engine wait for the close' or 'a 0.15 buffer cuts the false breaks'). "
+                       "Breakouts only (reversals enter on rejection). NOTE: this is advisory — the "
+                       "engine buffer/entry is set via ENGINE_PILOT_BUFFER + routing, not the wire "
+                       "button. Uses acct1 (TV Farm, full sample) by default.",
+        "input_schema": {"type": "object", "properties": {
+            "account": {"type": "string", "enum": ["1", "2"],
+                        "description": "setup universe: 1=TV Farm full sample (default), 2=TV Refined"},
+            "buffers": {"type": "string", "description": "comma buffer sweep, e.g. '0.05,0.1,0.15,0.2'"},
+            "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
+    },
 ]
 
 def _run_crew_tool(name: str, args: dict) -> str:
@@ -1067,6 +1105,25 @@ def _run_crew_tool(name: str, args: dict) -> str:
                         "intended level) is the prime suspect. Slippage is per-share — multiply by "
                         "size for dollars.",
             })[:6000]
+        if name == "entry_test":
+            acct = str(args.get("account") or "1")
+            qs = f"account={acct}"
+            if args.get("from_date"): qs += f"&from={args['from_date']}"
+            if args.get("to_date"):   qs += f"&to={args['to_date']}"
+            qs += f"&buffers={args.get('buffers') or '0.05,0.1,0.15,0.2'}"
+            d = _get(f"/api/simulate/entry_test?{qs}")
+            if d.get("error"):
+                return json.dumps({"error": d["error"]})
+            return json.dumps({
+                "account": d.get("account"), "from": d.get("from"), "to": d.get("to"),
+                "n_setups": d.get("n_setups"), "n_tickers": d.get("n_tickers"),
+                "rules": d.get("rules"), "buffer_sweep": d.get("sweep"),
+                "note": "Per-share P&L (qty 1), breakouts only, first entry/day, live exits held "
+                        "fixed. Higher total_pnl = better entry timing. If 'confirmed' or a bigger "
+                        "'buffered' beats 'immediate', the engine is entering too early on false "
+                        "breaks — recommend raising ENGINE_PILOT_BUFFER or waiting for a confirmed "
+                        "close. Advisory only: applied via routing/env, not the wire button.",
+            })[:6000]
         if name == "cross_account":
             fd = (args.get("from_date") or "").strip()
             td = (args.get("to_date") or "").strip()
@@ -1174,9 +1231,11 @@ def api_crew_chat():
         "band_fill_quality (one band: Refined-TV vs Kairos-engine P&L + the engine's slippage — "
         "for 'is the engine degrading R3S3 breakout'), and cross_account (strategies positive on "
         "BOTH books + divergent ones + an index SPY/QQQ/IWM/SMH rollup — for 'which strategies "
-        "work in both' and 'how did the indices do'), and pick_scorecard (how your LAST report's "
+        "work in both' and 'how did the indices do'), pick_scorecard (how your LAST report's "
         "Top-N picks actually did on Crew Paper since wiring — the out-of-sample grade of your "
-        "own selection method). "
+        "own selection method), and entry_test (compare breakout entry timing — confirmed vs "
+        "immediate vs buffered vs retest + a buffer sweep — to diagnose immediate losers and "
+        "recommend how the Kairos engine should enter; breakouts only, advisory). "
         "USE them whenever the user asks about anything current, specific, or "
         "not covered by the report — don't guess or say you lack data. Account map: 1=TV Farm, "
         "2=TV Refined, 3=Kairos Refined, 5=Kairos Farm (engine). Resolve relative dates ('yesterday', "
@@ -1630,6 +1689,10 @@ def api_crew_run():
                 # Strategies that would rank better gated to one side (acct2 / acct3).
                 "side_gated_refined": (_s2 or {}).get("side_gated_candidates"),
                 "side_gated_kairos":  (_s3 or {}).get("side_gated_candidates"),
+                # Per-band x side P&L (BREAKOUT/REVERSAL x R3S3/R4S4 x long/short) — a
+                # more robust, band-level side signal than the per-strategy candidates.
+                "band_side_refined": (_s2 or {}).get("by_band_side"),
+                "band_side_kairos":  (_s3 or {}).get("by_band_side"),
             }
         except Exception:
             pass
