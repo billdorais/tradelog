@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -541,6 +541,36 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
 
         scorecard_block = _fmt_scorecard(scorecard_data)
 
+        def _fmt_book(bk):
+            """The LIVE Crew Paper book: every strategy currently wired to acct4 and
+            how it's actually doing since it was wired. Unlike the pick scorecard,
+            this covers the real wired set (not just the last card), so nothing on
+            Crew Paper is invisible when deciding what to keep vs cut."""
+            if not bk or not bk.get("picks"):
+                return ""
+            lines = [
+                f"=== CURRENT CREW PAPER BOOK — {bk.get('n_wired')} strategies wired NOW "
+                f"(each since its wire date; earliest {bk.get('since')}) ===",
+                f"Traded: {bk.get('n_traded')}/{bk.get('n_wired')} | "
+                f"Positive: {bk.get('n_positive')}/{bk.get('n_traded') or 0} | "
+                f"Net P&L: ${bk.get('total_pnl', 0):.2f}",
+                "",
+            ]
+            for r in bk.get("picks", []):
+                off = "" if r.get("enabled", True) else " [DISABLED]"
+                if r.get("trades"):
+                    lines.append(f"  {r['strategy']}{off}: {r['trades']} trades | "
+                                 f"${r['pnl']:.2f} | {r['win_rate']:.0f}% win | since {r.get('since')}")
+                else:
+                    lines.append(f"  {r['strategy']}{off}: no trades yet | since {r.get('since')}")
+            lines.append("")
+            lines.append("This is the ACTUAL live book on Crew Paper — worst first. Keep the earners, "
+                         "cut the persistent bleeders. A strategy here but NOT in this month's Top picks "
+                         "will be removed from Crew Paper on the next wire, so say so if you'd keep it.")
+            return "\n".join(lines)
+
+        book_block = _fmt_book(book_data)
+
         # ── Load knowledge base ───────────────────────────────────────────────
         knowledge_block = ""
         try:
@@ -655,6 +685,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 f"Here is the Kairos account data"
                 + (f" for: {period}" if period else "") + ":\n\n"
                 + (f"{scorecard_block}\n\n" if scorecard_block else "")
+                + (f"{book_block}\n\n" if book_block else "")
                 + f"{strategy_block}\n\n"
                 f"{engine_strat_block}\n\n"
                 f"{card_block}\n\n"
@@ -693,7 +724,13 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "selection method (best-side composite ranking) is showing forward edge or "
                 "picking in-sample flukes. Drop or down-weight repeat offenders; keep validated "
                 "picks. If there is no scorecard (first run, or picks never wired/traded), say "
-                "so in one line and move on.\n\n"
+                "so in one line and move on. ALSO review the CURRENT CREW PAPER BOOK block if "
+                "present — that is every strategy wired to Crew Paper right now and how it is "
+                "actually doing since its wire date (the scorecard only covers the last card). "
+                "A strategy earning its keep there should stay in this month's Top picks — if you "
+                "drop it, it gets removed from Crew Paper on the next wire, so only drop the "
+                "bleeders. Explicitly name any live-book earner you are choosing to KEEP and any "
+                "bleeder you are cutting.\n\n"
                 "1. **Portfolio Health** — Is the Refined top-20 earning its keep? "
                 "What does the PF and Sharpe say about real edge vs. luck?\n\n"
                 "2. **Strategy Calls** — Name 2-3 to promote/add to Refined and 2-3 to pause "
@@ -844,6 +881,83 @@ def api_crew_scorecard():
     if not sc:
         return jsonify({"error": "No previous crew report with parseable picks"}), 404
     return jsonify(sc)
+
+
+def _crew_book_scorecard():
+    """How the strategies CURRENTLY wired to Crew Paper (acct4) are actually doing,
+    each measured since it was wired. Sourced from the LIVE routing rules — the
+    ground truth of what's trading — not from a report's text, so it reflects manual
+    edits and the wire reconcile and covers every wired strategy (the pick scorecard
+    only sees the last report's card, so it missed strategies that accumulated across
+    months). Returns {} if nothing is wired to acct4.
+
+    A rule's created_at is its wire date and survives upserts (only `nodes` is
+    updated on re-wire), so a carried-forward strategy keeps its full track record.
+    A strategy has no acct4 fills before it was wired, so a single from_date at the
+    earliest wire date yields each strategy's true since-wiring P&L."""
+    import app as _kairos
+    wired, enabled_of = {}, {}   # strat -> earliest wire date (YYYY-MM-DD)
+    try:
+        conn = _kairos.get_db(); cur = conn.cursor()
+        cur.execute("SELECT enabled, nodes, created_at FROM routing_rules")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    for r in rows:
+        enabled = r[0] if _kairos.DATABASE_URL else r["enabled"]
+        raw     = r[1] if _kairos.DATABASE_URL else r["nodes"]
+        created = r[2] if _kairos.DATABASE_URL else r["created_at"]
+        try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception: nodes = []
+        if not any(n.get("type") == "broker"
+                   and (n.get("value") or "").lower() in ("alpaca-paper-4", "alpaca-live-4")
+                   for n in nodes):
+            continue
+        c = (created or "")[:10]
+        for n in nodes:
+            if n.get("type") == "strategy" and n.get("value"):
+                s = n["value"].strip().upper()
+                if s not in wired or (c and c < wired[s]):
+                    wired[s] = c
+                enabled_of[s] = enabled_of.get(s, False) or bool(enabled)
+    if not wired:
+        return {}
+    since = min([c for c in wired.values() if c], default="") or None
+    per_strat = {}
+    try:
+        with _kairos.app.test_client() as _c:
+            qs = "account=4" + (f"&from_date={since}" if since else "")
+            d = _c.get(f"/api/alpaca/analysis?{qs}").get_json() or {}
+            per_strat = {k.upper(): v for k, v in (d.get("per_strategy") or {}).items()}
+    except Exception:
+        per_strat = {}
+    out, traded, positive, total = [], 0, 0, 0.0
+    for s in wired:
+        st = per_strat.get(s)
+        if st and (st.get("trades") or 0) > 0:
+            pnl = round(st.get("total_pnl", 0) or 0, 2)
+            out.append({"strategy": s, "since": wired[s], "enabled": enabled_of.get(s, True),
+                        "trades": st.get("trades", 0), "pnl": pnl, "win_rate": st.get("win_rate", 0)})
+            traded += 1; positive += 1 if pnl > 0 else 0; total += pnl
+        else:
+            out.append({"strategy": s, "since": wired[s], "enabled": enabled_of.get(s, True),
+                        "trades": 0, "pnl": None, "win_rate": None})
+    out.sort(key=lambda r: (r["pnl"] is None, r["pnl"] if r["pnl"] is not None else 0))  # worst first, untraded last
+    return {"n_wired": len(wired), "n_traded": traded, "n_positive": positive,
+            "total_pnl": round(total, 2), "since": since, "picks": out,
+            "caveat": "LIVE Crew Paper book — the strategies wired to acct4 right now, each since "
+                      "its wire date. This is what is actually trading; keep the earners, cut the "
+                      "bleeders. Distinct from the pick scorecard (which grades one report's picks)."}
+
+
+@crew_bp.route("/api/crew/book")
+def api_crew_book():
+    """Standalone view of the live Crew Paper book (also fed into reports + chat)."""
+    bk = _crew_book_scorecard()
+    if not bk:
+        return jsonify({"error": "No strategies are wired to Crew Paper (acct4)."}), 404
+    return jsonify(bk)
 
 
 # ── Chat tools — let the advisor pull LIVE Kairos data on demand ───────────────
@@ -1783,9 +1897,17 @@ def api_crew_run():
                 scorecard_data = _pick_scorecard(prev_reports[0])
         except Exception:
             pass
+        # How the strategies wired to Crew Paper RIGHT NOW are actually doing — the
+        # live book, sourced from the routing rules so it covers every wired strategy
+        # (the pick scorecard only sees the last report's card).
+        book_data = {}
+        try:
+            book_data = _crew_book_scorecard()
+        except Exception:
+            pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data),
             daemon=True,
         ).start()
     else:
