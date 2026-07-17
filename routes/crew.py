@@ -500,6 +500,24 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                         + " · ".join(
                             f"{r.get('band')} {r.get('side')} ${r.get('pnl', 0):.0f} "
                             f"({r.get('trades', 0)}t {r.get('win_rate', 0)}%)" for r in rows))
+            # SIDE x DAY-TYPE — the regime-vs-structural test. A side that loses on
+            # EVERY day type is regime (the tape this month); a side that loses only
+            # on specific day types is structural, and the day-type gate can address
+            # it. This is what decides whether a bleeding side gets a filter or is
+            # left alone as one month's direction.
+            for label, key in (("TV Refined acct2", "side_daytype_refined"),
+                               ("Kairos Refined acct3", "side_daytype_kairos"),
+                               ("Crew Paper acct4", "side_daytype_crew")):
+                rows = [r for r in (cd.get(key) or []) if (r.get("trades", 0) or 0) >= 3]
+                if rows:
+                    rows = sorted(rows, key=lambda r: r.get("pnl", 0))[:8]
+                    lines.append(
+                        f"SIDE x DAY-TYPE on {label} (>=3 trades, worst first — a side that bleeds "
+                        f"on EVERY day type is REGIME; a side that bleeds only on specific day types "
+                        f"is STRUCTURAL and the day-type gate can target it): "
+                        + " · ".join(
+                            f"{r.get('side')} on {r.get('day_type')} ${r.get('pnl', 0):.0f} "
+                            f"({r.get('trades', 0)}t {r.get('win_rate', 0)}%)" for r in rows))
             for label, key in (("TV Refined acct2", "side_gated_refined"), ("Kairos Refined acct3", "side_gated_kairos"),
                                ("Crew Paper acct4", "side_gated_crew")):
                 cands = cd.get(key) or []
@@ -570,6 +588,39 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             return "\n".join(lines)
 
         book_block = _fmt_book(book_data)
+
+        def _fmt_gate_state(gs):
+            """Ground-truth system gate config, so the crew reports what's actually
+            live instead of guessing (it once claimed there was no pre-market CPR
+            filter while the day-type gate was on for every book)."""
+            if not gs:
+                return ""
+            db, dr = gs.get("daytype_breakout", {}), gs.get("daytype_reversal", {})
+            lines = ["=== LIVE SYSTEM GATE STATE (ground truth — report this as FACT; do NOT "
+                     "claim a gate is missing when it is listed ON here) ==="]
+            if db.get("on"):
+                lines.append(f"Day-type gate (breakouts): ON — blocks BREAKOUT entries except on "
+                             f"{'/'.join(db.get('ok_days') or [])} days, for: {', '.join(db.get('accounts') or [])}. "
+                             f"{db.get('note','')}")
+            else:
+                lines.append("Day-type gate (breakouts): OFF.")
+            if dr.get("on"):
+                lines.append(f"Day-type gate (reversals): ON — blocks REVERSAL entries except on "
+                             f"{'/'.join(dr.get('ok_days') or [])} days, for: {', '.join(dr.get('accounts') or [])}.")
+            else:
+                lines.append("Day-type gate (reversals): OFF (separate, independently toggled).")
+            lines.append("")
+            lines.append("Per curated book:")
+            for b in gs.get("books", []):
+                lines.append(
+                    f"  {b['label']}: breakout day-type gate {'ON' if b['breakout_daytype_gated'] else 'off'}"
+                    f" · reversals {b['reversal_policy']}"
+                    f" · hours {b['hours']}"
+                    f" · profit-lock {'on' if b['profit_lock'] else 'off'}"
+                    f" · daily-loss guard {'on' if b['daily_loss_guard'] else 'off'}")
+            return "\n".join(lines)
+
+        gate_block = _fmt_gate_state(_gate_state())
 
         # ── Load knowledge base ───────────────────────────────────────────────
         knowledge_block = ""
@@ -684,6 +735,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
             description=(
                 f"Here is the Kairos account data"
                 + (f" for: {period}" if period else "") + ":\n\n"
+                + (f"{gate_block}\n\n" if gate_block else "")
                 + (f"{scorecard_block}\n\n" if scorecard_block else "")
                 + (f"{book_block}\n\n" if book_block else "")
                 + f"{strategy_block}\n\n"
@@ -713,7 +765,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "FORMAT: put each numbered pick on its OWN line, separated by <br> (one ticker per line) — e.g. "
                 "`1. SMH_CAM_... — SHORT-only [Engine] (...)<br>2. SPY_CAM_... — both [TV] (...)<br>3. ...`. |\n"
                 "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
-                "| Day-type gate | Yes / No |\n"
+                "| Day-type gate | Read the LIVE SYSTEM GATE STATE block — report the ACTUAL state (ON/OFF + which books + allowed days). Do NOT claim it is missing or recommend building it if it is listed ON there. Only suggest a CHANGE to its threshold if the side×day-type data supports one. |\n"
                 "| Entries | Default for UNTAGGED picks only: Refined TV OR Kairos engine — per the engine-vs-TV read. Per-pick [TV]/[Engine] tags override this default. |\n"
                 "| Best indices | top index tickers · indices-only P&L from TV Farm: $X (from the card inputs) |\n\n"
                 "Then continue with the detailed sections:\n\n"
@@ -743,7 +795,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "across the books, that is REGIME (e.g. shorts lost because the tape rose this "
                 "month), NOT a persistent strategy edge — do NOT hard-gate a whole side on one "
                 "month's direction; note it as regime and let the day-type/regime filter handle "
-                "it. (b) Bands carry their KIND (BREAKOUT R4S4 vs REVERSAL R4S4). If one kind "
+                "it. Use the SIDE x DAY-TYPE data to settle regime-vs-structural: a side that "
+                "bleeds on EVERY day type is regime (leave it, or defer to a market-regime "
+                "filter); a side that bleeds ONLY on specific day types is structural — the "
+                "day-type gate can target exactly those days, so recommend a gate change rather "
+                "than a blanket side ban. (b) Bands carry their KIND (BREAKOUT R4S4 vs REVERSAL R4S4). If one kind "
                 "bleeds while the same level's other kind holds, cut the KIND, not the level — "
                 "recommending 'pause R4S4' when only its reversals bleed would kill working "
                 "breakouts. (c) The three books are separate evidence: a pattern in all three is "
@@ -958,6 +1014,64 @@ def api_crew_book():
     if not bk:
         return jsonify({"error": "No strategies are wired to Crew Paper (acct4)."}), 404
     return jsonify(bk)
+
+
+def _gate_state():
+    """The live gate configuration, read from the app so the crew reports system
+    state as FACT instead of guessing. The crew once wrote 'the system does not yet
+    have an automated pre-market CPR filter' while the day-type gate was live on
+    every book — this block is the ground truth that stops that confabulation."""
+    import app as _kairos
+    meta = _kairos.ACCOUNT_META
+    tag_label = {m.get("tag"): m.get("label", n) for n, m in meta.items()}
+
+    def _labels(tags):
+        return sorted(tag_label.get(t, t) for t in (tags or []))
+
+    dt_on   = bool(getattr(_kairos, "DAYTYPE_GATE_ENABLED", False))
+    rdt_on  = bool(getattr(_kairos, "DAYTYPE_REVERSAL_GATE_ENABLED", False))
+    dt_acc  = getattr(_kairos, "DAYTYPE_GATE_ACCOUNTS", set())
+    rdt_acc = getattr(_kairos, "DAYTYPE_REVERSAL_GATE_ACCOUNTS", set())
+    rev_by  = getattr(_kairos, "_REVERSAL_SIDE_BY_TAG", {})
+
+    books = []
+    for n in ("2", "3", "4"):          # the curated books the crew picks for
+        m = meta.get(n) or {}
+        tag = m.get("tag")
+        try:    hs, he = _kairos._account_hours(tag)
+        except Exception: hs, he = "", ""
+        books.append({
+            "label": m.get("label", n), "tag": tag,
+            "breakout_daytype_gated": dt_on and tag in dt_acc,
+            "reversal_daytype_gated": rdt_on and tag in rdt_acc,
+            "reversal_policy": rev_by.get(tag) or "free",   # "off" / "long" / "short" / "free"
+            "hours": (f"{hs}-{he} ET" if hs and he else "all day"),
+            "profit_lock": bool(m.get("profit_lock")),
+            "daily_loss_guard": bool(m.get("daily_loss_guard")),
+        })
+
+    return {
+        "daytype_breakout": {
+            "on": dt_on,
+            "ok_days": sorted(getattr(_kairos, "DAYTYPE_GATE_BREAKOUT_OK_DAYS", set())),
+            "accounts": _labels(dt_acc),
+            "note": "This IS an automated pre-market filter: the day type is computed from the "
+                    "prior day's Camarilla CPR width (known before the open), and breakout entries "
+                    "are blocked except on the allowed day type.",
+        },
+        "daytype_reversal": {
+            "on": rdt_on,
+            "ok_days": sorted(getattr(_kairos, "DAYTYPE_REVERSAL_OK_DAYS", set())),
+            "accounts": _labels(rdt_acc),
+        },
+        "books": books,
+    }
+
+
+@crew_bp.route("/api/crew/gate_state")
+def api_crew_gate_state():
+    """Standalone view of the live gate configuration (also fed into reports)."""
+    return jsonify(_gate_state())
 
 
 # ── Chat tools — let the advisor pull LIVE Kairos data on demand ───────────────
@@ -1391,7 +1505,7 @@ def api_crew_chat():
         "| Decision | Recommendation |\n|---|---|\n"
         "| Top 10 to run | ten strategy names, each tagged long / short / both AND [TV] / [Engine] (a name may earn its slot on its best single side or single book). FORMAT: each numbered pick on its OWN line, separated by <br> (one ticker per line). |\n"
         "| Sizing | Equal risk OR Scaled-by-score — one-line why |\n"
-        "| Day-type gate | Yes / No |\n"
+        "| Day-type gate | Report the ACTUAL state from the LIVE SYSTEM GATE STATE block (ON/OFF + books + allowed days); never claim it's missing if listed ON |\n"
         "| Entries | Default for untagged picks: Refined TV OR Kairos engine (per-pick [TV]/[Engine] tags override) |\n"
         "| Best indices | tickers · indices-only P&L from TV Farm: $X |\n\n"
         "Then a `## Detail` section with the reasoning, samples and caveats. Keep the card to "
@@ -1871,6 +1985,13 @@ def api_crew_run():
                 "band_side_refined": (_s2 or {}).get("by_band_side"),
                 "band_side_kairos":  (_s3 or {}).get("by_band_side"),
                 "band_side_crew":    (_s4 or {}).get("by_band_side"),
+                # Side x day-type — the regime-vs-structural test for a one-sided
+                # bleed: a side that loses on EVERY day type is regime (the tape),
+                # a side that loses only on specific day types is structural and the
+                # day-type gate can address it.
+                "side_daytype_refined": (_s2 or {}).get("by_side_daytype"),
+                "side_daytype_kairos":  (_s3 or {}).get("by_side_daytype"),
+                "side_daytype_crew":    (_s4 or {}).get("by_side_daytype"),
             }
         except Exception:
             pass
