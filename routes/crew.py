@@ -475,26 +475,33 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                              + ", ".join(f"{k} ${v:.2f}" for k, v in sorted(idx.items(), key=lambda x: -x[1])))
             else:
                 lines.append("Indices-only P&L on TV Farm: no index data in window.")
-            for label, key in (("TV Refined acct2", "side_refined"), ("Kairos Refined acct3", "side_kairos")):
-                ss = cd.get(key) or []
+            _BOOKS = (("TV Refined acct2", "refined"), ("Kairos Refined acct3", "kairos"),
+                      ("Crew Paper acct4", "crew"))
+            for label, sfx in _BOOKS:
+                ss = cd.get(f"side_{sfx}") or []
                 if ss:
                     lines.append(f"{label} by side: " + " · ".join(
                         f"{r.get('side')} ${r.get('pnl', 0):.2f} ({r.get('trades', 0)}t {r.get('win_rate', 0)}%)"
                         for r in ss))
             # Per-band x side P&L — band-level side edges (more robust than the
             # per-strategy candidates). Only cells with >=5 trades, worst-first, so
-            # the advisor can side-gate a band whose one side bleeds.
-            for label, key in (("TV Refined acct2", "band_side_refined"), ("Kairos Refined acct3", "band_side_kairos")):
-                rows = [r for r in (cd.get(key) or []) if (r.get("trades", 0) or 0) >= 5]
+            # the advisor can side-gate a band whose one side bleeds. Bands carry the
+            # strategy kind (BREAKOUT R4S4 / REVERSAL R4S4) — the same level's
+            # breakouts and reversals can run opposite, so they must not be merged.
+            for label, sfx in _BOOKS:
+                rows = [r for r in (cd.get(f"band_side_{sfx}") or []) if (r.get("trades", 0) or 0) >= 5]
                 if rows:
                     rows = sorted(rows, key=lambda r: r.get("pnl", 0))[:8]
                     lines.append(
                         f"BAND x SIDE on {label} (>=5 trades, worst first — a band whose ONE side "
-                        f"bleeds is a side-gate candidate; a side that bleeds across ALL bands is regime, not strategy): "
+                        f"bleeds is a side-gate candidate; a side that bleeds across ALL bands is regime, not strategy; "
+                        f"if one KIND bleeds (e.g. REVERSAL R4S4) while the same level's breakouts hold, "
+                        f"cut the kind, not the level): "
                         + " · ".join(
                             f"{r.get('band')} {r.get('side')} ${r.get('pnl', 0):.0f} "
                             f"({r.get('trades', 0)}t {r.get('win_rate', 0)}%)" for r in rows))
-            for label, key in (("TV Refined acct2", "side_gated_refined"), ("Kairos Refined acct3", "side_gated_kairos")):
+            for label, key in (("TV Refined acct2", "side_gated_refined"), ("Kairos Refined acct3", "side_gated_kairos"),
+                               ("Crew Paper acct4", "side_gated_crew")):
                 cands = cd.get(key) or []
                 if cands:
                     lines.append(
@@ -694,12 +701,19 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "line: use BOTH the SIDE-GATED CANDIDATES (per-strategy) AND the BAND x SIDE table "
                 "(band-level, more robust) to call out any cohort you'd run one-sided (e.g. "
                 "'BREAKOUT R3S3 shorts bleed −$X across the band — tag those picks LONG-only'). "
-                "IMPORTANT distinction: if ONE side of a specific band bleeds, that's a strategy "
-                "fix (side-gate it). But if the SAME side bleeds across ALL bands, that is REGIME "
-                "(e.g. shorts lost because the tape rose this month), NOT a persistent strategy "
-                "edge — do NOT hard-gate a whole side on one month's direction; note it as regime "
-                "and let the day-type/regime filter handle it. Always keep the hindsight caveat "
-                "(a side's edge can flip).\n\n"
+                "IMPORTANT distinctions. (a) If ONE side of a specific band bleeds, that's a "
+                "strategy fix (side-gate it). But if the SAME side bleeds across ALL bands AND "
+                "across the books, that is REGIME (e.g. shorts lost because the tape rose this "
+                "month), NOT a persistent strategy edge — do NOT hard-gate a whole side on one "
+                "month's direction; note it as regime and let the day-type/regime filter handle "
+                "it. (b) Bands carry their KIND (BREAKOUT R4S4 vs REVERSAL R4S4). If one kind "
+                "bleeds while the same level's other kind holds, cut the KIND, not the level — "
+                "recommending 'pause R4S4' when only its reversals bleed would kill working "
+                "breakouts. (c) The three books are separate evidence: a pattern in all three is "
+                "far stronger than one book's, and books can hold OPPOSITE edges (TV Refined and "
+                "Kairos Refined have before) — never carry a finding from one book to another "
+                "without its own numbers. Always keep the hindsight caveat (a side's edge can "
+                "flip).\n\n"
                 "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
                 "the journal, are current trailing stops appropriate? Reference specific sweep "
                 "results and the trader's own notes if they offer relevant observations.\n\n"
@@ -1677,6 +1691,9 @@ def api_crew_run():
                 _pa  = _c.get(f"/api/alpaca/analysis?account=1{_dr}").get_json() or {}
                 _s2  = _c.get(f"/api/alpaca/ls_breakdown?account=2{_dr}").get_json() or {}
                 _s3  = _c.get(f"/api/alpaca/ls_breakdown?account=3{_dr}").get_json() or {}
+                # Crew Paper's own book — the crew grades its picks via the scorecard
+                # but was blind to how its own bands/sides actually traded.
+                _s4  = _c.get(f"/api/alpaca/ls_breakdown?account=4{_dr}").get_json() or {}
             _IDX = ("SPY", "QQQ", "IWM", "SMH")
             def _idx_sum(ps):
                 out = {}
@@ -1689,13 +1706,18 @@ def api_crew_run():
                 "indices_paper_all": _idx_sum(_pa.get("per_strategy")),
                 "side_refined": (_s2 or {}).get("overall_side"),
                 "side_kairos":  (_s3 or {}).get("overall_side"),
-                # Strategies that would rank better gated to one side (acct2 / acct3).
+                "side_crew":    (_s4 or {}).get("overall_side"),
+                # Strategies that would rank better gated to one side (acct2 / 3 / 4).
                 "side_gated_refined": (_s2 or {}).get("side_gated_candidates"),
                 "side_gated_kairos":  (_s3 or {}).get("side_gated_candidates"),
+                "side_gated_crew":    (_s4 or {}).get("side_gated_candidates"),
                 # Per-band x side P&L (BREAKOUT/REVERSAL x R3S3/R4S4 x long/short) — a
                 # more robust, band-level side signal than the per-strategy candidates.
+                # Bands carry the strategy kind, so a bleeding level can be traced to
+                # breakouts or reversals rather than blaming the level as a whole.
                 "band_side_refined": (_s2 or {}).get("by_band_side"),
                 "band_side_kairos":  (_s3 or {}).get("by_band_side"),
+                "band_side_crew":    (_s4 or {}).get("by_band_side"),
             }
         except Exception:
             pass

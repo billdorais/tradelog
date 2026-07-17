@@ -382,6 +382,28 @@ def _strategy_band(strategy: str):
             return f"{parts[0]}_{parts[1]}"
     return None
 
+def _kind_band(strategy: str):
+    """Band key for side/band diagnostics, keeping the strategy kind:
+    "BREAKOUT R4S4" / "REVERSAL R4S4" (unparseable → "OTHER").
+
+    Breakouts and reversals on the same level behave nothing alike, so merging
+    them into one "R4S4" cell hides which one is bleeding — a book can show a
+    losing "R4S4 LONG" that is entirely reversals while its breakout longs are
+    flat, and gating the level would cut the wrong cohort. Separate from
+    _strategy_band, which is the take-profit lookup key and must stay level-only.
+    """
+    s    = (strategy or "").upper()
+    kind = "BREAKOUT" if "BREAKOUT" in s else "REVERSAL" if "REVERSAL" in s else ""
+    i    = s.find("_CAM_")
+    lvl  = ""
+    if i >= 0:
+        parts = s[i + 5:].split("_")
+        if len(parts) >= 2:
+            lvl = f"{parts[0]}{parts[1]}"
+    if not lvl:
+        return kind or "OTHER"
+    return f"{kind} {lvl}".strip()
+
 def _get_account_take_profit_pct(strategy: str, account_tag: str):
     """This account's take-profit % for a strategy (exact name, then its band), or
     None. Enforced ahead of the cross-account rule TP and the global TP."""
@@ -4687,19 +4709,12 @@ def api_journal_generate():
             # quarter of weekly journals reveal whether a one-sided bleed in a band is
             # persistent (strategy) or drifts with the tape (regime). Computed from the
             # clean pairs already in hand — no extra network calls.
-            def _j_band(strat):
-                s = (strat or "").upper(); i = s.find("_CAM_")
-                if i >= 0:
-                    p = s[i + 5:].split("_")
-                    if len(p) >= 2:
-                        return f"{p[0]} {p[1]}"
-                return "OTHER"
             _bs = {}
             for t in j_clean:
                 side = (t.get("side") or "").upper()
                 if side not in ("LONG", "SHORT"):
                     continue
-                key = (_j_band(t.get("strategy")), side)
+                key = (_kind_band(t.get("strategy")), side)
                 b = _bs.setdefault(key, {"trades": 0, "wins": 0, "pnl": 0.0})
                 b["trades"] += 1
                 if t["pnl"] > 0: b["wins"] += 1
@@ -14227,13 +14242,9 @@ def api_alpaca_ls_breakdown():
     if not trades:
         return jsonify({"error": "No completed round-trips for the selected period"}), 404
 
-    def _band(strat):
-        s = (strat or "").upper(); i = s.find("_CAM_")
-        if i >= 0:
-            p = s[i + 5:].split("_")
-            if len(p) >= 2:
-                return f"{p[0]} {p[1]}"
-        return "OTHER"
+    # Buckets keep the strategy kind ("BREAKOUT R4S4" vs "REVERSAL R4S4") — the two
+    # behave nothing alike on the same level, and merging them hides which bleeds.
+    _band = _kind_band
 
     # Day type per unique (ticker, date) — concurrent, cached in _day_class_cache.
     keyset = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
