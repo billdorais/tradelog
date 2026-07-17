@@ -97,6 +97,22 @@
       <span style="font-size:0.7rem;color:#666">Full Refined list · breakouts = fresh-cross buffered entry · reversals = confirmed reject (wick ≥ 0.25·ATR) · EMA/hours/strikes gates · 25-min re-fade cooldown · RTH only.</span>
     </div>
     <div id="pilotFills" style="margin-top:12px"></div>
+    <!-- Which pair to compare. The farms are the controlled entry test: both trade
+         every pipeline, so they differ only in entry mechanism. The curated pair
+         can't isolate it — acct3 trades acct2's picks. -->
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.05em">Compare</span>
+      <select id="comparePair" onchange="loadPilotCompare()"
+              style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 10px;font-size:0.8rem;font-family:inherit">
+        <option value="1,5">TV Farm vs Kairos Farm — same universe, entry is the only difference</option>
+        <option value="2,3" selected>TV Refined vs Kairos Refined — same picks, engine entry</option>
+      </select>
+      <select id="compareDays" onchange="loadPilotCompare()"
+              style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 10px;font-size:0.8rem;font-family:inherit">
+        <option value="14">14d</option><option value="30" selected>30d</option>
+        <option value="60">60d</option><option value="120">120d</option>
+      </select>
+    </div>
     <div id="pilotCompare" style="margin-top:14px"></div>
   </div>
 
@@ -129,6 +145,8 @@
 </div>
 
 <script>
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
     m.style.display = m.style.display === 'none' ? 'block' : 'none';
@@ -484,22 +502,33 @@
     } catch (e) { console.error('savePilotBuffer failed:', e); }
   }
 
-  // Head-to-head: TV Refined (acct2) vs Kairos engine (acct3).
+  // Head-to-head between two books. Labels/colours come from the response, so the
+  // farm pair (1 vs 5) and the curated pair (2 vs 3) both render correctly.
   async function loadPilotCompare() {
     const el = document.getElementById('pilotCompare');
+    const [a, b] = (document.getElementById('comparePair')?.value || '2,3').split(',');
+    const days   = document.getElementById('compareDays')?.value || '30';
     try {
-      const r = await fetch('/api/engine_pilot/compare?days=30');
+      const r = await fetch(`/api/engine_pilot/compare?a=${a}&b=${b}&days=${days}`);
       const d = await r.json();
+      if (d.error) { el.innerHTML = `<div style="font-size:0.8rem;color:#F2C76B">${d.error}</div>`; return; }
       const rows = d.rows || [];
-      if (!rows.length) { el.innerHTML = ''; return; }
+      if (!rows.length) { el.innerHTML = '<div style="font-size:0.8rem;color:#666">No overlapping round-trips in this window.</div>'; return; }
       const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
       const tv = d.tv, eng = d.engine;
+      const A  = d.a || {label:'A'}, B = d.b || {label:'B'};
       const diff = (eng.pnl || 0) - (tv.pnl || 0);
-      const head = `<div style="font-weight:700;color:#c4b5fd;margin:6px 0 8px">TV Refined vs Kairos Engine — head to head (${d.days}d)</div>`
+      // Say so when the window moved — a comparison over a window the reader
+      // didn't choose is exactly how a young account looks fake-bad.
+      const aligned = d.window_aligned
+        ? `<div style="font-size:0.75rem;color:#F2C76B;margin-bottom:8px">⚖ Window aligned to ${d.from_date} — ${esc(B.label)} has no fills before then. Comparing them over ${esc(A.label)}'s full history would credit it for days ${esc(B.label)} wasn't trading.</div>`
+        : '';
+      const head = `<div style="font-weight:700;color:#c4b5fd;margin:6px 0 8px">${esc(A.label)} vs ${esc(B.label)} — head to head (${d.from_date} → ${d.to_date})</div>`
+        + aligned
         + `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:0.84rem;margin-bottom:8px">`
-        + `<div><span style="color:#7bb3d6;font-weight:700">TV Refined:</span> <strong class="${tv.pnl>=0?'pos':'neg'}">${money(tv.pnl)}</strong> · ${tv.trades} trades · ${tv.win_rate}% win</div>`
-        + `<div><span style="color:#F2C07A;font-weight:700">Kairos Engine:</span> <strong class="${eng.pnl>=0?'pos':'neg'}">${money(eng.pnl)}</strong> · ${eng.trades} trades · ${eng.win_rate}% win</div>`
-        + `<div style="margin-left:auto"><span style="color:#888">Engine − TV:</span> <strong style="color:${diff>=0?'#7FE098':'#F2C76B'}">${diff>=0?'+':''}${money(diff)}</strong></div>`
+        + `<div><span style="color:${A.color||'#7bb3d6'};font-weight:700">${esc(A.label)}:</span> <strong class="${tv.pnl>=0?'pos':'neg'}">${money(tv.pnl)}</strong> · ${tv.trades} trades · ${tv.win_rate}% win</div>`
+        + `<div><span style="color:${B.color||'#F2C07A'};font-weight:700">${esc(B.label)}:</span> <strong class="${eng.pnl>=0?'pos':'neg'}">${money(eng.pnl)}</strong> · ${eng.trades} trades · ${eng.win_rate}% win</div>`
+        + `<div style="margin-left:auto"><span style="color:#888">${esc(B.label)} − ${esc(A.label)}:</span> <strong style="color:${diff>=0?'#7FE098':'#F2C76B'}">${diff>=0?'+':''}${money(diff)}</strong></div>`
         + `</div>`;
       const body = rows.map(x =>
         `<tr>` +
@@ -513,9 +542,9 @@
         `</tr>`).join('');
       el.innerHTML = head
         + `<div style="overflow-x:auto"><table style="font-size:0.8rem"><thead><tr>`
-        + `<th>Date</th><th style="text-align:right">TV P&amp;L</th><th style="text-align:right">TV #</th>`
-        + `<th style="text-align:right">Engine P&amp;L</th><th style="text-align:right">Eng #</th>`
-        + `<th style="text-align:right">Cum TV</th><th style="text-align:right">Cum Eng</th>`
+        + `<th>Date</th><th style="text-align:right">${esc(A.label)} P&amp;L</th><th style="text-align:right">#</th>`
+        + `<th style="text-align:right">${esc(B.label)} P&amp;L</th><th style="text-align:right">#</th>`
+        + `<th style="text-align:right">Cum ${esc(A.label)}</th><th style="text-align:right">Cum ${esc(B.label)}</th>`
         + `</tr></thead><tbody>${body}</tbody></table></div>`;
     } catch (e) { /* leave as-is */ }
   }

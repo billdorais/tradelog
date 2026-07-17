@@ -13119,20 +13119,58 @@ def api_daytype_gate_toggle():
 
 @app.route("/api/engine_pilot/compare")
 def api_engine_pilot_compare():
-    """Head-to-head daily realized P&L: TV Refined (acct2) vs Kairos engine (acct3)
-    over the last N days, with cumulative running totals and per-account summary."""
+    """Head-to-head daily realized P&L between two accounts, with cumulative running
+    totals and a per-account summary. Defaults to TV Refined (2) vs Kairos engine (3).
+
+    ?a=&b= compares any two configured books. The one that matters for the entry
+    question is ?a=1&b=5 — TV Farm vs Kairos Farm. Both farms trade EVERY pipeline,
+    so they differ only in entry mechanism (TV bar-close vs engine level-touch),
+    which makes that pair a controlled test of the entry itself. The curated pair
+    (2 vs 3) can't answer it as cleanly: acct3 trades acct2's picks, so it only
+    tells you how the engine does on TV-selected names.
+
+    Window auto-aligns to the later of the two accounts' first fills, because a
+    young account (Kairos Farm) against a long-running one (TV Farm) would
+    otherwise post a fake deficit purely for days it wasn't trading yet. Pass an
+    explicit from_date to override. `window_aligned` reports whether it happened.
+
+    Response keeps the tv/engine key names (tv = account a, engine = account b) for
+    the entry-engine page and the crew's reader; `a`/`b` carry the real labels.
+    """
     import datetime as _dt
     from collections import defaultdict
+    a_num = str(request.args.get("a") or "2")
+    b_num = str(request.args.get("b") or "3")
+    for _n in (a_num, b_num):
+        if _n not in ACCOUNTS_BY_NUM:
+            return jsonify({"error": f"Account {_n} is not configured"}), 400
+    _a_broker, _a_tag, a_label, a_fills_fn = _alpaca_account_ctx(a_num)
+    _b_broker, _b_tag, b_label, b_fills_fn = _alpaca_account_ctx(b_num)
+
     try:    days = int(request.args.get("days", 14))
     except (TypeError, ValueError): days = 14
     days = max(1, min(120, days))
     to_d   = _dt.datetime.now(_dt.timezone.utc).date()
-    from_s = (to_d - _dt.timedelta(days=days)).isoformat()
-    to_s   = to_d.isoformat()
+    from_s = request.args.get("from_date") or (to_d - _dt.timedelta(days=days)).isoformat()
+    to_s   = request.args.get("to_date")   or to_d.isoformat()
 
-    def _daily(fills):
+    a_fills = a_fills_fn() or []
+    b_fills = b_fills_fn() or []
+
+    def _first_fill(fills):
+        ds = [(f.get("time") or "")[:10] for f in fills if f.get("time")]
+        return min(ds) if ds else None
+
+    a_first, b_first = _first_fill(a_fills), _first_fill(b_fills)
+    window_aligned = False
+    if not request.args.get("from_date") and a_first and b_first:
+        common = max(a_first, b_first)
+        if common > from_s:
+            from_s, window_aligned = common, True
+
+    def _daily(fills, _from, _to):
         per_day = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0})
-        win = [f for f in fills if from_s <= (f.get("time") or "")[:10] <= to_s]
+        win = [f for f in fills if _from <= (f.get("time") or "")[:10] <= _to]
         try:    paired = _pair_alpaca_fills_lifo(win)
         except Exception: return per_day
         for t in paired.get("closed_clean", []):
@@ -13146,8 +13184,8 @@ def api_engine_pilot_compare():
                 per_day[d]["wins"] += 1
         return per_day
 
-    tv  = _daily(_get_cached_fills_2())
-    eng = _daily(_get_cached_fills_3())
+    tv  = _daily(a_fills, from_s, to_s)
+    eng = _daily(b_fills, from_s, to_s)
 
     rows, cum_tv, cum_eng = [], 0.0, 0.0
     for d in sorted(set(tv) | set(eng)):
@@ -13163,10 +13201,18 @@ def api_engine_pilot_compare():
         w  = sum(v["wins"] for v in pd.values())
         return {"pnl": round(tp, 2), "trades": tr, "win_rate": round(w / tr * 100, 1) if tr else 0.0}
 
+    _a_summ, _b_summ = _summ(tv), _summ(eng)
     return jsonify({
-        "days": days, "configured": alpaca_broker3 is not None,
+        "days": days,
+        "configured": (_a_broker is not None and _b_broker is not None),
         "rows": list(reversed(rows)),
-        "tv": _summ(tv), "engine": _summ(eng),
+        "tv": _a_summ, "engine": _b_summ,
+        "a": {"account": a_num, "label": a_label, "first_fill": a_first,
+              "color": ACCOUNT_META.get(a_num, {}).get("color")},
+        "b": {"account": b_num, "label": b_label, "first_fill": b_first,
+              "color": ACCOUNT_META.get(b_num, {}).get("color")},
+        "from_date": from_s, "to_date": to_s, "window_aligned": window_aligned,
+        "delta": round(_b_summ["pnl"] - _a_summ["pnl"], 2),
     })
 
 
