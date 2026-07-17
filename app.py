@@ -7825,6 +7825,142 @@ def refresh_kairos_refined():
     return jsonify(result)
 
 
+@app.route("/api/refined_union")
+def api_refined_union():
+    """Union of the TV Refined and Kairos Refined snapshots.
+
+    Feeds the Crew analysis workflow: which strategies have proven themselves
+    under BOTH execution mechanisms (survivor-strong), which under just one,
+    and — for singletons — which entry_source to prefer when Crew wires them.
+
+    Query params:
+      scope=top|top+ondeck  (default top+ondeck) — how deep in each snapshot
+      min_trades=N          (default 0) — filter out strategies with fewer
+                            trades than N in EITHER snapshot; useful once
+                            Kairos matures to avoid noisy low-N picks
+
+    Returns:
+      {
+        "tv_run_at":      "...",
+        "kairos_run_at":  "...",
+        "rows": [{
+          "name":                 "SPY_CAM_BREAKOUT_R3S3_V02_5MIN",
+          "source":               "both" | "tv" | "kairos",
+          "tv_rank":              int | null   (1-indexed across top+on_deck)
+          "tv_score":             float | null
+          "tv_trades":            int | null
+          "tv_win_rate":          float | null
+          "tv_pf":                float | null
+          "tv_total_pnl":         float | null
+          "tv_in_top":            bool
+          "kairos_rank":          int | null
+          "kairos_score":         float | null
+          "kairos_trades":        int | null
+          "kairos_win_rate":      float | null
+          "kairos_pf":            float | null
+          "kairos_total_pnl":     float | null
+          "kairos_in_top":        bool
+          "combined_score":       float
+          "source_recommendation": "tv" | "kairos"
+        }],
+        "summary": {
+          "both": N,
+          "tv_only": N,
+          "kairos_only": N,
+          "min_trades_gate": N,
+        }
+      }
+    """
+    scope      = (request.args.get("scope") or "top+ondeck").lower()
+    min_trades = max(0, int(request.args.get("min_trades") or 0))
+
+    def _rank_scored(snap):
+        """[(name, rank_1idx, entry_dict, is_top)] from a snapshot,
+        walking top_scored first (in-top) then on_deck_scored (on-deck)."""
+        out = []
+        top = (snap or {}).get("top_scored") or []
+        for i, s in enumerate(top):
+            out.append((s.get("name"), i + 1, s, True))
+        if scope == "top+ondeck":
+            _n = len(top)
+            for j, s in enumerate((snap or {}).get("on_deck_scored") or []):
+                out.append((s.get("name"), _n + j + 1, s, False))
+        return out
+
+    tv_rows     = _rank_scored(_refined_last_result)
+    kairos_rows = _rank_scored(_kairos_refined_last_result)
+    tv_by_name     = {n.upper(): (rk, s, t) for n, rk, s, t in tv_rows if n}
+    kairos_by_name = {n.upper(): (rk, s, t) for n, rk, s, t in kairos_rows if n}
+
+    names = set(tv_by_name) | set(kairos_by_name)
+    rows  = []
+    for nm in names:
+        tv     = tv_by_name.get(nm)
+        kairos = kairos_by_name.get(nm)
+        tv_stats     = tv[1]     if tv     else {}
+        kairos_stats = kairos[1] if kairos else {}
+        # min_trades gate: only kicks in when a strategy IS in a snapshot but
+        # its trade count is below the floor. A strategy in only ONE snapshot
+        # doesn't get gated on the missing side (nothing to gate against).
+        if tv and (tv_stats.get("trades") or 0) < min_trades and not kairos:
+            continue
+        if kairos and (kairos_stats.get("trades") or 0) < min_trades and not tv:
+            continue
+        if tv and kairos and min_trades > 0:
+            if (tv_stats.get("trades") or 0) < min_trades and (kairos_stats.get("trades") or 0) < min_trades:
+                continue
+        _src = "both" if (tv and kairos) else ("tv" if tv else "kairos")
+        _tv_score     = tv_stats.get("score")     if tv     else None
+        _kairos_score = kairos_stats.get("score") if kairos else None
+        if _src == "both":
+            _combined = round(((_tv_score or 0) + (_kairos_score or 0)) / 2, 4)
+            _rec      = "kairos" if (_kairos_score or 0) > (_tv_score or 0) else "tv"
+        else:
+            _combined = _kairos_score if _src == "kairos" else _tv_score
+            _rec      = _src
+        rows.append({
+            "name":   nm,
+            "source": _src,
+            "tv_rank":         tv[0]                       if tv else None,
+            "tv_score":        _tv_score,
+            "tv_trades":       tv_stats.get("trades")      if tv else None,
+            "tv_win_rate":     tv_stats.get("win_rate")    if tv else None,
+            "tv_pf":           tv_stats.get("profit_factor") if tv else None,
+            "tv_total_pnl":    tv_stats.get("total_pnl")   if tv else None,
+            "tv_in_top":       bool(tv[2])                 if tv else False,
+            "kairos_rank":     kairos[0]                       if kairos else None,
+            "kairos_score":    _kairos_score,
+            "kairos_trades":   kairos_stats.get("trades")      if kairos else None,
+            "kairos_win_rate": kairos_stats.get("win_rate")    if kairos else None,
+            "kairos_pf":       kairos_stats.get("profit_factor") if kairos else None,
+            "kairos_total_pnl":kairos_stats.get("total_pnl")   if kairos else None,
+            "kairos_in_top":   bool(kairos[2])                 if kairos else False,
+            "combined_score":  _combined,
+            "source_recommendation": _rec,
+        })
+
+    # Order: 'both' first (survivor-strong), then single-source. Within each
+    # bucket, highest combined_score wins. Ties break on name for stability.
+    _src_order = {"both": 0, "tv": 1, "kairos": 1}
+    rows.sort(key=lambda r: (_src_order.get(r["source"], 9),
+                             -(r["combined_score"] or 0),
+                             r["name"]))
+
+    summary = {
+        "both":            sum(1 for r in rows if r["source"] == "both"),
+        "tv_only":         sum(1 for r in rows if r["source"] == "tv"),
+        "kairos_only":     sum(1 for r in rows if r["source"] == "kairos"),
+        "min_trades_gate": min_trades,
+        "scope":           scope,
+    }
+    return jsonify({
+        "tv_run_at":     (_refined_last_result        or {}).get("run_at"),
+        "kairos_run_at": (_kairos_refined_last_result or {}).get("run_at"),
+        "rows":    rows,
+        "summary": summary,
+    })
+
+
 def _refined_scheduler_loop():
     """Daily background thread: refresh Alpaca Refined at 4:15 PM ET on weekdays."""
     import datetime as _dt
