@@ -1456,11 +1456,16 @@ def _parse_next_month_card(report):
 
 @crew_bp.route("/api/crew/wire_to_router", methods=["POST"])
 def api_crew_wire_to_router():
-    """Append the latest crew report's "Next Month — Crew Paper" picks to the
-    Signal Router as routing rules targeting the Crew Paper account (alpaca-paper-4).
+    """Sync the latest crew report's "Next Month — Crew Paper" picks to the Signal
+    Router as routing rules targeting the Crew Paper account (alpaca-paper-4).
 
-    Append-only with dedupe: a pick is skipped if a rule already routes that
-    strategy to acct4. Fails loudly if there's no report or no parsable picks."""
+    Reconciling, not append-only: picks are upserted (update in place, else insert),
+    AND Crew rules whose strategy dropped out of this report are deleted, so Crew
+    Paper mirrors the LATEST report instead of accumulating every strategy ever
+    wired. Nothing is lost — every report is kept in crew_reports (the scorecard
+    reads from there), so an old set can be recreated by re-wiring its report. A
+    prune is deferred for any strategy with a live Crew Paper position. Fails loudly
+    if there's no report or no parsable picks."""
     import app as _kairos
     import copy as _copy
     import json as _json
@@ -1610,11 +1615,45 @@ def api_crew_wire_to_router():
                 (f"{slug} · Crew", 1, nodes_json, ts, 0),
             )
             created.append(slug)
+
+    # 4) Reconcile — delete Crew rules whose strategy dropped out of this report,
+    # so Crew Paper mirrors the latest picks rather than piling up every strategy
+    # ever wired ("filter Crew" used to grow without bound). A rule is spared if
+    # ANY of its strategies is still picked, or if any of its tickers has a LIVE
+    # Crew Paper position — that prune is deferred to the next wire so an open trade
+    # keeps its tuned exit (global position-loss + max-hold protect it regardless).
+    # Pick history is untouched: it lives in crew_reports, not in these rules.
+    new_slugs = {pick["strategy"] for pick in picks}
+    rid_strats = {}
+    for _s, _rid in existing_crew.items():
+        rid_strats.setdefault(_rid, set()).add(_s)
+    prune_rids = {rid: strs for rid, strs in rid_strats.items() if not (strs & new_slugs)}
+
+    open_tickers = set()
+    if prune_rids:
+        try:
+            _br4 = (_kairos.ACCOUNTS_BY_TAG.get("alpaca4") or {}).get("broker")
+            if _br4 is not None:
+                _br4._invalidate_pos_cache()
+                open_tickers = {(pp.get("symbol") or "").upper() for pp in _br4.get_positions()}
+        except Exception as _pe:
+            _kairos.log.warning("crew wire: acct4 positions fetch failed; pruning "
+                                "without the open-position guard: %s", _pe)
+
+    deleted, deferred = [], []
+    for rid, strs in prune_rids.items():
+        if any(s.split("_", 1)[0].upper() in open_tickers for s in strs):
+            deferred.extend(sorted(strs))
+            continue
+        cur.execute(f"DELETE FROM routing_rules WHERE id={p}", (rid,))
+        deleted.extend(sorted(strs))
+
     conn.commit()
     conn.close()
 
     return jsonify({
         "created": created, "updated": updated,
+        "deleted": deleted, "deferred_open_position": deferred,
         "cloned_from_source": cloned,
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
         "size_dollars": size_dollars, "daytype_gate": parsed["daytype"], "qty": qty,

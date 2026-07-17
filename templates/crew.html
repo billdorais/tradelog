@@ -715,11 +715,15 @@
       } else {
         out.style.color = '#7FE098';
         const c = (d.created || []).length, u = (d.updated || []).length;
+        const del = (d.deleted || []), defd = (d.deferred_open_position || []);
         const all = [...(d.created || []), ...(d.updated || [])];
         const sizeTxt = d.size_dollars ? `~$${Math.round(d.size_dollars).toLocaleString()}/trade` : `qty ${d.qty}`;
         out.innerHTML = `✓ Crew Paper: ${c} added, ${u} updated`
+          + (del.length ? `, ${del.length} removed` : '')
           + ` · entries: ${d.entry_source} · ${sizeTxt} · exits cloned from each strategy's pipeline`
-          + (all.length ? `<br><span style="color:#666">${all.join(', ')}</span>` : '')
+          + (all.length ? `<br><span style="color:#666">kept: ${all.join(', ')}</span>` : '')
+          + (del.length ? `<br><span style="color:#c98b8b">removed (dropped from this report): ${del.join(', ')}</span>` : '')
+          + (defd.length ? `<br><span style="color:#F2C76B">kept for now (open position — will remove next wire): ${defd.join(', ')}</span>` : '')
           + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`;
       }
     } catch (e) {
