@@ -255,6 +255,7 @@
       <div class="risk-section">
         <div class="risk-label">Today's P&amp;L</div>
         <div class="risk-value neutral" id="riskPnl">—</div>
+        <div id="riskPnlAccts" style="font-size:0.72rem;color:#888;margin-top:4px;line-height:1.55"></div>
       </div>
 
       <div class="risk-divider"></div>
@@ -1007,7 +1008,7 @@
       const resetSec = document.getElementById('riskResetSection');
       const input  = document.getElementById('riskLimitInput');
 
-      // P&L display
+      // P&L display — combined (across accounts) headline + per-curated-account breakdown
       if (data.current_pnl !== null && data.current_pnl !== undefined) {
         const sign = data.current_pnl >= 0 ? '+' : '';
         pnlEl.textContent = sign + '$' + data.current_pnl.toFixed(2);
@@ -1015,6 +1016,18 @@
       } else {
         pnlEl.textContent = '—';
         pnlEl.className = 'risk-value neutral';
+      }
+      const acctBox = document.getElementById('riskPnlAccts');
+      if (acctBox) {
+        const rows = data.pnl_accounts || [];
+        acctBox.innerHTML = rows.map(a => {
+          if (a.pnl === null || a.pnl === undefined) {
+            return `<div><span style="color:${a.color || '#888'}">${a.label}</span>: <span style="color:#555">—</span></div>`;
+          }
+          const s = a.pnl >= 0 ? '+' : '';
+          const c = a.pnl > 0 ? '#7FE098' : a.pnl < 0 ? '#ef5350' : '#888';
+          return `<div><span style="color:${a.color || '#888'}">${a.label}</span>: <span style="color:${c};font-weight:600">${s}$${a.pnl.toFixed(2)}</span></div>`;
+        }).join('');
       }
 
       // Pre-fill inputs (only when not actively editing)

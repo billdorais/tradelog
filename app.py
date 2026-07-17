@@ -2858,10 +2858,32 @@ def risk_status():
             p["est_stop_price"] = None
             p["trail_pct"]      = None
 
+    # Per-curated-account realized daily P&L (Crew, Kairos Refined, TV Refined —
+    # the accounts flagged profit_lock=True). Uses the same realized-only
+    # calculation as the profit lock so the numbers agree, and orders by
+    # UI_ACCOUNT_ORDER so the display matches the tab order everywhere.
+    _pnl_accts = []
+    for _a in sorted((a for a in ALPACA_ACCOUNTS if a.get("profit_lock", True)),
+                     key=lambda a: _ui_account_rank(a["num"])):
+        if _a.get("broker") is None:
+            continue
+        try:
+            _apnl = _realized_daily_pnl(_a["fills_fn"])
+        except Exception:
+            _apnl = None
+        _pnl_accts.append({
+            "num":   _a["num"],
+            "tag":   _a["tag"],
+            "label": _a["label"],
+            "color": _a.get("color"),
+            "pnl":   None if _apnl is None else round(_apnl, 2),
+        })
+
     return jsonify({
         "halted":               halted,
         "max_daily_loss":       MAX_DAILY_LOSS if MAX_DAILY_LOSS != 0 else None,
         "current_pnl":          round(pnl, 2) if pnl is not None else None,
+        "pnl_accounts":         _pnl_accts,
         "enabled":              MAX_DAILY_LOSS < 0,
         "daily_loss_accounts": [
             {"tag": a["tag"], "label": a["label"], "halted": bool(dl_halted.get(a["tag"]))}
