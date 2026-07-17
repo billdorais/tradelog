@@ -163,6 +163,14 @@ TV_PILOT_ALL          = os.environ.get("TV_PILOT_ALL", "")
 #   money to stay wrong and nothing to reverse.
 #   Env override per account: REVERSAL_SIDE_<TAG> (e.g. REVERSAL_SIDE_ALPACA2=off).
 #   Enforced by target account in webhook + engine. Exits are never gated.
+# hours_key — which Settings-page trading-hours window this book follows:
+#   "refined" (REFINED_HOURS_*) or "paper" (PAPER_HOURS_*, the default; empty =
+#   trade all day). Point a book at "refined" to make it share TV Refined's window
+#   — that is the knob for testing whether an edge is really a time-of-day effect.
+#   For a window belonging to one book alone, set env HOURS_<TAG>_START/END.
+#   The farms deliberately stay on "paper"/all-day: they are the full-sample
+#   audition pools, and their symmetry is what makes farm-vs-farm a controlled
+#   test of the entry mechanism. Resolved per TARGET account in webhook + engine.
 #   The 2x2: a full-sample FARM (all pipelines) refines into a curated account,
 #   per entry mechanism — TV Farm -> TV Refined, Kairos Farm -> Kairos Refined.
 #   UI order (paired): TV Farm, TV Refined, Kairos Farm, Kairos Refined, Crew Paper.
@@ -172,7 +180,7 @@ ACCOUNT_META = {
     # reversal_side "off": TV Refined's reversals had ONE winner in 22 over
     # 2026-07-01..17 (−$394, both sides dead) — no edge left to side-gate. TV Farm
     # keeps trading them, so the evidence for a comeback keeps accruing.
-    "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd",
+    "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True},
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
@@ -235,6 +243,11 @@ def _reversal_side_cfg(tag, meta):
 
 _REVERSAL_SIDE_BY_TAG = {_meta_tag(n): _reversal_side_cfg(_meta_tag(n), m)
                          for n, m in ACCOUNT_META.items()}
+
+# Which trading-hours window each book follows ("refined"/"paper"). Config-static
+# like the reversal map; the windows themselves stay runtime-editable.
+_HOURS_KEY_BY_TAG = {_meta_tag(n): (m.get("hours_key") or "paper")
+                     for n, m in ACCOUNT_META.items()}
 
 def _reversal_gate_block(strategy: str, side: str, account_tag: str) -> bool:
     """True if a REVERSAL ENTRY on `side` ('long'/'short') is disallowed for this
@@ -10356,14 +10369,38 @@ def _get_strike_counts(force: bool = False):
     return _strike_cache["data"]
 
 
+def _account_hours(account: str):
+    """(start, end) ET window for this account as "HH:MM" strings; ("","") means
+    always allowed. Resolution order:
+
+      1. env HOURS_<TAG>_START / HOURS_<TAG>_END — a window for this book alone
+         (mirrors REVERSAL_SIDE_<TAG>). Set either to take this branch.
+      2. the account's ACCOUNT_META hours_key — "refined" or "paper" — naming
+         which of the two Settings-page windows it follows.
+
+    Registry-driven so a book's window is declared next to its other gates rather
+    than inferred from its tag. The two windows are runtime-editable (Settings),
+    so they're read on every call and must not be cached.
+    """
+    t = (account or "").upper()
+    s = os.environ.get("HOURS_" + t + "_START")
+    e = os.environ.get("HOURS_" + t + "_END")
+    if s is not None or e is not None:
+        return (s or ""), (e or "")
+    if _HOURS_KEY_BY_TAG.get(account, "paper") == "refined":
+        return REFINED_HOURS_START, REFINED_HOURS_END
+    return PAPER_HOURS_START, PAPER_HOURS_END
+
+
 def _account_hours_ok(account: str, now_et=None) -> bool:
-    """True if `account` ('alpaca'=Paper All, 'alpaca2'=Refined) is inside its
-    configured trading-hours window (ET). Empty config = always allowed."""
+    """True if `account` (a broker tag, e.g. 'alpaca2') is inside its configured
+    trading-hours window (ET). Empty config = always allowed.
+
+    Callers must pass the TARGET account's tag. Passing a fixed tag applies that
+    book's window to every account — which is what the engine used to do.
+    """
     import datetime as _dt
-    if account == "alpaca2":
-        start, end = REFINED_HOURS_START, REFINED_HOURS_END
-    else:
-        start, end = PAPER_HOURS_START, PAPER_HOURS_END
+    start, end = _account_hours(account)
     if not start or not end:
         return True
     try:
@@ -12204,7 +12241,10 @@ def _entry_engine_compute(date=None, buffer=0.05):
     # Strikes frozen to the queried date (not today) so historical re-runs are
     # faithful — the strikes that actually accrued that day gate the setups.
     strikes  = _compute_strike_counts(date) if STRIKES_ENABLED else {}
-    hours_ok = _account_hours_ok("alpaca2")   # window-open-now, for the summary card only
+    # Window-open-now, for the summary card only. alpaca3 because this dry-run
+    # models the engine's live Refined-snapshot → acct3 path (as the day-type gate
+    # below already does), not TV Refined's own trading.
+    hours_ok = _account_hours_ok("alpaca3")
 
     # What actually traded today on Refined (for the dry-run vs reality diff).
     # Keyed (ticker, level, side, kind) with kind-aware level so reversals match.
@@ -12345,7 +12385,7 @@ def _entry_engine_compute(date=None, buffer=0.05):
         # not "now" — an entry only fires when price hits the level intraday.
         hours_ok_setup = True
         if entry_dt is not None:
-            try:    hours_ok_setup = _account_hours_ok("alpaca2", now_et=entry_dt.astimezone(et))
+            try:    hours_ok_setup = _account_hours_ok("alpaca3", now_et=entry_dt.astimezone(et))
             except Exception: hours_ok_setup = True
 
         blocked = []
@@ -12710,7 +12750,11 @@ def _engine_pilot_tick(now_et, today):
     bars     = _engine_pilot_bars(tickers, today)
     prices   = _engine_pilot_prices(tickers)
     lkey     = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
-    hours_ok = _account_hours_ok("alpaca2", now_et=now_et)
+    # Cheap tick-level short-circuit only: skip the whole evaluation when NO book
+    # the engine can fire into is inside its window. The authoritative check is
+    # per-target inside _enter — asking one fixed account here would mute the rest.
+    hours_ok = (any(_account_hours_ok(_a["tag"], now_et=now_et) for _a in ALPACA_ACCOUNTS)
+                if ALPACA_ACCOUNTS else True)
     strikes  = _compute_strike_counts(today) if STRIKES_ENABLED else {}
     now_utc  = datetime.now(timezone.utc)
     with _engine_pilot_lock:
@@ -12733,6 +12777,13 @@ def _engine_pilot_tick(now_et, today):
             else (s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}])
         for tgt in targets:
             broker_tag   = tgt["broker_tag"]
+            # Per-account trading hours. Resolved per TARGET: the engine fires into
+            # several books (alpaca3 via the snapshot, alpaca5 via ENGINE_PILOT_ALL,
+            # any rule broker), and they do not share a window. This used to ask
+            # _account_hours_ok("alpaca2") once per tick, so setting a TV Refined
+            # window would have silently muted every other book the engine feeds.
+            if not _account_hours_ok(broker_tag, now_et=now_et):
+                continue
             # Profit lock — skip this account's entries if it gave back below its floor.
             if _profit_lock_halted_for(broker_tag):
                 continue
