@@ -315,6 +315,68 @@
     </div>
   </div>
 
+  <!-- Kairos Refined Snapshot — mirror of Refined, sourced from Kairos Farm (acct5).
+       View-only for now; once trusted, top-N gets wired to alpaca-paper-3
+       with entry_source=kairos. -->
+  <div id="kairosRefinedSnapPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#F2C07A">⚡ Kairos Refined Snapshot</span>
+      <span id="kairosSnapMeta" style="font-size:0.75rem;color:#666">loading…</span>
+      <span style="font-size:0.7rem;color:#555">· view only · gate ≥3 trades</span>
+      <button id="kairosSnapToggle" onclick="toggleKairosSnap()"
+              style="margin-left:auto;background:transparent;border:1px solid #2a2d3e;color:#888;
+                     padding:4px 10px;border-radius:6px;font-size:0.72rem;cursor:pointer">Hide</button>
+      <button onclick="refreshKairosNow()"
+              style="background:transparent;border:1px solid #F2C07A;color:#F2C07A;
+                     padding:4px 12px;border-radius:6px;font-size:0.72rem;cursor:pointer">↻ Refresh Now</button>
+    </div>
+    <div id="kairosSnapStatus" style="font-size:0.72rem;color:#777;margin-bottom:10px;display:none"></div>
+    <div id="kairosSnapBody">
+      <div class="tbl-wrap">
+        <table style="width:100%">
+          <thead>
+            <tr>
+              <th style="width:48px">#</th>
+              <th>Strategy</th>
+              <th style="text-align:right" title="Calendar days since first induction into the Kairos top-N">Tenure</th>
+              <th style="text-align:right" title="Days since this strategy's most recent closed Kairos Farm trade">Last Trade</th>
+              <th style="text-align:right">Score</th>
+              <th style="text-align:right" title="Shares if routed to Kairos Refined (band $ target ÷ last price)">Shares</th>
+              <th style="text-align:right">Price</th>
+              <th style="text-align:right">Trades</th>
+              <th style="text-align:right">Win %</th>
+              <th style="text-align:right">PF</th>
+              <th style="text-align:right">Total P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody id="kairosSnapRows"><tr><td colspan="11" class="empty">Loading…</td></tr></tbody>
+        </table>
+
+        <div id="kairosOnDeckWrap" style="margin-top:18px;display:none">
+          <div style="font-size:0.75rem;color:#888;margin-bottom:6px"
+               title="Just outside the Kairos top cut (≥2 trades) — visibility only.">
+            On Deck <span style="color:#555;font-weight:400">(next up · ≥2 trades · not routed)</span>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+            <thead><tr>
+              <th style="width:48px">#</th>
+              <th>Strategy</th>
+              <th style="text-align:right">Last Trade</th>
+              <th style="text-align:right">Score</th>
+              <th style="text-align:right">Shares</th>
+              <th style="text-align:right">Price</th>
+              <th style="text-align:right">Trades</th>
+              <th style="text-align:right">Win %</th>
+              <th style="text-align:right">PF</th>
+              <th style="text-align:right">Total P&amp;L</th>
+            </tr></thead>
+            <tbody id="kairosOnDeckTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Top-N performance breakdown: how much of the edge comes from the top ranks?
        Both tables use the Refined Snapshot's ordered top_strategies as the ranking,
        and aggregate stats from analysisData.per_strategy (current date range). -->
@@ -981,6 +1043,7 @@
     renderWeekly(perfData.weekly || []);
     if (isAlpaca || isAlpaca2) loadReconciliation(isAlpaca2 ? '2' : '');
     _loadRefinedSnapshot();
+    _loadKairosSnapshot();
     // Isolated: a Trade Time Analysis error must never abort the load flow
     // (it runs last so the snapshot / On Deck always render first).
     try { renderTradeTimeAnalysis(); }
@@ -1335,6 +1398,127 @@
       await _loadRefinedSnapshot();
       await _refreshLiveStrategies();
       if (_lastStratMap && Object.keys(_lastStratMap).length) renderStratTable(_lastStratMap);
+    } catch (e) {
+      meta.textContent = 'refresh failed: ' + (e.message || e);
+      rows.innerHTML   = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
+    }
+  }
+
+  // ── Kairos Refined snapshot (mirror of the TV one, view-only) ─────────────
+  // Sourced from Kairos Farm (acct5) fills; renders top-N + on-deck the same way.
+  async function _loadKairosSnapshot() {
+    const meta = document.getElementById('kairosSnapMeta');
+    const rows = document.getElementById('kairosSnapRows');
+    try {
+      const res = await fetch('/api/kairos_refined/refresh');
+      const d   = await res.json();
+      if (!d.run_at) {
+        meta.textContent = 'never run · scheduler fires at 4:16 PM ET on weekdays';
+        rows.innerHTML   = '<tr><td colspan="11" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
+        _renderKairosOnDeck([]);
+        return;
+      }
+      const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
+      const cnt  = (d.top_strategies || []).length;
+      const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
+      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · sourced from Kairos Farm · last run ${d.run_at}`;
+      const scored = d.top_scored || [];
+      if (!scored.length) {
+        rows.innerHTML = '<tr><td colspan="11" class="empty">No profitable strategies with ≥3 trades in the Kairos Farm window yet.</td></tr>';
+        _renderKairosOnDeck([]);
+        return;
+      }
+      const tenureMap = d.tenure_runs || {};
+      const _rankChip = (delta) => {
+        if (delta == null || delta === 0) return '';
+        if (delta > 0) return ` <span style="color:#7FE098;font-size:0.7rem;margin-left:3px" title="Up ${delta}">▲${delta}</span>`;
+        const dn = Math.abs(delta);
+        return ` <span style="color:#ef5350;font-size:0.7rem;margin-left:3px" title="Down ${dn}">▼${dn}</span>`;
+      };
+      rows.innerHTML = scored.map((s, i) => {
+        const t   = tenureMap[s.name];
+        const ten = (t == null) ? '<span style="color:#F2C07A;font-weight:600" title="First run">NEW</span>' : (t + 'd');
+        const wr  = s.win_rate == null ? '—' : (s.win_rate.toFixed(1) + '%');
+        const pf  = s.profit_factor == null ? '∞' : s.profit_factor.toFixed(2);
+        const pn  = s.total_pnl == null ? '—' : fmt(s.total_pnl);
+        const pnCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+        const lt  = s.last_trade_at
+          ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
+          : '—';
+        const sh  = s.shares != null ? s.shares : '—';
+        const px  = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
+        return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}" title="Click to see round-trip pairs">
+          <td>${i + 1}</td>
+          <td class="mono">${esc(s.name)}${_rankChip(s.rank_delta)}</td>
+          <td style="text-align:right;color:#aaa">${ten}</td>
+          <td style="text-align:right;color:#888">${lt}</td>
+          <td style="text-align:right;color:#F2C07A;font-weight:600">${(s.score * 100).toFixed(0)}</td>
+          <td style="text-align:right;color:#aaa">${sh}</td>
+          <td style="text-align:right;color:#888">${px}</td>
+          <td style="text-align:right">${s.trades}</td>
+          <td style="text-align:right">${wr}</td>
+          <td style="text-align:right">${pf}</td>
+          <td style="text-align:right" class="${pnCls}">${pn}</td>
+        </tr>`;
+      }).join('');
+      _renderKairosOnDeck(d.on_deck_scored || []);
+    } catch (e) {
+      meta.textContent = 'load failed: ' + (e.message || e);
+      rows.innerHTML   = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Load failed.</td></tr>';
+    }
+  }
+
+  function _renderKairosOnDeck(scored) {
+    const wrap = document.getElementById('kairosOnDeckWrap');
+    const tb   = document.getElementById('kairosOnDeckTbody');
+    if (!scored || !scored.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    const topN = (_snapshotData && _snapshotData.top_strategies || []).length || 20;
+    tb.innerHTML = scored.map((s, i) => {
+      const wr  = s.win_rate == null ? '—' : (s.win_rate.toFixed(1) + '%');
+      const pf  = s.profit_factor == null ? '∞' : s.profit_factor.toFixed(2);
+      const pn  = s.total_pnl == null ? '—' : fmt(s.total_pnl);
+      const pnCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+      const lt  = s.last_trade_at
+        ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
+        : '—';
+      const sh = s.shares != null ? s.shares : '—';
+      const px = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
+      return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}" title="Click to see round-trip pairs">
+        <td>${topN + i + 1}</td>
+        <td class="mono">${esc(s.name)}</td>
+        <td style="text-align:right;color:#888">${lt}</td>
+        <td style="text-align:right;color:#F2C07A;font-weight:600">${(s.score * 100).toFixed(0)}</td>
+        <td style="text-align:right;color:#aaa">${sh}</td>
+        <td style="text-align:right;color:#888">${px}</td>
+        <td style="text-align:right">${s.trades}</td>
+        <td style="text-align:right">${wr}</td>
+        <td style="text-align:right">${pf}</td>
+        <td style="text-align:right" class="${pnCls}">${pn}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function toggleKairosSnap() {
+    const body = document.getElementById('kairosSnapBody');
+    const btn  = document.getElementById('kairosSnapToggle');
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    btn.textContent    = hidden ? 'Hide' : 'Show';
+  }
+
+  async function refreshKairosNow() {
+    if (!confirm('Run the Kairos Refined refresh now?\n\nSources from Kairos Farm (acct5) fills, min 3 trades. View-only — does not touch routing rules.')) return;
+    const meta = document.getElementById('kairosSnapMeta');
+    const rows = document.getElementById('kairosSnapRows');
+    meta.textContent = 'refreshing…';
+    rows.innerHTML   = '<tr><td colspan="11" class="empty">Refreshing…</td></tr>';
+    try {
+      const res = await fetch('/api/kairos_refined/refresh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      await _loadKairosSnapshot();
     } catch (e) {
       meta.textContent = 'refresh failed: ' + (e.message || e);
       rows.innerHTML   = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Refresh failed.</td></tr>';
