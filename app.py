@@ -1967,6 +1967,18 @@ def init_db():
         try: conn.rollback()
         except Exception: pass
 
+    # Kairos Refined history — parallel to refined_history, but scored from the
+    # Kairos Farm audition pool. Same schema so the same rank/tenure helpers work.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS kairos_refined_history (
+            run_at        TEXT NOT NULL,
+            strategy_name TEXT NOT NULL,
+            rank          INTEGER,
+            PRIMARY KEY (run_at, strategy_name)
+        )
+    """)
+    conn.commit()
+
     # User-saved backtesting strategies (converted from Pine Script)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_strategies (
@@ -6775,6 +6787,11 @@ def api_blocked_signals():
 
 _refined_last_run    = None   # UTC timestamp of last scheduled/manual refresh
 _refined_last_result = {}    # {updated, removed, not_found, top_strategies}
+# Kairos Refined mirror — same shape, sourced from Kairos Farm (acct5) fills.
+# View-only for now (no auto-routing); once trusted, we'll wire top-N →
+# alpaca-paper-3 with entry_source=kairos.
+_kairos_refined_last_run    = None
+_kairos_refined_last_result = {}
 
 
 def _build_signal_lookup_for_alpaca(trades_db=None):
@@ -6975,10 +6992,10 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             "orphans": orphans, "signal_lookup": signal_lookup}
 
 
-def _compute_strategy_stats(days=45, from_date=None):
-    """Per-strategy stats from Alpaca account-1 fills, using the same signal-resolution
-    + LIFO pairing as /api/alpaca/analysis so the Refined snapshot agrees with the
-    leaderboard view.
+def _compute_strategy_stats(days=45, from_date=None, fills_fn=None):
+    """Per-strategy stats from an Alpaca account's fills, using the same
+    signal-resolution + LIFO pairing as /api/alpaca/analysis so the leaderboard
+    and any Refined snapshot agree on the same numbers.
 
     Returns {strategy_name: {trades, wins, losses, win_rate, gross_win,
     gross_loss, total_pnl, profit_factor}}. profit_factor is None when there
@@ -6986,7 +7003,11 @@ def _compute_strategy_stats(days=45, from_date=None):
 
     If from_date (YYYY-MM-DD) is provided it acts as a fixed anchor — the window
     grows over time and rankings become more stable as data accumulates.
-    Otherwise falls back to a rolling `days`-day window."""
+    Otherwise falls back to a rolling `days`-day window.
+
+    `fills_fn` picks the source account (default = TV Farm's cached fills, which
+    the TV Refined snapshot uses as its wide audition pool). Pass e.g.
+    _get_cached_fills_5 for the Kairos Farm audition pool."""
     import datetime as _dt
 
     if not from_date:
@@ -6995,7 +7016,7 @@ def _compute_strategy_stats(days=45, from_date=None):
         ).strftime("%Y-%m-%d")
 
     try:
-        fills = _get_cached_fills()
+        fills = (fills_fn or _get_cached_fills)()
     except Exception:
         return {}
 
@@ -7123,6 +7144,12 @@ _REFINED_MIN_TRADES = 7
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
 # strategies clear the strict routing bar above.
 _REFINED_ONDECK_MIN_TRADES = 5
+
+# Kairos Refined snapshot uses a much lower floor — the engine account is newer
+# with fewer fills per strategy, and the user wants a wider look at the top of
+# the funnel early. Once the pool matures we'll ratchet this up to match TV's 7.
+_KAIROS_REFINED_MIN_TRADES        = 3
+_KAIROS_REFINED_ONDECK_MIN_TRADES = 2
 
 
 def _band_target_dollars(score):
@@ -7537,12 +7564,274 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
     return _refined_last_result
 
 
+def _do_refresh_kairos_refined(n=20, days=30, from_date=None):
+    """Kairos Refined snapshot — mirrors _do_refresh_refined but sourced from
+    Kairos Farm (acct5) fills and gated at a lower min_trades (3, vs. TV's 7)
+    so the top-of-the-funnel is visible earlier in the account's life.
+
+    VIEW-ONLY for now: computes the leaderboard + on-deck + persists to
+    KAIROS_REFINED_LAST_RESULT + kairos_refined_history, but does NOT touch
+    routing rules. Once the user is comfortable with the rankings we'll wire
+    top-N → alpaca-paper-3 with an entry_source=kairos node."""
+    global _kairos_refined_last_run, _kairos_refined_last_result
+    import datetime as _dt
+
+    # Same account resolution + fills_fn the profit lock uses — keeps every
+    # 'Kairos Farm' surface in sync.
+    _farm_rec = ACCOUNTS_BY_TAG.get("alpaca5")
+    _fills_fn = _farm_rec.get("fills_fn") if _farm_rec else None
+    if _fills_fn is None:
+        log.warning("Kairos Refined refresh: Kairos Farm (acct5) not configured — skipping")
+        return {"error": "Kairos Farm (acct5) not configured", "top_strategies": []}
+
+    stats_map     = _compute_strategy_stats(days=days, from_date=from_date, fills_fn=_fills_fn)
+    stats_map_10d = _compute_strategy_stats(days=10,   from_date=from_date, fills_fn=_fills_fn)
+    demoted = [k for k, v in stats_map.items()
+               if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
+    if demoted:
+        log.info("Kairos Refined: demoting %d strategies with %d+ consecutive losses: %s",
+                 len(demoted), _REFINED_CONSEC_LOSS_GATE, demoted)
+
+    # Same routing-rule whitelist as the TV snapshot — a strategy must be
+    # matched by at least one enabled rule's strategy node to be scored.
+    _enabled_patterns = []
+    _patterns_loaded  = False
+    try:
+        _rconn = get_db(); _rcur = _rconn.cursor()
+        _rcur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        for row in _rcur.fetchall():
+            nodes_raw = row[0] if DATABASE_URL else row["nodes"]
+            _nodes = json.loads(nodes_raw) if isinstance(nodes_raw, str) else (nodes_raw or [])
+            for nd in _nodes:
+                if nd.get("type") == "strategy":
+                    val = (nd.get("value") or "").strip().upper()
+                    if val:
+                        _enabled_patterns.append(val)
+        _rconn.close()
+        _patterns_loaded = True
+    except Exception as _re:
+        log.warning("Kairos Refined: failed to load enabled rule strategies, skipping rule filter: %s", _re)
+
+    def _strategy_has_enabled_rule(strat_name):
+        if not _patterns_loaded:
+            return True
+        s = strat_name.upper()
+        for pattern in _enabled_patterns:
+            if pattern == s: return True
+            if pattern.endswith("*") and s.startswith(pattern[:-1]): return True
+            if pattern.startswith("*") and s.endswith(pattern[1:]):  return True
+        return False
+
+    _excluded_bands = _load_excluded_bands()
+    candidates = {
+        k: v for k, v in stats_map.items()
+        if (v.get("total_pnl") or 0) > 0
+        and (v.get("trades") or 0) >= _KAIROS_REFINED_MIN_TRADES
+        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and _strategy_has_enabled_rule(k)
+        and _band_of(k) not in _excluded_bands
+    }
+    max_pnl     = max((v["total_pnl"] for v in candidates.values()), default=0)
+    max_pnl_10d = max((v["total_pnl"] for v in stats_map_10d.values() if (v.get("total_pnl") or 0) > 0), default=1)
+
+    def _blended_score(name, stats_20d):
+        score_20d  = _composite_score(stats_20d, max_pnl)
+        stats_10d  = stats_map_10d.get(name, {})
+        if (stats_10d.get("trades") or 0) >= 2 and (stats_10d.get("total_pnl") or 0) > 0:
+            score_10d = _composite_score(stats_10d, max_pnl_10d)
+            return round(0.60 * score_20d + 0.40 * score_10d, 4)
+        return score_20d
+
+    scored = sorted(
+        ((name, stats, _blended_score(name, stats)) for name, stats in candidates.items()),
+        key=lambda x: x[2], reverse=True,
+    )
+    top_scored = scored[:n]
+    top        = [name for name, _, _ in top_scored]
+    _top_names = {name for name, _, _ in top_scored}
+
+    ondeck_candidates = {
+        k: v for k, v in stats_map.items()
+        if (v.get("total_pnl") or 0) > 0
+        and (v.get("trades") or 0) >= _KAIROS_REFINED_ONDECK_MIN_TRADES
+        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and _strategy_has_enabled_rule(k)
+        and k not in _top_names
+    }
+    on_deck_scored = sorted(
+        ((name, stats, _blended_score(name, stats)) for name, stats in ondeck_candidates.items()),
+        key=lambda x: x[2], reverse=True,
+    )[:5]
+    on_deck = [name for name, _, _ in on_deck_scored]
+
+    # Per-strategy shares — same sizing bands as TV, so once we route top-N to
+    # alpaca-paper-3 the qty_override values plug in cleanly.
+    _scored_for_qty = top_scored + on_deck_scored
+    tickers      = {_strategy_to_ticker(name) for name, _, _ in _scored_for_qty}
+    last_prices  = _fetch_alpaca_last_prices(tickers)
+    qty_by_strat = {}
+    for name, stats, score in _scored_for_qty:
+        ticker = _strategy_to_ticker(name)
+        price  = last_prices.get(ticker)
+        target = _band_target_dollars(score)
+        shares = _compute_refined_qty(score, price)
+        qty_by_strat[name] = (shares, target, price)
+
+    _kairos_refined_last_run = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # Kairos history: parallel to refined_history so tenure/rank-delta arrows work.
+    added_strategies, removed_strategies, tenure_runs, rank_deltas = [], [], {}, {}
+    try:
+        hconn = get_db(); hcur = hconn.cursor(); hp = placeholder()
+        hcur.execute("SELECT run_at, strategy_name, rank FROM kairos_refined_history ORDER BY run_at DESC")
+        hist_rows = hcur.fetchall()
+        runs = []; cur_at = None; cur_map = None
+        for r in hist_rows:
+            rt = r[0] if DATABASE_URL else r["run_at"]
+            nm = r[1] if DATABASE_URL else r["strategy_name"]
+            rk = r[2] if DATABASE_URL else r["rank"]
+            if rt != cur_at:
+                if cur_map is not None: runs.append((cur_at, cur_map))
+                cur_at = rt; cur_map = {}
+            cur_map[nm] = rk
+        if cur_map is not None: runs.append((cur_at, cur_map))
+        prev_ranks = runs[0][1] if runs else {}
+        prev_top   = set(prev_ranks.keys())
+        new_top    = set(top)
+        added_strategies   = sorted(new_top - prev_top)
+        removed_strategies = sorted(prev_top - new_top)
+        for i, name in enumerate(top):
+            pr = prev_ranks.get(name)
+            rank_deltas[name] = (pr - (i + 1)) if pr is not None else None
+        for j, name in enumerate(on_deck):
+            pr = prev_ranks.get(name)
+            rank_deltas[name] = (pr - (n + j + 1)) if pr is not None else None
+        for i, name in enumerate(top):
+            if DATABASE_URL:
+                hcur.execute(
+                    f"INSERT INTO kairos_refined_history (run_at, strategy_name, rank) "
+                    f"VALUES ({hp},{hp},{hp}) ON CONFLICT DO NOTHING",
+                    (_kairos_refined_last_run, name, i + 1),
+                )
+            else:
+                hcur.execute(
+                    f"INSERT OR IGNORE INTO kairos_refined_history (run_at, strategy_name, rank) "
+                    f"VALUES ({hp},{hp},{hp})",
+                    (_kairos_refined_last_run, name, i + 1),
+                )
+        hconn.commit()
+        first_seen = {}
+        for run_at, names in reversed(runs):
+            for s in names:
+                if s not in first_seen: first_seen[s] = run_at
+        for s in added_strategies:
+            if s not in first_seen: first_seen[s] = _kairos_refined_last_run
+        now_date = _dt.datetime.now(_dt.timezone.utc).date()
+        for s in new_top:
+            first_str = first_seen.get(s, _kairos_refined_last_run)
+            try:
+                first_date = _dt.datetime.strptime(first_str[:10], "%Y-%m-%d").date()
+                tenure_runs[s] = max(1, (now_date - first_date).days + 1)
+            except Exception:
+                tenure_runs[s] = 1
+        hconn.close()
+    except Exception as _he:
+        log.warning("Kairos Refined history tracking failed: %s", _he)
+
+    _kairos_refined_last_result = {
+        "run_at": _kairos_refined_last_run,
+        "top_strategies":     top,
+        "added_strategies":   added_strategies,
+        "removed_strategies": removed_strategies,
+        "tenure_runs":        tenure_runs,
+        "rank_deltas":        rank_deltas,
+        "top_scored": [
+            {
+                "name": name, "score": score,
+                "trades": stats.get("trades"), "win_rate": stats.get("win_rate"),
+                "profit_factor": stats.get("profit_factor"), "total_pnl": stats.get("total_pnl"),
+                "sharpe": stats.get("sharpe"), "consec_losses": stats.get("consec_losses", 0),
+                "shares": qty_by_strat.get(name, (None, 0, None))[0],
+                "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
+                "last_price": qty_by_strat.get(name, (None, 0, None))[2],
+                "last_trade_at": stats.get("last_trade_at"),
+                "rank_delta": rank_deltas.get(name),
+            }
+            for name, stats, score in top_scored
+        ],
+        "on_deck_strategies": on_deck,
+        "on_deck_scored": [
+            {
+                "name": name, "score": score,
+                "trades": stats.get("trades"), "win_rate": stats.get("win_rate"),
+                "profit_factor": stats.get("profit_factor"), "total_pnl": stats.get("total_pnl"),
+                "sharpe": stats.get("sharpe"), "consec_losses": stats.get("consec_losses", 0),
+                "shares": qty_by_strat.get(name, (None, 0, None))[0],
+                "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
+                "last_price": qty_by_strat.get(name, (None, 0, None))[2],
+                "last_trade_at": stats.get("last_trade_at"),
+                "rank_delta": rank_deltas.get(name),
+            }
+            for name, stats, score in on_deck_scored
+        ],
+        "weights":          _REFINED_SCORE_WEIGHTS,
+        "size_bands":       _REFINED_SIZE_BANDS,
+        "min_trades":       _KAIROS_REFINED_MIN_TRADES,
+        "consec_loss_gate": _REFINED_CONSEC_LOSS_GATE,
+        "demoted":          demoted,
+        "source":           "kairos_farm",
+        "from_date":        from_date or None,
+        "days":             days if not from_date else None,
+    }
+    log.info("Kairos Refined refresh: top=%d anchor=%s min_trades=%d",
+             len(top), from_date or f"last {days}d", _KAIROS_REFINED_MIN_TRADES)
+    try:
+        _save_setting("KAIROS_REFINED_LAST_RESULT", json.dumps(_kairos_refined_last_result))
+    except Exception as _pe:
+        log.warning("Failed to persist Kairos Refined snapshot: %s", _pe)
+    return _kairos_refined_last_result
+
+
+@app.route("/api/kairos_refined/refresh", methods=["GET"])
+def get_kairos_refined_status():
+    anchor = _load_setting("KAIROS_REFINED_FROM_DATE") or ""
+    days   = _load_setting("KAIROS_REFINED_DAYS")
+    try:    days = int(days) if days else 30
+    except (TypeError, ValueError): days = 30
+    if _kairos_refined_last_run:
+        return jsonify({**_kairos_refined_last_result, "anchor_from_date": anchor, "days": days})
+    return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
+
+
+@app.route("/api/kairos_refined/refresh", methods=["POST"])
+def refresh_kairos_refined():
+    data = request.get_json(silent=True) or {}
+    n = int(data.get("n", 20))
+    if "days" in data:
+        try:    days = max(1, int(data["days"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "days must be an integer ≥ 1"}), 400
+        _save_setting("KAIROS_REFINED_DAYS", str(days))
+    else:
+        stored = _load_setting("KAIROS_REFINED_DAYS")
+        try:    days = int(stored) if stored else 30
+        except (TypeError, ValueError): days = 30
+    if "from_date" in data:
+        from_date = (data.get("from_date") or "").strip() or None
+        _save_setting("KAIROS_REFINED_FROM_DATE", from_date or "")
+    else:
+        from_date = (_load_setting("KAIROS_REFINED_FROM_DATE") or "").strip() or None
+    result = _do_refresh_kairos_refined(n=n, days=days, from_date=from_date)
+    return jsonify(result)
+
+
 def _refined_scheduler_loop():
     """Daily background thread: refresh Alpaca Refined at 4:15 PM ET on weekdays."""
     import datetime as _dt
     from zoneinfo import ZoneInfo
     _et = ZoneInfo("America/New_York")
     _ran_today = None
+    _kairos_ran_today = None
     _ee_logged = None
     while True:
         time.sleep(60)
@@ -7565,6 +7854,19 @@ def _refined_scheduler_loop():
                 log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
+        # Kairos Refined snapshot — offset 1 min from the TV refresh so the two
+        # don't overlap on the DB. Same day-window convention as TV.
+        if now.hour == 16 and now.minute == 16 and _kairos_ran_today != today:
+            _kairos_ran_today = today
+            try:
+                _kdays_raw = _load_setting("KAIROS_REFINED_DAYS")
+                try:    _kdays = int(_kdays_raw) if _kdays_raw else 30
+                except (TypeError, ValueError): _kdays = 30
+                _kfrom = (_load_setting("KAIROS_REFINED_FROM_DATE") or "").strip() or None
+                _do_refresh_kairos_refined(days=_kdays, from_date=_kfrom)
+                log.info("Scheduled Kairos Refined refresh complete for %s", today)
+            except Exception as _kre:
+                log.warning("Scheduled Kairos Refined refresh failed: %s", _kre)
         # Capture the entry-engine dry-run into the daily log after the close
         # (after the refresh, so scores are fresh and the full session's bars exist).
         if now.hour == 16 and now.minute == 30 and _ee_logged != today:
@@ -15464,6 +15766,21 @@ def _restore_refined_snapshot():
             log.warning("Failed to restore refined snapshot: %s", _e)
 
 _restore_refined_snapshot()
+
+
+def _restore_kairos_refined_snapshot():
+    global _kairos_refined_last_run, _kairos_refined_last_result
+    stored = _load_setting("KAIROS_REFINED_LAST_RESULT")
+    if stored:
+        try:
+            data = json.loads(stored)
+            _kairos_refined_last_run    = data.get("run_at")
+            _kairos_refined_last_result = data
+            log.info("Restored Kairos Refined snapshot from DB (run_at=%s)", _kairos_refined_last_run)
+        except Exception as _e:
+            log.warning("Failed to restore Kairos Refined snapshot: %s", _e)
+
+_restore_kairos_refined_snapshot()
 
 if __name__ == "__main__":
     app.run(debug=True)
