@@ -1667,7 +1667,10 @@ def api_crew_run():
             with _ca.test_client() as _c:
                 strat_data        = _c.get(f"/api/alpaca/analysis?{_qs}").get_json()  or {}
                 engine_strat_data = _c.get(f"/api/alpaca/analysis?{_qs3}").get_json() or {}
-                journal_data = _c.get("/api/journal/entries").get_json()         or []
+                # Scope to TV Refined — the book this comparison is about. Journals
+                # are per-account now, so an unfiltered pull would blend Kairos/Crew
+                # sweeps into it.
+                journal_data = _c.get("/api/journal/entries?account=2").get_json() or []
                 rules_data   = _c.get("/api/routing/rules").get_json()           or []
                 engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
                 # Inputs for the "Next Month" card baked into the report.

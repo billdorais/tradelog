@@ -2394,10 +2394,13 @@
 
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
+      // File the snapshot under the account the sweep ran on — otherwise a Kairos
+      // sweep would land on TV Refined's journal entry.
       const res = await fetch('/api/journal/sweep', {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ week: isoWeek, sweep_results: snapshot }),
+        body:    JSON.stringify({ week: isoWeek, account: document.getElementById('account').value,
+                                  sweep_results: snapshot }),
       });
       const data = await res.json();
       btn.textContent = data.ok ? '✓ Saved' : 'Error';

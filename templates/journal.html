@@ -25,6 +25,18 @@
     .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #88BF8B; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 5px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Account tabs — active tab takes the book's own colour (matches dashboard/replay) */
+    .acct-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .acct-tab { background: #13161f; border: 1px solid #2a2d3e; color: #888; border-radius: 6px;
+                padding: 7px 14px; font-size: 0.82rem; font-family: inherit; cursor: pointer;
+                transition: color 0.12s, border-color 0.12s, background 0.12s; }
+    .acct-tab:hover { color: #ccc; }
+    .acct-tab.active { color: var(--acct-color, #fff); border-color: var(--acct-color, #2a2d3e);
+                       background: color-mix(in srgb, var(--acct-color, #888) 12%, #13161f); font-weight: 600; }
+    /* Badge on each entry card so the book is unmistakable when reading back */
+    .acct-badge { display: inline-block; font-size: 0.68rem; font-weight: 700; padding: 2px 8px;
+                  border-radius: 4px; vertical-align: middle; margin-left: 8px; }
+
     /* Entry card */
     .entry { background: #13161f; border: 1px solid #1e2130; border-radius: 12px; margin-bottom: 32px; overflow: hidden; }
     .entry-head { padding: 20px 24px 16px; border-bottom: 1px solid #1e2130; }
@@ -166,10 +178,18 @@
   <div class="page-title">Weekly Trading Journal</div>
   <div class="page-sub">AI-generated weekly entries combining your trade stats with market context</div>
 
+  <!-- Each curated book keeps its own weekly entries — pick the book to journal. -->
+  <div class="acct-tabs" id="acctTabs">
+    {% for a in accounts %}
+    <button class="acct-tab{% if loop.first %} active{% endif %}" data-acct="{{ a.num }}"
+            data-color="{{ a.color }}" onclick="switchAccount('{{ a.num }}')">{{ a.label }}</button>
+    {% endfor %}
+  </div>
+
   <div class="gen-bar">
     <input type="week" id="weekPicker" class="week-input" title="Select week to generate">
     <button class="btn btn-primary" id="genBtn" onclick="generate()">&#10024; Generate This Week</button>
-    <span style="font-size:0.78rem;color:#555">Pulls your TV Refined trades + SPY/QQQ/VIX + last week's entry + AI analysis</span>
+    <span style="font-size:0.78rem;color:#555">Pulls your <span id="genHint">TV Refined</span> trades + SPY/QQQ/VIX + last week's entry + AI analysis</span>
   </div>
 
   <!-- Daily recap: TV Refined (acct2) vs Kairos Refined (acct3), per weekday -->
@@ -187,6 +207,31 @@
 
 <script>
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  // ── Account state ───────────────────────────────────────────────────────
+  // One book at a time: entries, generate, notes, delete and trade review all
+  // scope to _acct. Keeps week-keyed DOM ids unique (3 books share a week).
+  const ACCOUNTS = {{ accounts | tojson }};
+  let _acct = ACCOUNTS.length ? ACCOUNTS[0].num : '2';
+  const acctLabel = n => (ACCOUNTS.find(a => a.num === n) || {}).label || `Account ${n}`;
+  const acctColor = n => (ACCOUNTS.find(a => a.num === n) || {}).color || '#888';
+
+  function _paintTabs() {
+    document.querySelectorAll('.acct-tab').forEach(t => {
+      const on = t.dataset.acct === _acct;
+      t.classList.toggle('active', on);
+      t.style.setProperty('--acct-color', t.dataset.color);
+    });
+    const hint = document.getElementById('genHint');
+    if (hint) hint.textContent = acctLabel(_acct);
+  }
+
+  function switchAccount(n) {
+    if (n === _acct) return;
+    _acct = n;
+    _paintTabs();
+    loadEntries();
+  }
 
   function renderMd(text) {
     if (!text) return '';
@@ -340,7 +385,7 @@
     const card = document.createElement('div');
     card.className = 'entry';
     card.id = 'live-entry';
-    card.innerHTML = `<div class="entry-head"><div class="entry-week">${esc(weekDateRange(week))}</div><div class="entry-date">Generating…</div></div>
+    card.innerHTML = `<div class="entry-head"><div class="entry-week">${esc(weekDateRange(week))}</div><div class="entry-date">Generating ${esc(acctLabel(_acct))}…</div></div>
       <div class="ai-section"><div class="ai-label"><span class="ai-badge">Claude AI</span> Weekly Analysis</div>
       <div class="ai-text" id="live-text"><span class="ai-placeholder"><span class="spinner"></span> Fetching trade data and market conditions…</span></div></div>`;
     const container = document.getElementById('entries');
@@ -350,7 +395,7 @@
       const res = await fetch('/api/journal/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ week }),
+        body: JSON.stringify({ week, account: _acct }),
       });
       const reader = res.body.getReader();
       const dec    = new TextDecoder();
@@ -407,7 +452,7 @@
         await fetch('/api/journal/summary', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ week, ai_summary: finalSummary, tags: putTags }),
+          body: JSON.stringify({ week, account: _acct, ai_summary: finalSummary, tags: putTags }),
         });
       } catch {}
     } catch(e) {
@@ -422,15 +467,18 @@
   }
 
   async function loadEntries() {
-    const res     = await fetch('/api/journal/entries');
+    const acct    = _acct;                       // guard against a mid-flight tab switch
+    const res     = await fetch(`/api/journal/entries?account=${encodeURIComponent(acct)}`);
     const entries = await res.json();
+    if (acct !== _acct) return;                  // a newer switch already won
     const el      = document.getElementById('entries');
     if (!entries.length) {
-      el.innerHTML = '<div class="empty">No journal entries yet. Generate your first weekly entry above.</div>';
+      el.innerHTML = `<div class="empty">No ${esc(acctLabel(acct))} journal entries yet. Generate your first weekly entry above.</div>`;
       return;
     }
     // Pre-load cached trade reviews so they render inline
-    await _loadTradeReviews(entries.map(e => e.week));
+    await _loadTradeReviews(entries.map(e => e.week), acct);
+    if (acct !== _acct) return;
     el.innerHTML = entries.map(e => renderEntry(e)).join('');
   }
 
@@ -499,7 +547,7 @@
       : `<div class="ai-placeholder">No AI summary — click Regenerate to generate one.</div>`;
 
     // Trade review — loaded from cache if available
-    const trCache   = _tradeReviewCache[e.week];
+    const trCache   = _tradeReviewCache[_trKey(e.week, e.account)];
     const trContent = trCache?.summary ? `<div class="ai-text">${renderMd(trCache.summary)}</div>` : '';
     const trMeta    = trCache ? `${trCache.trade_count} trades · ${trCache.premature_pct}% early exits · ${trCache.generated_at}` : '';
     const trChanges = trCache?.changes || null;
@@ -570,7 +618,9 @@
       <div class="entry-head" style="display:flex;justify-content:space-between;align-items:flex-start">
         <div>
           <div class="entry-week">${esc(weekDateRange(e.week))}${md.regime ? ` <span style="font-size:0.7rem;font-weight:400;opacity:0.75;margin-left:8px">${esc(md.regime)}</span>` : ''}</div>
-          <div class="entry-date">Week ${esc(e.week)} &nbsp;·&nbsp; Generated ${esc((e.generated_at || '').slice(0,10))}</div>
+          <div class="entry-date">Week ${esc(e.week)} &nbsp;·&nbsp; Generated ${esc((e.generated_at || '').slice(0,10))}
+            <span class="acct-badge" style="color:${esc(e.account_color || '#888')};background:color-mix(in srgb, ${esc(e.account_color || '#888')} 15%, transparent)">${esc(e.account_label || '')}</span>
+          </div>
         </div>
         <div style="display:flex;gap:6px">
           <button onclick="generateTradeReview('${esc(e.week)}')"
@@ -696,8 +746,9 @@
   }
 
   async function deleteEntry(week) {
-    if (!confirm(`Delete the journal entry for ${week}? This cannot be undone.`)) return;
-    await fetch(`/api/journal/entries/${encodeURIComponent(week)}`, { method: 'DELETE' });
+    if (!confirm(`Delete the ${acctLabel(_acct)} journal entry for ${week}? This cannot be undone.`)) return;
+    await fetch(`/api/journal/entries/${encodeURIComponent(week)}?account=${encodeURIComponent(_acct)}`,
+                { method: 'DELETE' });
     loadEntries();
   }
 
@@ -706,7 +757,7 @@
     await fetch('/api/journal/notes', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ week, notes }),
+      body: JSON.stringify({ week, account: _acct, notes }),
     });
     const ok = document.getElementById(`save-ok-${week}`);
     if (ok) { ok.style.opacity = '1'; setTimeout(() => ok.style.opacity = '0', 2000); }
@@ -722,17 +773,22 @@
     if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
   });
 
+  _paintTabs();
   loadEntries();
 
   // ── Trade Review ────────────────────────────────────────────────────────
-  const _tradeReviewCache = {};  // week → {summary, trade_count, premature_pct, generated_at}
+  // "week|account" → {summary, trade_count, premature_pct, generated_at}. Keyed by
+  // account too, or switching books would show the previous book's review.
+  const _tradeReviewCache = {};
+  const _trKey = (w, a) => `${w}|${a}`;
 
-  async function _loadTradeReviews(weeks) {
+  async function _loadTradeReviews(weeks, acct) {
     for (const w of weeks) {
-      if (_tradeReviewCache[w]) continue;
+      if (_tradeReviewCache[_trKey(w, acct)]) continue;
       try {
-        const d = await fetch(`/api/journal/trade_review/${w}`).then(r => r.json());
-        if (d.summary) _tradeReviewCache[w] = d;
+        const d = await fetch(`/api/journal/trade_review/${w}?account=${encodeURIComponent(acct)}`)
+                    .then(r => r.json());
+        if (d.summary) _tradeReviewCache[_trKey(w, acct)] = d;
       } catch(e) {}
     }
   }
@@ -748,7 +804,7 @@
       const res = await fetch('/api/journal/trade_review', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({week}),
+        body: JSON.stringify({week, account: _acct}),
       });
       if (!res.ok) { textEl.textContent = 'Error: HTTP ' + res.status; return; }
 
@@ -772,7 +828,10 @@
               buf = '';
               // Cache changes and show Apply button if recommendations present
               if (msg.changes && Object.keys(msg.changes).length) {
-                if (_tradeReviewCache[week]) _tradeReviewCache[week].changes = msg.changes;
+                // Seed the entry if absent — a freshly generated review has no
+                // cached row yet, and Apply reads its changes from here.
+                const _k = _trKey(week, _acct);
+                _tradeReviewCache[_k] = { ...(_tradeReviewCache[_k] || {}), changes: msg.changes };
                 const applyWrap = document.getElementById(`tr-apply-wrap-${week}`);
                 if (applyWrap && !applyWrap.querySelector('button')) {
                   applyWrap.innerHTML = `<button onclick="applyTradeReviewChanges('${week}')"
@@ -792,7 +851,7 @@
   }
 
   async function applyTradeReviewChanges(week) {
-    const ch = _tradeReviewCache[week]?.changes;
+    const ch = _tradeReviewCache[_trKey(week, _acct)]?.changes;
     if (!ch) { alert('No changes found for this review.'); return; }
 
     // Build human-readable summary for confirm dialog

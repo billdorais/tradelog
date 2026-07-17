@@ -1949,29 +1949,94 @@ def init_db():
     """)
     conn.commit()
 
-    # Journal entries table
+    # Journal entries table — one row per (week, account) so each curated book
+    # (TV Refined / Kairos Refined / Crew) gets its own weekly entry.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS journal_entries (
-            id           SERIAL PRIMARY KEY,
-            week         TEXT UNIQUE,
-            generated_at TEXT,
-            trade_stats  TEXT,
-            market_data  TEXT,
-            ai_summary   TEXT,
-            user_notes   TEXT
+            id            SERIAL PRIMARY KEY,
+            week          TEXT,
+            account       TEXT DEFAULT '2',
+            generated_at  TEXT,
+            trade_stats   TEXT,
+            market_data   TEXT,
+            ai_summary    TEXT,
+            user_notes    TEXT,
+            tags          TEXT,
+            sweep_results TEXT,
+            UNIQUE (week, account)
         )
     """ if DATABASE_URL else """
         CREATE TABLE IF NOT EXISTS journal_entries (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            week         TEXT UNIQUE,
-            generated_at TEXT,
-            trade_stats  TEXT,
-            market_data  TEXT,
-            ai_summary   TEXT,
-            user_notes   TEXT
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            week          TEXT,
+            account       TEXT DEFAULT '2',
+            generated_at  TEXT,
+            trade_stats   TEXT,
+            market_data   TEXT,
+            ai_summary    TEXT,
+            user_notes    TEXT,
+            tags          TEXT,
+            sweep_results TEXT,
+            UNIQUE (week, account)
         )
     """)
     conn.commit()
+
+    # ── Migrate pre-account journals: (week UNIQUE) → UNIQUE(week, account) ──
+    # Existing rows were all implicitly TV Refined (account 2 was the generate
+    # default), so they backfill to '2'. Runs after the CREATE above so the table
+    # is guaranteed to exist; idempotent via the `account` column probe.
+    try:
+        if DATABASE_URL:
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='journal_entries' AND column_name='account'")
+            _has_acct = cur.fetchone() is not None
+        else:
+            cur.execute("PRAGMA table_info(journal_entries)")
+            _has_acct = any(r[1] == "account" for r in cur.fetchall())
+        if not _has_acct:
+            log.info("Migrating journal_entries to per-account rows…")
+            if DATABASE_URL:
+                cur.execute("ALTER TABLE journal_entries ADD COLUMN account TEXT")
+                cur.execute("UPDATE journal_entries SET account='2' WHERE account IS NULL")
+                cur.execute("ALTER TABLE journal_entries ALTER COLUMN account SET DEFAULT '2'")
+                cur.execute("ALTER TABLE journal_entries DROP CONSTRAINT IF EXISTS journal_entries_week_key")
+                cur.execute("ALTER TABLE journal_entries ADD CONSTRAINT journal_entries_week_account_key "
+                            "UNIQUE (week, account)")
+            else:
+                # SQLite can't drop a column-level UNIQUE — rebuild the table.
+                cur.execute("PRAGMA table_info(journal_entries)")
+                _have = {r[1] for r in cur.fetchall()}
+                _cols = ["id", "week", "generated_at", "trade_stats", "market_data",
+                         "ai_summary", "user_notes", "tags", "sweep_results"]
+                _sel  = ", ".join(c if c in _have else "NULL" for c in _cols)
+                cur.execute("""
+                    CREATE TABLE journal_entries_new (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        week          TEXT,
+                        account       TEXT DEFAULT '2',
+                        generated_at  TEXT,
+                        trade_stats   TEXT,
+                        market_data   TEXT,
+                        ai_summary    TEXT,
+                        user_notes    TEXT,
+                        tags          TEXT,
+                        sweep_results TEXT,
+                        UNIQUE (week, account)
+                    )
+                """)
+                cur.execute(
+                    f"INSERT INTO journal_entries_new (id, week, generated_at, trade_stats, "
+                    f"market_data, ai_summary, user_notes, tags, sweep_results, account) "
+                    f"SELECT {_sel}, '2' FROM journal_entries"
+                )
+                cur.execute("DROP TABLE journal_entries")
+                cur.execute("ALTER TABLE journal_entries_new RENAME TO journal_entries")
+            conn.commit()
+            log.info("journal_entries migration complete (existing rows → account '2').")
+    except Exception as _je:
+        conn.rollback()
+        log.warning("journal_entries per-account migration failed: %s", _je)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS position_timers (
@@ -3330,7 +3395,13 @@ def routing_page():
 
 @app.route("/journal")
 def journal():
-    return render_template("journal.html")
+    # The journal covers the curated books (TV Refined, Kairos Refined, Crew) —
+    # the farms are audition pools, not books you review week to week. Filtered by
+    # the registry so an unconfigured account doesn't render a dead tab.
+    _curated = ["2", "3", "4"]
+    _accts = [{"num": n, "label": ACCOUNT_META[n]["label"], "color": ACCOUNT_META[n]["color"]}
+              for n in _curated if n in ACCOUNTS_BY_NUM and n in ACCOUNT_META]
+    return render_template("journal.html", accounts=_accts)
 
 
 @app.route("/research")
@@ -4290,9 +4361,16 @@ def api_agent_optimize():
 
 @app.route("/api/journal/entries")
 def api_journal_entries():
+    """All journal entries, newest first. ?account=N filters to one book;
+    omit it to get every account (each row carries its own `account`)."""
+    account = str(request.args.get("account") or "").strip()
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute("SELECT * FROM journal_entries ORDER BY week DESC")
+    if account:
+        cur.execute(f"SELECT * FROM journal_entries WHERE account={placeholder()} "
+                    f"ORDER BY week DESC", (account,))
+    else:
+        cur.execute("SELECT * FROM journal_entries ORDER BY week DESC, account ASC")
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description] if DATABASE_URL else None
     entries = []
@@ -4303,6 +4381,11 @@ def api_journal_entries():
                 e[f] = json.loads(e[f]) if e[f] else {}
             except Exception:
                 e[f] = {}
+        # Pre-account rows carry no account — they were all TV Refined.
+        e["account"] = str(e.get("account") or "2")
+        _meta = ACCOUNT_META.get(e["account"], {})
+        e["account_label"] = _meta.get("label", f"Account {e['account']}")
+        e["account_color"] = _meta.get("color", "#888")
         entries.append(e)
     conn.close()
     return jsonify(entries)
@@ -4315,6 +4398,7 @@ def api_journal_summary():
     labels-only) preserves the pre-computed grade already in the DB."""
     data     = request.get_json(silent=True) or {}
     week     = data.get("week", "").strip()
+    account  = str(data.get("account") or "2").strip() or "2"
     summary  = data.get("ai_summary", "")
     new_tags = data.get("tags") or {}
     if not week:
@@ -4323,7 +4407,7 @@ def api_journal_summary():
     conn = get_db()
     cur  = conn.cursor()
     # Read existing tags so we can merge (preserve grade if not re-sent)
-    cur.execute(f"SELECT tags FROM journal_entries WHERE week={p}", (week,))
+    cur.execute(f"SELECT tags FROM journal_entries WHERE week={p} AND account={p}", (week, account))
     row = cur.fetchone()
     existing = {}
     if row:
@@ -4334,8 +4418,8 @@ def api_journal_summary():
             pass
     merged = {**existing, **new_tags}
     cur.execute(
-        f"UPDATE journal_entries SET ai_summary={p}, tags={p} WHERE week={p}",
-        (summary, json.dumps(merged), week)
+        f"UPDATE journal_entries SET ai_summary={p}, tags={p} WHERE week={p} AND account={p}",
+        (summary, json.dumps(merged), week, account)
     )
     conn.commit()
     conn.close()
@@ -4345,27 +4429,23 @@ def api_journal_summary():
 @app.route("/api/journal/sweep", methods=["PUT"])
 def api_journal_sweep():
     """Save a sweep snapshot to the journal entry for a given week."""
-    data  = request.get_json(silent=True) or {}
-    week  = data.get("week", "").strip()
-    sweep = data.get("sweep_results")
+    data    = request.get_json(silent=True) or {}
+    week    = data.get("week", "").strip()
+    # The sweep was run against a specific account on Replay — file it under that
+    # book's entry, not blindly onto TV Refined's.
+    account = str(data.get("account") or "2").strip() or "2"
+    sweep   = data.get("sweep_results")
     if not week:
         return jsonify({"error": "week required"}), 400
     p    = placeholder()
     conn = get_db()
     cur  = conn.cursor()
     sweep_json = json.dumps(sweep)
-    if DATABASE_URL:
-        cur.execute(
-            f"INSERT INTO journal_entries (week, sweep_results) VALUES ({p},{p}) "
-            f"ON CONFLICT (week) DO UPDATE SET sweep_results={p}",
-            (week, sweep_json, sweep_json),
-        )
-    else:
-        cur.execute(f"SELECT id FROM journal_entries WHERE week={p}", (week,))
-        if cur.fetchone():
-            cur.execute(f"UPDATE journal_entries SET sweep_results={p} WHERE week={p}", (sweep_json, week))
-        else:
-            cur.execute(f"INSERT INTO journal_entries (week, sweep_results) VALUES ({p},{p})", (week, sweep_json))
+    cur.execute(
+        f"INSERT INTO journal_entries (week, account, sweep_results) VALUES ({p},{p},{p}) "
+        f"ON CONFLICT (week, account) DO UPDATE SET sweep_results={p}",
+        (week, account, sweep_json, sweep_json),
+    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -4373,15 +4453,17 @@ def api_journal_sweep():
 
 @app.route("/api/journal/notes", methods=["PUT"])
 def api_journal_notes():
-    data  = request.get_json(silent=True) or {}
-    week  = data.get("week", "").strip()
-    notes = data.get("notes", "")
+    data    = request.get_json(silent=True) or {}
+    week    = data.get("week", "").strip()
+    account = str(data.get("account") or "2").strip() or "2"
+    notes   = data.get("notes", "")
     if not week:
         return jsonify({"error": "week required"}), 400
     p = placeholder()
     conn = get_db()
     cur  = conn.cursor()
-    cur.execute(f"UPDATE journal_entries SET user_notes={p} WHERE week={p}", (notes, week))
+    cur.execute(f"UPDATE journal_entries SET user_notes={p} WHERE week={p} AND account={p}",
+                (notes, week, account))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -4389,9 +4471,12 @@ def api_journal_notes():
 
 @app.route("/api/journal/entries/<week>", methods=["DELETE"])
 def api_journal_delete(week):
+    """Delete one book's entry for a week. ?account= is required in effect —
+    it defaults to TV Refined rather than deleting every account's entry."""
+    account = str(request.args.get("account") or "2").strip() or "2"
     p = placeholder()
     conn = get_db(); cur = conn.cursor()
-    cur.execute(f"DELETE FROM journal_entries WHERE week={p}", (week,))
+    cur.execute(f"DELETE FROM journal_entries WHERE week={p} AND account={p}", (week, account))
     conn.commit(); conn.close()
     return jsonify({"ok": True})
 
@@ -4401,6 +4486,18 @@ def api_journal_generate():
     """Generate a weekly journal entry. Streams the AI summary via SSE."""
     import datetime as _dtmod
 
+    data    = request.get_json(silent=True) or {}
+    week    = data.get("week", "").strip()   # "YYYY-WXX"
+    # Registry-driven: journal any configured account. Defaults to TV Refined (2),
+    # the primary production book. Validate against the registry rather than
+    # falling back to account 1 — a silent fallback would label the entry with the
+    # requested account while showing another account's fills. Validated before the
+    # AI-service guards so a bad request reads as 400, not 503.
+    account = str(data.get("account", "2")).strip() or "2"
+    if account not in ACCOUNTS_BY_NUM:
+        return jsonify({"error": f"Account {account} is not configured"}), 400
+    _acct_broker, _acct_tag, account_label, _acct_fills_fn = _alpaca_account_ctx(account)
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
@@ -4408,13 +4505,6 @@ def api_journal_generate():
         import anthropic as _anthropic
     except ImportError:
         return jsonify({"error": "anthropic package not installed"}), 503
-
-    data    = request.get_json(silent=True) or {}
-    week    = data.get("week", "").strip()   # "YYYY-WXX"
-    # Default to Alpaca Refined (account 2) — that's the production cohort the
-    # weekly journal is meant to reflect. Pass account="1" to use Paper All.
-    account = str(data.get("account", "2")).strip() or "2"
-    use_acct2 = (account == "2")
 
     # Default to current ISO week (must match <input type="week"> / fromisocalendar;
     # strftime %W is NOT ISO and can be off by one).
@@ -4438,10 +4528,10 @@ def api_journal_generate():
     # ── Trade stats for the week (same LIFO logic as /api/alpaca/analysis) ──
     trade_stats = {}
     try:
-        active_broker = alpaca_broker2 if use_acct2 else alpaca_broker
+        active_broker = _acct_broker
         if active_broker is not None:
             from datetime import datetime as _dt2
-            fills = _get_cached_fills_2() if use_acct2 else _get_cached_fills()
+            fills = _acct_fills_fn()
             week_fills = [f for f in fills if from_date <= (f.get("time") or "")[:10] <= to_date]
 
             # Build signal lookup (ticker, side) → [(ts, strategy, sentiment)]
@@ -4690,7 +4780,7 @@ def api_journal_generate():
     # ── Account equity → system return % ────────────────────────────────
     if trade_stats and trade_stats.get('total_pnl') is not None:
         try:
-            _ae_broker = alpaca_broker2 if use_acct2 else alpaca_broker
+            _ae_broker = _acct_broker
             if _ae_broker is not None:
                 _ae_broker._ensure_client()
                 _ae_acct   = _ae_broker._trading.get_account()
@@ -4721,22 +4811,18 @@ def api_journal_generate():
     conn = get_db()
     cur  = conn.cursor()
     now_str = _dtmod.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Upsert entry so regeneration replaces old content; save grade now so it
-    # shows immediately even if the stream's label UPDATE fails later.
-    if DATABASE_URL:
-        cur.execute(
-            f"INSERT INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes, tags) "
-            f"VALUES ({p},{p},{p},{p},{p},{p},{p}) "
-            f"ON CONFLICT (week) DO UPDATE SET generated_at={p}, trade_stats={p}, market_data={p}, ai_summary='', tags={p}",
-            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "", _init_tags_json,
-             now_str, json.dumps(trade_stats), json.dumps(market_data), _init_tags_json),
-        )
-    else:
-        cur.execute(
-            "INSERT OR REPLACE INTO journal_entries (week, generated_at, trade_stats, market_data, ai_summary, user_notes, tags) "
-            f"VALUES ({p},{p},{p},{p},{p},{p},{p})",
-            (week, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "", _init_tags_json),
-        )
+    # Upsert this (week, account) so regeneration replaces old content; save grade
+    # now so it shows immediately even if the stream's label UPDATE fails later.
+    # Both backends use ON CONFLICT DO UPDATE: it leaves user_notes/sweep_results
+    # intact (SQLite's INSERT OR REPLACE would delete the row and wipe them).
+    cur.execute(
+        f"INSERT INTO journal_entries (week, account, generated_at, trade_stats, market_data, ai_summary, user_notes, tags) "
+        f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p}) "
+        f"ON CONFLICT (week, account) DO UPDATE SET generated_at={p}, trade_stats={p}, "
+        f"market_data={p}, ai_summary='', tags={p}",
+        (week, account, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "", _init_tags_json,
+         now_str, json.dumps(trade_stats), json.dumps(market_data), _init_tags_json),
+    )
     conn.commit()
     conn.close()
 
@@ -4753,8 +4839,9 @@ def api_journal_generate():
         _pconn = get_db()
         _pcur  = _pconn.cursor()
         _pcur.execute(
-            f"SELECT ai_summary, trade_stats FROM journal_entries WHERE week={placeholder()}",
-            (prev_week_key,),
+            f"SELECT ai_summary, trade_stats FROM journal_entries "
+            f"WHERE week={placeholder()} AND account={placeholder()}",
+            (prev_week_key, account),
         )
         _prow = _pcur.fetchone()
         _pconn.close()
@@ -4784,8 +4871,6 @@ def api_journal_generate():
     spy_ret  = spy.get("weekly_return", 0) or 0
     qqq_ret  = qqq.get("weekly_return", 0) or 0
 
-    account_label = ACCOUNT_META.get(account, {}).get("label",
-                                     "TV Refined" if use_acct2 else "TV Farm")
     prompt = (
         f"You are a trading coach reviewing a systematic trader's weekly performance journal.\n\n"
         f"Week: {week} ({from_date} to {to_date}) · Account: {account_label}\n\n"
@@ -4969,8 +5054,14 @@ def api_trade_review():
     except ImportError:
         return jsonify({"error": "anthropic package not installed"}), 503
 
-    data = request.get_json(silent=True) or {}
-    week = data.get("week", "").strip()
+    data    = request.get_json(silent=True) or {}
+    week    = data.get("week", "").strip()
+    # Review the book the journal entry is for — otherwise a Kairos entry would
+    # show TV Refined's exits. Validated against the registry (no silent fallback).
+    account = str(data.get("account") or "2").strip() or "2"
+    if account not in ACCOUNTS_BY_NUM:
+        return jsonify({"error": f"Account {account} is not configured"}), 400
+    _tr_broker, _tr_tag, _tr_label, _tr_fills_fn = _alpaca_account_ctx(account)
     if not week:
         today = _dtmod.date.today()
         week  = today.strftime("%Y-W%W")
@@ -5026,14 +5117,14 @@ def api_trade_review():
             yield f"data: {json.dumps({'error': f'Internal error: {_ex}'})}\n\n"
 
     def _stream_inner():
-        if not alpaca_broker2:
-            yield f"data: {json.dumps({'error': 'Refined account not configured'})}\n\n"
+        if not _tr_broker:
+            yield f"data: {json.dumps({'error': f'{_tr_label} not configured'})}\n\n"
             return
 
-        fills = _get_cached_fills_2()
+        fills = _tr_fills_fn()
         week_fills = [f for f in fills if from_date <= (f.get("time") or "")[:10] <= to_date]
         if not week_fills:
-            yield f"data: {json.dumps({'error': 'No Refined fills found for this week'})}\n\n"
+            yield f"data: {json.dumps({'error': f'No {_tr_label} fills found for this week'})}\n\n"
             return
 
         # Pair into round-trips
@@ -5242,12 +5333,15 @@ def api_trade_review():
 
         yield f"data: {json.dumps({'done': True, 'changes': changes})}\n\n"
 
-        # Persist to settings keyed by week
+        # Persist to settings keyed by week + account. Account 2 keeps the bare
+        # week key so reviews written before per-account journals still load.
         try:
-            _save_setting(f"TRADE_REVIEW_{week}", json.dumps({
+            _key = f"TRADE_REVIEW_{week}" if account == "2" else f"TRADE_REVIEW_{week}_{account}"
+            _save_setting(_key, json.dumps({
                 "summary":       summary,
                 "changes":       changes,
                 "week":          week,
+                "account":       account,
                 "trade_count":   len(records),
                 "premature_pct": premature_pct,
                 "generated_at":  _dtmod.datetime.now(_dtmod.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -5261,8 +5355,11 @@ def api_trade_review():
 
 @app.route("/api/journal/trade_review/<week>", methods=["GET"])
 def api_get_trade_review(week):
-    """Return cached trade review for a week."""
-    stored = _load_setting(f"TRADE_REVIEW_{week}")
+    """Return cached trade review for a week. ?account=N selects the book;
+    account 2 reads the bare week key written before per-account journals."""
+    account = str(request.args.get("account") or "2").strip() or "2"
+    stored = _load_setting(f"TRADE_REVIEW_{week}" if account == "2"
+                           else f"TRADE_REVIEW_{week}_{account}")
     if stored:
         try:
             return jsonify(json.loads(stored))
