@@ -4593,6 +4593,35 @@ def api_journal_generate():
                 except Exception:
                     pass
 
+            # Band × side split (same buckets as the Long/Short diagnostic) — lets a
+            # quarter of weekly journals reveal whether a one-sided bleed in a band is
+            # persistent (strategy) or drifts with the tape (regime). Computed from the
+            # clean pairs already in hand — no extra network calls.
+            def _j_band(strat):
+                s = (strat or "").upper(); i = s.find("_CAM_")
+                if i >= 0:
+                    p = s[i + 5:].split("_")
+                    if len(p) >= 2:
+                        return f"{p[0]} {p[1]}"
+                return "OTHER"
+            _bs = {}
+            for t in j_clean:
+                side = (t.get("side") or "").upper()
+                if side not in ("LONG", "SHORT"):
+                    continue
+                key = (_j_band(t.get("strategy")), side)
+                b = _bs.setdefault(key, {"trades": 0, "wins": 0, "pnl": 0.0})
+                b["trades"] += 1
+                if t["pnl"] > 0: b["wins"] += 1
+                b["pnl"] = round(b["pnl"] + t["pnl"], 2)
+            by_band_side = sorted(
+                ({"band": k[0], "side": k[1], "trades": v["trades"], "wins": v["wins"],
+                  "win_rate": round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0.0,
+                  "pnl": v["pnl"]}
+                 for k, v in _bs.items()),
+                key=lambda r: r["pnl"],   # worst first — surface the bleed
+            )
+
             trade_stats = {
                 "trades":        len(all_j),
                 "wins":          len(wins),
@@ -4609,6 +4638,7 @@ def api_journal_generate():
                 "per_ticker":    {k: v for k, v in top_tickers},
                 "by_day":        {d: by_day[d] for d in _days if d in by_day},
                 "by_hour":       dict(sorted(by_hour.items())),
+                "by_band_side":  by_band_side,
             }
     except Exception as _te:
         log.warning("Journal trade stats error: %s", _te)
@@ -4803,6 +4833,15 @@ def api_journal_generate():
         else:
             prompt += f"  {_d}: no trades\n"
 
+    # Band × side split — so each weekly entry records which side of which band bled,
+    # and a quarter of entries reveals persistent (strategy) vs tape-driven (regime) edges.
+    _bss = [r for r in (ts.get("by_band_side") or []) if r.get("trades", 0) >= 2]
+    if _bss:
+        prompt += "\nBAND × SIDE THIS WEEK (>=2 trades, worst first):\n"
+        for r in _bss[:10]:
+            prompt += (f"  {r['band']} {r['side']}: {r['trades']} trades · "
+                       f"{r.get('win_rate', 0)}% win · ${r['pnl']:+.2f}\n")
+
     # Prior-week reference block — gives the AI material to assess week-over-week progression.
     if prior_summary or prior_stats:
         prev_pnl   = prior_stats.get("total_pnl", 0)
@@ -4824,7 +4863,7 @@ def api_journal_generate():
             prompt += f"  Last week's journal:\n    {_trimmed}\n"
 
     prompt += (
-        f"\nWrite a weekly trading journal entry with these SIX sections. Use the exact headers shown:\n\n"
+        f"\nWrite a weekly trading journal entry with these SEVEN sections. Use the exact headers shown:\n\n"
         f"**Market Regime & Setup Availability**\n"
         f"Was the regime favorable for Camarilla breakout/reversal strategies on 5-min bars? "
         f"Reference VIX level and SPY/QQQ direction specifically.\n\n"
@@ -4841,6 +4880,16 @@ def api_journal_generate():
         f"Combined P&L was ${bot5_pnl:+.2f}. Write one line per strategy using this exact format:\n"
         f"**TICKER** (P&L · stock return): one sentence — regime loss or structural miss?\n"
         f"State whether each loss was the stock moving against the strategy (regime) or the stock was up but strategy still lost (structural miss).\n\n"
+        f"**Side Edges by Band**\n"
+        + (
+            "From the BAND × SIDE table, call out any band whose ONE side clearly bled (e.g. 'R4S4 shorts lost while "
+            "longs held'). For each, say whether it looks like a strategy problem in that band (side-gate candidate) "
+            "or the whole week's tape went against that side (regime). IMPORTANT: this is one week — a single week is "
+            "noise, so frame it as 'watch whether this persists', not a verdict. If nothing is clearly one-sided, say "
+            "so in one line. 2-3 sentences.\n\n"
+            if _bss else
+            "Not enough band×side data this week (need >=2 trades on a side) — note that and move on in one line.\n\n"
+        ) +
         f"**Progress vs Last Week**\n"
         + (
             "Compare this week's numbers (trades, win rate, P&L, PF) to last week's. Did the prior 'Next Week Watchlist' "
