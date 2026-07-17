@@ -843,25 +843,31 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _kept
 
-    # Per-account reversal-side gate (entries only): drop targets whose account
-    # restricts REVERSALS to one side (e.g. Refined = short-only). Accounts with no
-    # policy (Kairos, Crew Paper, Paper All) pass. Per-target, so gating Refined
-    # never touches Kairos. Exits always pass.
-    if not _is_exit and alpaca_targets and _gate_entry_side in ("long", "short"):
+    # Per-account reversal policy (entries only): drop targets whose account takes
+    # reversals on one side only (e.g. "short") or takes none at all ("off", TV
+    # Refined). Accounts with no policy (Kairos, Crew Paper, the farms) pass — the
+    # farms keep trading reversals, which is what keeps the evidence accruing.
+    # Per-target, so gating TV Refined never touches Kairos. Exits always pass.
+    # No _gate_entry_side precondition: under "off" the side is irrelevant, and
+    # _reversal_gate_block already passes an unknown side for the one-side policies.
+    if not _is_exit and alpaca_targets:
         _rev_kept, _rev_dropped = [], []
         for bt in alpaca_targets:
             _acct_tag = _alpaca_broker_name(bt[0])
-            if app._reversal_gate_block(strategy_name, _gate_entry_side, _acct_tag):
+            if app._reversal_gate_block(strategy_name, _gate_entry_side or "", _acct_tag):
                 _rev_dropped.append(_acct_tag)
             else:
                 _rev_kept.append(bt)
         if _rev_dropped:
-            app.log.info("Reversal-side gate: %s %s — skipped %s (reversal not %s-side)",
-                         order_action, ticker, ",".join(_rev_dropped), _gate_entry_side)
+            _pols = {t: app._REVERSAL_SIDE_BY_TAG.get(t) for t in _rev_dropped}
+            _why  = lambda t: ("takes no reversal entries" if _pols[t] == "off"
+                               else f"trades {_pols[t]}-side reversals only")
+            app.log.info("Reversal gate: %s %s — skipped %s", order_action, ticker,
+                         "; ".join(f"{t} ({_pols[t]})" for t in sorted(set(_rev_dropped))))
             if not _rev_kept and conn:
                 app._update_exec(cur, trade_id, "skipped",
-                    f"Reversal-side gate: {', '.join(sorted(set(_rev_dropped)))} trades reversals "
-                    f"one-side only — this {_gate_entry_side} reversal skipped")
+                    "Reversal gate: " + "; ".join(f"{t} {_why(t)}"
+                                                  for t in sorted(set(_rev_dropped))))
                 conn.commit()
         alpaca_targets = _rev_kept
 

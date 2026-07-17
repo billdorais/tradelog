@@ -1,9 +1,17 @@
-"""Per-account reversal-side gate.
+"""Per-account reversal policy: one side only, "off", or free.
 
-Evidence (Book Breakdown, Jun-Jul '26): Refined's reversals bleed long-side, so
-Refined (alpaca2) is gated to short-only reversals; Kairos (alpaca3) and others
-have no policy. The gate is enforced by TARGET ACCOUNT, so gating Refined never
-touches Kairos. Exits and breakouts always pass.
+Evidence (Book Breakdown): Kairos (alpaca3) and Crew reversals are profitable
+both sides, so they run free. TV Refined (alpaca2) was short-only on a short-side
+edge, but 2026-07-01..17 killed that premise — 22 round-trips, ONE winner (4.5%),
+-$394, both sides dead — so it takes no reversal entries at all ("off"). TV Farm
+keeps trading reversals, so the evidence for a comeback keeps accruing.
+
+The gate is enforced by TARGET ACCOUNT, so gating TV Refined never touches
+Kairos. Exits and breakouts always pass.
+
+Mechanism tests below patch the policy map directly, so they keep testing the
+gate rather than today's config; the current per-account policy is pinned
+separately in test_current_policy_config.
 """
 from __future__ import annotations
 
@@ -19,23 +27,85 @@ import sqlite3
 
 import pytest
 
-
-def test_helper_gates_refined_long_only(engine_app):
-    a = engine_app
-    # Refined (alpaca2) = short-only reversals.
-    assert a._reversal_gate_block("AMZN_CAM_REVERSAL_R4S4_V02_5MIN", "long",  "alpaca2") is True
-    assert a._reversal_gate_block("AMZN_CAM_REVERSAL_R4S4_V02_5MIN", "short", "alpaca2") is False
-    # Kairos (alpaca3) + Paper All (alpaca) = no policy.
-    assert a._reversal_gate_block("AMZN_CAM_REVERSAL_R4S4_V02_5MIN", "long",  "alpaca3") is False
-    assert a._reversal_gate_block("AMZN_CAM_REVERSAL_R4S4_V02_5MIN", "long",  "alpaca")  is False
-    # Breakouts are never reversal-gated.
-    assert a._reversal_gate_block("AMZN_CAM_BREAKOUT_R4S4_V02_5MIN", "long",  "alpaca2") is False
+REV = "AMZN_CAM_REVERSAL_R4S4_V02_5MIN"
+BRK = "AMZN_CAM_BREAKOUT_R4S4_V02_5MIN"
 
 
 @pytest.fixture()
 def engine_app():
     import app as a
     return a
+
+
+@pytest.fixture()
+def policy(engine_app):
+    """Patch the resolved policy map so mechanism tests don't depend on config."""
+    a = engine_app
+    saved = a._REVERSAL_SIDE_BY_TAG.copy()
+
+    def _set(**tags):
+        a._REVERSAL_SIDE_BY_TAG.clear()
+        a._REVERSAL_SIDE_BY_TAG.update(tags)
+        return a
+
+    yield _set
+    a._REVERSAL_SIDE_BY_TAG.clear()
+    a._REVERSAL_SIDE_BY_TAG.update(saved)
+
+
+def test_one_side_policy_blocks_only_the_other_side(policy):
+    a = policy(x="short")
+    assert a._reversal_gate_block(REV, "long",  "x") is True
+    assert a._reversal_gate_block(REV, "short", "x") is False
+
+
+def test_off_policy_blocks_both_sides(policy):
+    a = policy(x="off")
+    assert a._reversal_gate_block(REV, "long",  "x") is True
+    assert a._reversal_gate_block(REV, "short", "x") is True
+    # An unparseable side can't make a reversal allowed when the book takes none.
+    assert a._reversal_gate_block(REV, "",      "x") is True
+    assert a._reversal_gate_block(REV, None,    "x") is True
+
+
+def test_off_policy_still_lets_breakouts_through(policy):
+    """"off" is a reversal policy — it must not touch the breakout book, which is
+    where TV Refined's edge actually lives."""
+    a = policy(x="off")
+    assert a._reversal_gate_block(BRK, "long",  "x") is False
+    assert a._reversal_gate_block(BRK, "short", "x") is False
+
+
+def test_no_policy_passes_everything(policy):
+    a = policy(x=None)
+    assert a._reversal_gate_block(REV, "long",  "x") is False
+    assert a._reversal_gate_block(REV, "short", "x") is False
+    # An account absent from the map entirely also passes (fails open).
+    assert a._reversal_gate_block(REV, "long",  "unknown-tag") is False
+
+
+def test_unknown_side_passes_a_one_side_policy(policy):
+    """Can't prove a violation without a side — only "off" blocks regardless."""
+    a = policy(x="short")
+    assert a._reversal_gate_block(REV, "", "x") is False
+
+
+def test_current_policy_config(engine_app):
+    """Today's per-account policy. Update deliberately when a book's policy changes."""
+    a = engine_app
+    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca2") == "off"    # TV Refined: no reversals
+    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca3") is None     # Kairos Refined: free
+    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca4") is None     # Crew Paper: free
+    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca")  is None     # TV Farm: free (keeps the data)
+    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca5") is None     # Kairos Farm: free
+
+
+def test_env_override_accepts_off(engine_app, monkeypatch):
+    a = engine_app
+    monkeypatch.setenv("REVERSAL_SIDE_ALPACA9", "off")
+    assert a._reversal_side_cfg("alpaca9", {}) == "off"
+    monkeypatch.setenv("REVERSAL_SIDE_ALPACA9", "garbage")
+    assert a._reversal_side_cfg("alpaca9", {}) is None        # unknown value fails open
 
 
 @pytest.fixture()
@@ -70,7 +140,7 @@ def webhook_client(tmp_path):
         return c
 
     a.get_db = _fake_db
-    # Neutralize the trading-hours gate so it can't pre-empt the reversal-side gate
+    # Neutralize the trading-hours gate so it can't pre-empt the reversal gate
     # (Refined has a 09:30-11:00 ET window; otherwise the test is wall-clock dependent).
     a._account_hours_ok = lambda tag: True
     yield a.app.test_client(), db
@@ -85,13 +155,15 @@ def _last_exec(db):
     return row
 
 
-def test_refined_long_reversal_is_skipped(webhook_client):
+@pytest.mark.parametrize("action", ["LONG", "SHORT"])
+def test_refined_reversal_is_skipped_both_sides(webhook_client, action):
+    """With "off", the short side is skipped too — it used to be the allowed one."""
     client, db = webhook_client
     client.post("/webhook?token=test-token",
-                json={"strategy": "AMZN_CAM_REVERSAL_R4S4_V02_5MIN", "ticker": "AMZN", "action": "LONG"})
+                json={"strategy": REV, "ticker": "AMZN", "action": action})
     status, detail = _last_exec(db)
     assert status == "skipped"
-    assert "reversal" in (detail or "").lower()
+    assert "no reversal entries" in (detail or "").lower()
 
 
 def test_kairos_long_reversal_not_reversal_gated(webhook_client):
@@ -99,5 +171,5 @@ def test_kairos_long_reversal_not_reversal_gated(webhook_client):
     client.post("/webhook?token=test-token",
                 json={"strategy": "NVDA_CAM_REVERSAL_R4S4_V02_5MIN", "ticker": "NVDA", "action": "LONG"})
     status, detail = _last_exec(db)
-    # Kairos has no policy → the reversal-side gate must NOT skip it.
-    assert not (status == "skipped" and "reversal-side" in (detail or "").lower())
+    # Kairos has no policy → the reversal gate must NOT skip it.
+    assert not (status == "skipped" and "reversal gate" in (detail or "").lower())

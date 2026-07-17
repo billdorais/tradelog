@@ -150,19 +150,30 @@ TV_PILOT_ALL          = os.environ.get("TV_PILOT_ALL", "")
 #   auto_source — receives auto-generated entries (Refined snapshot / engine pilot).
 #                 Crew Paper (acct4) is False: it trades ONLY rules wired from the
 #                 crew page, never the snapshot/engine auto-sources.
-# reversal_side — restrict this account's REVERSAL entries to one side ("long"/
-# "short"/None). Evidence (Book Breakdown, Jun–Jul '26): Refined's reversals bleed
-# long-side (short-only edge), while Kairos's are profitable both sides — so only
-# Refined is gated. Env override per account: REVERSAL_SIDE_<TAG> (e.g.
-# REVERSAL_SIDE_ALPACA2=short). Enforced by target account in webhook + engine.
+# reversal_side — this account's REVERSAL entry policy: "long"/"short" (that side
+# only), "off" (no reversal entries at all), or None (both sides free).
+#   Evidence (Book Breakdown, Jun–Jul '26): Kairos's and Crew's reversals are
+#   profitable both sides, so they run free. TV Refined was short-only on a
+#   short-side edge — but 2026-07-01..17 killed that premise: 22 round-trips, ONE
+#   winner (4.5%), −$394, with BOTH sides dead (long 0%/9t, short 7.7%/13t). At a
+#   4.5% win rate there is no edge to gate a side of, so it is "off" rather than
+#   short-only. Safe to cut on ~3 weeks because TV Farm (reversal_side None, fed
+#   every TV entry by TV_PILOT_ALL) keeps trading reversals both sides — the farm
+#   goes on collecting the evidence for when/if the edge returns, so this costs
+#   money to stay wrong and nothing to reverse.
+#   Env override per account: REVERSAL_SIDE_<TAG> (e.g. REVERSAL_SIDE_ALPACA2=off).
+#   Enforced by target account in webhook + engine. Exits are never gated.
 #   The 2x2: a full-sample FARM (all pipelines) refines into a curated account,
 #   per entry mechanism — TV Farm -> TV Refined, Kairos Farm -> Kairos Refined.
 #   UI order (paired): TV Farm, TV Refined, Kairos Farm, Kairos Refined, Crew Paper.
 ACCOUNT_META = {
     "1": {"tag": "alpaca",  "label": "TV Farm",        "color": "#9aa0b5",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
+    # reversal_side "off": TV Refined's reversals had ONE winner in 22 over
+    # 2026-07-01..17 (−$394, both sides dead) — no edge left to side-gate. TV Farm
+    # keeps trading them, so the evidence for a comeback keeps accruing.
     "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "short", "daily_loss_guard": True},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True},
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
     "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098",
@@ -220,19 +231,24 @@ def _is_non_shortable(ticker: str) -> bool:
 def _reversal_side_cfg(tag, meta):
     env = os.environ.get("REVERSAL_SIDE_" + (tag or "").upper())
     val = env.strip().lower() if env is not None else meta.get("reversal_side")
-    return val if val in ("long", "short") else None
+    return val if val in ("long", "short", "off") else None
 
 _REVERSAL_SIDE_BY_TAG = {_meta_tag(n): _reversal_side_cfg(_meta_tag(n), m)
                          for n, m in ACCOUNT_META.items()}
 
 def _reversal_gate_block(strategy: str, side: str, account_tag: str) -> bool:
     """True if a REVERSAL ENTRY on `side` ('long'/'short') is disallowed for this
-    account by its reversal_side policy. Non-reversals and unknown sides pass;
-    accounts with no policy pass. Callers must exempt exits."""
+    account by its reversal_side policy ("long"/"short"/"off"/None). Non-reversals
+    pass; accounts with no policy pass. Under "off" every reversal entry is blocked
+    regardless of side — including an unparseable side, since the side can't make it
+    allowed. Under "long"/"short" an unknown side passes (can't prove a violation).
+    Callers must exempt exits."""
     if "REVERSAL" not in (strategy or "").upper():
         return False
     pol = _REVERSAL_SIDE_BY_TAG.get(account_tag)
-    s   = (side or "").lower()
+    if pol == "off":
+        return True
+    s = (side or "").lower()
     if pol not in ("long", "short") or s not in ("long", "short"):
         return False
     return s != pol
@@ -12727,11 +12743,13 @@ def _engine_pilot_tick(now_et, today):
             _tgt_gate = tgt.get("side_gate")
             if _tgt_gate in ("long", "short") and _tgt_gate != side.lower():
                 continue
-            # Per-account reversal-side policy (e.g. Refined = short-only). Kairos
-            # and others with no policy pass; only affects this account's targets.
+            # Per-account reversal policy: one-side only, or "off" (no reversal
+            # entries at all — TV Refined). Accounts with no policy pass; only
+            # affects this account's targets.
             if _reversal_gate_block(strat, side, broker_tag):
-                log.info("Reversal-side gate: skip %s %s [%s] — reversal %s-only",
-                         side, tk, broker_tag, _REVERSAL_SIDE_BY_TAG.get(broker_tag))
+                _pol = _REVERSAL_SIDE_BY_TAG.get(broker_tag)
+                log.info("Reversal gate: skip %s %s [%s] — %s", side, tk, broker_tag,
+                         "reversals off" if _pol == "off" else f"reversals {_pol}-only")
                 continue
             qty_override = tgt.get("qty_override")
             broker_inst  = broker_inst_by_tag.get(broker_tag)
