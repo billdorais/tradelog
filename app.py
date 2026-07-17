@@ -195,6 +195,15 @@ ACCOUNT_META = {
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
+# Display order for account tabs across the whole UI. Left → right:
+#   Crew Paper (4) is the hero account, Kairos/TV Refined are the curated
+#   graduates, farms are the audition pools at the right. Any configured
+#   account not in this list falls in after (stable by num).
+UI_ACCOUNT_ORDER = ["4", "3", "2", "5", "1"]
+_UI_ACCOUNT_RANK = {n: i for i, n in enumerate(UI_ACCOUNT_ORDER)}
+def _ui_account_rank(num):
+    return (_UI_ACCOUNT_RANK.get(str(num), 99), str(num))
+
 def _meta_tag(num):
     n = str(num)
     return ACCOUNT_META.get(n, {}).get("tag", "alpaca" if n == "1" else "alpaca" + n)
@@ -3446,12 +3455,16 @@ def routing_page():
 
 @app.route("/journal")
 def journal():
-    # The journal covers the curated books (TV Refined, Kairos Refined, Crew) —
+    # The journal covers the curated books (Crew, Kairos Refined, TV Refined) —
     # the farms are audition pools, not books you review week to week. Filtered by
-    # the registry so an unconfigured account doesn't render a dead tab.
-    _curated = ["2", "3", "4"]
-    _accts = [{"num": n, "label": ACCOUNT_META[n]["label"], "color": ACCOUNT_META[n]["color"]}
-              for n in _curated if n in ACCOUNTS_BY_NUM and n in ACCOUNT_META]
+    # the registry so an unconfigured account doesn't render a dead tab. Ordered
+    # by the shared UI_ACCOUNT_ORDER so Crew leads across every page.
+    _curated = {"2", "3", "4"}
+    _accts = sorted(
+        ({"num": n, "label": ACCOUNT_META[n]["label"], "color": ACCOUNT_META[n]["color"]}
+         for n in _curated if n in ACCOUNTS_BY_NUM and n in ACCOUNT_META),
+        key=lambda a: _ui_account_rank(a["num"]),
+    )
     return render_template("journal.html", accounts=_accts)
 
 
@@ -5420,12 +5433,10 @@ def about():
 @app.route("/simulate")
 def simulate():
     # Registry-driven account dropdown — every configured paper account shows up.
-    # Paired order (TV Farm, TV Refined, Kairos Farm, Kairos Refined, Crew, …) to
-    # match the dashboard; any account not in the preferred list falls in after.
-    _order = ["1", "2", "5", "3", "4"]
-    _rank  = {n: i for i, n in enumerate(_order)}
+    # Ordered by UI_ACCOUNT_ORDER (Crew, Kairos Refined, TV Refined, Kairos Farm,
+    # TV Farm) so the dropdown matches the tabs across the rest of the UI.
     _accts = sorted(({"num": a["num"], "label": a["label"]} for a in ALPACA_ACCOUNTS),
-                    key=lambda a: (_rank.get(a["num"], 99), a["num"]))
+                    key=lambda a: _ui_account_rank(a["num"]))
     return render_template("simulate.html", accounts=_accts)
 
 

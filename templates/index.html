@@ -621,9 +621,9 @@
   <div class="section-label" style="margin-top:8px">Today's P&amp;L · Curated Accounts</div>
   <div class="stats" style="margin-bottom:8px">
     <div class="stat-card">
-      <div class="label" style="color:#c4b5fd">TV Refined</div>
-      <div class="value" id="glance2">—</div>
-      <div id="glance2sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
+      <div class="label" style="color:#7FE098">Crew Paper</div>
+      <div class="value" id="glance4">—</div>
+      <div id="glance4sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
     </div>
     <div class="stat-card">
       <div class="label" style="color:#F2C07A">Kairos Refined</div>
@@ -631,9 +631,9 @@
       <div id="glance3sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
     </div>
     <div class="stat-card">
-      <div class="label" style="color:#7FE098">Crew Paper</div>
-      <div class="value" id="glance4">—</div>
-      <div id="glance4sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
+      <div class="label" style="color:#c4b5fd">TV Refined</div>
+      <div class="value" id="glance2">—</div>
+      <div id="glance2sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
     </div>
   </div>
 
@@ -698,13 +698,13 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px;align-items:center">
+        <button id="tabCrew"     class="pnl-tab active-crew"    onclick="switchTab('crew')">Crew Paper</button>
+        <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos Refined</button>
+        <button id="tabRefined"  class="pnl-tab"                onclick="switchTab('refined')">TV Refined</button>
+        <button id="tabFarm"     class="pnl-tab"                onclick="switchTab('farm')">Kairos Farm</button>
         <button id="tabAlpaca"   class="pnl-tab"                onclick="switchTab('alpaca')">TV Farm</button>
         <button id="tabSignals"  class="pnl-tab"                onclick="switchTab('signals')" style="display:none">Signals P&amp;L</button>
         <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')"      style="display:none">IB P&amp;L</button>
-        <button id="tabRefined"  class="pnl-tab active-refined" onclick="switchTab('refined')">TV Refined</button>
-        <button id="tabFarm"     class="pnl-tab"                onclick="switchTab('farm')">Kairos Farm</button>
-        <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos Refined</button>
-        <button id="tabCrew"     class="pnl-tab"                onclick="switchTab('crew')">Crew Paper</button>
         <span id="chartLoadingSpinner"
           style="display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);
                  border-top-color:#7FE098;border-radius:50%;
@@ -846,21 +846,21 @@
   <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;max-width:1200px;margin:0 auto 10px">
     <span>Trade Feed</span>
     <div style="display:flex;gap:4px">
-      <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        TV Farm</button>
-      <button id="feedTabRefined" onclick="switchFeedTab('refined')"
+      <button id="feedTabCrew" onclick="switchFeedTab('crew')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B">
+        Crew</button>
+      <button id="feedTabKairos" onclick="switchFeedTab('kairos')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
+        ⚡ Kairos Refined</button>
+      <button id="feedTabRefined" onclick="switchFeedTab('refined')"
+        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Refined</button>
       <button id="feedTabFarm" onclick="switchFeedTab('farm')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         Kairos Farm</button>
-      <button id="feedTabKairos" onclick="switchFeedTab('kairos')"
+      <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        ⚡ Kairos Refined</button>
-      <button id="feedTabCrew" onclick="switchFeedTab('crew')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        Crew</button>
+        TV Farm</button>
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Signals</button>
@@ -967,10 +967,10 @@
     let _cachedToDate      = null;
     let _allGroups     = [];
     let _feedFilter    = { tv: false, alpaca: true };  // Alpaca default
-    let feedTab        = 'refined';  // matches activeTab default so chart + feed start in sync
+    let feedTab        = 'crew';  // matches activeTab default so chart + feed start in sync
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
-    let activeTab = 'refined';
+    let activeTab = 'crew';
     // Map a chart tab to its Alpaca ?account= value ('' = Paper All, 2 = Refined, 3 = Kairos engine, 4 = Crew Paper).
     function _acctForTab(tab) { return tab === 'refined' ? '2' : tab === 'kairos' ? '3' : tab === 'crew' ? '4' : tab === 'farm' ? '5' : ''; }
 

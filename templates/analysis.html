@@ -221,9 +221,13 @@
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s;display:none">
           Signals
         </button>
-        <button id="srcAlpaca" onclick="switchSource('alpaca')"
+        <button id="srcAlpaca4" onclick="switchSource('alpaca4')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
-          TV Farm
+          Crew Paper
+        </button>
+        <button id="srcAlpaca3" onclick="switchSource('alpaca3')"
+          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
+          Kairos Refined
         </button>
         <button id="srcAlpaca2" onclick="switchSource('alpaca2')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
@@ -233,13 +237,9 @@
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
           Kairos Farm
         </button>
-        <button id="srcAlpaca3" onclick="switchSource('alpaca3')"
+        <button id="srcAlpaca" onclick="switchSource('alpaca')"
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Kairos Refined
-        </button>
-        <button id="srcAlpaca4" onclick="switchSource('alpaca4')"
-          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Crew Paper
+          TV Farm
         </button>
       </div>
     </div>
@@ -762,7 +762,7 @@
 <script>
   let analysisData = null;
   let sortState    = {};   // tableId → {col, dir}
-  let activeSource = 'alpaca';
+  let activeSource = 'alpaca4';
 
   // ── Source toggle ──────────────────────────────────────────────────────────
   function switchSource(src) {
