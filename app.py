@@ -12076,7 +12076,11 @@ def api_simulate_reversal_test():
 
     if alpaca_broker is None:
         return jsonify({"error": "Alpaca data is not configured."}), 503
-    use2       = (request.args.get("account") or "2").strip() == "2"
+    # Registry-driven (same fix as entry_test) — 3/4/5 no longer fall back to Paper All.
+    account = str(request.args.get("account") or "2").strip()
+    _rt_broker, _rt_tag, _rt_label, _rt_fills_fn = _alpaca_account_ctx(account)
+    if _rt_broker is None:
+        return jsonify({"error": f"Account {account} ({_rt_label}) is not configured."}), 400
     ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
     multi      = (request.args.get("multi", "1") or "1").strip() not in ("0", "false", "")
     from_date  = (request.args.get("from") or "").strip()
@@ -12132,7 +12136,7 @@ def api_simulate_reversal_test():
                     break
         return r or {"trail_pct": 0.3, "trigger_pct": 0.1, "max_hold_mins": None}
 
-    fills  = _get_cached_fills_2() if use2 else _get_cached_fills()
+    fills  = _rt_fills_fn()
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
     trades = paired["closed_clean"]
     if not trades:
@@ -12259,7 +12263,7 @@ def api_simulate_reversal_test():
             for rb in retest_bars_list]
 
     return jsonify({
-        "account": "Refined" if use2 else "Paper All", "from": from_date, "to": to_date,
+        "account": _rt_label, "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
         "skipped_breakout": skipped_breakout, "ema_filter": ema_filter, "multi": multi,
         "exits": "Signal Router per strategy", "rules": out,

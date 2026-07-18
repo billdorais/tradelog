@@ -511,10 +511,10 @@
     <div id="hwmResult" style="margin-top:14px"></div>
   </div>
 
-  <!-- Entry-timing test -->
+  <!-- Entry-timing test — breakouts AND reversals in one run -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Entry Test
-      <span style="font-size:0.72rem;color:#666;font-weight:400">— every breakout setup, your live Signal Router exits; only entry timing varies</span></div>
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— breakouts &amp; reversals, your live Signal Router exits; only entry timing varies</span></div>
     <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
       <div class="param-group"><label>Buffer</label><div class="input-wrap"><input type="number" id="etBuffer" value="0.05" step="0.01" min="0"><span class="unit">$</span></div></div>
       <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px">
@@ -531,31 +531,20 @@
           <option value="short">Shorts only</option>
           <option value="long">Longs only</option>
         </select></div>
-      <button class="run-btn" onclick="runEntryTest()" style="padding:8px 18px">&#9654; Test Entries</button>
-      <button class="run-btn" onclick="runBufferSweep()" style="padding:8px 18px;background:#517356">&#8644; Buffer Sweep</button>
+      <button class="run-btn" onclick="runEntryTests()" style="padding:8px 18px">&#9654; Test Entries</button>
+      <button class="run-btn" onclick="runBufferSweep()" style="padding:8px 18px;background:#517356" title="Breakouts: sweep the entry buffer">&#8644; Buffer Sweep</button>
+      <button class="run-btn" onclick="runRetestSweep()" style="padding:8px 18px;background:#3a7d44" title="Reversals: sweep the pullback-and-retest window">&#8635; Retest Sweep</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Exits = each strategy's Signal Router trail / trigger / max-hold (+ session overrides).</span>
     </div>
-    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Breakout strategies only (reversals enter on rejection, not modeled). Per-share P&amp;L (qty 1), first entry of the day per setup; immediate / buffered / retest assume a fill at the level price; exits modeled on 5-min bars.</div>
-    <div id="entryTestResult" style="margin-top:14px"></div>
-  </div>
-
-  <!-- Reversal entry test -->
-  <div class="config-panel" style="margin-top:18px">
-    <div class="section-title" style="margin-bottom:10px">Reversal Entry Test
-      <span style="font-size:0.72rem;color:#666;font-weight:400">— does waiting for the rejection close beat fading the level on the touch?</span></div>
-    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
-      <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px">
-        <input type="checkbox" id="rvEma" checked> 8-EMA + slope filter
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#ccc;cursor:pointer;padding-bottom:6px">
-        <input type="checkbox" id="rvMulti" checked> All entries
-      </label>
-      <button class="run-btn" onclick="runReversalTest()" style="padding:8px 18px">&#9654; Test Reversals</button>
-      <button class="run-btn" onclick="runRetestSweep()" style="padding:8px 18px;background:#3a7d44">&#8635; Sweep Retest Bars</button>
-      <span style="font-size:0.72rem;color:#666;align-self:center">Reject vs Touch; or sweep a pullback-and-retest (reject → re-enter on the 2nd touch within N bars).</span>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Per-share P&amp;L (qty 1); exits modeled on 5-min bars. Breakouts: confirmed / immediate / buffered / retest. Reversals (LONG bounces off S, SHORT rejects at R): reject vs touch + wick sweep. The Side toggle applies to breakouts.</div>
+    <div style="margin-top:14px">
+      <div style="font-weight:700;color:#7FE098;font-size:0.9rem;margin-bottom:4px">Breakouts</div>
+      <div id="entryTestResult"></div>
     </div>
-    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the Account + From/To above. Reversal strategies only — LONG bounces off S, SHORT rejects at R. Per-share P&amp;L (qty 1); exits = each strategy's Signal Router params; exits modeled on 5-min bars.</div>
-    <div id="reversalTestResult" style="margin-top:14px"></div>
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid #1e2130">
+      <div style="font-weight:700;color:#F2C07A;font-size:0.9rem;margin-bottom:4px">Reversals</div>
+      <div id="reversalTestResult"></div>
+    </div>
   </div>
 
   <!-- Regime backtest -->
@@ -829,6 +818,10 @@
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // One click → both books. Runs the breakout and reversal entry tests in parallel
+  // and lets each populate its own section below.
+  function runEntryTests() { runEntryTest(); runReversalTest(); }
+
   async function runEntryTest() {
     const out = document.getElementById('entryTestResult');
     const p = new URLSearchParams({
@@ -895,8 +888,8 @@
     const p = new URLSearchParams({
       account: document.getElementById('account').value,
       from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
-      ema: document.getElementById('rvEma').checked ? '1' : '0',
-      multi: document.getElementById('rvMulti').checked ? '1' : '0',
+      ema: document.getElementById('etEma').checked ? '1' : '0',
+      multi: document.getElementById('etMulti').checked ? '1' : '0',
     });
     out.innerHTML = '<span style="color:#888">Replaying reversal setups…</span>';
     const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
@@ -1211,8 +1204,8 @@
     const p = new URLSearchParams({
       account: document.getElementById('account').value,
       from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
-      ema: document.getElementById('rvEma').checked ? '1' : '0',
-      multi: document.getElementById('rvMulti').checked ? '1' : '0',
+      ema: document.getElementById('etEma').checked ? '1' : '0',
+      multi: document.getElementById('etMulti').checked ? '1' : '0',
       retest_bars: '1,2,3,4,5,6,8,10',
     });
     out.innerHTML = '<span style="color:#888">Sweeping the retest window 1 → 10 bars…</span>';
