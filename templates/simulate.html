@@ -920,7 +920,29 @@
               + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem"><thead><tr style="color:#555;font-size:0.64rem;text-transform:uppercase">`
               + `<th style="text-align:left;padding:3px 12px">Threshold</th><th style="text-align:right;padding:3px 12px">Trades</th><th style="text-align:right;padding:3px 12px">Win %</th><th style="text-align:right;padding:3px 12px">Total/sh</th><th style="text-align:right;padding:3px 12px">Avg/trade</th>`
               + `</tr></thead><tbody>${sweep}</tbody></table></div></div>` : '')
+          + confirmBlock(kd, base)
           + `</div>`;
+      };
+
+      // Reversal confirmation entry (reject → close below the 20-EMA). Shown only
+      // when the payload carries `confirm` (reversal side).
+      const confirmBlock = (kd, fadeBase) => {
+        const c = kd.confirm;
+        if (!c) return '';
+        const nTotal = (c.n_confirmed || 0) + (c.n_no_confirm || 0);
+        const cRows = [{label:'Confirmed entries (all)', d:c.baseline}, {label:c.vol.label, d:c.vol}]
+          .map(b => `<tr><td style="padding:6px 12px;color:#ccc">${b.label}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#aaa">${b.d.trades}</td>`
+            + `<td style="padding:6px 12px;text-align:right">${wr(b.d.win_rate)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${b.d.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(b.d.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#888">${money(b.d.avg_pnl)}</td></tr>`).join('');
+        const cmp = (fadeBase && fadeBase.trades && c.baseline.trades)
+          ? `<div style="font-size:0.75rem;margin-top:6px;color:${c.baseline.avg_pnl > fadeBase.avg_pnl ? '#7FE098' : '#c98b8b'}">Fade-at-top baseline ${money(fadeBase.avg_pnl)}/trade (${fadeBase.win_rate}%) → confirmation ${money(c.baseline.avg_pnl)}/trade (${c.baseline.win_rate}%) — ${c.baseline.avg_pnl > fadeBase.avg_pnl ? 'waiting for the break helps' : 'waiting for the break does not help'}.</div>` : '';
+        return `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed #2a2d3e">`
+          + `<div style="font-weight:700;color:#c4b5fd;font-size:0.82rem;margin-bottom:3px">Confirmation entry — reject then close below 20-EMA <span style="color:#666;font-weight:400;font-size:0.72rem">· ${c.n_confirmed}/${nTotal} rejects confirmed within ${c.window} bars</span></div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">`
+          + `<th style="text-align:left;padding:5px 12px">Entry</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L/sh</th><th style="text-align:right;padding:5px 12px">Avg/trade</th>`
+          + `</tr></thead><tbody>${cRows}</tbody></table></div>${cmp}</div>`;
       };
 
       out.innerHTML =

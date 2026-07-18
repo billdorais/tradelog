@@ -12673,17 +12673,80 @@ def api_simulate_short_filter_test():
             "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
         }
 
+    # Confirmation-entry reversal short: reject at R4/R3, then DON'T fade the top —
+    # wait for the first bar that closes back below the 20-EMA (the reversal actually
+    # turning down) and enter THERE. Later, worse price, but only takes rejects that
+    # confirm. Compares against the fade-at-top baseline to see if confirmation
+    # rescues the (otherwise ~9%-win) reversal shorts.
+    try:    confirm_window = max(1, int(float(request.args.get("confirm_window", 8))))
+    except Exception: confirm_window = 8
+
+    def _run_reversal_confirm(setups):
+        base, volb = [], []
+        both_by_mult = _dd(list)
+        n_confirmed = n_no_confirm = 0
+        for (tk, date, strat) in setups:
+            bars     = bars_map.get((tk, date)) or []
+            lvl_name = _short_level(strat, "reversal")
+            level    = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl_name))
+            if not bars or not level:
+                continue
+            hit = _find_reversal_entry(bars, level, "SHORT", "reject", ema_filter=False,
+                                       atr_mult=0.25, start=1)
+            if not hit:
+                continue
+            rej_idx = hit[0]
+            conf_idx = None
+            for j in range(rej_idx + 1, min(len(bars), rej_idx + 1 + confirm_window)):
+                e20 = getattr(bars[j], "ema20", None)
+                if e20 is not None and bars[j].close < e20:   # closed back below the 20-EMA
+                    conf_idx = j
+                    break
+            if conf_idx is None:
+                n_no_confirm += 1                             # reject never turned down
+                continue
+            bar = bars[conf_idx]
+            entry_px = bar.close
+            ex  = _match_exit(strat)
+            eff = _apply_session_trail(ex["trail_pct"], bar.timestamp)
+            r = _simulate_exit(bars[conf_idx:], entry_px, "SHORT", eff, ex["trigger_pct"], 0.0,
+                               ex["max_hold_mins"] or 0, entry_dt=bar.timestamp, qty=1.0)
+            if not r:
+                continue
+            n_confirmed += 1
+            pnl = entry_px - float(r["exit_price"])
+            base.append(pnl)
+            prior = bars[max(0, conf_idx - vol_lookback):conf_idx]
+            vols  = [getattr(b, "volume", 0) or 0 for b in prior]
+            vavg  = (sum(vols) / len(vols)) if vols else 0.0
+            cur_vol = getattr(bar, "volume", 0) or 0
+            ratio = (cur_vol / vavg) if vavg > 0 else None
+            if ratio is not None and ratio >= vol_mult:
+                volb.append(pnl)
+            for m in vol_mults:
+                if ratio is not None and ratio >= m:
+                    both_by_mult[m].append(pnl)
+        return {
+            "n_confirmed": n_confirmed, "n_no_confirm": n_no_confirm, "window": confirm_window,
+            "baseline": _summ(base),
+            "vol": {**_summ(volb), "label": f"+ volume ≥ {vol_mult}× avg on the break"},
+            "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
+        }
+
+    reversal = _payload(rv_setups, "reversal", "+ above 20-EMA (extended)")
+    reversal["confirm"] = _run_reversal_confirm(rv_setups)
+
     _feed = (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower()
     return jsonify({
         "account": _sf_label, "from": from_date, "to": to_date, "rule": rule,
         "vol_mult": vol_mult, "vol_lookback": vol_lookback,
         "feed": "sip" if _feed == "sip" else "iex",
         "breakout": _payload(bo_setups, "breakout", "+ below 20-EMA"),
-        "reversal": _payload(rv_setups, "reversal", "+ above 20-EMA (extended)"),
-        "note": "Free-tier bars carry IEX-only volume (~a few % of the tape) — the "
-                "volume filter is a relative proxy, not true market volume. Breakout "
-                "short = break S4/S3 below the 20-EMA; reversal short = reject R4/R3 "
-                "above the 20-EMA.",
+        "reversal": reversal,
+        "note": "Breakout short = break S4/S3 below the 20-EMA (momentum). Reversal "
+                "short = reject R4/R3; 'fade' enters at the reject (above the 20-EMA), "
+                "'confirm' waits for a close back below the 20-EMA (the reversal turning "
+                "down). Volume from the active feed (SIP once ALPACA_DATA_FEED=sip).",
     })
 
 

@@ -143,3 +143,57 @@ def test_missing_volume_counted_and_excluded(sf):
     assert d["vol"]["trades"] == 0
     assert d["both"]["trades"] == 0
     assert d["ema"]["trades"] == 1      # EMA check still works without volume
+
+
+def _reversal_bars(reject_above=True, confirm_below=True, confirm_vol=500):
+    """20 prior bars, a reject at idx 20 (above the 20-EMA=100), then bars that
+    either close back below the EMA (confirm) or stay above (no confirm)."""
+    t0 = _dt.datetime(2026, 7, 6, 13, 0, tzinfo=_dt.timezone.utc)
+    b = [_Bar(t0 + _dt.timedelta(minutes=5 * i), 100.0, 100.0, 100) for i in range(20)]
+    b.append(_Bar(t0 + _dt.timedelta(minutes=5 * 20), 101.0, 100.0, 100))   # reject (above EMA)
+    b.append(_Bar(t0 + _dt.timedelta(minutes=5 * 21), 102.0, 100.0, 100))   # still above
+    if confirm_below:
+        b.append(_Bar(t0 + _dt.timedelta(minutes=5 * 22), 99.0, 100.0, confirm_vol))  # closes below → confirm
+        b.append(_Bar(t0 + _dt.timedelta(minutes=5 * 23), 98.0, 100.0, 100))
+    else:
+        b.append(_Bar(t0 + _dt.timedelta(minutes=5 * 22), 103.0, 100.0, 100))         # stays above the EMA
+        b.append(_Bar(t0 + _dt.timedelta(minutes=5 * 23), 104.0, 100.0, 100))         # ...all of it
+    return b
+
+
+def _wire_reversal(monkeypatch, bars, exit_px):
+    monkeypatch.setattr(a, "alpaca_broker", object())
+    monkeypatch.setattr(a, "_alpaca_account_ctx",
+                        lambda acct: (object(), "alpaca2", "TV Refined", lambda: [1]))
+    monkeypatch.setattr(a, "_fetch_5m_rth_objs", lambda tk, dt: bars)
+    monkeypatch.setattr(a, "_camarilla_levels", lambda tk, dt: {"r4": 110.0, "s4": 90.0})
+    monkeypatch.setattr(a, "_apply_session_trail", lambda trail, dt: trail)
+    monkeypatch.setattr(a, "_find_reversal_entry",
+                        lambda bars, level, side, rule, ema_filter=True, atr_mult=0.25, start=1, retest_bars=4: (20, 101.0))
+    monkeypatch.setattr(a, "_simulate_exit", lambda bars, entry, side, *ar, **kw: {"exit_price": exit_px})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", lambda *ar, **kw: {"closed_clean": [
+        {"ticker": "AAA", "side": "SHORT", "strategy": "AAA_CAM_REVERSAL_R4S4_V02_5MIN",
+         "date": "2026-07-06", "entry_time": "2026-07-06T14:00:00+00:00",
+         "exit_time": "2026-07-06T14:20:00+00:00", "entry_price": 101.0, "exit_price": exit_px,
+         "qty": 10, "pnl": 0}]})
+    a.app.config["TESTING"] = True
+
+
+def test_reversal_confirmation_enters_on_the_ema_break(monkeypatch):
+    # Reject at idx20 (px 101), price closes below the 20-EMA at idx22 (px 99) →
+    # confirmation entry at 99; exit 95 → short pnl = 99-95 = +4 (not fading at 101).
+    _wire_reversal(monkeypatch, _reversal_bars(confirm_below=True, confirm_vol=500), exit_px=95.0)
+    with a.app.test_client() as cl:
+        c = cl.get("/api/simulate/short_filter_test?account=2&vol_mult=2").get_json()["reversal"]["confirm"]
+    assert c["n_confirmed"] == 1 and c["n_no_confirm"] == 0 and c["window"] == 8
+    assert c["baseline"]["trades"] == 1
+    assert c["baseline"]["total_pnl"] == pytest.approx(4.0)     # entered at 99, not 101
+    assert c["vol"]["trades"] == 1                              # 500 vs ~100 avg = surge
+
+
+def test_reversal_that_never_breaks_below_ema_is_not_confirmed(monkeypatch):
+    _wire_reversal(monkeypatch, _reversal_bars(confirm_below=False), exit_px=95.0)
+    with a.app.test_client() as cl:
+        c = cl.get("/api/simulate/short_filter_test?account=2&vol_mult=2").get_json()["reversal"]["confirm"]
+    assert c["n_confirmed"] == 0 and c["n_no_confirm"] == 1
+    assert c["baseline"]["trades"] == 0
