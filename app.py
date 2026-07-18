@@ -188,8 +188,10 @@ ACCOUNT_META = {
     # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
+    # reversal_side "long": Crew Paper pauses reversal SHORTS too (same breakeven
+    # finding). A hard gate rather than relying on the crew to stop wiring them.
     "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
     # Kairos Farm — the engine-entry twin of TV Farm. Full-sample audition pool
     # fired by ENGINE_PILOT_ALL=alpaca5:$1000 (TV Farm gets TV via TV_PILOT_ALL), so
     # each farm's selection pool matches its execution mechanism. Farm exemptions
