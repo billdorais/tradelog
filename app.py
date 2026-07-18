@@ -14259,6 +14259,33 @@ def _fetch_daily_ohlc(ticker: str, date_str: str, n_days: int = 2):
         return []
 
 
+_day_open_cache: dict = {}   # {(ticker, date): open_price | None} — per session
+
+
+def _fetch_day_open(ticker: str, date_str: str):
+    """The daily OPEN for `ticker` on `date_str` ITSELF (the trade date), or None.
+    _fetch_daily_ohlc ends the day BEFORE date_str (it fetches prior days for level
+    math), so we query through the next day and pick out the trade date's own bar.
+    Used to locate where price opened relative to the CPR / breakout level."""
+    try:
+        import datetime as _dt
+        nxt = (_dt.date.fromisoformat(date_str) + _dt.timedelta(days=1)).isoformat()
+        for b in _fetch_daily_ohlc(ticker, nxt, n_days=3):
+            if b.get("date") == date_str:
+                return b.get("open")
+    except Exception as _oe:
+        log.debug("fetch_day_open %s %s: %s", ticker, date_str, _oe)
+    return None
+
+
+def _get_day_open(ticker: str, date_str: str):
+    """Cached wrapper around _fetch_day_open (per session)."""
+    key = (ticker.upper(), date_str)
+    if key not in _day_open_cache:
+        _day_open_cache[key] = _fetch_day_open(ticker, date_str)
+    return _day_open_cache[key]
+
+
 def _fetch_review_bars(ticker: str, date_str: str, ema_period: int = 8):
     """Fetch 5-minute bars for a ticker on a single market day, formatted for
     lightweight-charts. Returns list of {time, open, high, low, close, ema}
@@ -14832,16 +14859,25 @@ def api_alpaca_ls_breakdown():
     # behave nothing alike on the same level, and merging them hides which bleeds.
     _band = _kind_band
 
-    # Day type per unique (ticker, date) — concurrent, cached in _day_class_cache.
+    # Per unique (ticker, date), concurrent + cached: the full day classification
+    # (day_type + CPR mid/levels) and the trade date's OWN open. The open + levels
+    # feed the opening-location split (Thor Young: a breakout that opens near the
+    # CPR has room to the level; one that opens already at the extreme is exhausted).
     keyset = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
               for t in trades if t.get("ticker") and t.get("entry_time")}
-    dtmap = {}
+    clsmap, openmap = {}, {}
     with _cf.ThreadPoolExecutor(max_workers=8) as pool:
-        futs = {pool.submit(_get_day_classification, tk, dt): (tk, dt) for tk, dt in keyset}
-        for f in _cf.as_completed(futs):
-            tk, dt = futs[f]
-            try:    dtmap[(tk, dt)] = (f.result() or {}).get("day_type") or "Unknown"
-            except Exception: dtmap[(tk, dt)] = "Unknown"
+        cfuts = {pool.submit(_get_day_classification, tk, dt): (tk, dt) for tk, dt in keyset}
+        ofuts = {pool.submit(_get_day_open, tk, dt): (tk, dt) for tk, dt in keyset}
+        for f in _cf.as_completed(cfuts):
+            tk, dt = cfuts[f]
+            try:    clsmap[(tk, dt)] = f.result() or {}
+            except Exception: clsmap[(tk, dt)] = {}
+        for f in _cf.as_completed(ofuts):
+            tk, dt = ofuts[f]
+            try:    openmap[(tk, dt)] = f.result()
+            except Exception: openmap[(tk, dt)] = None
+    dtmap = {k: (v.get("day_type") or "Unknown") for k, v in clsmap.items()}
 
     bs = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})  # (band, side)
     sd = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})  # (side, day_type)
@@ -14858,6 +14894,64 @@ def api_alpaca_ls_breakdown():
         pnl  = float(t.get("pnl") or 0); win = 1 if pnl > 0 else 0
         for bucket, key in ((bs, (band, side)), (sd, (side, dt)), (ov, (side,))):
             bucket[key]["trades"] += 1; bucket[key]["wins"] += win; bucket[key]["pnl"] += pnl
+
+    # ── Opening location (BREAKOUTS only) ───────────────────────────────────
+    # Where price OPENED relative to the CPR mid and the level this breakout was
+    # trying to reach, as a fraction: 0 = opened at the mid (full room), 1 =
+    # opened right at the level (no room / extreme), >1 = opened beyond it. Thor
+    # Young's heuristic: a breakout that opens near the CPR and travels to the
+    # level is a real range-extension move; one that opens already at the extreme
+    # is exhausted on arrival and tends to revert. Split by (side, bucket) so we
+    # can see whether the losing breakouts opened extended.
+    def _open_frac(strat, side, cls, open_px):
+        if "BREAKOUT" not in (strat or "").upper() or not cls or open_px is None:
+            return None
+        mid  = cls.get("mid_cpr")
+        band = _kind_band(strat)                     # "BREAKOUT R4S4" / "BREAKOUT R3S3"
+        if side == "LONG":
+            lvl = cls.get("r4") if "R4S4" in band else cls.get("r3") if "R3S3" in band else None
+        else:
+            lvl = cls.get("s4") if "R4S4" in band else cls.get("s3") if "R3S3" in band else None
+        if mid is None or lvl is None:
+            return None
+        denom = (lvl - mid) if side == "LONG" else (mid - lvl)
+        if denom <= 0:
+            return None
+        return ((open_px - mid) if side == "LONG" else (mid - open_px)) / denom
+
+    def _open_bucket(frac):
+        if   frac <= 0.33: return "near CPR (room)"
+        elif frac <= 0.66: return "mid-travel"
+        elif frac <= 1.00: return "extended"
+        else:              return "at/past extreme"
+
+    ol = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})   # (side, open_bucket)
+    ol_unresolved = 0
+    for t in trades:
+        side = (t.get("side") or "").upper()
+        if side not in ("LONG", "SHORT") or "BREAKOUT" not in (t.get("strategy") or "").upper():
+            continue
+        tk = (t.get("ticker") or "").upper(); d = (t.get("entry_time") or "")[:10]
+        frac = _open_frac(t.get("strategy"), side, clsmap.get((tk, d)), openmap.get((tk, d)))
+        if frac is None:
+            ol_unresolved += 1
+            continue
+        pnl = float(t.get("pnl") or 0)
+        b = ol[(side, _open_bucket(frac))]
+        b["trades"] += 1; b["wins"] += 1 if pnl > 0 else 0; b["pnl"] += pnl
+
+    _OPEN_ORDER = {"near CPR (room)": 0, "mid-travel": 1, "extended": 2, "at/past extreme": 3}
+
+    def _fmt_open(d):
+        out = []
+        for (side, lbl), v in d.items():
+            n = v["trades"]
+            out.append({"side": side, "open_location": lbl, "trades": n, "wins": v["wins"],
+                        "win_rate": round(v["wins"] / n * 100, 1) if n else 0.0,
+                        "pnl": round(v["pnl"], 2)})
+        # Ordered room→extreme within each side, so the gradient is readable.
+        out.sort(key=lambda r: (r["side"], _OPEN_ORDER.get(r["open_location"], 9)))
+        return out
 
     def _fmt(d, keys):
         out = []
@@ -14933,6 +15027,8 @@ def api_alpaca_ls_breakdown():
         "by_band_side":    _fmt(bs, ("band", "side")),
         "by_side_daytype": _fmt(sd, ("side", "day_type")),
         "overall_side":    _fmt(ov, ("side",)),
+        "by_open_location": _fmt_open(ol),   # breakouts only — Thor Young opening-location test
+        "open_location_unresolved": ol_unresolved,
         "by_strategy_side":      by_strategy_side,
         "side_gated_candidates": candidates,
     })

@@ -2554,12 +2554,33 @@
       };
       const ov = (d.overall_side || []).map(x =>
         `<span style="color:${sideC(x.side)};font-weight:700">${x.side}</span> ${money(x.pnl)} · ${x.trades} tr · ${wr(x.win_rate)}`).join(' &nbsp;&nbsp;·&nbsp;&nbsp; ');
+      // Opening location (breakouts only): where price opened relative to the CPR
+      // and the breakout's target level. Ordered room→extreme so the gradient shows.
+      const openTbl = (rows) => {
+        if (!rows || !rows.length) return '';
+        const body = rows.map(x => `<tr style="border-bottom:1px solid #15171f">
+            <td style="padding:5px 10px;color:#ccc">${x.open_location}</td>
+            <td style="padding:5px 10px;color:${sideC(x.side)};font-weight:600">${x.side}</td>
+            <td style="padding:5px 10px;text-align:right;color:#888">${x.trades}</td>
+            <td style="padding:5px 10px;text-align:right">${wr(x.win_rate)}</td>
+            <td style="padding:5px 10px;text-align:right">${money(x.pnl)}</td></tr>`).join('');
+        return `<div style="flex:1;min-width:340px">
+          <div style="font-weight:700;color:#c4b5fd;margin-bottom:4px;font-size:0.84rem">By opening location (breakouts only)</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">
+            <th style="text-align:left;padding:3px 10px">Open vs level</th><th style="text-align:left;padding:3px 10px">Side</th>
+            <th style="text-align:right;padding:3px 10px">Trades</th><th style="text-align:right;padding:3px 10px">Win%</th><th style="text-align:right;padding:3px 10px">P&amp;L</th>
+          </tr></thead><tbody>${body}</tbody></table></div>`;
+      };
+      const olRows = d.by_open_location || [];
+      const olUnres = d.open_location_unresolved || 0;
       wrap.innerHTML =
         `<div style="font-size:0.82rem;margin-bottom:10px">${d.account} · ${d.trades} round-trips &nbsp;—&nbsp; ${ov}</div>`
         + `<div style="display:flex;gap:24px;flex-wrap:wrap">`
         + tbl('By band × side (worst first)', d.by_band_side, 'band')
         + tbl('By side × day-type', d.by_side_daytype, 'day_type')
         + `</div>`
+        + (olRows.length ? `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:16px">` + openTbl(olRows) + `</div>`
+            + `<div style="font-size:0.72rem;color:#666;margin-top:6px">Thor-Young test: a breakout that opens <b>near the CPR</b> has room to travel to its level; one that opens <b>at/past the extreme</b> is exhausted on arrival and tends to revert. Read down each side — if P&amp;L degrades from “near CPR” to “extreme”, opening location is a real entry-quality gate.${olUnres ? ` (${olUnres} breakouts unclassified — missing open/levels.)` : ''}</div>` : '')
         + `<div style="font-size:0.72rem;color:#666;margin-top:8px">Worst P&L first. If one side bleeds in a specific band (e.g. LONG breakout R4S4) it's a strategy fix; if a side bleeds across day types it's regime. Day-type gate covers breakouts on non-Outside days.</div>`;
     } catch (e) { wrap.innerHTML = `<div style="color:#ef5350;font-size:0.82rem">Error: ${e.message}</div>`; }
   }
