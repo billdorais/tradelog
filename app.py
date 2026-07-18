@@ -11902,7 +11902,12 @@ def api_simulate_entry_test():
 
     if alpaca_broker is None:
         return jsonify({"error": "Alpaca data is not configured."}), 503
-    use2 = (request.args.get("account") or "2").strip() == "2"
+    # Registry-driven account: previously only 1|2 were honored and 3/4/5 silently
+    # fell back to Paper All, so Kairos/Crew returned identical (wrong) results.
+    account = str(request.args.get("account") or "2").strip()
+    _et_broker, _et_tag, _et_label, _et_fills_fn = _alpaca_account_ctx(account)
+    if _et_broker is None:
+        return jsonify({"error": f"Account {account} ({_et_label}) is not configured."}), 400
     try:    buffer = float(request.args.get("buffer", 0.05))
     except Exception: buffer = 0.05
     ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
@@ -11952,7 +11957,7 @@ def api_simulate_entry_test():
                     break
         return r or {"trail_pct": 0.3, "trigger_pct": 0.1, "max_hold_mins": None}
 
-    fills  = _get_cached_fills_2() if use2 else _get_cached_fills()
+    fills  = _et_fills_fn()
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
     trades = paired["closed_clean"]
     if not trades:
@@ -12048,7 +12053,7 @@ def api_simulate_entry_test():
               "short": _summ(agg_buf[(b, "SHORT")])} for b in buffers]
 
     return jsonify({
-        "account": "Refined" if use2 else "Paper All",
+        "account": _et_label,
         "from": from_date, "to": to_date,
         "n_setups": n_setups, "n_setups_long": n_setups_side["LONG"],
         "n_setups_short": n_setups_side["SHORT"],
