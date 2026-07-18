@@ -197,3 +197,17 @@ def test_reversal_that_never_breaks_below_ema_is_not_confirmed(monkeypatch):
         c = cl.get("/api/simulate/short_filter_test?account=2&vol_mult=2").get_json()["reversal"]["confirm"]
     assert c["n_confirmed"] == 0 and c["n_no_confirm"] == 1
     assert c["baseline"]["trades"] == 0
+
+
+def test_confirmation_window_sweep(monkeypatch):
+    # Break happens at idx22 = 2 bars after the reject (idx20). A window < 2 misses
+    # it (no confirm); a window >= 2 catches it.
+    _wire_reversal(monkeypatch, _reversal_bars(confirm_below=True, confirm_vol=100), exit_px=95.0)
+    with a.app.test_client() as cl:
+        c = cl.get("/api/simulate/short_filter_test?account=2&confirm_windows=1,2,5").get_json()["reversal"]["confirm"]
+    sweep = {row["window"]: row for row in c["window_sweep"]}
+    assert set(sweep) == {1, 2, 5}
+    assert sweep[1]["n_confirmed"] == 0 and sweep[1]["trades"] == 0   # break is 2 bars out
+    assert sweep[2]["n_confirmed"] == 1 and sweep[2]["trades"] == 1   # caught at window 2
+    assert sweep[5]["n_confirmed"] == 1                               # still caught
+    assert sweep[2]["total_pnl"] == pytest.approx(4.0)                # entered 99, exit 95

@@ -12680,8 +12680,17 @@ def api_simulate_short_filter_test():
     # rescues the (otherwise ~9%-win) reversal shorts.
     try:    confirm_window = max(1, int(float(request.args.get("confirm_window", 8))))
     except Exception: confirm_window = 8
+    confirm_windows = []
+    for _x in (request.args.get("confirm_windows") or "2,3,5,8,12").split(","):
+        try:
+            _w = int(float(_x))
+            if _w >= 1: confirm_windows.append(_w)
+        except Exception:
+            pass
+    if not confirm_windows:
+        confirm_windows = [confirm_window]
 
-    def _run_reversal_confirm(setups):
+    def _run_reversal_confirm(setups, window):
         base, volb = [], []
         both_by_mult = _dd(list)
         n_confirmed = n_no_confirm = 0
@@ -12697,7 +12706,7 @@ def api_simulate_short_filter_test():
                 continue
             rej_idx = hit[0]
             conf_idx = None
-            for j in range(rej_idx + 1, min(len(bars), rej_idx + 1 + confirm_window)):
+            for j in range(rej_idx + 1, min(len(bars), rej_idx + 1 + window)):
                 e20 = getattr(bars[j], "ema20", None)
                 if e20 is not None and bars[j].close < e20:   # closed back below the 20-EMA
                     conf_idx = j
@@ -12727,14 +12736,23 @@ def api_simulate_short_filter_test():
                 if ratio is not None and ratio >= m:
                     both_by_mult[m].append(pnl)
         return {
-            "n_confirmed": n_confirmed, "n_no_confirm": n_no_confirm, "window": confirm_window,
+            "n_confirmed": n_confirmed, "n_no_confirm": n_no_confirm, "window": window,
             "baseline": _summ(base),
             "vol": {**_summ(volb), "label": f"+ volume ≥ {vol_mult}× avg on the break"},
             "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
         }
 
     reversal = _payload(rv_setups, "reversal", "+ above 20-EMA (extended)")
-    reversal["confirm"] = _run_reversal_confirm(rv_setups)
+    confirm = _run_reversal_confirm(rv_setups, confirm_window)
+    # Sweep the confirmation window — does a tighter/looser "break within N bars"
+    # lift the confirmed reversal shorts from near-breakeven into profit?
+    confirm["window_sweep"] = []
+    for w in sorted(set(confirm_windows)):
+        rc = _run_reversal_confirm(rv_setups, w)
+        confirm["window_sweep"].append({
+            "window": w, "n_confirmed": rc["n_confirmed"], "n_no_confirm": rc["n_no_confirm"],
+            **{k: rc["baseline"][k] for k in ("trades", "win_rate", "total_pnl", "avg_pnl")}})
+    reversal["confirm"] = confirm
 
     _feed = (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower()
     return jsonify({
