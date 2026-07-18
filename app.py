@@ -11377,23 +11377,27 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
                                  timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                                  start=start, end=end, feed=DataFeed.IEX)
         bars = list(client.get_stock_bars(req)[ticker.upper()])
-        k = 2.0 / (ema_period + 1)
-        ema, atr, prev_close, ema_hist, out = None, None, None, [], []
+        k   = 2.0 / (ema_period + 1)
+        k20 = 2.0 / (20 + 1)     # second EMA for the volume-short filter (20-period)
+        ema = ema20 = atr = prev_close = None
+        ema_hist, out = [], []
         for b in sorted(bars, key=lambda x: x.timestamp):
             t_et = b.timestamp.astimezone(et)
             if not (_dt.time(9, 30) <= t_et.time() < _dt.time(16, 0)):
                 continue
             h, l, c = float(b.high), float(b.low), float(b.close)
+            vol = float(getattr(b, "volume", 0) or 0)   # IEX-only on the free tier — a proxy
             tr  = (h - l) if prev_close is None else max(h - l, abs(h - prev_close), abs(l - prev_close))
             atr = tr if atr is None else (atr * 13 + tr) / 14.0          # Wilder ATR(14)
-            ema = c if ema is None else (c - ema) * k + ema
+            ema   = c if ema   is None else (c - ema) * k + ema
+            ema20 = c if ema20 is None else (c - ema20) * k20 + ema20
             ema_hist.append(ema)
             ema2 = ema_hist[-3] if len(ema_hist) >= 3 else None           # EMA 2 bars ago (slope)
             prev_close = c
             if t_et.date() == day:
                 out.append(SimpleNamespace(
                     timestamp=b.timestamp, open=float(b.open), high=h, low=l, close=c,
-                    ema=round(ema, 4), atr=round(atr, 4),
+                    volume=vol, ema=round(ema, 4), ema20=round(ema20, 4), atr=round(atr, 4),
                     ema2=round(ema2, 4) if ema2 is not None else None))
         return out
     except Exception as _e:
@@ -12467,6 +12471,171 @@ def api_simulate_reconcile():
         "entry_pct": round(entry_gap_tot / total_gap * 100, 1) if total_gap else 0.0,
         "exit_pct":  round(exit_gap_tot  / total_gap * 100, 1) if total_gap else 0.0,
         "rows": rows,
+    })
+
+
+@app.route("/api/simulate/short_filter_test")
+def api_simulate_short_filter_test():
+    """Does stacking a 20-EMA + volume-surge confirmation on your breakout SHORTS
+    filter out the losers? For each breakout short setup, take the level-break entry
+    (S4/S3 via the chosen rule), then bucket by whether the ENTRY BAR also:
+      · closes below the 20-EMA (momentum), and
+      · has volume >= vol_mult × its trailing-N-bar average (a push).
+    Buckets: baseline / +EMA / +volume / +both. Exits = Signal Router per strategy,
+    per-share P&L (qty=1). The +both bucket is also swept over several vol_mults.
+
+    NOTE: free-tier bars carry IEX-only volume (~a few % of the tape) — treat the
+    volume filter as a RELATIVE proxy, not true market volume.
+    ?account=&from=&to=&rule=&vol_mult=&vol_lookback=&buffer="""
+    import concurrent.futures as _cf
+
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca data is not configured."}), 503
+    account = str(request.args.get("account") or "2").strip()
+    _sf_broker, _sf_tag, _sf_label, _sf_fills_fn = _alpaca_account_ctx(account)
+    if _sf_broker is None:
+        return jsonify({"error": f"Account {account} ({_sf_label}) is not configured."}), 400
+    rule = (request.args.get("rule") or "confirmed").strip().lower()
+    if rule not in ("confirmed", "immediate", "buffered", "retest"):
+        rule = "confirmed"
+    try:    buffer = float(request.args.get("buffer", 0.05))
+    except Exception: buffer = 0.05
+    try:    vol_lookback = max(3, int(float(request.args.get("vol_lookback", 20))))
+    except Exception: vol_lookback = 20
+    try:    vol_mult = float(request.args.get("vol_mult", 2.0))
+    except Exception: vol_mult = 2.0
+    vol_mults = []
+    for _x in (request.args.get("vol_mults") or "1.5,2,2.5,3").split(","):
+        try:    vol_mults.append(round(float(_x), 2))
+        except Exception: pass
+    if not vol_mults:
+        vol_mults = [vol_mult]
+    from_date = (request.args.get("from") or "").strip()
+    to_date   = (request.args.get("to")   or "").strip()
+
+    rule_settings = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname = (_row[0] or "").upper()
+            _trail = _trigger = _mhm = None
+            for _nd in json.loads(_row[1] or "[]"):
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mraw    = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mraw)) if _mraw else None
+            if _trail is not None:
+                rule_settings[_rname] = {"trail_pct": _trail, "trigger_pct": _trigger or 0.0,
+                                         "max_hold_mins": _mhm}
+        _rc.close()
+    except Exception as _re:
+        log.warning("short_filter rule settings failed: %s", _re)
+
+    def _match_exit(strategy):
+        r = rule_settings.get((strategy or "").upper())
+        if r is None:
+            sname = (strategy or "").upper().replace(" ", "_")
+            for rkey, rval in rule_settings.items():
+                pat = "_".join(rkey.split("_CAM_")[1].split("_")[:2]) if "_CAM_" in rkey else rkey
+                if pat and pat in sname:
+                    r = rval
+                    break
+        return r or {"trail_pct": 0.3, "trigger_pct": 0.1, "max_hold_mins": None}
+
+    paired = _pair_alpaca_fills_lifo(_sf_fills_fn(), from_date=from_date, to_date=to_date)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No round-trips for that account / date range."}), 404
+
+    # Unique breakout SHORT setups (first-of-day per ticker/date/strategy).
+    setups = {}
+    for t in trades:
+        strat = t.get("strategy") or ""
+        if "BREAKOUT" not in strat.upper() or (t.get("side") or "").upper() != "SHORT":
+            continue
+        tk = (t.get("ticker") or "").upper(); date = (t.get("entry_time") or "")[:10]
+        if not (_trade_level(strat, "SHORT") and tk and date):
+            continue
+        setups[(tk, date, strat)] = True
+
+    ticker_dates = {(k[0], k[1]) for k in setups}
+    bars_map, lv_map = {}, {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        lfut = {pool.submit(_camarilla_levels,  tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        for f in _cf.as_completed(bfut):
+            try:    bars_map[bfut[f]] = f.result()
+            except Exception: bars_map[bfut[f]] = []
+        for f in _cf.as_completed(lfut):
+            try:    lv_map[lfut[f]] = f.result()
+            except Exception: lv_map[lfut[f]] = {}
+
+    lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+    from collections import defaultdict as _dd
+    buckets = {"baseline": [], "ema": [], "vol": [], "both": []}   # of per-share pnl
+    both_by_mult = _dd(list)                                       # vol_mult -> pnl list
+    n_no_vol = 0
+
+    for (tk, date, strat) in setups:
+        bars     = bars_map.get((tk, date)) or []
+        lvl_name = _trade_level(strat, "SHORT")
+        level    = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl_name))
+        if not bars or not level:
+            continue
+        hit = _find_entry(bars, level, "SHORT", rule, buffer, ema_filter=False, start=1)
+        if not hit:
+            continue
+        idx, entry_px = hit
+        bar = bars[idx]
+        ex = _match_exit(strat)
+        eff = _apply_session_trail(ex["trail_pct"], bar.timestamp)
+        r = _simulate_exit(bars[idx:], entry_px, "SHORT", eff, ex["trigger_pct"], 0.0,
+                           ex["max_hold_mins"] or 0, entry_dt=bar.timestamp, qty=1.0)
+        if not r:
+            continue
+        pnl = entry_px - float(r["exit_price"])            # short per-share
+
+        ema20 = getattr(bar, "ema20", None)
+        ema_ok = ema20 is not None and bar.close < ema20   # closed below the 20-EMA
+        prior = bars[max(0, idx - vol_lookback):idx]
+        vols  = [getattr(b, "volume", 0) or 0 for b in prior]
+        vavg  = (sum(vols) / len(vols)) if vols else 0.0
+        cur_vol = getattr(bar, "volume", 0) or 0
+        has_vol = vavg > 0 and cur_vol > 0
+        if not has_vol:
+            n_no_vol += 1
+        vol_ratio = (cur_vol / vavg) if vavg > 0 else None
+
+        buckets["baseline"].append(pnl)
+        if ema_ok:
+            buckets["ema"].append(pnl)
+        if has_vol and vol_ratio is not None and vol_ratio >= vol_mult:
+            buckets["vol"].append(pnl)
+            if ema_ok:
+                buckets["both"].append(pnl)
+        for m in vol_mults:
+            if ema_ok and has_vol and vol_ratio is not None and vol_ratio >= m:
+                both_by_mult[m].append(pnl)
+
+    def _summ(pnls):
+        n, wins = len(pnls), sum(1 for p in pnls if p > 0)
+        return {"trades": n, "wins": wins,
+                "win_rate":  round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl": round(sum(pnls), 4),
+                "avg_pnl":   round(sum(pnls) / n, 4) if n else 0.0}
+
+    return jsonify({
+        "account": _sf_label, "from": from_date, "to": to_date, "rule": rule,
+        "vol_mult": vol_mult, "vol_lookback": vol_lookback,
+        "n_setups": len(buckets["baseline"]), "n_no_volume": n_no_vol,
+        "baseline": _summ(buckets["baseline"]),
+        "ema":      {**_summ(buckets["ema"]),  "label": "+ below 20-EMA"},
+        "vol":      {**_summ(buckets["vol"]),  "label": f"+ volume ≥ {vol_mult}× avg"},
+        "both":     {**_summ(buckets["both"]), "label": f"+ both (20-EMA & {vol_mult}× vol)"},
+        "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
+        "note": "Free-tier bars carry IEX-only volume (~a few % of the tape) — the "
+                "volume filter is a relative proxy, not true market volume.",
     })
 
 
