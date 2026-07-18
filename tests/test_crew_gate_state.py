@@ -37,7 +37,7 @@ def test_reflects_reversal_policy_per_book():
     gs = crew._gate_state()
     by = {b["label"]: b for b in gs["books"]}
     assert by["TV Refined"]["reversal_policy"] == "off"    # set earlier this session
-    assert by["Kairos Refined"]["reversal_policy"] == "free"
+    assert by["Kairos Refined"]["reversal_policy"] == "long"   # reversal shorts paused
     assert by["Crew Paper"]["reversal_policy"] == "free"
 
 

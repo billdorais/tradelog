@@ -182,8 +182,12 @@ ACCOUNT_META = {
     # keeps trading them, so the evidence for a comeback keeps accruing.
     "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True},
+    # reversal_side "long": pause Kairos REVERSAL SHORTS only. The short_filter_test
+    # (Jul '26, 309 setups) put reversal shorts at breakeven-at-best even with the
+    # confirmation entry (reject -> 20-EMA break); Kairos reversal LONGS have been
+    # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
     "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
     # Kairos Farm — the engine-entry twin of TV Farm. Full-sample audition pool

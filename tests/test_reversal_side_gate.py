@@ -94,7 +94,7 @@ def test_current_policy_config(engine_app):
     """Today's per-account policy. Update deliberately when a book's policy changes."""
     a = engine_app
     assert a._REVERSAL_SIDE_BY_TAG.get("alpaca2") == "off"    # TV Refined: no reversals
-    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca3") is None     # Kairos Refined: free
+    assert a._REVERSAL_SIDE_BY_TAG.get("alpaca3") == "long"   # Kairos Refined: reversal shorts paused
     assert a._REVERSAL_SIDE_BY_TAG.get("alpaca4") is None     # Crew Paper: free
     assert a._REVERSAL_SIDE_BY_TAG.get("alpaca")  is None     # TV Farm: free (keeps the data)
     assert a._REVERSAL_SIDE_BY_TAG.get("alpaca5") is None     # Kairos Farm: free
