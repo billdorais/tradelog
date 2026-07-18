@@ -12673,9 +12673,11 @@ def api_simulate_short_filter_test():
             "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
         }
 
+    _feed = (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower()
     return jsonify({
         "account": _sf_label, "from": from_date, "to": to_date, "rule": rule,
         "vol_mult": vol_mult, "vol_lookback": vol_lookback,
+        "feed": "sip" if _feed == "sip" else "iex",
         "breakout": _payload(bo_setups, "breakout", "+ below 20-EMA"),
         "reversal": _payload(rv_setups, "reversal", "+ above 20-EMA (extended)"),
         "note": "Free-tier bars carry IEX-only volume (~a few % of the tape) — the "

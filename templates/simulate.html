@@ -589,7 +589,7 @@
       <button class="run-btn" onclick="runShortFilter()" style="padding:8px 18px">&#9654; Test Filter</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Breakout shorts only · exits = Signal Router · per-share P&amp;L.</span>
     </div>
-    <div style="font-size:0.7rem;color:#c98b4b;margin-top:6px">⚠ Free-tier bars carry <b>IEX-only volume</b> (~a few % of the tape) — the volume filter is a relative proxy, not true market volume. Treat the result as directional.</div>
+    <div style="font-size:0.7rem;color:#666;margin-top:6px">Volume feed is shown in the results header. Set <code>ALPACA_DATA_FEED=sip</code> for consolidated (real-tape) volume; otherwise it's the IEX proxy (~3% of the tape).</div>
     <div id="shortFilterResult" style="margin-top:14px"></div>
   </div>
 
@@ -924,7 +924,7 @@
       };
 
       out.innerHTML =
-        `<div style="font-size:0.72rem;color:#666;margin-bottom:10px">${d.account} · ${d.from || '—'} → ${d.to || '—'} · entry: ${d.rule} · per-share P&amp;L · <span style="color:#c98b4b">IEX volume proxy</span></div>`
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:10px">${d.account} · ${d.from || '—'} → ${d.to || '—'} · entry: ${d.rule} · per-share P&amp;L · ` + (d.feed === 'sip' ? `<span style="color:#7FE098">SIP volume (real tape)</span>` : `<span style="color:#c98b4b">IEX volume proxy (~3%)</span>`) + `</div>`
         + section(d.breakout, 'Breakout shorts (break S4/S3 · below 20-EMA)', '#7FE098', 'below EMA')
         + `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"></div>`
         + section(d.reversal, 'Reversal shorts (reject R4/R3 · above 20-EMA)', '#F2C07A', 'above EMA')
