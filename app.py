@@ -5188,6 +5188,7 @@ def api_trade_review():
                 timeframe         = TimeFrame(1, TimeFrameUnit.Minute),
                 start             = _exit_dt,
                 end               = _end_dt,
+                feed              = _alpaca_data_feed(),
             )
             bars_df = _client.get_stock_bars(req)
             bars = list(bars_df[ticker.upper()])
@@ -11348,6 +11349,17 @@ def api_refined_cutoff_impact():
     })
 
 
+def _alpaca_data_feed():
+    """The Alpaca market-data feed for historical bars, from env ALPACA_DATA_FEED:
+    'sip' (consolidated — all exchanges, real tape volume; needs an Algo Trader Plus
+    subscription on the ALPACA_KEY login) or 'iex' (default — ~a few % of volume,
+    the free tier). Centralizes what used to be hardcoded/omitted per fetch, so the
+    feed is one config flip. Invalid/unset → iex (safe default)."""
+    from alpaca.data.enums import DataFeed
+    return (DataFeed.SIP if (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower() == "sip"
+            else DataFeed.IEX)
+
+
 def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
     """5-min RTH bars (09:30–16:00 ET) for a ticker as lightweight objects with
     .timestamp/.open/.high/.low/.close/.ema. The EMA is warmed up over prior
@@ -11375,7 +11387,7 @@ def _fetch_5m_rth_objs(ticker: str, date_str: str, ema_period: int = 8):
         # empties bars, which previously blocked every engine breakout at cbar=None.
         req   = StockBarsRequest(symbol_or_symbols=ticker.upper(),
                                  timeframe=TimeFrame(5, TimeFrameUnit.Minute),
-                                 start=start, end=end, feed=DataFeed.IEX)
+                                 start=start, end=end, feed=_alpaca_data_feed())
         bars = list(client.get_stock_bars(req)[ticker.upper()])
         k   = 2.0 / (ema_period + 1)
         k20 = 2.0 / (20 + 1)     # second EMA for the volume-short filter (20-period)
@@ -11440,7 +11452,7 @@ def _fetch_1m_rth_bars(ticker: str, date_str: str):
         end   = _dt.datetime(day.year, day.month, day.day, 16, 0,  tzinfo=et)
         req   = StockBarsRequest(symbol_or_symbols=ticker.upper(),
                                  timeframe=TimeFrame(1, TimeFrameUnit.Minute),
-                                 start=start, end=end, feed=DataFeed.IEX)
+                                 start=start, end=end, feed=_alpaca_data_feed())
         raw   = list(client.get_stock_bars(req)[ticker.upper()])
         out   = [SimpleNamespace(timestamp=b.timestamp,
                                  high=float(b.high), low=float(b.low),
@@ -12673,6 +12685,39 @@ def api_simulate_short_filter_test():
     })
 
 
+@app.route("/api/debug/feed")
+def api_debug_feed():
+    """Verify the active market-data feed after a SIP upgrade. Fetches a sample of
+    5-min bars and reports the volume magnitude — SIP (consolidated) volume runs
+    ~25–35× IEX for the same bars, so this makes the upgrade visible in one click.
+    ?ticker=SPY"""
+    import datetime as _dt
+    feed_name = (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower()
+    feed_name = "sip" if feed_name == "sip" else "iex"
+    ticker = (request.args.get("ticker") or "SPY").upper()
+    sample = None
+    d = _dt.date.today()
+    for _ in range(6):                       # walk back to the last day with bars
+        if d.weekday() < 5:
+            bars = _fetch_5m_rth_objs(ticker, d.isoformat())
+            if bars:
+                vols = [getattr(b, "volume", 0) or 0 for b in bars]
+                sample = {"date": d.isoformat(), "bars": len(bars),
+                          "total_volume": round(sum(vols)),
+                          "max_bar_volume": round(max(vols)) if vols else 0,
+                          "last_close": getattr(bars[-1], "close", None)}
+                break
+        d -= _dt.timedelta(days=1)
+    return jsonify({
+        "feed": feed_name, "feed_resolved": str(_alpaca_data_feed()),
+        "ticker": ticker, "sample": sample,
+        "hint": "SIP total_volume for SPY 5-min RTH runs into the tens/hundreds of "
+                "millions; IEX is a small fraction. If you set ALPACA_DATA_FEED=sip "
+                "but volume still looks tiny, the Algo Trader Plus subscription isn't "
+                "on the ALPACA_KEY login, or the env didn't take (restart the app).",
+    })
+
+
 # ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────
 # For each closed Refined round-trip, fetch 1-min bars between entry and exit,
 # compute the Maximum Favorable Excursion (how far it ran in your favor), then
@@ -12746,6 +12791,7 @@ def api_tp_sweep():
                 timeframe=TimeFrame(1, TimeFrameUnit.Minute),
                 start=_ent - _dt.timedelta(minutes=1),
                 end=_ex + _dt.timedelta(minutes=1),
+                feed=_alpaca_data_feed(),
             )
             bars = list(_client.get_stock_bars(req)[ticker])
             # Include the entry-minute bar through the exit-minute bar. Anchoring to
@@ -14606,6 +14652,7 @@ def _fetch_post_exit_range(ticker: str, exit_time_str: str):
             timeframe         = TimeFrame(1, TimeFrameUnit.Minute),
             start             = _exit_dt,
             end               = _end_dt,
+            feed              = _alpaca_data_feed(),
         )
         bars_df = _client.get_stock_bars(req)
         bars    = list(bars_df[ticker.upper()])
@@ -14639,6 +14686,7 @@ def _fetch_day_bars(ticker: str, date_str: str):
             timeframe         = TimeFrame(1, TimeFrameUnit.Minute),
             start             = start,
             end               = end,
+            feed              = _alpaca_data_feed(),
         )
         bars_df = client.get_stock_bars(req)
         return list(bars_df[ticker.upper()])
@@ -14670,6 +14718,7 @@ def _fetch_daily_ohlc(ticker: str, date_str: str, n_days: int = 2):
                                              tzinfo=_dt.timezone.utc),
             end               = _dt.datetime(end_date.year, end_date.month, end_date.day,
                                              tzinfo=_dt.timezone.utc),
+            feed              = _alpaca_data_feed(),
         )
         bars_df = client.get_stock_bars(req)
         bars    = list(bars_df[ticker.upper()])
@@ -14751,6 +14800,7 @@ def _fetch_review_bars(ticker: str, date_str: str, ema_period: int = 8):
             timeframe         = TimeFrame(5, TimeFrameUnit.Minute),
             start             = start,
             end               = end,
+            feed              = _alpaca_data_feed(),
         )
         bars = list(client.get_stock_bars(req)[ticker.upper()])
 
