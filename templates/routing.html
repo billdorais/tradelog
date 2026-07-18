@@ -483,6 +483,17 @@
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearStrikes()">Off</button>
         </div>
         <div class="risk-hint">After this many losing round-trips on the same ticker+level in a day, new entries on that level are blocked until the next session. Applies to both accounts. Exits are never blocked.</div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d3e">
+          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+            Short re-fade cap
+            <span style="color:#666;font-size:0.68rem">tighter limit for SHORT levels (S3/S4) on the curated books only</span>
+          </div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="strikesShortInput" type="number" step="1" min="0" max="9" placeholder="0 = off" style="width:80px">
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveShortStrikes()">Set</button>
+          </div>
+          <div class="risk-hint">The re-fade fix: a low value (e.g. 1) makes a short level go cold after its first loss, so the same-day re-shorts (which carried the bleed) don't fire. TV/Kairos Refined + Crew only; both farms and all longs keep the limit above. 0 = off. Requires the strikes gate enabled.</div>
+        </div>
         <div id="strikesActive" style="margin-top:8px;font-size:0.76rem;color:#888"></div>
       </div>
     </div>
@@ -1104,6 +1115,10 @@
       if (document.activeElement !== stInput && data.strikes_per_level) {
         stInput.value = data.strikes_per_level;
       }
+      const stShortInput = document.getElementById('strikesShortInput');
+      if (stShortInput && document.activeElement !== stShortInput && data.strikes_per_level_short != null) {
+        stShortInput.value = data.strikes_per_level_short;
+      }
       const stBadge = document.getElementById('strikesBadge');
       const stDot   = document.getElementById('strikesDot');
       const stText  = document.getElementById('strikesText');
@@ -1531,6 +1546,15 @@
   async function clearStrikes() {
     try { await _postLimit({strikes_enabled: false}); }
     catch(e) { console.error('clearStrikes failed:', e); }
+  }
+
+  async function saveShortStrikes() {
+    const input = document.getElementById('strikesShortInput');
+    const val = parseInt(input.value, 10);
+    if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({strikes_per_level_short: val}); }
+    catch(e) { console.error('saveShortStrikes failed:', e); }
   }
 
   async function saveRefinedHours() {

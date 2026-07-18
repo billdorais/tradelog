@@ -79,6 +79,13 @@ BP_PAUSE_PCT          = float(os.environ.get("BP_PAUSE_PCT", "0"))
 # ticker+Camarilla-level in a day, block new entries on that level.
 STRIKES_ENABLED       = os.environ.get("STRIKES_ENABLED", "0") == "1"
 STRIKES_PER_LEVEL     = int(os.environ.get("STRIKES_PER_LEVEL", "2"))
+# Tighter strike limit for SHORT levels (S3/S4) on the CURATED books only — the
+# re-fade fix. The reconciliation showed the first short of a setup is ~breakeven
+# while the same-day re-entries carry the bleed; a low short limit (e.g. 1) makes a
+# short level go cold after its first loss, capping the re-fades. 0 = off (use the
+# normal STRIKES_PER_LEVEL for shorts too). Farms stay on the normal limit so they
+# keep sampling. Longs (R-levels) always use STRIKES_PER_LEVEL.
+STRIKES_PER_LEVEL_SHORT = int(os.environ.get("STRIKES_PER_LEVEL_SHORT", "0"))
 # Global max-hold backstop (minutes). Any open position without a per-rule
 # max-hold timer gets capped at this. 0 = disabled. A safety net so a routing
 # rule missing max_hold_mins can't let a trade run forever.
@@ -236,6 +243,22 @@ DAYTYPE_REVERSAL_OK_DAYS       = {"Inside"}
 ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS"].split(",") if t.strip()}
                           if os.environ.get("ENGINE_RETEST_ACCOUNTS")
                           else _accounts_with("retest"))
+
+# Curated books (profit_lock on: TV Refined, Kairos Refined, Crew Paper) — the
+# accounts the tighter short strike limit applies to. Farms (profit_lock off) are
+# exempt so they keep sampling short re-fades for the periodic re-check.
+_CURATED_TAGS = _accounts_with("profit_lock")
+
+def _strike_limit(level, account_tag):
+    """Strikes-per-level for this (level, account): SHORT levels (S3/S4) on a
+    curated book use the tighter STRIKES_PER_LEVEL_SHORT (the re-fade cap) when set;
+    everything else (longs, farms) uses STRIKES_PER_LEVEL. Read live so a settings
+    change takes effect without a restart."""
+    base = max(1, STRIKES_PER_LEVEL)
+    if (STRIKES_PER_LEVEL_SHORT >= 1 and (level or "").upper().startswith("S")
+            and account_tag in _CURATED_TAGS):
+        return max(1, STRIKES_PER_LEVEL_SHORT)
+    return base
 
 # Tickers the broker won't let you sell short (SPACs, hard-to-borrow, etc.). A
 # short ENTRY on one of these just errors at Alpaca ("cannot be sold short"), so
@@ -2941,6 +2964,7 @@ def risk_status():
         "auto_closed_symbols": [{"broker": k[0], "symbol": k[1]} for k in auto_closed_snap],
         "strikes_enabled":     STRIKES_ENABLED,
         "strikes_per_level":   STRIKES_PER_LEVEL,
+        "strikes_per_level_short": STRIKES_PER_LEVEL_SHORT,
         "strikes":             _strikes_status_list(),
         "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
@@ -2996,7 +3020,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -3118,6 +3142,15 @@ def risk_set_limit():
         _save_setting("STRIKES_PER_LEVEL", str(STRIKES_PER_LEVEL))
         log.info("STRIKES_PER_LEVEL set to %d", STRIKES_PER_LEVEL)
         changed.append("strikes_per_level")
+    if "strikes_per_level_short" in data:
+        try:
+            STRIKES_PER_LEVEL_SHORT = max(0, int(data["strikes_per_level_short"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "strikes_per_level_short must be an integer ≥ 0 (0 = off)"}), 400
+        _update_env_file("STRIKES_PER_LEVEL_SHORT", str(STRIKES_PER_LEVEL_SHORT))
+        _save_setting("STRIKES_PER_LEVEL_SHORT", str(STRIKES_PER_LEVEL_SHORT))
+        log.info("STRIKES_PER_LEVEL_SHORT set to %d (0=off) — short re-fade cap on curated books", STRIKES_PER_LEVEL_SHORT)
+        changed.append("strikes_per_level_short")
     if "paper_hours" in data:
         _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END")
     if "refined_hours" in data:
@@ -3173,6 +3206,7 @@ def risk_set_limit():
         "afternoon_trail_pct":    AFTERNOON_TRAIL_PCT,
         "strikes_enabled":        STRIKES_ENABLED,
         "strikes_per_level":      STRIKES_PER_LEVEL,
+        "strikes_per_level_short": STRIKES_PER_LEVEL_SHORT,
         "changed":                changed,
     })
 
@@ -13854,7 +13888,9 @@ def _engine_pilot_tick(now_et, today):
                 last = _engine_pilot_state["last_entry"].get(key)
             if last is not None and (now_utc - last).total_seconds() < ENGINE_COOLDOWN_MINS * 60:
                 continue
-            if STRIKES_ENABLED and strikes.get((broker_tag, tk, lvl_name), 0) >= STRIKES_PER_LEVEL:
+            # Per-account limit: SHORT levels on curated books use the tighter
+            # re-fade cap; longs/farms use the normal STRIKES_PER_LEVEL.
+            if STRIKES_ENABLED and strikes.get((broker_tag, tk, lvl_name), 0) >= _strike_limit(lvl_name, broker_tag):
                 continue
             # Sizing priority:
             #   1. qty_override on the broker node (set by Refined refresh for top-N strategies)
@@ -16428,7 +16464,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -16527,6 +16563,13 @@ def _restore_risk_settings():
         try:
             STRIKES_PER_LEVEL = max(1, int(stored))
             log.info("Restored STRIKES_PER_LEVEL=%d from DB", STRIKES_PER_LEVEL)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("STRIKES_PER_LEVEL_SHORT")
+    if stored is not None:
+        try:
+            STRIKES_PER_LEVEL_SHORT = max(0, int(stored))
+            log.info("Restored STRIKES_PER_LEVEL_SHORT=%d from DB (short re-fade cap)", STRIKES_PER_LEVEL_SHORT)
         except (TypeError, ValueError):
             pass
     for _k in ("PAPER_HOURS_START", "PAPER_HOURS_END", "REFINED_HOURS_START", "REFINED_HOURS_END"):

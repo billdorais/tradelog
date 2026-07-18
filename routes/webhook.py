@@ -717,23 +717,25 @@ def _webhook_locked(data, received_at, broker_name, ticker):
         level = app._trade_level(strategy_name, side)
         if level:
             try:
-                limit  = max(1, int(getattr(app, "STRIKES_PER_LEVEL", 2)))
                 counts = app._get_strike_counts()
                 accts  = {_alpaca_broker_name(_bt[0]) for _bt in broker_targets
                           if _broker_family(_bt[0]) == "alpaca"}
-                hit = [a for a in accts
-                       if counts.get((a, ticker.upper(), level), 0) >= limit]
+                # Per-account limit: SHORT levels on curated books use the tighter
+                # re-fade cap (STRIKES_PER_LEVEL_SHORT); longs/farms use the normal one.
+                hit = [(a, app._strike_limit(level, a)) for a in accts
+                       if counts.get((a, ticker.upper(), level), 0) >= app._strike_limit(level, a)]
                 if hit:
+                    _names = [a for a, _ in hit]; _lim = hit[0][1]
                     app.log.warning(
                         "Strikes gate: %s %s (%s) blocked — %s+ losses at %s today on %s",
-                        order_action, ticker, strategy_name, limit, level, ",".join(hit))
+                        order_action, ticker, strategy_name, _lim, level, ",".join(_names))
                     app._update_exec(cur, trade_id, "blocked",
-                        f"{limit}-strikes/level: {level} already took {limit} losses "
-                        f"today ({', '.join(hit)})")
+                        f"{_lim}-strikes/level: {level} already took {_lim} loss(es) "
+                        f"today ({', '.join(_names)})")
                     conn.commit()
                     conn.close()
                     return jsonify({"status": "blocked", "reason": "strikes_limit",
-                                    "level": level, "accounts": hit}), 200
+                                    "level": level, "limit": _lim, "accounts": _names}), 200
             except Exception as _se:
                 app.log.warning("Strikes gate check failed: %s — allowing order", _se)
 
