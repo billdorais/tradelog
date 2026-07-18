@@ -11987,9 +11987,14 @@ def api_simulate_entry_test():
 
     lkey       = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     fixed_rules = ["confirmed", "immediate", "retest"]   # buffer-independent
-    agg_fixed  = {r: {"pnls": [], "offsets": []} for r in fixed_rules}
-    agg_buf    = {b: {"pnls": [], "offsets": []} for b in buffers}
+    _SIDES     = ("LONG", "SHORT")
+    # Aggregate per (rule, side) so results can be split by side — the whole point
+    # of the short-entry investigation is to see whether a different entry timing
+    # rescues the shorts specifically, which the combined totals hide.
+    agg_fixed  = {(r, s): {"pnls": [], "offsets": []} for r in fixed_rules for s in _SIDES}
+    agg_buf    = {(b, s): {"pnls": [], "offsets": []} for b in buffers     for s in _SIDES}
     n_setups   = 0
+    n_setups_side = {"LONG": 0, "SHORT": 0}
 
     def _run(bars, level, side, rule, buf, trail0, trigger, max_hold, bucket):
         for pnl, offset in _replay_entries(bars, level, side, rule, buf, trail0,
@@ -12000,16 +12005,17 @@ def api_simulate_entry_test():
     for (tk, date, strat, side, lvl) in setups:
         bars  = bars_map.get((tk, date)) or []
         level = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl))
-        if not bars or not level:
+        if not bars or not level or side not in _SIDES:
             continue
         ex_set = _match_exit(strat)
         trail0, trigger = ex_set["trail_pct"], ex_set["trigger_pct"]
         max_hold = ex_set["max_hold_mins"] or 0
         n_setups += 1
+        n_setups_side[side] += 1
         for rule in fixed_rules:
-            _run(bars, level, side, rule, 0.0, trail0, trigger, max_hold, agg_fixed[rule])
+            _run(bars, level, side, rule, 0.0, trail0, trigger, max_hold, agg_fixed[(rule, side)])
         for b in buffers:
-            _run(bars, level, side, "buffered", b, trail0, trigger, max_hold, agg_buf[b])
+            _run(bars, level, side, "buffered", b, trail0, trigger, max_hold, agg_buf[(b, side)])
 
     def _summ(bucket):
         pnls, offs = bucket["pnls"], bucket["offsets"]
@@ -12020,16 +12026,33 @@ def api_simulate_entry_test():
                 "avg_pnl":    round(sum(pnls) / n, 4) if n else 0.0,
                 "avg_offset": round(sum(offs) / n, 4) if n else 0.0}
 
-    out = [{"rule": "confirmed", **_summ(agg_fixed["confirmed"])},
-           {"rule": "immediate", **_summ(agg_fixed["immediate"])},
-           {"rule": "buffered",  **_summ(agg_buf[buffers[0]])},
-           {"rule": "retest",    **_summ(agg_fixed["retest"])}]
-    sweep = [{"buffer": b, **_summ(agg_buf[b])} for b in buffers]
+    def _merge(*bs):
+        m = {"pnls": [], "offsets": []}
+        for b in bs:
+            m["pnls"] += b["pnls"]; m["offsets"] += b["offsets"]
+        return m
+
+    def _rule_row(name, lo, sh):
+        # Top-level keys = combined (back-compat); `long`/`short` = the side split.
+        return {"rule": name, **_summ(_merge(lo, sh)), "long": _summ(lo), "short": _summ(sh)}
+
+    out = [
+        _rule_row("confirmed", agg_fixed[("confirmed", "LONG")], agg_fixed[("confirmed", "SHORT")]),
+        _rule_row("immediate", agg_fixed[("immediate", "LONG")], agg_fixed[("immediate", "SHORT")]),
+        _rule_row("buffered",  agg_buf[(buffers[0], "LONG")],    agg_buf[(buffers[0], "SHORT")]),
+        _rule_row("retest",    agg_fixed[("retest", "LONG")],    agg_fixed[("retest", "SHORT")]),
+    ]
+    sweep = [{"buffer": b,
+              **_summ(_merge(agg_buf[(b, "LONG")], agg_buf[(b, "SHORT")])),
+              "long":  _summ(agg_buf[(b, "LONG")]),
+              "short": _summ(agg_buf[(b, "SHORT")])} for b in buffers]
 
     return jsonify({
         "account": "Refined" if use2 else "Paper All",
         "from": from_date, "to": to_date,
-        "n_setups": n_setups, "n_tickers": len({tk for (tk, _d) in ticker_dates}),
+        "n_setups": n_setups, "n_setups_long": n_setups_side["LONG"],
+        "n_setups_short": n_setups_side["SHORT"],
+        "n_tickers": len({tk for (tk, _d) in ticker_dates}),
         "skipped_reversal": skipped_reversal, "buffer": buffers[0], "ema_filter": ema_filter,
         "multi": multi, "exits": "Signal Router per strategy", "rules": out, "sweep": sweep,
     })

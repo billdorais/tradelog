@@ -524,6 +524,13 @@
              title="Re-enter on every fresh cross of the level, like your live account — captures the chop re-fades. Off = first entry of the day only.">
         <input type="checkbox" id="etMulti" checked> All entries (re-fades)
       </label>
+      <div class="param-group"><label>Side</label>
+        <select id="etSide" onchange="if(window._lastEntryTest)renderEntryTest(window._lastEntryTest)"
+                style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.82rem;font-family:inherit">
+          <option value="all">Both sides</option>
+          <option value="short">Shorts only</option>
+          <option value="long">Longs only</option>
+        </select></div>
       <button class="run-btn" onclick="runEntryTest()" style="padding:8px 18px">&#9654; Test Entries</button>
       <button class="run-btn" onclick="runBufferSweep()" style="padding:8px 18px;background:#517356">&#8644; Buffer Sweep</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Exits = each strategy's Signal Router trail / trigger / max-hold (+ session overrides).</span>
@@ -832,42 +839,55 @@
       multi: document.getElementById('etMulti').checked ? '1' : '0',
     });
     out.innerHTML = '<span style="color:#888">Replaying every breakout setup with your Signal Router exits…</span>';
-    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
     try {
       const r = await fetch('/api/simulate/entry_test?' + p);
       const d = await r.json();
       if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
-      const label = {
-        confirmed: 'Confirmed (bar close)', immediate: 'Immediate (level touch)',
-        buffered:  'Buffered (level ± $' + d.buffer + ')', retest: 'Retest pullback',
-      };
-      const totals = d.rules.filter(x => x.trades > 0).map(x => x.total_pnl);
-      const best   = totals.length ? Math.max(...totals) : null;
-      const rows = d.rules.map(x => {
-        const isBest = x.trades > 0 && x.total_pnl === best;
-        return `<tr style="${isBest ? 'background:rgba(127,224,152,0.08)' : ''}">`
-          + `<td style="padding:7px 12px;color:#ccc">${label[x.rule] || x.rule}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
-          + `<td style="padding:7px 12px;text-align:right;color:#aaa">${x.trades}</td>`
-          + `<td style="padding:7px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
-          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_offset)}</td>`
-          + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
-          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
-      }).join('');
-      const skipNote = d.skipped_reversal ? ` · ${d.skipped_reversal} reversal trades excluded` : '';
-      const emaNote  = d.ema_filter ? ' · 8-EMA ON' : ' · 8-EMA OFF';
-      const multiNote = d.multi ? ' · all entries (re-fades)' : ' · first entry/day';
-      out.innerHTML =
-        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout setups across ${d.n_tickers} tickers · ${d.from || '—'} → ${d.to || '—'} · exits: ${d.exits}${emaNote}${multiNote} · per-share P&amp;L${skipNote}</div>`
-        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
-        + `<thead><tr>`
-        + `<th style="text-align:left;padding:6px 12px;color:#555;font-size:0.7rem;text-transform:uppercase">Entry rule</th>`
-        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Trades</th>`
-        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Win %</th>`
-        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem" title="Average entry price minus the level — how far past the level you entered">Avg offset</th>`
-        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
-        + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg/trade</th>`
-        + `</tr></thead><tbody>${rows}</tbody></table></div>`;
+      window._lastEntryTest = d;         // cache so the side toggle can re-render
+      renderEntryTest(d);
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  // Render the cached entry-test result for the selected side. Each rule row
+  // carries combined fields plus `long`/`short` sub-objects; the toggle picks one.
+  function renderEntryTest(d) {
+    const out  = document.getElementById('entryTestResult');
+    const side = document.getElementById('etSide')?.value || 'all';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    const pick  = x => side === 'all' ? x : (x[side] || {trades:0, win_rate:0, avg_offset:0, total_pnl:0, avg_pnl:0});
+    const label = {
+      confirmed: 'Confirmed (bar close)', immediate: 'Immediate (level touch)',
+      buffered:  'Buffered (level ± $' + d.buffer + ')', retest: 'Retest pullback',
+    };
+    const view = d.rules.map(x => ({ rule: x.rule, ...pick(x) }));
+    const totals = view.filter(x => x.trades > 0).map(x => x.total_pnl);
+    const best   = totals.length ? Math.max(...totals) : null;
+    const rows = view.map(x => {
+      const isBest = x.trades > 0 && x.total_pnl === best;
+      return `<tr style="${isBest ? 'background:rgba(127,224,152,0.08)' : ''}">`
+        + `<td style="padding:7px 12px;color:#ccc">${label[x.rule] || x.rule}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
+        + `<td style="padding:7px 12px;text-align:right;color:#aaa">${x.trades}</td>`
+        + `<td style="padding:7px 12px;text-align:right;color:${x.win_rate >= 50 ? '#7FE098' : '#ef5350'}">${x.win_rate}%</td>`
+        + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_offset)}</td>`
+        + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+        + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
+    }).join('');
+    const skipNote  = d.skipped_reversal ? ` · ${d.skipped_reversal} reversal trades excluded` : '';
+    const emaNote   = d.ema_filter ? ' · 8-EMA ON' : ' · 8-EMA OFF';
+    const multiNote = d.multi ? ' · all entries (re-fades)' : ' · first entry/day';
+    const nSet = side === 'short' ? d.n_setups_short : side === 'long' ? d.n_setups_long : d.n_setups;
+    const sideNote = side === 'all' ? '' : ` · <b style="color:${side==='short'?'#ef5350':'#7FE098'}">${side.toUpperCase()} only</b>`;
+    out.innerHTML =
+      `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${nSet} ${side==='all'?'':side+' '}breakout setups across ${d.n_tickers} tickers · ${d.from || '—'} → ${d.to || '—'} · exits: ${d.exits}${emaNote}${multiNote} · per-share P&amp;L${sideNote}${skipNote}</div>`
+      + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem">`
+      + `<thead><tr>`
+      + `<th style="text-align:left;padding:6px 12px;color:#555;font-size:0.7rem;text-transform:uppercase">Entry rule</th>`
+      + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Trades</th>`
+      + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Win %</th>`
+      + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem" title="Average entry price minus the level — how far past the level you entered">Avg offset</th>`
+      + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Total P&amp;L/sh</th>`
+      + `<th style="text-align:right;padding:6px 12px;color:#555;font-size:0.7rem">Avg/trade</th>`
+      + `</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
   async function runReversalTest() {
