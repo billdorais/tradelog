@@ -19,8 +19,9 @@ import pytest
 
 import app as a
 
-# CPR mid = 100; long level r4 = 110, short level s4 = 90.
-_CLS = {"day_type": "Outside", "mid_cpr": 100.0, "r4": 110.0, "s4": 90.0, "r3": 105.0, "s3": 95.0}
+# CPR mid = 100; long level r4 = 110, short level s4 = 90. Neutral bias by default.
+_CLS = {"day_type": "Outside", "mid_cpr": 100.0, "r4": 110.0, "s4": 90.0, "r3": 105.0,
+        "s3": 95.0, "bias": "Neutral"}
 
 
 def _rt(ticker, side, pnl, strat="BREAKOUT"):
@@ -33,8 +34,8 @@ def _rt(ticker, side, pnl, strat="BREAKOUT"):
 
 @pytest.fixture()
 def ls(monkeypatch):
-    """Wire ls_breakdown to fixed fills, a fixed day classification, and per-ticker
-    opens that place each ticker's open at a chosen spot on the CPR→level path."""
+    """Wire ls_breakdown to fixed fills, a per-ticker day classification (so bias
+    can vary by ticker), and per-ticker opens placed at a chosen spot on the path."""
     # ticker -> that day's open price (chosen to land in a known bucket).
     opens = {
         "NEAR":  100.0,   # opened at mid → near CPR (room)     [long & short]
@@ -43,8 +44,14 @@ def ls(monkeypatch):
         "PEAK":  114.0,   # past r4 → at/past extreme
         "SNEAR": 100.0,   # short: at mid → near CPR
         "SPEAK":  86.0,   # short: past s4 → at/past extreme
+        "BULL":  100.0, "BEAR": 100.0,   # trend-context tickers (open irrelevant here)
     }
-    monkeypatch.setattr(a, "_get_day_classification", lambda tk, dt: dict(_CLS))
+    # ticker -> bias override; default Neutral.
+    bias = {"BULL": "Bullish", "BEAR": "Bearish"}
+
+    def _cls(tk, dt):
+        return {**_CLS, "bias": bias.get(tk.upper(), "Neutral")}
+    monkeypatch.setattr(a, "_get_day_classification", _cls)
     monkeypatch.setattr(a, "_get_day_open", lambda tk, dt: opens.get(tk.upper()))
     monkeypatch.setattr(a, "_build_signal_lookup_for_alpaca", lambda: {})
 
@@ -119,3 +126,54 @@ def test_gradient_reveals_the_thor_pattern(ls):
     peak = _cell(d["by_open_location"], "LONG", "at/past extreme")
     assert near["win_rate"] == 100.0 and near["pnl"] == 100
     assert peak["win_rate"] == 0.0 and peak["pnl"] == -120
+
+
+def _tc(rows, side, ctx):
+    return next((r for r in rows if r["side"] == side and r["trend_context"] == ctx), None)
+
+
+def test_trend_context_classifies_with_and_against(ls):
+    d = ls([
+        _rt("BULL", "LONG", 50),    # long on a bullish day → with-trend
+        _rt("BEAR", "LONG", -40),   # long on a bearish day → against-trend
+        _rt("BEAR", "SHORT", 30),   # short on a bearish day → with-trend
+        _rt("BULL", "SHORT", -90),  # short on a bullish day → AGAINST-trend (the suspect)
+    ])
+    tc = d["by_trend_context"]
+    assert _tc(tc, "LONG", "with-trend")["pnl"] == 50
+    assert _tc(tc, "LONG", "against-trend")["pnl"] == -40
+    assert _tc(tc, "SHORT", "with-trend")["pnl"] == 30
+    assert _tc(tc, "SHORT", "against-trend")["pnl"] == -90
+
+
+def test_against_trend_short_is_the_bleed_bucket(ls):
+    """The deck's thesis: a SHORT breakout against a bullish 2-day trend
+    ('S4 Breakout Against the Trend') is the lower-quality, bleeding cohort."""
+    d = ls([
+        _rt("BEAR", "SHORT", 40), _rt("BEAR", "SHORT", 20),    # with-trend shorts: green
+        _rt("BULL", "SHORT", -60), _rt("BULL", "SHORT", -80),  # against-trend shorts: red
+    ])
+    tc = d["by_trend_context"]
+    assert _tc(tc, "SHORT", "with-trend")["pnl"] == 60 and _tc(tc, "SHORT", "with-trend")["win_rate"] == 100.0
+    assert _tc(tc, "SHORT", "against-trend")["pnl"] == -140 and _tc(tc, "SHORT", "against-trend")["win_rate"] == 0.0
+
+
+def test_neutral_bias_is_its_own_bucket_not_unresolved(ls):
+    d = ls([_rt("NEAR", "LONG", 10)])   # NEAR has default Neutral bias
+    assert _tc(d["by_trend_context"], "LONG", "neutral")["pnl"] == 10
+    assert d["trend_context_unresolved"] == 0
+
+
+def test_trend_context_ordered_against_first(ls):
+    d = ls([
+        _rt("BULL", "LONG", 10),    # with-trend
+        _rt("BEAR", "LONG", -10),   # against-trend
+        _rt("NEAR", "LONG", 5),     # neutral
+    ])
+    longs = [r["trend_context"] for r in d["by_trend_context"] if r["side"] == "LONG"]
+    assert longs == ["against-trend", "neutral", "with-trend"]
+
+
+def test_trend_context_reversals_excluded(ls):
+    d = ls([_rt("BULL", "LONG", 10, strat="REVERSAL")])
+    assert d["by_trend_context"] == []

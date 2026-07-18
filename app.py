@@ -14953,6 +14953,48 @@ def api_alpaca_ls_breakdown():
         out.sort(key=lambda r: (r["side"], _OPEN_ORDER.get(r["open_location"], 9)))
         return out
 
+    # ── Trend context (BREAKOUTS only) ──────────────────────────────────────
+    # Thor Young's 2-day pivot relationship (Higher/Lower Range) makes a breakout
+    # WITH- or AGAINST-trend: a short S4 break on a bullish (higher-range) day is
+    # his "S4 Breakout Against the Trend" — a lower-priority, counter-trend play.
+    # `bias` (today's CPR mid vs yesterday's R2/S2) is the Higher/Lower-Range proxy.
+    # Needs only bias, so a trade with a missing OPEN still classifies here.
+    def _trend_ctx(side, bias):
+        b = (bias or "").upper()
+        if b == "NEUTRAL":
+            return "neutral"
+        if b not in ("BULLISH", "BEARISH"):
+            return None                     # unclassifiable → counted as unresolved
+        with_trend = (side == "LONG" and b == "BULLISH") or (side == "SHORT" and b == "BEARISH")
+        return "with-trend" if with_trend else "against-trend"
+
+    tc = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})   # (side, context)
+    tc_unresolved = 0
+    for t in trades:
+        side = (t.get("side") or "").upper()
+        if side not in ("LONG", "SHORT") or "BREAKOUT" not in (t.get("strategy") or "").upper():
+            continue
+        tk = (t.get("ticker") or "").upper(); d = (t.get("entry_time") or "")[:10]
+        ctx = _trend_ctx(side, (clsmap.get((tk, d)) or {}).get("bias"))
+        if ctx is None:
+            tc_unresolved += 1
+            continue
+        pnl = float(t.get("pnl") or 0)
+        b = tc[(side, ctx)]
+        b["trades"] += 1; b["wins"] += 1 if pnl > 0 else 0; b["pnl"] += pnl
+
+    _TC_ORDER = {"against-trend": 0, "neutral": 1, "with-trend": 2}   # worst-expected first
+
+    def _fmt_tc(d):
+        out = []
+        for (side, ctx), v in d.items():
+            n = v["trades"]
+            out.append({"side": side, "trend_context": ctx, "trades": n, "wins": v["wins"],
+                        "win_rate": round(v["wins"] / n * 100, 1) if n else 0.0,
+                        "pnl": round(v["pnl"], 2)})
+        out.sort(key=lambda r: (r["side"], _TC_ORDER.get(r["trend_context"], 9)))
+        return out
+
     def _fmt(d, keys):
         out = []
         for k, v in d.items():
@@ -15029,6 +15071,8 @@ def api_alpaca_ls_breakdown():
         "overall_side":    _fmt(ov, ("side",)),
         "by_open_location": _fmt_open(ol),   # breakouts only — Thor Young opening-location test
         "open_location_unresolved": ol_unresolved,
+        "by_trend_context": _fmt_tc(tc),     # breakouts only — with/against 2-day pivot trend
+        "trend_context_unresolved": tc_unresolved,
         "by_strategy_side":      by_strategy_side,
         "side_gated_candidates": candidates,
     })
