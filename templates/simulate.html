@@ -547,6 +547,32 @@
     </div>
   </div>
 
+  <!-- Sim vs Actual reconciliation — attribute the model/actual gap to entry vs exit -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Sim vs Actual
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— the modeled breakout is profitable but the live account bled: where is the edge lost?</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Side</label>
+        <select id="rcSide" style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.82rem;font-family:inherit">
+          <option value="short">Shorts only</option>
+          <option value="long">Longs only</option>
+          <option value="">Both sides</option>
+        </select></div>
+      <div class="param-group"><label>Model entry</label>
+        <select id="rcRule" style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.82rem;font-family:inherit"
+                title="Which entry rule the full-model column uses. 'Confirmed' (bar close) matches how TV alerts actually fire.">
+          <option value="confirmed">Confirmed (bar close)</option>
+          <option value="immediate">Immediate (level touch)</option>
+          <option value="buffered">Buffered</option>
+          <option value="retest">Retest pullback</option>
+        </select></div>
+      <button class="run-btn" onclick="runReconcile()" style="padding:8px 18px">&#9654; Reconcile</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">First round-trip/day per setup. Per-share P&amp;L.</span>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Compares your <b>actual</b> entry→exit against (a) the <b>modeled trailing exit from your actual entry</b> — isolates the EXIT — and (b) the <b>full modeled</b> entry→exit — the extra gap isolates the ENTRY. Total gap = entry gap + exit gap.</div>
+    <div id="reconcileResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Regime backtest -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Regime Backtest
@@ -821,6 +847,60 @@
   // One click → both books. Runs the breakout and reversal entry tests in parallel
   // and lets each populate its own section below.
   function runEntryTests() { runEntryTest(); runReversalTest(); }
+
+  // Sim vs Actual: attribute the modeled/actual gap to entry vs exit.
+  async function runReconcile() {
+    const out = document.getElementById('reconcileResult');
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
+    const p = new URLSearchParams({
+      account: document.getElementById('account').value,
+      from: document.getElementById('fromDate').value, to: document.getElementById('toDate').value,
+      side: document.getElementById('rcSide').value,
+      rule: document.getElementById('rcRule').value,
+      ema: document.getElementById('etEma').checked ? '1' : '0',
+    });
+    out.innerHTML = '<span style="color:#888">Reconciling modeled vs actual trades…</span>';
+    try {
+      const r = await fetch('/api/simulate/reconcile?' + p);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+      if (!(d.rows || []).length) { out.innerHTML = '<span style="color:#888">No breakout setups to reconcile in this window.</span>'; return; }
+      const verdict = Math.abs(d.exit_gap_total) >= Math.abs(d.entry_gap_total)
+        ? `<b style="color:#F2C76B">Exit execution</b> is the bigger leak — the modeled trailing exit would have done <b>${money(d.exit_gap_total)}</b> better from your own entries.`
+        : `<b style="color:#F2C76B">Entry price</b> is the bigger leak — the modeled entry captured <b>${money(d.entry_gap_total)}</b> the actual fills didn't.`;
+      const head = `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_reconciled}/${d.n_setups} setups reconciled${d.n_no_model_entry ? ` · ${d.n_no_model_entry} the model wouldn't enter` : ''} · ${d.from || '—'} → ${d.to || '—'} · model entry: ${d.rule} · ${d.side} · per-share</div>`;
+      const summary = `<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.86rem;margin-bottom:10px">`
+        + `<div>Actual: <b style="color:${d.actual_total >= 0 ? '#7FE098' : '#ef5350'}">${money(d.actual_total)}</b></div>`
+        + `<div>Model: <b style="color:${d.model_total >= 0 ? '#7FE098' : '#ef5350'}">${money(d.model_total)}</b></div>`
+        + `<div>Total gap: <b style="color:#c4b5fd">${money(d.total_gap)}</b></div></div>`;
+      const eabs = Math.abs(d.entry_gap_total), xabs = Math.abs(d.exit_gap_total), tot = (eabs + xabs) || 1;
+      const bar = `<div style="display:flex;height:22px;border-radius:5px;overflow:hidden;font-size:0.72rem;font-weight:700;margin-bottom:6px">`
+        + `<div style="width:${xabs / tot * 100}%;background:#8a6d3b;color:#fff;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden">EXIT ${d.exit_pct}% · ${money(d.exit_gap_total)}</div>`
+        + `<div style="width:${eabs / tot * 100}%;background:#3b5c8a;color:#fff;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden">ENTRY ${d.entry_pct}% · ${money(d.entry_gap_total)}</div></div>`;
+      const gcell = v => v == null ? '<span style="color:#444">—</span>' : `<span style="color:${v >= 0 ? '#7FE098' : '#ef5350'}">${money(v)}</span>`;
+      const body = (d.rows || []).map(x => `<tr style="border-bottom:1px solid #15171f">`
+        + `<td style="padding:5px 9px;color:#ccc">${x.ticker}</td>`
+        + `<td style="padding:5px 9px;color:#888">${x.date}</td>`
+        + `<td style="padding:5px 9px;color:${x.side === 'SHORT' ? '#ef5350' : '#7FE098'}">${x.side}</td>`
+        + `<td style="padding:5px 9px;text-align:right;color:#aaa">${x.actual_entry} → ${x.actual_exit}</td>`
+        + `<td style="padding:5px 9px;text-align:right;color:${x.actual_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.actual_pnl)}</td>`
+        + `<td style="padding:5px 9px;text-align:right;color:#aaa">${x.model_entry == null ? '—' : x.model_entry + ' → ' + x.model_exit}</td>`
+        + `<td style="padding:5px 9px;text-align:right;color:${(x.model_pnl || 0) >= 0 ? '#7FE098' : '#ef5350'}">${x.model_pnl == null ? '—' : money(x.model_pnl)}</td>`
+        + `<td style="padding:5px 9px;text-align:right">${gcell(x.exit_gap)}</td>`
+        + `<td style="padding:5px 9px;text-align:right">${gcell(x.entry_gap)}</td>`
+        + `<td style="padding:5px 9px;text-align:right;font-weight:600">${gcell(x.total_gap)}</td></tr>`).join('');
+      out.innerHTML = head + summary + bar
+        + `<div style="font-size:0.85rem;margin:8px 0 12px">${verdict}</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">`
+        + `<th style="text-align:left;padding:4px 9px">Ticker</th><th style="text-align:left;padding:4px 9px">Date</th><th style="text-align:left;padding:4px 9px">Side</th>`
+        + `<th style="text-align:right;padding:4px 9px">Actual in→out</th><th style="text-align:right;padding:4px 9px">Actual P&amp;L</th>`
+        + `<th style="text-align:right;padding:4px 9px">Model in→out</th><th style="text-align:right;padding:4px 9px">Model P&amp;L</th>`
+        + `<th style="text-align:right;padding:4px 9px" title="Modeled exit from your actual entry − your actual P&L">Exit gap</th>`
+        + `<th style="text-align:right;padding:4px 9px" title="Modeled entry vs your entry (both modeled exit)">Entry gap</th>`
+        + `<th style="text-align:right;padding:4px 9px">Total gap</th>`
+        + `</tr></thead><tbody>${body}</tbody></table></div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
 
   async function runEntryTest() {
     const out = document.getElementById('entryTestResult');

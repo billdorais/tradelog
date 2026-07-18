@@ -12276,6 +12276,200 @@ def api_simulate_reversal_test():
     })
 
 
+@app.route("/api/simulate/reconcile")
+def api_simulate_reconcile():
+    """Reconcile MODELED vs ACTUAL breakout trades and attribute the P&L gap to
+    ENTRY vs EXIT. The Entry Test showed the setups are profitable in simulation
+    while the live account bled — this finds WHERE the edge is lost. Per setup's
+    first round-trip of the day, three P&Ls (per share, qty=1):
+
+      actual      = your real entry price → your real exit price
+      model-exit  = your real entry → the MODELED trailing exit (isolates the EXIT)
+      full-model  = the modeled entry → modeled exit  (vs model-exit isolates ENTRY)
+
+    total gap = full-model − actual = (full-model − model-exit) + (model-exit − actual)
+              =            entry gap +                             exit gap
+
+    ?account=&from=&to=&side=long|short&rule=confirmed|immediate|buffered|retest
+    """
+    import concurrent.futures as _cf
+    import datetime as _dt2
+
+    if alpaca_broker is None:
+        return jsonify({"error": "Alpaca data is not configured."}), 503
+    account = str(request.args.get("account") or "2").strip()
+    _rc_broker, _rc_tag, _rc_label, _rc_fills_fn = _alpaca_account_ctx(account)
+    if _rc_broker is None:
+        return jsonify({"error": f"Account {account} ({_rc_label}) is not configured."}), 400
+    side_filter = (request.args.get("side") or "").strip().lower()       # "", long, short
+    rule        = (request.args.get("rule") or "confirmed").strip().lower()
+    if rule not in ("confirmed", "immediate", "buffered", "retest"):
+        rule = "confirmed"
+    try:    buffer = float(request.args.get("buffer", 0.05))
+    except Exception: buffer = 0.05
+    ema_filter = (request.args.get("ema", "1") or "1").strip() not in ("0", "false", "")
+    from_date  = (request.args.get("from") or "").strip()
+    to_date    = (request.args.get("to")   or "").strip()
+
+    # Per-strategy exit params from the live Signal Router (same loader as entry_test).
+    rule_settings = {}
+    try:
+        _rc = get_db()
+        for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
+            _rname  = (_row[0] or "").upper()
+            _trail = _trigger = _mhm = None
+            for _nd in json.loads(_row[1] or "[]"):
+                if _nd.get("type") == "exit_params":
+                    _trail   = float(_nd.get("trail_offset") or 0) or None
+                    _trigger = float(_nd.get("trail_trigger") or 0)
+                    _mraw    = _nd.get("max_hold_mins")
+                    _mhm     = int(float(_mraw)) if _mraw else None
+            if _trail is not None:
+                rule_settings[_rname] = {"trail_pct": _trail, "trigger_pct": _trigger or 0.0,
+                                         "max_hold_mins": _mhm}
+        _rc.close()
+    except Exception as _re:
+        log.warning("reconcile rule settings failed: %s", _re)
+
+    def _match_exit(strategy):
+        r = rule_settings.get((strategy or "").upper())
+        if r is None:
+            sname = (strategy or "").upper().replace(" ", "_")
+            for rkey, rval in rule_settings.items():
+                pat = "_".join(rkey.split("_CAM_")[1].split("_")[:2]) if "_CAM_" in rkey else rkey
+                if pat and pat in sname:
+                    r = rval
+                    break
+        return r or {"trail_pct": 0.3, "trigger_pct": 0.1, "max_hold_mins": None}
+
+    paired = _pair_alpaca_fills_lifo(_rc_fills_fn(), from_date=from_date, to_date=to_date)
+    trades = paired["closed_clean"]
+    if not trades:
+        return jsonify({"error": "No round-trips for that account / date range."}), 404
+
+    # First actual BREAKOUT round-trip per (ticker, date, strategy, side).
+    first = {}
+    for t in trades:
+        strat = t.get("strategy") or ""
+        if "BREAKOUT" not in strat.upper():
+            continue
+        side = (t.get("side") or "").upper()
+        if side not in ("LONG", "SHORT"):
+            continue
+        if side_filter in ("long", "short") and side != side_filter.upper():
+            continue
+        tk = (t.get("ticker") or "").upper(); date = (t.get("entry_time") or "")[:10]
+        if not (_trade_level(strat, side) and tk and date and t.get("entry_time")):
+            continue
+        key = (tk, date, strat, side)
+        if key not in first or (t.get("entry_time") or "") < (first[key].get("entry_time") or ""):
+            first[key] = t
+
+    ticker_dates = {(k[0], k[1]) for k in first}
+    bars_map, lv_map = {}, {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        lfut = {pool.submit(_camarilla_levels,  tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
+        for f in _cf.as_completed(bfut):
+            try:    bars_map[bfut[f]] = f.result()
+            except Exception: bars_map[bfut[f]] = []
+        for f in _cf.as_completed(lfut):
+            try:    lv_map[lfut[f]] = f.result()
+            except Exception: lv_map[lfut[f]] = {}
+
+    lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
+
+    def _pnl(side, entry, exit_):
+        return (exit_ - entry) if side == "LONG" else (entry - exit_)
+
+    def _bar_idx_at(bars, ts_iso):
+        try:
+            t = _dt2.datetime.fromisoformat((ts_iso or "").replace("Z", "+00:00"))
+        except Exception:
+            return None
+        for i, b in enumerate(bars):
+            bt = b.timestamp
+            if bt.tzinfo is None:
+                bt = bt.replace(tzinfo=_dt2.timezone.utc)
+            if bt >= t:
+                return i
+        return None
+
+    def _sim_exit_from(bars, idx, entry_px, side, trail0, trigger, max_hold):
+        eff = _apply_session_trail(trail0, bars[idx].timestamp)
+        r = _simulate_exit(bars[idx:], entry_px, side, eff, trigger, 0.0, max_hold or 0,
+                           entry_dt=bars[idx].timestamp, qty=1.0)
+        return r["exit_price"] if r else None
+
+    rows = []
+    n_no_model = 0
+    act_tot = mdl_tot = entry_gap_tot = exit_gap_tot = 0.0
+    for (tk, date, strat, side), t in first.items():
+        bars     = bars_map.get((tk, date)) or []
+        lvl_name = _trade_level(strat, side)
+        level    = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl_name))
+        if not bars or not level:
+            continue
+        ex = _match_exit(strat)
+        trail0, trigger, max_hold = ex["trail_pct"], ex["trigger_pct"], ex["max_hold_mins"]
+        a_entry = float(t.get("entry_price") or 0); a_exit = float(t.get("exit_price") or 0)
+        if a_entry <= 0 or a_exit <= 0:
+            continue
+        a_pnl = _pnl(side, a_entry, a_exit)
+
+        # (1) modeled trailing exit, starting from YOUR actual entry → isolates exit.
+        me_pnl = me_exit = None
+        idx = _bar_idx_at(bars, t.get("entry_time"))
+        if idx is not None:
+            me_exit = _sim_exit_from(bars, idx, a_entry, side, trail0, trigger, max_hold)
+            if me_exit is not None:
+                me_pnl = _pnl(side, a_entry, me_exit)
+
+        # (2) full model: modeled entry (per rule) + modeled exit.
+        fm_pnl = fm_entry = fm_exit = None
+        hit = _find_entry(bars, level, side, rule, buffer, ema_filter=ema_filter, start=1)
+        if hit:
+            m_idx, fm_entry = hit
+            fm_exit = _sim_exit_from(bars, m_idx, fm_entry, side, trail0, trigger, max_hold)
+            if fm_exit is not None:
+                fm_pnl = _pnl(side, fm_entry, fm_exit)
+
+        row = {"ticker": tk, "date": date, "side": side,
+               "actual_entry": round(a_entry, 4), "actual_exit": round(a_exit, 4),
+               "actual_pnl": round(a_pnl, 4),
+               "model_entry": round(fm_entry, 4) if fm_entry is not None else None,
+               "model_exit":  round(fm_exit, 4)  if fm_exit  is not None else None,
+               "model_pnl":   round(fm_pnl, 4)   if fm_pnl   is not None else None,
+               "model_exit_from_actual": round(me_exit, 4) if me_exit is not None else None}
+        if me_pnl is not None and fm_pnl is not None:
+            exit_gap  = me_pnl - a_pnl        # same entry, modeled exit vs actual exit
+            entry_gap = fm_pnl - me_pnl       # modeled entry vs actual entry (both modeled exit)
+            row["exit_gap"]  = round(exit_gap, 4)
+            row["entry_gap"] = round(entry_gap, 4)
+            row["total_gap"] = round(fm_pnl - a_pnl, 4)
+            act_tot += a_pnl; mdl_tot += fm_pnl
+            exit_gap_tot += exit_gap; entry_gap_tot += entry_gap
+        else:
+            n_no_model += 1
+            row["exit_gap"] = row["entry_gap"] = row["total_gap"] = None
+        rows.append(row)
+
+    rows.sort(key=lambda r: (r["total_gap"] if r["total_gap"] is not None else -1e9), reverse=True)
+    total_gap = mdl_tot - act_tot
+    return jsonify({
+        "account": _rc_label, "from": from_date, "to": to_date,
+        "side": side_filter or "both", "rule": rule, "ema_filter": ema_filter,
+        "n_setups": len(rows), "n_reconciled": len(rows) - n_no_model,
+        "n_no_model_entry": n_no_model,
+        "actual_total": round(act_tot, 4), "model_total": round(mdl_tot, 4),
+        "total_gap": round(total_gap, 4),
+        "entry_gap_total": round(entry_gap_tot, 4), "exit_gap_total": round(exit_gap_tot, 4),
+        "entry_pct": round(entry_gap_tot / total_gap * 100, 1) if total_gap else 0.0,
+        "exit_pct":  round(exit_gap_tot  / total_gap * 100, 1) if total_gap else 0.0,
+        "rows": rows,
+    })
+
+
 # ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────
 # For each closed Refined round-trip, fetch 1-min bars between entry and exit,
 # compute the Maximum Favorable Excursion (how far it ran in your favor), then
