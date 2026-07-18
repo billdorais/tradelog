@@ -885,40 +885,50 @@
       const d = await r.json();
       if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
       const wr = v => `<span style="color:${v >= 50 ? '#7FE098' : v <= 35 ? '#ef5350' : '#F2E7AC'}">${v}%</span>`;
-      const base = d.baseline || {};
-      // Row per bucket; highlight the best total_pnl.
-      const buckets = [{key: 'baseline', label: 'Baseline (all breakout shorts)', d: d.baseline},
-                       {key: 'ema', label: d.ema.label, d: d.ema},
-                       {key: 'vol', label: d.vol.label, d: d.vol},
-                       {key: 'both', label: d.both.label, d: d.both}];
-      const best = Math.max(...buckets.filter(b => b.d.trades > 0).map(b => b.d.total_pnl));
-      const rows = buckets.map(b => {
-        const x = b.d, isBest = x.trades > 0 && x.total_pnl === best;
-        const lift = (b.key !== 'baseline' && x.trades > 0 && base.trades)
-          ? `<span style="color:#888;font-size:0.72rem"> (${x.win_rate - base.win_rate >= 0 ? '+' : ''}${(x.win_rate - base.win_rate).toFixed(1)}pt win)</span>` : '';
-        return `<tr style="${isBest ? 'background:rgba(127,224,152,0.08)' : ''}">`
-          + `<td style="padding:7px 12px;color:#ccc">${b.label}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
-          + `<td style="padding:7px 12px;text-align:right;color:#aaa">${x.trades}</td>`
-          + `<td style="padding:7px 12px;text-align:right">${wr(x.win_rate)}${lift}</td>`
-          + `<td style="padding:7px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
-          + `<td style="padding:7px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
-      }).join('');
-      const sweep = (d.vol_sweep || []).map(s =>
-        `<tr><td style="padding:5px 12px;color:#ccc">≥ ${s.vol_mult}× avg vol (+ below EMA)</td>`
-        + `<td style="padding:5px 12px;text-align:right;color:#aaa">${s.trades}</td>`
-        + `<td style="padding:5px 12px;text-align:right">${wr(s.win_rate)}</td>`
-        + `<td style="padding:5px 12px;text-align:right;color:${s.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(s.total_pnl)}</td>`
-        + `<td style="padding:5px 12px;text-align:right;color:#888">${money(s.avg_pnl)}</td></tr>`).join('');
+
+      // One section per short kind (breakout / reversal); both share the layout.
+      const section = (kd, title, color, sweepNote) => {
+        if (!kd || !kd.n_setups) return `<div style="margin-top:6px"><div style="font-weight:700;color:${color};font-size:0.9rem;margin-bottom:4px">${title}</div><div style="font-size:0.8rem;color:#666">No setups in this window.</div></div>`;
+        const base = kd.baseline || {};
+        const buckets = [{key:'baseline', label:'Baseline (all)', d:kd.baseline},
+                         {key:'ema', label:kd.ema.label, d:kd.ema},
+                         {key:'vol', label:kd.vol.label, d:kd.vol},
+                         {key:'both', label:kd.both.label, d:kd.both}];
+        const best = Math.max(...buckets.filter(b => b.d.trades > 0).map(b => b.d.total_pnl));
+        const rows = buckets.map(b => {
+          const x = b.d, isBest = x.trades > 0 && x.total_pnl === best;
+          const lift = (b.key !== 'baseline' && x.trades > 0 && base.trades)
+            ? `<span style="color:#888;font-size:0.72rem"> (${x.win_rate - base.win_rate >= 0 ? '+' : ''}${(x.win_rate - base.win_rate).toFixed(1)}pt win)</span>` : '';
+          return `<tr style="${isBest ? 'background:rgba(127,224,152,0.08)' : ''}">`
+            + `<td style="padding:6px 12px;color:#ccc">${b.label}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#aaa">${x.trades}</td>`
+            + `<td style="padding:6px 12px;text-align:right">${wr(x.win_rate)}${lift}</td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${x.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(x.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#888">${money(x.avg_pnl)}</td></tr>`;
+        }).join('');
+        const sweep = (kd.vol_sweep || []).map(s =>
+          `<tr><td style="padding:4px 12px;color:#ccc">≥ ${s.vol_mult}× avg vol (+ ${sweepNote})</td>`
+          + `<td style="padding:4px 12px;text-align:right;color:#aaa">${s.trades}</td>`
+          + `<td style="padding:4px 12px;text-align:right">${wr(s.win_rate)}</td>`
+          + `<td style="padding:4px 12px;text-align:right;color:${s.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(s.total_pnl)}</td>`
+          + `<td style="padding:4px 12px;text-align:right;color:#888">${money(s.avg_pnl)}</td></tr>`).join('');
+        return `<div style="margin-top:6px"><div style="font-weight:700;color:${color};font-size:0.9rem;margin-bottom:4px">${title} <span style="color:#666;font-weight:400;font-size:0.72rem">· ${kd.n_setups} setups${kd.n_no_volume ? ` · ${kd.n_no_volume} no-volume` : ''}</span></div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.83rem"><thead><tr style="color:#555;font-size:0.68rem;text-transform:uppercase">`
+          + `<th style="text-align:left;padding:5px 12px">Filter</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L/sh</th><th style="text-align:right;padding:5px 12px">Avg/trade</th>`
+          + `</tr></thead><tbody>${rows}</tbody></table></div>`
+          + (sweep ? `<div style="margin-top:10px"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">Volume threshold sweep</div>`
+              + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem"><thead><tr style="color:#555;font-size:0.64rem;text-transform:uppercase">`
+              + `<th style="text-align:left;padding:3px 12px">Threshold</th><th style="text-align:right;padding:3px 12px">Trades</th><th style="text-align:right;padding:3px 12px">Win %</th><th style="text-align:right;padding:3px 12px">Total/sh</th><th style="text-align:right;padding:3px 12px">Avg/trade</th>`
+              + `</tr></thead><tbody>${sweep}</tbody></table></div></div>` : '')
+          + `</div>`;
+      };
+
       out.innerHTML =
-        `<div style="font-size:0.72rem;color:#666;margin-bottom:8px">${d.account} · ${d.n_setups} breakout short setups · ${d.from || '—'} → ${d.to || '—'} · entry: ${d.rule} · ${d.n_no_volume ? d.n_no_volume + ' with no volume data · ' : ''}per-share P&amp;L</div>`
-        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.84rem"><thead><tr style="color:#555;font-size:0.7rem;text-transform:uppercase">`
-        + `<th style="text-align:left;padding:6px 12px">Filter</th><th style="text-align:right;padding:6px 12px">Trades</th><th style="text-align:right;padding:6px 12px">Win %</th><th style="text-align:right;padding:6px 12px">Total P&amp;L/sh</th><th style="text-align:right;padding:6px 12px">Avg/trade</th>`
-        + `</tr></thead><tbody>${rows}</tbody></table></div>`
-        + (sweep ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:3px">Volume threshold sweep (with below-EMA)</div>`
-            + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">`
-            + `<th style="text-align:left;padding:4px 12px">Threshold</th><th style="text-align:right;padding:4px 12px">Trades</th><th style="text-align:right;padding:4px 12px">Win %</th><th style="text-align:right;padding:4px 12px">Total/sh</th><th style="text-align:right;padding:4px 12px">Avg/trade</th>`
-            + `</tr></thead><tbody>${sweep}</tbody></table></div></div>` : '')
-        + `<div style="font-size:0.72rem;color:#666;margin-top:8px">If <b>+both</b> lifts win rate and P&amp;L over baseline, the volume-below-EMA confirmation is filtering losers — a candidate short-entry gate. Watch the trade count: a filter that only keeps a handful isn't robust.</div>`;
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:10px">${d.account} · ${d.from || '—'} → ${d.to || '—'} · entry: ${d.rule} · per-share P&amp;L · <span style="color:#c98b4b">IEX volume proxy</span></div>`
+        + section(d.breakout, 'Breakout shorts (break S4/S3 · below 20-EMA)', '#7FE098', 'below EMA')
+        + `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"></div>`
+        + section(d.reversal, 'Reversal shorts (reject R4/R3 · above 20-EMA)', '#F2C07A', 'above EMA')
+        + `<div style="font-size:0.72rem;color:#666;margin-top:10px">If <b>+both</b> lifts win rate and P&amp;L over baseline, the volume-EMA confirmation is filtering losers — a candidate short-entry gate. Watch the trade count: a filter that only keeps a handful isn't robust. Note the EMA condition is <b>inverted</b> — breakouts want price below the 20-EMA (momentum), reversals want it above (fading an overextension).</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 

@@ -12548,18 +12548,24 @@ def api_simulate_short_filter_test():
     if not trades:
         return jsonify({"error": "No round-trips for that account / date range."}), 404
 
-    # Unique breakout SHORT setups (first-of-day per ticker/date/strategy).
-    setups = {}
+    # Unique SHORT setups per kind (first-of-day per ticker/date/strategy).
+    bo_setups, rv_setups = {}, {}
     for t in trades:
         strat = t.get("strategy") or ""
-        if "BREAKOUT" not in strat.upper() or (t.get("side") or "").upper() != "SHORT":
+        if (t.get("side") or "").upper() != "SHORT":
+            continue
+        su = strat.upper()
+        if not ("R4S4" in su or "R3S3" in su):
             continue
         tk = (t.get("ticker") or "").upper(); date = (t.get("entry_time") or "")[:10]
-        if not (_trade_level(strat, "SHORT") and tk and date):
+        if not (tk and date):
             continue
-        setups[(tk, date, strat)] = True
+        if "BREAKOUT" in su:
+            bo_setups[(tk, date, strat)] = True
+        elif "REVERSAL" in su:
+            rv_setups[(tk, date, strat)] = True
 
-    ticker_dates = {(k[0], k[1]) for k in setups}
+    ticker_dates = {(k[0], k[1]) for k in list(bo_setups) + list(rv_setups)}
     bars_map, lv_map = {}, {}
     with _cf.ThreadPoolExecutor(max_workers=8) as pool:
         bfut = {pool.submit(_fetch_5m_rth_objs, tk, dt): (tk, dt) for (tk, dt) in ticker_dates}
@@ -12573,50 +12579,69 @@ def api_simulate_short_filter_test():
 
     lkey = {"R3": "r3", "R4": "r4", "S3": "s3", "S4": "s4"}
     from collections import defaultdict as _dd
-    buckets = {"baseline": [], "ema": [], "vol": [], "both": []}   # of per-share pnl
-    both_by_mult = _dd(list)                                       # vol_mult -> pnl list
-    n_no_vol = 0
 
-    for (tk, date, strat) in setups:
-        bars     = bars_map.get((tk, date)) or []
-        lvl_name = _trade_level(strat, "SHORT")
-        level    = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl_name))
-        if not bars or not level:
-            continue
-        hit = _find_entry(bars, level, "SHORT", rule, buffer, ema_filter=False, start=1)
-        if not hit:
-            continue
-        idx, entry_px = hit
-        bar = bars[idx]
-        ex = _match_exit(strat)
-        eff = _apply_session_trail(ex["trail_pct"], bar.timestamp)
-        r = _simulate_exit(bars[idx:], entry_px, "SHORT", eff, ex["trigger_pct"], 0.0,
-                           ex["max_hold_mins"] or 0, entry_dt=bar.timestamp, qty=1.0)
-        if not r:
-            continue
-        pnl = entry_px - float(r["exit_price"])            # short per-share
+    def _short_level(strat, kind):
+        # Breakout short BREAKS support (S, below); reversal short REJECTS resistance
+        # (R, above) — inverted between the two.
+        su = (strat or "").upper()
+        band = "R4S4" if "R4S4" in su else "R3S3" if "R3S3" in su else None
+        if not band:
+            return None
+        return band[2:] if kind == "breakout" else band[:2]   # S4/S3  vs  R4/R3
 
-        ema20 = getattr(bar, "ema20", None)
-        ema_ok = ema20 is not None and bar.close < ema20   # closed below the 20-EMA
-        prior = bars[max(0, idx - vol_lookback):idx]
-        vols  = [getattr(b, "volume", 0) or 0 for b in prior]
-        vavg  = (sum(vols) / len(vols)) if vols else 0.0
-        cur_vol = getattr(bar, "volume", 0) or 0
-        has_vol = vavg > 0 and cur_vol > 0
-        if not has_vol:
-            n_no_vol += 1
-        vol_ratio = (cur_vol / vavg) if vavg > 0 else None
+    def _run_kind(setups, kind):
+        buckets = {"baseline": [], "ema": [], "vol": [], "both": []}
+        both_by_mult, n_no_vol = _dd(list), 0
+        for (tk, date, strat) in setups:
+            bars     = bars_map.get((tk, date)) or []
+            lvl_name = _short_level(strat, kind)
+            level    = (lv_map.get((tk, date)) or {}).get(lkey.get(lvl_name))
+            if not bars or not level:
+                continue
+            if kind == "breakout":
+                hit = _find_entry(bars, level, "SHORT", rule, buffer, ema_filter=False, start=1)
+            else:
+                hit = _find_reversal_entry(bars, level, "SHORT", "reject", ema_filter=False,
+                                           atr_mult=0.25, start=1)
+            if not hit:
+                continue
+            idx, entry_px = hit
+            bar = bars[idx]
+            ex  = _match_exit(strat)
+            eff = _apply_session_trail(ex["trail_pct"], bar.timestamp)
+            r = _simulate_exit(bars[idx:], entry_px, "SHORT", eff, ex["trigger_pct"], 0.0,
+                               ex["max_hold_mins"] or 0, entry_dt=bar.timestamp, qty=1.0)
+            if not r:
+                continue
+            pnl = entry_px - float(r["exit_price"])            # short per-share
 
-        buckets["baseline"].append(pnl)
-        if ema_ok:
-            buckets["ema"].append(pnl)
-        if has_vol and vol_ratio is not None and vol_ratio >= vol_mult:
-            buckets["vol"].append(pnl)
+            ema20 = getattr(bar, "ema20", None)
+            # Breakout short wants price BELOW the 20-EMA (momentum down); reversal
+            # short wants it ABOVE (extended above the mean, fading the overextension).
+            if kind == "breakout":
+                ema_ok = ema20 is not None and bar.close < ema20
+            else:
+                ema_ok = ema20 is not None and bar.close > ema20
+            prior = bars[max(0, idx - vol_lookback):idx]
+            vols  = [getattr(b, "volume", 0) or 0 for b in prior]
+            vavg  = (sum(vols) / len(vols)) if vols else 0.0
+            cur_vol = getattr(bar, "volume", 0) or 0
+            has_vol = vavg > 0 and cur_vol > 0
+            if not has_vol:
+                n_no_vol += 1
+            vol_ratio = (cur_vol / vavg) if vavg > 0 else None
+
+            buckets["baseline"].append(pnl)
             if ema_ok:
-                buckets["both"].append(pnl)
-        for m in vol_mults:
-            if ema_ok and has_vol and vol_ratio is not None and vol_ratio >= m:
-                both_by_mult[m].append(pnl)
+                buckets["ema"].append(pnl)
+            if has_vol and vol_ratio is not None and vol_ratio >= vol_mult:
+                buckets["vol"].append(pnl)
+                if ema_ok:
+                    buckets["both"].append(pnl)
+            for m in vol_mults:
+                if ema_ok and has_vol and vol_ratio is not None and vol_ratio >= m:
+                    both_by_mult[m].append(pnl)
+        return buckets, both_by_mult, n_no_vol
 
     def _summ(pnls):
         n, wins = len(pnls), sum(1 for p in pnls if p > 0)
@@ -12625,17 +12650,26 @@ def api_simulate_short_filter_test():
                 "total_pnl": round(sum(pnls), 4),
                 "avg_pnl":   round(sum(pnls) / n, 4) if n else 0.0}
 
+    def _payload(setups, kind, ema_label):
+        buckets, both_by_mult, n_no_vol = _run_kind(setups, kind)
+        return {
+            "n_setups": len(buckets["baseline"]), "n_no_volume": n_no_vol,
+            "baseline": _summ(buckets["baseline"]),
+            "ema":      {**_summ(buckets["ema"]),  "label": ema_label},
+            "vol":      {**_summ(buckets["vol"]),  "label": f"+ volume ≥ {vol_mult}× avg"},
+            "both":     {**_summ(buckets["both"]), "label": f"+ both (20-EMA & {vol_mult}× vol)"},
+            "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
+        }
+
     return jsonify({
         "account": _sf_label, "from": from_date, "to": to_date, "rule": rule,
         "vol_mult": vol_mult, "vol_lookback": vol_lookback,
-        "n_setups": len(buckets["baseline"]), "n_no_volume": n_no_vol,
-        "baseline": _summ(buckets["baseline"]),
-        "ema":      {**_summ(buckets["ema"]),  "label": "+ below 20-EMA"},
-        "vol":      {**_summ(buckets["vol"]),  "label": f"+ volume ≥ {vol_mult}× avg"},
-        "both":     {**_summ(buckets["both"]), "label": f"+ both (20-EMA & {vol_mult}× vol)"},
-        "vol_sweep": [{"vol_mult": m, **_summ(both_by_mult[m])} for m in vol_mults],
+        "breakout": _payload(bo_setups, "breakout", "+ below 20-EMA"),
+        "reversal": _payload(rv_setups, "reversal", "+ above 20-EMA (extended)"),
         "note": "Free-tier bars carry IEX-only volume (~a few % of the tape) — the "
-                "volume filter is a relative proxy, not true market volume.",
+                "volume filter is a relative proxy, not true market volume. Breakout "
+                "short = break S4/S3 below the 20-EMA; reversal short = reject R4/R3 "
+                "above the 20-EMA.",
     })
 
 
