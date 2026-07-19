@@ -190,13 +190,13 @@ ACCOUNT_META = {
     # 2026-07-01..17 (−$394, both sides dead) — no edge left to side-gate. TV Farm
     # keeps trading them, so the evidence for a comeback keeps accruing.
     "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True, "rvol_gate": True},
     # reversal_side "long": pause Kairos REVERSAL SHORTS only. The short_filter_test
     # (Jul '26, 309 setups) put reversal shorts at breakeven-at-best even with the
     # confirmation entry (reject -> 20-EMA break); Kairos reversal LONGS have been
     # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "rvol_gate": True},
     # reversal_side "long": Crew Paper pauses reversal SHORTS too (same breakeven
     # finding). A hard gate rather than relying on the crew to stop wiring them.
     "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098", "hours_key": "refined",
@@ -250,6 +250,18 @@ ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS
 # accounts the tighter short strike limit applies to. Farms (profit_lock off) are
 # exempt so they keep sampling short re-fades for the periodic re-check.
 _CURATED_TAGS = _accounts_with("profit_lock")
+
+# RVOL entry gate — block low relative-volume BREAKOUT entries (and short blow-offs)
+# on the gated books. The Replay RVOL sweep (Jun–Jul '26) showed the edge lives in
+# the 1.5–3.0x band: sub-1.5x breakouts bled on both TV Refined (-$70 -> +$484 at
+# >=1.5x) and Kairos Refined (-$711 -> +$456), while shorts get run over >=3x.
+# Applies to TV Refined + Kairos Refined (rvol_gate flag); Crew held (thin sample),
+# farms ungated as the control. Breakouts only; reversals/exits pass. Default OFF.
+RVOL_GATE_ENABLED   = os.environ.get("RVOL_GATE_ENABLED", "0") == "1"
+RVOL_GATE_MIN       = float(os.environ.get("RVOL_GATE_MIN", "1.5"))        # require entry-bar RVOL >= this
+RVOL_GATE_SHORT_CAP = float(os.environ.get("RVOL_GATE_SHORT_CAP", "3.0"))  # block shorts >= this (0 = off)
+RVOL_GATE_LOOKBACK  = int(os.environ.get("RVOL_GATE_LOOKBACK", "20"))      # baseline bars
+RVOL_GATE_ACCOUNTS  = _accounts_with("rvol_gate")
 
 def _strike_limit(level, account_tag):
     """Strikes-per-level for this (level, account): SHORT levels (S3/S4) on a
@@ -3000,6 +3012,9 @@ def risk_status():
         "strikes_per_level":   STRIKES_PER_LEVEL,
         "strikes_per_level_short": STRIKES_PER_LEVEL_SHORT,
         "strikes":             _strikes_status_list(),
+        "rvol_gate_enabled":   RVOL_GATE_ENABLED,
+        "rvol_gate_min":       RVOL_GATE_MIN,
+        "rvol_gate_short_cap": RVOL_GATE_SHORT_CAP,
         "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
         "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
@@ -3054,7 +3069,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -3185,6 +3200,30 @@ def risk_set_limit():
         _save_setting("STRIKES_PER_LEVEL_SHORT", str(STRIKES_PER_LEVEL_SHORT))
         log.info("STRIKES_PER_LEVEL_SHORT set to %d (0=off) — short re-fade cap on curated books", STRIKES_PER_LEVEL_SHORT)
         changed.append("strikes_per_level_short")
+    if "rvol_gate_enabled" in data:
+        RVOL_GATE_ENABLED = bool(data["rvol_gate_enabled"])
+        _update_env_file("RVOL_GATE_ENABLED", "1" if RVOL_GATE_ENABLED else "0")
+        _save_setting("RVOL_GATE_ENABLED", "1" if RVOL_GATE_ENABLED else "0")
+        log.info("RVOL_GATE_ENABLED set to %s (TV Refined + Kairos Refined breakouts)", RVOL_GATE_ENABLED)
+        changed.append("rvol_gate_enabled")
+    if "rvol_gate_min" in data:
+        try:
+            RVOL_GATE_MIN = max(0.0, float(data["rvol_gate_min"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "rvol_gate_min must be a number ≥ 0"}), 400
+        _update_env_file("RVOL_GATE_MIN", f"{RVOL_GATE_MIN:g}")
+        _save_setting("RVOL_GATE_MIN", f"{RVOL_GATE_MIN:g}")
+        log.info("RVOL_GATE_MIN set to %g×", RVOL_GATE_MIN)
+        changed.append("rvol_gate_min")
+    if "rvol_gate_short_cap" in data:
+        try:
+            RVOL_GATE_SHORT_CAP = max(0.0, float(data["rvol_gate_short_cap"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "rvol_gate_short_cap must be a number ≥ 0 (0 = off)"}), 400
+        _update_env_file("RVOL_GATE_SHORT_CAP", f"{RVOL_GATE_SHORT_CAP:g}")
+        _save_setting("RVOL_GATE_SHORT_CAP", f"{RVOL_GATE_SHORT_CAP:g}")
+        log.info("RVOL_GATE_SHORT_CAP set to %g× (0=off)", RVOL_GATE_SHORT_CAP)
+        changed.append("rvol_gate_short_cap")
     if "paper_hours" in data:
         _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END")
     if "refined_hours" in data:
@@ -3241,6 +3280,9 @@ def risk_set_limit():
         "strikes_enabled":        STRIKES_ENABLED,
         "strikes_per_level":      STRIKES_PER_LEVEL,
         "strikes_per_level_short": STRIKES_PER_LEVEL_SHORT,
+        "rvol_gate_enabled":      RVOL_GATE_ENABLED,
+        "rvol_gate_min":          RVOL_GATE_MIN,
+        "rvol_gate_short_cap":    RVOL_GATE_SHORT_CAP,
         "changed":                changed,
     })
 
@@ -12184,6 +12226,57 @@ def _backfill_trade_rvol(lookback_days: int = 5, per_account_cap: int = 50):
     return total
 
 
+# ── Live RVOL entry gate ─────────────────────────────────────────────────────
+_live_rvol_cache = {}     # (ticker, lookback) -> (mono_ts, rvol_or_None)
+
+def _live_rvol(ticker, lookback=20, now_dt=None):
+    """Entry-bar relative volume for a ticker right now (or at now_dt): the most
+    recent completed 1-min SIP bar's volume ÷ the average of the prior `lookback`
+    RTH bars — the same definition the RVOL diagnostic validated. Cached ~20s so the
+    same ticker across two gated accounts on one signal only fetches once. Returns a
+    float, or None when it can't be computed (no bars / too near the open)."""
+    import datetime as _dtl
+    key = (ticker.upper(), int(lookback))
+    _c = _live_rvol_cache.get(key)
+    if now_dt is None and _c and (time.time() - _c[0]) < 20:
+        return _c[1]
+    now = now_dt or _dtl.datetime.now(_dtl.timezone.utc)
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dtl.timezone.utc
+    bars = _fetch_day_bars(ticker, now.astimezone(et).date().isoformat())
+    rv = _compute_trade_rvol({"ticker": ticker, "entry_time": now.isoformat()},
+                             bars=bars, lookback=lookback)
+    val = rv["rvol"] if rv else None
+    if now_dt is None:
+        _live_rvol_cache[key] = (time.time(), val)
+    return val
+
+
+def _rvol_gate_block(strategy, side, ticker, account_tag, now_dt=None):
+    """(blocked, reason, rvol) for a BREAKOUT entry on a gated account. Blocks when
+    the live entry-bar RVOL is below RVOL_GATE_MIN ('rvol_low'), or — for shorts —
+    at/above RVOL_GATE_SHORT_CAP ('rvol_blowoff', the run-over zone). FAILS OPEN when
+    RVOL can't be computed (data glitch / too near the open): a gate must never mute
+    the book on a fetch error. Non-breakouts, ungated accounts, and the disabled
+    state all pass through."""
+    if not RVOL_GATE_ENABLED or account_tag not in RVOL_GATE_ACCOUNTS:
+        return (False, None, None)
+    if not ticker or "BREAKOUT" not in (strategy or "").upper():
+        return (False, None, None)
+    try:
+        rvol = _live_rvol(ticker, lookback=RVOL_GATE_LOOKBACK, now_dt=now_dt)
+    except Exception as _e:
+        log.warning("RVOL gate: live RVOL failed for %s — allowing (%s)", ticker, _e)
+        return (False, None, None)
+    if rvol is None:
+        return (False, None, None)          # fail open
+    if rvol < RVOL_GATE_MIN:
+        return (True, "rvol_low", rvol)
+    if (side or "").lower() == "short" and RVOL_GATE_SHORT_CAP > 0 and rvol >= RVOL_GATE_SHORT_CAP:
+        return (True, "rvol_blowoff", rvol)
+    return (False, None, rvol)
+
+
 def _trade_hwm_loop():
     """Every 5 min, backfill HWMs + RVOL for any newly-closed trades. Runs
     quietly; logs only when it actually writes rows."""
@@ -13358,6 +13451,28 @@ def api_debug_feed():
     })
 
 
+@app.route("/api/debug/rvol")
+def api_debug_rvol():
+    """Live entry-bar RVOL for a ticker right now — how the RVOL gate sees it, and
+    whether it would block. ?ticker=SPY"""
+    ticker = (request.args.get("ticker") or "SPY").upper()
+    rvol = _live_rvol(ticker, lookback=RVOL_GATE_LOOKBACK)
+    def _would_block(side):
+        return _rvol_gate_block("X_CAM_BREAKOUT_R4S4_V02_5MIN", side, ticker, "alpaca3")[1]
+    return jsonify({
+        "ticker": ticker, "rvol": rvol, "feed": str(_alpaca_data_feed()),
+        "gate": {
+            "enabled": RVOL_GATE_ENABLED, "min": RVOL_GATE_MIN,
+            "short_cap": RVOL_GATE_SHORT_CAP, "lookback": RVOL_GATE_LOOKBACK,
+            "accounts": sorted(RVOL_GATE_ACCOUNTS),
+        },
+        "would_block_long":  _would_block("long"),
+        "would_block_short": _would_block("short"),
+        "hint": "rvol=null means no bars / too near the open → the gate FAILS OPEN "
+                "(entry allowed). Only breakout strategies are gated.",
+    })
+
+
 # ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────
 # For each closed Refined round-trip, fetch 1-min bars between entry and exit,
 # compute the Maximum Favorable Excursion (how far it ran in your favor), then
@@ -14397,6 +14512,14 @@ def _engine_pilot_tick(now_et, today):
             _dt_block, _dt_reason = _daytype_gate_block(strat, tk, today, broker_tag)
             if _dt_block:
                 log.info("ENGINE PILOT skip %s %s [%s]: %s", act, tk, broker_tag, _dt_reason)
+                continue
+            # RVOL gate (gated books only): skip breakout entries below the RVOL
+            # floor, or short blow-offs >= the cap. Reversals pass; fails open.
+            _rv_block, _rv_reason, _rv_val = _rvol_gate_block(strat, side, tk, broker_tag,
+                                                              now_dt=now_utc)
+            if _rv_block:
+                log.info("ENGINE PILOT skip %s %s [%s]: RVOL gate %s (%.2fx)",
+                         act, tk, broker_tag, _rv_reason, _rv_val or 0.0)
                 continue
             # Cooldown is per (broker_tag, strategy, side, level) so the same
             # setup on alpaca + alpaca3 doesn't share a single cooldown clock.
@@ -16981,7 +17104,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -17087,6 +17210,24 @@ def _restore_risk_settings():
         try:
             STRIKES_PER_LEVEL_SHORT = max(0, int(stored))
             log.info("Restored STRIKES_PER_LEVEL_SHORT=%d from DB (short re-fade cap)", STRIKES_PER_LEVEL_SHORT)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("RVOL_GATE_ENABLED")
+    if stored is not None:
+        RVOL_GATE_ENABLED = stored == "1"
+        log.info("Restored RVOL_GATE_ENABLED=%s from DB", RVOL_GATE_ENABLED)
+    stored = _load_setting("RVOL_GATE_MIN")
+    if stored is not None:
+        try:
+            RVOL_GATE_MIN = max(0.0, float(stored))
+            log.info("Restored RVOL_GATE_MIN=%g× from DB", RVOL_GATE_MIN)
+        except (TypeError, ValueError):
+            pass
+    stored = _load_setting("RVOL_GATE_SHORT_CAP")
+    if stored is not None:
+        try:
+            RVOL_GATE_SHORT_CAP = max(0.0, float(stored))
+            log.info("Restored RVOL_GATE_SHORT_CAP=%g× from DB", RVOL_GATE_SHORT_CAP)
         except (TypeError, ValueError):
             pass
     for _k in ("PAPER_HOURS_START", "PAPER_HOURS_END", "REFINED_HOURS_START", "REFINED_HOURS_END"):

@@ -251,6 +251,11 @@
           <span style="color:#888;font-size:0.8rem">halts + liquidates the book when its own daily P&amp;L hits the limit</span></td>
         <td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#666">exempt</td><td style="color:#7FE098">✓ on</td><td style="color:#7FE098">✓ on</td>
       </tr>
+      <tr>
+        <td style="font-family:inherit;white-space:normal">RVOL entry gate<br>
+          <span style="color:#888;font-size:0.8rem">blocks breakout entries below the RVOL floor (and short blow-offs ≥ the cap); breakouts only, live SIP volume, fails open. Default off.</span></td>
+        <td style="color:#666">off</td><td style="color:#7FE098">✓ ≥1.5×</td><td style="color:#666">off</td><td style="color:#7FE098">✓ ≥1.5×</td><td style="color:#666">held</td>
+      </tr>
     </table>
     <p style="font-size:0.86rem;color:#888">
       On top of these, four <strong>universal</strong> guards apply to every account: the reversal

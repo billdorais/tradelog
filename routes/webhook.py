@@ -873,6 +873,36 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _rev_kept
 
+    # RVOL entry gate (entries only): drop targets on a gated book (TV Refined,
+    # Kairos Refined) when the BREAKOUT's live entry-bar relative volume is below
+    # the floor, or — for shorts — in the >=cap blow-off zone. Per-target so gating
+    # the refined books never touches the farms. Reversals/exits pass. Fails open.
+    if (not _is_exit and alpaca_targets
+            and getattr(app, "RVOL_GATE_ENABLED", False)):
+        _rv_kept, _rv_dropped = [], []
+        for bt in alpaca_targets:
+            _acct_tag = _alpaca_broker_name(bt[0])
+            _blk, _why, _rvol = app._rvol_gate_block(
+                strategy_name, _gate_entry_side or "", ticker, _acct_tag)
+            if _blk:
+                _rv_dropped.append((_acct_tag, _why, _rvol))
+            else:
+                _rv_kept.append(bt)
+        if _rv_dropped:
+            _r0 = _rv_dropped[0]
+            _rv_txt = ("below the %.2fx RVOL floor" % app.RVOL_GATE_MIN
+                       if _r0[1] == "rvol_low"
+                       else ">= %.2fx RVOL blow-off (short)" % app.RVOL_GATE_SHORT_CAP)
+            app.log.info("RVOL gate: %s %s — skipped %s (RVOL %.2fx, %s)",
+                         order_action, ticker,
+                         ",".join(t for t, _w, _v in _rv_dropped),
+                         (_r0[2] or 0.0), _rv_txt)
+            if not _rv_kept and conn:
+                app._update_exec(cur, trade_id, "skipped",
+                    f"RVOL gate: entry {_rv_txt} (RVOL {_r0[2]:.2f}x)")
+                conn.commit()
+        alpaca_targets = _rv_kept
+
     # Profit-lock gate (entries only): drop Alpaca targets whose account has halted
     # after giving back its daily profit floor. Per-account — a halted book (e.g.
     # Refined) is skipped while others (e.g. Kairos) keep trading. Exits always pass.

@@ -459,6 +459,42 @@
       </div>
     </div>
 
+    <!-- Row 4b: RVOL entry gate — TV Refined + Kairos Refined breakouts -->
+    <div class="rg-card" style="margin-top:10px;border-color:#5a8fa8">
+      <div class="rg-card-title" style="color:#7bb3d6">&#9670; RVOL Entry Gate — block thin-volume breakouts</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Gate breakout entries by relative volume
+          <span style="color:#666;font-size:0.68rem">TV Refined + Kairos Refined · breakouts only · farms ungated</span>
+          <span id="rvolGateBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="rvolGateDot"></span>
+            <span id="rvolGateText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row" id="rvolGateBtnRow">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setRvolGate(true)">Enable</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setRvolGate(false)">Off</button>
+        </div>
+        <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px;display:flex;gap:28px;flex-wrap:wrap">
+          <div>
+            <div class="risk-label">Min RVOL <span style="color:#666;font-size:0.68rem">block breakouts below this ×</span></div>
+            <div class="risk-input-row">
+              <input class="risk-input" id="rvolMinInput" type="number" step="0.25" min="0" placeholder="1.5" style="width:80px">
+              <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRvolMin()">Set</button>
+            </div>
+          </div>
+          <div>
+            <div class="risk-label">Short blow-off cap <span style="color:#666;font-size:0.68rem">block shorts ≥ this × (0 = off)</span></div>
+            <div class="risk-input-row">
+              <input class="risk-input" id="rvolCapInput" type="number" step="0.5" min="0" placeholder="3.0" style="width:80px">
+              <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRvolCap()">Set</button>
+            </div>
+          </div>
+        </div>
+        <div class="risk-hint">From the RVOL sweep (Jun–Jul '26): the breakout edge lives in the 1.5–3.0× band. Sub-1.5× bled on both refined books (TV Refined −$70→+$484, Kairos −$711→+$456 at ≥1.5×); shorts get run over ≥3×. Computed live from SIP bars at signal time — <b>fails open</b> if it can't read volume (never mutes the book on a data glitch). Reversals and exits always pass. Applies to TV Refined + Kairos Refined only; Crew and both farms stay ungated.</div>
+      </div>
+    </div>
+
     <!-- Row 5: Buying-power pause — both accounts -->
     <div class="rg-card" style="margin-top:10px;border-color:#7bb3d6">
       <div class="rg-card-title" style="color:#7bb3d6">&#9670; Buying-Power Pause — stop new entries at high utilization</div>
@@ -1121,6 +1157,31 @@
       setRowState('afternoonTrailInput', data.afternoon_trail_pct != null && data.afternoon_trail_pct > 0);
       setRowState('strikesInput',        !!data.strikes_enabled);
 
+      // RVOL entry gate
+      const rvMinInput = document.getElementById('rvolMinInput');
+      if (rvMinInput && document.activeElement !== rvMinInput && data.rvol_gate_min != null) {
+        rvMinInput.value = data.rvol_gate_min;
+      }
+      const rvCapInput = document.getElementById('rvolCapInput');
+      if (rvCapInput && document.activeElement !== rvCapInput && data.rvol_gate_short_cap != null) {
+        rvCapInput.value = data.rvol_gate_short_cap;
+      }
+      const rvBadge = document.getElementById('rvolGateBadge');
+      const rvDot   = document.getElementById('rvolGateDot');
+      const rvText  = document.getElementById('rvolGateText');
+      if (rvBadge) {
+        if (data.rvol_gate_enabled) {
+          rvBadge.className = 'risk-status-badge active'; rvDot.className = 'risk-dot green';
+          rvText.textContent = 'Active (≥' + (data.rvol_gate_min ?? 1.5) + '×'
+            + (data.rvol_gate_short_cap > 0 ? ', short cap ' + data.rvol_gate_short_cap + '×' : '') + ')';
+        } else {
+          rvBadge.className = 'risk-status-badge disabled'; rvDot.className = 'risk-dot grey';
+          rvText.textContent = 'Disabled';
+        }
+        const rvRow = document.getElementById('rvolGateBtnRow');
+        if (rvRow) { rvRow.classList.toggle('state-on', !!data.rvol_gate_enabled); rvRow.classList.toggle('state-off', !data.rvol_gate_enabled); }
+      }
+
       // Per-account trading hours
       _setHoursUI('refined', data.refined_hours || {});
 
@@ -1476,6 +1537,28 @@
     input.classList.remove('invalid');
     try { await _postLimit({strikes_per_level_short: val}); }
     catch(e) { console.error('saveShortStrikes failed:', e); }
+  }
+
+  // RVOL entry gate (TV Refined + Kairos Refined breakouts)
+  async function setRvolGate(on) {
+    try { await _postLimit({rvol_gate_enabled: !!on}); }
+    catch(e) { console.error('setRvolGate failed:', e); }
+  }
+  async function saveRvolMin() {
+    const input = document.getElementById('rvolMinInput');
+    const val = parseFloat(input.value);
+    if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({rvol_gate_min: val}); }
+    catch(e) { console.error('saveRvolMin failed:', e); }
+  }
+  async function saveRvolCap() {
+    const input = document.getElementById('rvolCapInput');
+    const val = parseFloat(input.value);
+    if (isNaN(val) || val < 0) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({rvol_gate_short_cap: val}); }
+    catch(e) { console.error('saveRvolCap failed:', e); }
   }
 
   async function saveRefinedHours() {
