@@ -301,9 +301,10 @@
     <!-- Row 2: Account-scoped + trailing stop cards -->
     <div class="rg-cards">
 
-      <!-- Refined Account -->
+      <!-- Curated Books (TV Refined · Kairos Refined · Crew Paper) -->
       <div class="rg-card rg-card-refined">
-        <div class="rg-card-title" style="color:#a78bfa">&#9670; Refined Account</div>
+        <div class="rg-card-title" style="color:#a78bfa">&#9670; Curated Books
+          <span style="color:#666;font-size:0.68rem;font-weight:400">TV Refined · Kairos Refined · Crew Paper — same settings, all three. Farms run ungated.</span></div>
 
         <div class="risk-section" style="margin-bottom:10px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -318,7 +319,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePositionLimit()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPositionLimit()">Off</button>
           </div>
-          <div class="risk-hint" id="posStatusHint">Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.</div>
+          <div class="risk-hint" id="posStatusHint">Applies to all three curated books. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.</div>
         </div>
 
         <div class="risk-section">
@@ -334,7 +335,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedDollarLimit()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedDollarLimit()">Off</button>
           </div>
-          <div class="risk-hint" id="refinedDollarHint">Fires alongside the % stop — whichever hits first. Caps large-position $ damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
+          <div class="risk-hint" id="refinedDollarHint">All three curated books. Fires alongside the % stop — whichever hits first. Caps large-position $ damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).</div>
         </div>
 
         <!-- Refined trading hours -->
@@ -353,47 +354,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
           </div>
-          <div class="risk-hint">New entries are blocked outside this window (ET). Exits always go through. Empty = all day. (e.g. 09:30–11:00 to trade only the open.)</div>
-        </div>
-      </div>
-
-      <!-- Paper All Account -->
-      <div class="rg-card rg-card-paper">
-        <div class="rg-card-title" style="color:#7FE098">&#9670; TV Farm Account</div>
-
-        <div class="risk-section">
-          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-            Per-Position Stop ($)
-            <span id="paperPosStatusBadge" class="risk-status-badge disabled">
-              <span class="risk-dot grey" id="paperPosStatusDot"></span>
-              <span id="paperPosStatusText">Disabled</span>
-            </span>
-          </div>
-          <div class="risk-input-row">
-            <input class="risk-input" id="paperPosLimitInput" type="number" step="1" placeholder="e.g. -15">
-            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperPositionLimit()">Set</button>
-            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperPositionLimit()">Off</button>
-          </div>
-          <div class="risk-hint" id="paperPosStatusHint">Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.</div>
-        </div>
-
-        <!-- Paper trading hours -->
-        <div class="risk-section" style="margin-top:10px">
-          <div class="risk-label" style="display:flex;align-items:center;gap:8px">
-            Trading Hours (ET)
-            <span id="paperHoursBadge" class="risk-status-badge disabled">
-              <span class="risk-dot grey" id="paperHoursDot"></span>
-              <span id="paperHoursText">All day</span>
-            </span>
-          </div>
-          <div class="risk-input-row">
-            <input class="risk-input" id="paperHoursStart" type="time" style="width:auto" oninput="_hoursDirty.paper = true">
-            <span style="color:#666">–</span>
-            <input class="risk-input" id="paperHoursEnd" type="time" style="width:auto" oninput="_hoursDirty.paper = true">
-            <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="savePaperHours()">Set</button>
-            <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearPaperHours()">Off</button>
-          </div>
-          <div class="risk-hint">New entries are blocked outside this window (ET). Exits always go through. Empty = all day.</div>
+          <div class="risk-hint">New entries are blocked outside this window (ET) on all three curated books. Exits always go through. Empty = all day. (e.g. 09:30–11:00 to trade only the open.) The farms stay all-day — they're the audition pools.</div>
         </div>
       </div>
     </div>
@@ -1101,10 +1062,6 @@
         const posVal = data.max_position_loss_pct ?? null;
         if (posVal !== null) posInput.value = posVal;
       }
-      const paperPosInput = document.getElementById('paperPosLimitInput');
-      if (document.activeElement !== paperPosInput && data.max_position_loss !== null) {
-        paperPosInput.value = data.max_position_loss || '';
-      }
       const trailInput = document.getElementById('trailLimitInput');
       if (document.activeElement !== trailInput && data.max_trailing_giveback !== null) {
         trailInput.value = data.max_trailing_giveback;
@@ -1159,14 +1116,12 @@
       setRowState('riskLimitInput',      !!data.enabled);
       setRowState('posLimitInput',       data.max_position_loss_pct != null && data.max_position_loss_pct < 0);
       setRowState('refinedDollarInput',  data.max_position_loss_refined != null && data.max_position_loss_refined < 0);
-      setRowState('paperPosLimitInput',  data.max_position_loss != null && data.max_position_loss < 0);
       setRowState('trailLimitInput',     !!data.trailing_stop_enabled);
       setRowState('morningTrailInput',   data.morning_trail_pct != null && data.morning_trail_pct > 0);
       setRowState('afternoonTrailInput', data.afternoon_trail_pct != null && data.afternoon_trail_pct > 0);
       setRowState('strikesInput',        !!data.strikes_enabled);
 
       // Per-account trading hours
-      _setHoursUI('paper',   data.paper_hours   || {});
       _setHoursUI('refined', data.refined_hours || {});
 
       // Buying-power pause
@@ -1271,12 +1226,12 @@
         posDot.className   = 'risk-dot green';
         posText.textContent = 'Active';
         const pctVal = data.max_position_loss_pct;
-        posHint.textContent = 'Refined only: auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of market value. Strategy stays active.';
+        posHint.textContent = 'Curated books: auto-closes any position whose unrealized loss exceeds ' + Math.abs(pctVal).toFixed(1) + '% of market value. Strategy stays active.';
       } else {
         posBadge.className = 'risk-status-badge disabled';
         posDot.className   = 'risk-dot grey';
         posText.textContent = 'Disabled';
-        posHint.textContent = 'Applies to the TV Refined account only. Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
+        posHint.textContent = 'Applies to all three curated books (TV Refined · Kairos Refined · Crew). Close when unrealized loss exceeds this % of position value (e.g. -0.5%). Strategy stays active.';
       }
 
       // Refined dollar cap badge
@@ -1292,29 +1247,12 @@
         refBadge.className = 'risk-status-badge active';
         refDot.className   = 'risk-dot green';
         refText.textContent = 'Active';
-        refHint.textContent = `Refined only: closes any position whose unrealized loss reaches $${Math.abs(data.max_position_loss_refined).toFixed(0)} — fires alongside the % stop, whichever hits first.`;
+        refHint.textContent = `Curated books: closes any position whose unrealized loss reaches $${Math.abs(data.max_position_loss_refined).toFixed(0)} — fires alongside the % stop, whichever hits first.`;
       } else {
         refBadge.className = 'risk-status-badge disabled';
         refDot.className   = 'risk-dot grey';
         refText.textContent = 'Disabled';
-        refHint.textContent = 'Refined only: fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).';
-      }
-
-      // Paper All position stop badge
-      const paperBadge = document.getElementById('paperPosStatusBadge');
-      const paperDot   = document.getElementById('paperPosStatusDot');
-      const paperText  = document.getElementById('paperPosStatusText');
-      const paperHint  = document.getElementById('paperPosStatusHint');
-      if (data.max_position_loss !== null && data.max_position_loss < 0) {
-        paperBadge.className = 'risk-status-badge active';
-        paperDot.className   = 'risk-dot green';
-        paperText.textContent = 'Active';
-        paperHint.textContent = 'TV Farm: auto-closes any position whose unrealized loss reaches $' + Math.abs(Number(data.max_position_loss)).toFixed(0) + '. Strategy stays active.';
-      } else {
-        paperBadge.className = 'risk-status-badge disabled';
-        paperDot.className   = 'risk-dot grey';
-        paperText.textContent = 'Disabled';
-        paperHint.textContent = 'Applies to the TV Farm account only. Close when unrealized loss hits this dollar value (e.g. -15 = close at -$15). Strategy stays active.';
+        refHint.textContent = 'Curated books: fires alongside the % stop — whichever hits first. Caps large-position dollar damage (e.g. -60 closes NFLX 284sh at -$60 before the 0.5% limit of -$126).';
       }
 
       // Trailing stop status badge
@@ -1410,7 +1348,7 @@
       const hasPositions = positions.length > 0;
       details.style.display = (hasBlocked || hasPositions) ? 'flex' : 'none';
       renderBlockedStrategies(blocked);
-      renderPositions(positions, data.max_position_loss);
+      renderPositions(positions, data.max_position_loss_refined);   // curated books' $ cap
 
     } catch (e) {
       console.warn('Risk status fetch failed:', e);
@@ -1500,23 +1438,6 @@
     catch(e) { console.error('clearRefinedDollarLimit failed:', e); }
   }
 
-  async function savePaperPositionLimit() {
-    const input = document.getElementById('paperPosLimitInput');
-    const raw = input.value.trim();
-    if (raw === '') { await clearPaperPositionLimit(); return; }
-    const val = parseFloat(raw);
-    if (isNaN(val)) { input.classList.add('invalid'); return; }
-    input.classList.remove('invalid');
-    try { await _postLimit({max_position_loss: val}); }
-    catch(e) { console.error('savePaperPositionLimit failed:', e); }
-  }
-
-  async function clearPaperPositionLimit() {
-    document.getElementById('paperPosLimitInput').value = '';
-    try { await _postLimit({max_position_loss: 0}); }
-    catch(e) { console.error('clearPaperPositionLimit failed:', e); }
-  }
-
   async function saveTrailLimit() {
     const input = document.getElementById('trailLimitInput');
     const raw = input.value.trim();
@@ -1572,22 +1493,6 @@
     try { await _postLimit({refined_hours: {start: '', end: ''}}); }
     catch(err) { console.error('clearRefinedHours failed:', err); }
   }
-  async function savePaperHours() {
-    const s = document.getElementById('paperHoursStart').value;
-    const e = document.getElementById('paperHoursEnd').value;
-    if (!s || !e) { alert('Set both start and end times (ET).'); return; }
-    _hoursDirty.paper = false;
-    try { await _postLimit({paper_hours: {start: s, end: e}}); }
-    catch(err) { console.error('savePaperHours failed:', err); }
-  }
-  async function clearPaperHours() {
-    _hoursDirty.paper = false;
-    document.getElementById('paperHoursStart').value = '';
-    document.getElementById('paperHoursEnd').value = '';
-    try { await _postLimit({paper_hours: {start: '', end: ''}}); }
-    catch(err) { console.error('clearPaperHours failed:', err); }
-  }
-
   async function saveBpPause() {
     const input = document.getElementById('bpPauseInput');
     const v = parseFloat(input.value);

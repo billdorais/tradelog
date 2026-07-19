@@ -52,13 +52,16 @@ def test_empty_window_allows_everything(hours):
         assert a._account_hours_ok(tag, now_et=_et(15, 30)) is True
 
 
-def test_refined_window_applies_only_to_its_own_book(hours):
-    """The regression that mattered: a TV Refined window must not mute the others."""
+def test_refined_window_drives_all_curated_books_not_the_farms(hours):
+    """The "Curated Books" window governs all three curated books together; the
+    regression that still matters is that it must NOT mute the farms."""
     hours(paper=("", ""), refined=("09:30", "11:00"))
-    assert a._account_hours_ok("alpaca2", now_et=_et(10, 0))  is True   # inside
-    assert a._account_hours_ok("alpaca2", now_et=_et(14, 0))  is False  # outside
-    # Every other book is on PAPER_HOURS (empty) and keeps trading all day.
-    for tag in ("alpaca", "alpaca3", "alpaca4", "alpaca5"):
+    # All three curated books follow the one refined window.
+    for tag in ("alpaca2", "alpaca3", "alpaca4"):
+        assert a._account_hours_ok(tag, now_et=_et(10, 0)) is True   # inside
+        assert a._account_hours_ok(tag, now_et=_et(14, 0)) is False  # outside
+    # The farms are on PAPER_HOURS (empty) and keep trading all day.
+    for tag in ("alpaca", "alpaca5"):
         assert a._account_hours_ok(tag, now_et=_et(14, 0)) is True
 
 
@@ -74,10 +77,11 @@ def test_hours_key_is_registry_driven(hours, monkeypatch):
     assert a._account_hours_ok("alpaca5", now_et=_et(14, 0)) is True
 
 
-def test_current_config_farms_all_day_refined_on_refined_window():
+def test_current_config_curated_on_refined_window_farms_all_day():
     """Today's mapping. Update deliberately if a book's window source changes."""
-    assert a._HOURS_KEY_BY_TAG.get("alpaca2") == "refined"
-    for tag in ("alpaca", "alpaca3", "alpaca4", "alpaca5"):
+    for tag in ("alpaca2", "alpaca3", "alpaca4"):        # curated books share the window
+        assert a._HOURS_KEY_BY_TAG.get(tag) == "refined"
+    for tag in ("alpaca", "alpaca5"):                    # farms stay all-day
         assert a._HOURS_KEY_BY_TAG.get(tag) == "paper"
 
 
@@ -115,7 +119,9 @@ def test_engine_resolves_hours_per_target_not_a_fixed_account(hours, monkeypatch
     now = _et(14, 0)
     targets = ["alpaca3", "alpaca5", "alpaca2"]
     allowed = [t for t in targets if a._account_hours_ok(t, now_et=now)]
-    assert allowed == ["alpaca3", "alpaca5"]     # not [] — the old behaviour
+    # Curated books (alpaca2/alpaca3) are outside the morning window; the farm
+    # (alpaca5) is all-day. Per-target resolution, not one fixed account.
+    assert allowed == ["alpaca5"]
 
     # And the tick-level short-circuit must stay open while ANY book can trade.
     accounts = [{"tag": t} for t in targets]

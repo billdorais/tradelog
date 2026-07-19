@@ -350,13 +350,14 @@
       </tr>
       <tr>
         <td>Per-Position Stop</td>
-        <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code></td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code> /
+            <code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_REFINED</code></td>
         <td>
-          A background thread polls all open positions every 5 seconds across all active brokers
-          (Alpaca, IB paper, IB live). When any single position's unrealized P&amp;L drops to or
-          below this value, that position is closed immediately. The strategy stays active and is
-          free to take a new entry on the next signal.
-          Set to a negative dollar value to enable (e.g. <code style="font-size:0.82rem;color:#aaa">-200</code>). Default: disabled.
+          A background thread polls all open positions every few seconds across all active brokers.
+          When a <strong>curated book</strong> (TV Refined, Kairos Refined, Crew Paper) position's
+          unrealized loss reaches the percent limit or the dollar cap, that position is closed
+          immediately; the strategy stays active and is free to re-enter on the next signal. The
+          farms run ungated. Set on the Routing "Curated Books" card. Default: disabled.
         </td>
       </tr>
       <tr>
@@ -451,14 +452,16 @@
       </tr>
       <tr>
         <td>Per-Position Hard Stop</td>
-        <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code><br>
-            <code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code></td>
+        <td><code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code><br>
+            <code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_REFINED</code></td>
         <td>
-          Fixed dollar or percent stop on individual positions, checked every 3 seconds.
-          The dollar stop (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code>) applies
-          to TV Farm (alpaca) positions. The percent stop
-          (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_PCT</code>) applies to Refined
-          (alpaca2) positions only. The strategy remains free to re-enter on the next signal.
+          Percent stop and/or dollar cap on individual positions, checked in the position monitor.
+          Both apply to the <strong>three curated books</strong> (TV Refined, Kairos Refined, Crew Paper)
+          with the same values — set once on the Routing "Curated Books" card. Whichever hits first
+          closes the position. The farms (TV Farm, Kairos Farm) run ungated so the audition sample
+          stays unbiased. The strategy remains free to re-enter on the next signal.
+          (<code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS</code>, the old TV-Farm-only
+          dollar stop, is retired.)
         </td>
       </tr>
       <tr>

@@ -64,7 +64,7 @@ MAX_DAILY_LOSS              = float(os.environ.get("MAX_DAILY_LOSS", "0"))
 # positions keep bleeding to their own exits. Default on.
 PROFIT_LOCK_DOLLARS         = float(os.environ.get("PROFIT_LOCK_DOLLARS", "0"))
 PROFIT_LOCK_FLATTEN         = os.environ.get("PROFIT_LOCK_FLATTEN", "1") == "1"
-MAX_POSITION_LOSS           = float(os.environ.get("MAX_POSITION_LOSS", "0"))       # dollar stop — Paper All only
+MAX_POSITION_LOSS           = float(os.environ.get("MAX_POSITION_LOSS", "0"))       # deprecated (old TV-Farm $ stop; farms now run ungated) — no longer enforced
 MAX_POSITION_LOSS_PCT       = float(os.environ.get("MAX_POSITION_LOSS_PCT", "0"))   # % stop — Refined only
 MAX_POSITION_LOSS_REFINED   = float(os.environ.get("MAX_POSITION_LOSS_REFINED", "0"))  # dollar cap — Refined only, fires alongside %
 MAX_TRAILING_GIVEBACK       = float(os.environ.get("MAX_TRAILING_GIVEBACK", "0"))
@@ -172,8 +172,10 @@ TV_PILOT_ALL          = os.environ.get("TV_PILOT_ALL", "")
 #   Enforced by target account in webhook + engine. Exits are never gated.
 # hours_key — which Settings-page trading-hours window this book follows:
 #   "refined" (REFINED_HOURS_*) or "paper" (PAPER_HOURS_*, the default; empty =
-#   trade all day). Point a book at "refined" to make it share TV Refined's window
-#   — that is the knob for testing whether an edge is really a time-of-day effect.
+#   trade all day). All three CURATED books (TV Refined, Kairos Refined, Crew) share
+#   the "refined" window — one Routing "Curated Books" hours control drives them
+#   together. Point a book at "refined" to make it share that window — also the knob
+#   for testing whether an edge is really a time-of-day effect.
 #   For a window belonging to one book alone, set env HOURS_<TAG>_START/END.
 #   The farms deliberately stay on "paper"/all-day: they are the full-sample
 #   audition pools, and their symmetry is what makes farm-vs-farm a controlled
@@ -193,11 +195,11 @@ ACCOUNT_META = {
     # (Jul '26, 309 setups) put reversal shorts at breakeven-at-best even with the
     # confirmation entry (reject -> 20-EMA break); Kairos reversal LONGS have been
     # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
-    "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
+    "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
     # reversal_side "long": Crew Paper pauses reversal SHORTS too (same breakeven
     # finding). A hard gate rather than relying on the crew to stop wiring them.
-    "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098",
+    "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
     # Kairos Farm — the engine-entry twin of TV Farm. Full-sample audition pool
     # fired by ENGINE_PILOT_ALL=alpaca5:$1000 (TV Farm gets TV via TV_PILOT_ALL), so
@@ -1425,8 +1427,12 @@ def _check_position_stops():
                 triggered = ("take-profit-pct",
                              f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {_eff_tp_pct:.2f}% ({_tp_src})")
 
-        # PCT stop applies to Refined (alpaca2) only — Paper All uses dollar stop or TV exits.
-        if not triggered and broker == "alpaca2":
+        # % stop + $ cap apply to the CURATED books (TV Refined, Kairos Refined,
+        # Crew Paper) — same values across all three. The farms (TV Farm, Kairos
+        # Farm) run ungated: they're the full-sample audition pools, and a stop
+        # would bias the sample. The old TV-Farm-only dollar stop (MAX_POSITION_LOSS)
+        # was retired here so the farms trade clean.
+        if not triggered and broker in _CURATED_TAGS:
             mkt_val = abs(float(pos.get("market_value") or 0))
             loss_pct = (upnl / mkt_val * 100) if mkt_val > 0 else 0.0
             if MAX_POSITION_LOSS_PCT < 0 and loss_pct <= MAX_POSITION_LOSS_PCT:
@@ -1434,11 +1440,10 @@ def _check_position_stops():
                              f"unrealized {loss_pct:.2f}% (${upnl:.2f}) hit % limit {MAX_POSITION_LOSS_PCT:.2f}%")
             elif MAX_POSITION_LOSS_REFINED < 0 and upnl <= MAX_POSITION_LOSS_REFINED:
                 triggered = ("fixed-loss-refined",
-                             f"unrealized ${upnl:.2f} hit Refined dollar cap ${MAX_POSITION_LOSS_REFINED:.2f}")
-        elif not triggered and MAX_POSITION_LOSS < 0 and broker == "alpaca" and upnl <= MAX_POSITION_LOSS:
-            triggered = ("fixed-loss",
-                         f"unrealized P&L ${upnl:.2f} hit fixed limit ${MAX_POSITION_LOSS:.2f}")
-        elif not triggered and MAX_TRAILING_GIVEBACK > 0 \
+                             f"unrealized ${upnl:.2f} hit curated dollar cap ${MAX_POSITION_LOSS_REFINED:.2f}")
+        # Trailing giveback — an independent layer that applies to EVERY account
+        # (its own check, not shadowed by the curated stop above).
+        if not triggered and MAX_TRAILING_GIVEBACK > 0 \
                 and peak >= MAX_TRAILING_GIVEBACK \
                 and (peak - upnl) >= MAX_TRAILING_GIVEBACK:
             triggered = ("trailing",
@@ -2942,7 +2947,7 @@ def risk_status():
         "max_position_loss":          MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
         "max_position_loss_pct":      MAX_POSITION_LOSS_PCT if MAX_POSITION_LOSS_PCT != 0 else None,
         "max_position_loss_refined":  MAX_POSITION_LOSS_REFINED if MAX_POSITION_LOSS_REFINED != 0 else None,
-        "position_stop_enabled":      MAX_POSITION_LOSS_PCT < 0 or MAX_POSITION_LOSS < 0 or MAX_POSITION_LOSS_REFINED < 0,
+        "position_stop_enabled":      MAX_POSITION_LOSS_PCT < 0 or MAX_POSITION_LOSS_REFINED < 0,
         "position_stop_mode":         "percent" if MAX_POSITION_LOSS_PCT < 0 else "dollars",
         "max_trailing_giveback":   MAX_TRAILING_GIVEBACK if MAX_TRAILING_GIVEBACK != 0 else None,
         "trailing_stop_enabled":   MAX_TRAILING_GIVEBACK > 0,
