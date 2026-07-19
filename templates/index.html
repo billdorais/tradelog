@@ -3748,6 +3748,19 @@
       if (!tilesEl) return;
       try {
         const d = await fetch('/api/rvol/pulse').then(r => r.json());
+        // Market closed → clean "closed" state instead of a wall of dashes.
+        if (d.market_open === false && d.market_pulse == null) {
+          document.getElementById('rpPulse').innerHTML =
+            `<span style="color:#666;font-weight:400;font-size:0.7rem">market</span> <span style="color:#777">Closed</span>`;
+          document.getElementById('rpIndexes').innerHTML =
+            (d.indexes || []).map(r => `<span class="rp-idxpill"><b style="color:#8a90a2">${r.ticker}</b> <span style="color:#4a4d5e">—</span></span>`).join('');
+          const g0 = d.gate || {};
+          document.getElementById('rpGate').textContent = g0.enabled
+            ? `gate ON · ≥${g0.min}× · resumes at the open` : `gate off · resumes at the open`;
+          document.getElementById('rpTiles').innerHTML =
+            `<span style="color:#555;font-size:0.75rem">🌙 Market closed — live volume resumes at the next open (${(d.watch || []).length} refined tickers watched).</span>`;
+          return;
+        }
         // Market pulse label + aggregate
         const plColor = d.pulse_label === 'Frenzy' ? '#ef7a78'
           : d.pulse_label === 'Active' ? '#7FE098'

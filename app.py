@@ -13583,8 +13583,14 @@ def api_rvol_pulse():
     pulse = round(sum(_idx_vals) / len(_idx_vals), 2) if _idx_vals else None
     label = ("—" if pulse is None else "Quiet" if pulse < 0.8 else
              "Normal" if pulse < 1.3 else "Active" if pulse < 2.0 else "Frenzy")
+    # Regular-hours flag (ET weekday 09:30–16:00) so the card shows a clean "closed"
+    # state instead of a wall of dashes off-hours / weekends. Holidays aren't in the
+    # calendar here — those read as "open" but with no live bars, same as any gap.
+    _now_et = _dtp.datetime.now(ZoneInfo("America/New_York"))
+    market_open = (_now_et.weekday() < 5
+                   and _dtp.time(9, 30) <= _now_et.time() < _dtp.time(16, 0))
     return jsonify({
-        "market_pulse": pulse, "pulse_label": label,
+        "market_pulse": pulse, "pulse_label": label, "market_open": market_open,
         "gate": {"enabled": RVOL_GATE_ENABLED, "min": RVOL_GATE_MIN,
                  "short_cap": RVOL_GATE_SHORT_CAP, "lookback": lookback},
         "indexes": idx_rows, "watch": watch_rows,
