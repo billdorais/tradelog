@@ -2182,6 +2182,35 @@ def init_db():
     """)
     conn.commit()
 
+    # trade_rvol: relative volume AT ENTRY per closed round-trip (real SIP tape).
+    # rvol = the entry 1-min bar's volume / average volume of the prior `lookback`
+    # RTH bars. `method` tags how it was computed so alternative definitions
+    # (time-of-day, cumulative-day) can be added without a migration. Populated by
+    # the same background backfill + on-demand from the RVOL diagnostic. Idempotent
+    # on (broker_tag, symbol, entry_time, exit_time).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS trade_rvol (
+            broker_tag       TEXT NOT NULL,
+            symbol           TEXT NOT NULL,
+            side             TEXT NOT NULL,
+            strategy         TEXT,
+            level            TEXT,
+            entry_time       TEXT NOT NULL,
+            entry_price      REAL NOT NULL,
+            exit_time        TEXT NOT NULL,
+            realized_pnl     REAL NOT NULL,
+            entry_volume     REAL,
+            baseline_volume  REAL,
+            rvol             REAL,
+            lookback         INTEGER,
+            method           TEXT,
+            source           TEXT,
+            computed_at      TEXT NOT NULL,
+            PRIMARY KEY (broker_tag, symbol, entry_time, exit_time)
+        )
+    """)
+    conn.commit()
+
     conn.close()
 
 
@@ -6648,6 +6677,138 @@ def simulate_stop_sweep():
         "trade_count": len(rows), "unresolved": unresolved,
         "side_counts": {"all": len(rows), "long": len(longs), "short": len(shorts)},
         "levels": levels,
+    })
+
+
+# RVOL buckets: emphasise the low end, where thin-volume breakouts are expected
+# to fail. (lo, hi, label) — hi=None is the open-ended top bucket.
+_RVOL_BUCKETS = [
+    (0.0, 0.5,  "< 0.5×"), (0.5, 1.0,  "0.5–1.0×"), (1.0, 1.5,  "1.0–1.5×"),
+    (1.5, 2.0,  "1.5–2.0×"), (2.0, 3.0,  "2.0–3.0×"), (3.0, None, "≥ 3.0×"),
+]
+
+def _rvol_bucket_label(rvol):
+    for lo, hi, lab in _RVOL_BUCKETS:
+        if rvol >= lo and (hi is None or rvol < hi):
+            return lab
+    return _RVOL_BUCKETS[-1][2]
+
+
+@app.route("/api/simulate/rvol_breakdown", methods=["POST"])
+def simulate_rvol_breakdown():
+    """Relative-volume-at-entry diagnostic on REAL round-trips (SIP tape).
+
+    Computes trailing-bar RVOL at entry for every closed round-trip, then splits
+    P&L by RVOL bucket (per side) and profiles each ticker (avg RVOL, thin-entry
+    rate, win% / P&L). Validates a low-volume entry gate before it's built, and
+    surfaces the chronically-thin tickers (the ASTS problem). Persists each row to
+    trade_rvol as it goes, so running this also backfills the DB for the window.
+    Body: accounts (default curated 2/3/4) or account, from_date, to_date,
+    lookback (baseline bars, default 20), breakouts_only (default false)."""
+    import datetime as _dt
+    import concurrent.futures as _cf
+    body       = request.get_json() or {}
+    accounts   = body.get("accounts") or ([str(body["account"])] if body.get("account") else ["2", "3", "4"])
+    accounts   = [str(a) for a in accounts]
+    from_date  = body.get("from_date", "")
+    to_date    = body.get("to_date",   "")
+    lookback   = max(3, int(body.get("lookback", 20)))
+    bo_only    = bool(body.get("breakouts_only", False))
+    if not from_date or not to_date:
+        return jsonify({"error": "from_date and to_date are required"}), 400
+
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    trades, labels = [], []
+    for acct in accounts:
+        broker, tag, label, fills_fn = _alpaca_account_ctx(acct)
+        if broker is None:
+            continue
+        labels.append(label)
+        try:
+            paired = _pair_alpaca_fills_lifo(fills_fn(), from_date=from_date,
+                                             to_date=to_date, signal_lookup=signal_lookup)
+        except Exception as _e:
+            log.debug("rvol_breakdown pair %s: %s", acct, _e)
+            continue
+        for t in paired.get("closed_clean", []):
+            t = dict(t); t["_tag"] = tag
+            trades.append(t)
+    if bo_only:
+        trades = [t for t in trades if "BREAKOUT" in (t.get("strategy") or "").upper()]
+    if not trades:
+        return jsonify({"error": "No completed round-trips found for the selected period"}), 404
+
+    ticker_dates = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
+                    for t in trades if t.get("ticker") and t.get("entry_time")}
+    day_bars = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_fetch_day_bars, tk, dt): (tk, dt) for tk, dt in ticker_dates}
+        for f in _cf.as_completed(futs):
+            tk, dt = futs[f]
+            try:    day_bars[(tk, dt)] = f.result()
+            except Exception: day_bars[(tk, dt)] = []
+
+    rows, unresolved = [], 0
+    for t in trades:
+        ticker = (t.get("ticker") or "").upper()
+        e_iso  = t.get("entry_time") or ""
+        if not (ticker and e_iso):
+            unresolved += 1; continue
+        rv = _compute_trade_rvol(t, bars=day_bars.get((ticker, e_iso[:10]), []), lookback=lookback)
+        if rv is None:
+            unresolved += 1; continue
+        side = "SHORT" if (t.get("side") or "").upper() == "SHORT" else "LONG"
+        rows.append({"ticker": ticker, "side": side, "rvol": rv["rvol"],
+                     "pnl": float(t.get("pnl") or 0)})
+        try:    _persist_trade_rvol(t.get("_tag") or "", t, rv)   # opportunistic backfill
+        except Exception: pass
+    if not rows:
+        return jsonify({"error": "No round-trips could be resolved to bars"}), 404
+
+    def _stats(subset):
+        n = len(subset)
+        wins = sum(1 for r in subset if r["pnl"] > 0)
+        pnl  = sum(r["pnl"] for r in subset)
+        return {"trades": n, "win_rate": round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl": round(pnl, 2), "avg_pnl": round(pnl / n, 2) if n else 0.0}
+
+    def _buckets(subset):
+        out = []
+        for lo, hi, lab in _RVOL_BUCKETS:
+            grp = [r for r in subset if r["rvol"] >= lo and (hi is None or r["rvol"] < hi)]
+            s = _stats(grp); s["bucket"] = lab; out.append(s)
+        return out
+
+    longs  = [r for r in rows if r["side"] == "LONG"]
+    shorts = [r for r in rows if r["side"] == "SHORT"]
+
+    # Per-ticker profile — chronically-thin tickers float to the top (avg RVOL asc).
+    by_ticker = {}
+    for r in rows:
+        d = by_ticker.setdefault(r["ticker"], {"rvols": [], "pnls": [], "thin": 0})
+        d["rvols"].append(r["rvol"]); d["pnls"].append(r["pnl"])
+        if r["rvol"] < 1.0:
+            d["thin"] += 1
+    tickers = []
+    for tk, d in by_ticker.items():
+        n = len(d["rvols"]); wins = sum(1 for p in d["pnls"] if p > 0)
+        tickers.append({
+            "ticker": tk, "trades": n,
+            "avg_rvol": round(sum(d["rvols"]) / n, 2),
+            "min_rvol": round(min(d["rvols"]), 2),
+            "thin_rate": round(d["thin"] / n * 100, 0),
+            "win_rate": round(wins / n * 100, 1),
+            "total_pnl": round(sum(d["pnls"]), 2),
+        })
+    tickers.sort(key=lambda x: (x["avg_rvol"], -x["trades"]))
+
+    return jsonify({
+        "from_date": from_date, "to_date": to_date, "accounts": labels,
+        "lookback": lookback, "breakouts_only": bo_only,
+        "trade_count": len(rows), "unresolved": unresolved,
+        "side_counts": {"all": len(rows), "long": len(longs), "short": len(shorts)},
+        "by_bucket": {"all": _buckets(rows), "long": _buckets(longs), "short": _buckets(shorts)},
+        "by_ticker": tickers,
     })
 
 
@@ -11829,15 +11990,175 @@ def _backfill_trade_hwm(lookback_days: int = 5, per_account_cap: int = 50):
     return total
 
 
+# ── Relative volume at entry (bar-derived, SIP tape) ─────────────────────────
+# Trailing-bar RVOL: the entry 1-min bar's volume vs the average of the prior N
+# RTH bars. Real SIP volume finally makes this trustworthy (IEX was ~3% of the
+# tape). Powers the per-ticker RVOL profile + the P&L-by-RVOL diagnostic that
+# validates a low-volume entry gate before we build it.
+def _compute_trade_rvol(trade, bars=None, lookback=20, min_bars=5):
+    """Trailing-bar relative volume at entry: the entry 1-min bar's SIP volume
+    divided by the average volume of the `lookback` RTH bars immediately before
+    it. Returns a dict or None (no bars / too close to the open to have `min_bars`
+    of history / zero baseline). method='trailing_bars'."""
+    import datetime as _dtr
+    ticker    = (trade.get("ticker") or "").upper()
+    entry_iso = trade.get("entry_time")
+    if not (ticker and entry_iso):
+        return None
+    try:
+        entry_dt = _dtr.datetime.fromisoformat(entry_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if bars is None:
+        bars = _fetch_day_bars(ticker, entry_iso[:10])
+    if not bars:
+        return None
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dtr.timezone.utc
+    # RTH bars only (pre-market volume would deflate the baseline unfairly).
+    rth = []
+    for b in bars:
+        _ts = b.timestamp
+        if _ts.tzinfo is None:
+            _ts = _ts.replace(tzinfo=_dtr.timezone.utc)
+        t_et = _ts.astimezone(et)
+        if _dtr.time(9, 30) <= t_et.time() < _dtr.time(16, 0):
+            rth.append((_ts, float(getattr(b, "volume", 0) or 0)))
+    rth.sort(key=lambda x: x[0])
+    # Entry bar = the last RTH bar starting at or before the entry timestamp.
+    idx = None
+    for i, (ts, _v) in enumerate(rth):
+        if ts <= entry_dt:
+            idx = i
+        else:
+            break
+    if idx is None:
+        return None
+    prior = [v for _ts, v in rth[max(0, idx - lookback):idx]]
+    if len(prior) < min_bars:
+        return None
+    baseline = sum(prior) / len(prior)
+    if baseline <= 0:
+        return None
+    entry_vol = rth[idx][1]
+    return {
+        "entry_volume":    round(entry_vol, 2),
+        "baseline_volume": round(baseline, 2),
+        "rvol":            round(entry_vol / baseline, 3),
+        "lookback":        lookback,
+        "n_baseline":      len(prior),
+        "method":          "trailing_bars",
+        "entry_bar_time":  rth[idx][0].isoformat(),
+    }
+
+
+def _rvol_key_exists(cur, broker_tag, symbol, entry_time, exit_time):
+    _p = placeholder()
+    cur.execute(
+        f"SELECT 1 FROM trade_rvol WHERE broker_tag={_p} AND symbol={_p} "
+        f"AND entry_time={_p} AND exit_time={_p} LIMIT 1",
+        (broker_tag, symbol, entry_time, exit_time),
+    )
+    return cur.fetchone() is not None
+
+
+def _persist_trade_rvol(broker_tag, trade, rv):
+    """Idempotent upsert (PK = broker_tag+symbol+entry_time+exit_time)."""
+    import datetime as _dt_p
+    _p = placeholder()
+    level = _trade_level(trade.get("strategy") or "", (trade.get("side") or "").upper())
+    vals = (broker_tag, (trade.get("ticker") or "").upper(),
+            (trade.get("side") or "").upper(), trade.get("strategy") or None, level,
+            trade.get("entry_time"), float(trade.get("entry_price") or 0),
+            trade.get("exit_time"), float(trade.get("pnl") or 0),
+            rv["entry_volume"], rv["baseline_volume"], rv["rvol"],
+            rv["lookback"], rv["method"], "bars_1m",
+            _dt_p.datetime.now(_dt_p.timezone.utc).isoformat())
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cols = ("broker_tag, symbol, side, strategy, level, entry_time, entry_price, "
+                "exit_time, realized_pnl, entry_volume, baseline_volume, rvol, "
+                "lookback, method, source, computed_at")
+        ph = ",".join([_p] * 16)
+        if DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO trade_rvol ({cols}) VALUES ({ph}) "
+                f"ON CONFLICT (broker_tag, symbol, entry_time, exit_time) DO UPDATE SET "
+                f"entry_volume=EXCLUDED.entry_volume, baseline_volume=EXCLUDED.baseline_volume, "
+                f"rvol=EXCLUDED.rvol, lookback=EXCLUDED.lookback, method=EXCLUDED.method, "
+                f"realized_pnl=EXCLUDED.realized_pnl, source=EXCLUDED.source, "
+                f"computed_at=EXCLUDED.computed_at", vals)
+        else:
+            cur.execute(f"INSERT OR REPLACE INTO trade_rvol ({cols}) VALUES ({ph})", vals)
+        conn.commit()
+    except Exception as _e:
+        try: conn.rollback()
+        except Exception: pass
+        log.warning("persist_trade_rvol failed: %s", _e)
+    finally:
+        conn.close()
+
+
+def _backfill_trade_rvol(lookback_days: int = 5, per_account_cap: int = 50):
+    """Sweep recent closed round-trips across all Alpaca accounts and compute RVOL
+    for any missing rows. Same shape as _backfill_trade_hwm."""
+    import datetime as _dt_bf
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt_bf.timezone(_dt_bf.timedelta(hours=-4))
+    to_d   = _dt_bf.datetime.now(et).date()
+    from_s = (to_d - _dt_bf.timedelta(days=lookback_days)).isoformat()
+    to_s   = to_d.isoformat()
+    total = 0
+    for _acct in ALPACA_ACCOUNTS:
+        if _acct.get("broker") is None:
+            continue
+        tag = _acct["tag"]
+        try:
+            fills  = _acct["fills_fn"]()
+            paired = _pair_alpaca_fills_lifo(fills, from_date=from_s, to_date=to_s)
+            trades = paired.get("closed_clean", [])
+        except Exception as _e:
+            log.debug("rvol backfill fills failed [%s]: %s", tag, _e)
+            continue
+        conn = get_db(); cur = conn.cursor()
+        try:
+            processed = 0
+            for t in reversed(trades):    # newest first — bar cache stays warm
+                if processed >= per_account_cap:
+                    break
+                entry_time = t.get("entry_time")
+                exit_time  = t.get("exit_time")
+                symbol     = (t.get("ticker") or "").upper()
+                if not (entry_time and exit_time and symbol):
+                    continue
+                if _rvol_key_exists(cur, tag, symbol, entry_time, exit_time):
+                    continue
+                rv = _compute_trade_rvol(t)
+                if rv is None:
+                    continue
+                _persist_trade_rvol(tag, t, rv)
+                processed += 1
+                total     += 1
+        finally:
+            conn.close()
+        if processed:
+            log.info("RVOL backfill [%s]: %d round-trips scored", tag, processed)
+    return total
+
+
 def _trade_hwm_loop():
-    """Every 5 min, backfill HWMs for any newly-closed trades. Runs quietly;
-    logs only when it actually writes rows."""
+    """Every 5 min, backfill HWMs + RVOL for any newly-closed trades. Runs
+    quietly; logs only when it actually writes rows."""
     time.sleep(60)   # let the app finish booting + fills caches populate
     while True:
         try:
             _backfill_trade_hwm(lookback_days=3, per_account_cap=100)
         except Exception as _e:
             log.debug("trade hwm loop: %s", _e)
+        try:
+            _backfill_trade_rvol(lookback_days=3, per_account_cap=100)
+        except Exception as _e:
+            log.debug("trade rvol loop: %s", _e)
         time.sleep(300)
 
 threading.Thread(target=_trade_hwm_loop, daemon=True).start()

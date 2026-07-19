@@ -610,6 +610,24 @@
     <div id="stopSweepResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Relative volume at entry — do thin-volume entries lose? (SIP tape) -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Relative Volume at Entry <span style="font-size:0.72rem;color:#666;font-weight:400">— does entering on thin volume lose? Splits real P&amp;L by RVOL bucket + profiles each ticker (the ASTS finder). Real SIP tape.</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Scope</label>
+        <select id="rvScope" style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.82rem;font-family:inherit">
+          <option value="curated">Curated books (TV Refined · Kairos Refined · Crew)</option>
+          <option value="account">Selected account (above)</option>
+        </select></div>
+      <div class="param-group"><label>Baseline</label><div class="input-wrap"><input type="number" id="rvLookback" value="20" step="1" min="3" style="width:70px"><span class="unit">bars</span></div></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;color:#ccc"><input type="checkbox" id="rvBoOnly"> Breakouts only</label>
+      <button class="run-btn" onclick="runRvolBreakdown()" style="padding:8px 18px">&#9654; Run RVOL Split</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">RVOL = entry bar volume ÷ prior N bars · persists to trade_rvol.</span>
+    </div>
+    <div style="font-size:0.7rem;color:#666;margin-top:6px">If the low buckets (&lt; 1.0×) bleed while the high buckets win, thin-volume is a real entry filter — a candidate RVOL gate. The per-ticker table (sorted by avg RVOL) surfaces names that habitually enter thin.</div>
+    <div id="rvolResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Regime backtest -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Regime Backtest
@@ -1039,6 +1057,75 @@
         + sideTable('long',  'Long book',  '#8fd4a0', d.side_counts.long)
         + sideTable('all',   'All trades', '#9ab7d6', d.side_counts.all)
         + `<div style="font-size:0.72rem;color:#666;margin-top:10px"><b>Recovered</b> trades are the ones a stop would hurt (dipped past it, then closed higher); <b>Bled</b> are the ones it rescues. Pick the level where <b>Net Δ</b> is most positive — and weigh it against how many recovered trades you'd sacrifice. A stop that saves little but cuts many winners-that-came-back is net-negative even if it feels safer.</div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  // Relative volume at entry: do thin-volume entries lose? Bucket P&L by RVOL + per-ticker profile.
+  async function runRvolBreakdown() {
+    const out = document.getElementById('rvolResult');
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
+    const wr = v => `<span style="color:${v >= 50 ? '#7FE098' : v <= 35 ? '#ef5350' : '#F2E7AC'}">${v}%</span>`;
+    const scope = document.getElementById('rvScope').value;
+    const bodyReq = {
+      from_date: document.getElementById('fromDate').value,
+      to_date:   document.getElementById('toDate').value,
+      lookback:  parseInt(document.getElementById('rvLookback').value, 10) || 20,
+      breakouts_only: document.getElementById('rvBoOnly').checked,
+    };
+    if (scope === 'account') bodyReq.account = document.getElementById('account').value;
+    else bodyReq.accounts = ['2', '3', '4'];
+    out.innerHTML = '<span style="color:#888">Computing entry RVOL from SIP bars…</span>';
+    try {
+      const r = await fetch('/api/simulate/rvol_breakdown', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyReq),
+      });
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+
+      const bucketTable = (key, title, color, n) => {
+        if (!n) return `<div style="margin-top:12px"><div style="font-weight:700;color:${color};font-size:0.86rem">${title}</div><div style="font-size:0.8rem;color:#666">No ${title.toLowerCase()} in this window.</div></div>`;
+        const rows = (d.by_bucket[key] || []).map(b => {
+          if (!b.trades) return `<tr style="opacity:0.4"><td style="padding:5px 12px;color:#ccc">${b.bucket}</td><td style="padding:5px 12px;text-align:right;color:#666">0</td><td></td><td></td><td></td></tr>`;
+          const thin = b.bucket === '< 0.5×' || b.bucket === '0.5–1.0×';
+          return `<tr style="${thin ? 'background:rgba(239,83,80,0.06)' : ''}">`
+            + `<td style="padding:6px 12px;color:#ccc">${b.bucket}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#aaa">${b.trades}</td>`
+            + `<td style="padding:6px 12px;text-align:right">${wr(b.win_rate)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${b.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(b.total_pnl)}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:${b.avg_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(b.avg_pnl)}</td></tr>`;
+        }).join('');
+        return `<div style="margin-top:12px"><div style="font-weight:700;color:${color};font-size:0.86rem;margin-bottom:3px">${title} <span style="color:#666;font-weight:400;font-size:0.72rem">· ${n} trades</span></div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.83rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">`
+          + `<th style="text-align:left;padding:5px 12px">RVOL bucket</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L</th><th style="text-align:right;padding:5px 12px">Avg/trade</th>`
+          + `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      };
+
+      // Per-ticker profile — chronically-thin tickers first.
+      const tk = (d.by_ticker || []).slice(0, 25).map(t => {
+        const thinCol = t.avg_rvol < 1.0 ? '#ef5350' : t.avg_rvol < 1.5 ? '#F2E7AC' : '#7FE098';
+        return `<tr>`
+          + `<td style="padding:5px 12px;color:#ccc;font-weight:600">${t.ticker}</td>`
+          + `<td style="padding:5px 12px;text-align:right;color:#aaa">${t.trades}</td>`
+          + `<td style="padding:5px 12px;text-align:right;color:${thinCol};font-weight:600">${t.avg_rvol.toFixed(2)}×</td>`
+          + `<td style="padding:5px 12px;text-align:right;color:#888">${t.min_rvol.toFixed(2)}×</td>`
+          + `<td style="padding:5px 12px;text-align:right;color:#888">${t.thin_rate}%</td>`
+          + `<td style="padding:5px 12px;text-align:right">${wr(t.win_rate)}</td>`
+          + `<td style="padding:5px 12px;text-align:right;font-weight:600;color:${t.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(t.total_pnl)}</td></tr>`;
+      }).join('');
+      const tkBlock = `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"><div style="font-weight:700;color:#9ab7d6;font-size:0.86rem;margin-bottom:3px">Per-ticker RVOL profile <span style="color:#666;font-weight:400;font-size:0.72rem">· sorted thinnest first · ${d.by_ticker.length} tickers</span></div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem"><thead><tr style="color:#555;font-size:0.64rem;text-transform:uppercase">`
+        + `<th style="text-align:left;padding:5px 12px">Ticker</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Avg RVOL</th><th style="text-align:right;padding:5px 12px">Min</th><th style="text-align:right;padding:5px 12px" title="% of entries under 1.0× RVOL">Thin %</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L</th>`
+        + `</tr></thead><tbody>${tk}</tbody></table></div></div>`;
+
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:6px">${(d.accounts || []).join(' · ')} · ${d.from_date} → ${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''} · ${d.trade_count} resolved`
+        + (d.unresolved ? ` · <span style="color:#c98b4b">${d.unresolved} unresolved (no bars / too near open)</span>` : '') + `</div>`
+        + bucketTable('short', 'Short book', '#ef9a9a', d.side_counts.short)
+        + bucketTable('long',  'Long book',  '#8fd4a0', d.side_counts.long)
+        + bucketTable('all',   'All trades', '#9ab7d6', d.side_counts.all)
+        + tkBlock
+        + `<div style="font-size:0.72rem;color:#666;margin-top:10px">Rows saved to <code>trade_rvol</code> as you run this, so the per-ticker history accrues. If the thin buckets are the losers, that's the case for an RVOL entry gate — validate here first, then we build the node.</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 
