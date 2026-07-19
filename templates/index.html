@@ -539,10 +539,39 @@
     #dtTape .dt-tk   { font-weight:700; color:#e6e6e6; letter-spacing:0.02em; }
     #dtTape .dt-out  { color:#7FE098; } #dtTape .dt-in { color:#7bb3d6; } #dtTape .dt-neu { color:#777; }
     @keyframes dtScroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
+
+    /* RVOL Pulse — live relative-volume board */
+    #rvolPulse { background:#0a0c12; border:1px solid #1e2130; border-radius:8px; padding:10px 12px; margin-top:8px; }
+    #rvolPulse .rp-head { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:9px; }
+    #rvolPulse .rp-title { font-size:0.7rem; font-weight:700; letter-spacing:0.09em; color:#7bb3d6; }
+    #rvolPulse .rp-pulse { font-size:0.84rem; font-weight:700; }
+    #rvolPulse .rp-idx { display:flex; gap:7px; flex-wrap:wrap; }
+    #rvolPulse .rp-idxpill { font-size:0.72rem; padding:3px 9px; border-radius:6px; background:#12151d; border:1px solid #232840; }
+    #rvolPulse .rp-tiles { display:flex; flex-wrap:wrap; gap:6px; }
+    #rvolPulse .rp-tile { min-width:62px; padding:5px 9px; border-radius:6px; text-align:center; border:1px solid transparent;
+              transition:background .5s ease, border-color .5s ease; }
+    #rvolPulse .rp-tk { font-weight:700; display:block; font-size:0.75rem; letter-spacing:0.02em; }
+    #rvolPulse .rp-rv { font-size:0.66rem; opacity:0.85; }
+    .rpz-dead    { background:#14161d; color:#5a5d6e; }
+    .rpz-warming { background:rgba(200,162,75,0.13); color:#d4b45c; border-color:rgba(200,162,75,0.28) !important; }
+    .rpz-sweet   { background:rgba(127,224,152,0.15); color:#7FE098; border-color:rgba(127,224,152,0.4) !important; }
+    .rpz-blowoff { background:rgba(239,83,80,0.15);  color:#ef7a78; border-color:rgba(239,83,80,0.4) !important; }
+    .rpz-nodata  { background:#101218; color:#3a3d4a; }
   </style>
   <div id="dtTape" title="Today's day type per routed ticker — Outside ▲ favours breakouts, Inside ▼ favours reversals (from prior-day Camarilla CPR). Hover to pause.">
     <div class="dt-tape-label" id="dtTapeLabel">Day Type</div>
     <div class="dt-tape-viewport"><div class="dt-tape-track" id="dtTapeTrack"></div></div>
+  </div>
+
+  <!-- RVOL Pulse — live relative volume (SIP): market participation + which names are in the gate's sweet spot right now -->
+  <div id="rvolPulse" title="Live relative volume (SIP tape). Indexes gauge market participation; watchlist tiles show each name's current entry-bar RVOL, zoned against the gate band — ★ in the 1.5–3.0× sweet spot, ⛔ blow-off, dim = thin. Refreshes ~45s.">
+    <div class="rp-head">
+      <span class="rp-title">◆ RVOL PULSE</span>
+      <span class="rp-pulse" id="rpPulse">—</span>
+      <span class="rp-idx" id="rpIndexes"></span>
+      <span id="rpGate" style="margin-left:auto;font-size:0.66rem;color:#555"></span>
+    </div>
+    <div class="rp-tiles" id="rpTiles"><span style="color:#555;font-size:0.75rem">Loading live volume…</span></div>
   </div>
 
   <!-- Performance stats -->
@@ -3580,6 +3609,7 @@
     loadOpenPositionsTable();
     loadDashPerfSummary();
     loadDayTypeTape();
+    loadRvolPulse();
     setInterval(loadTrades,            30000);
     setInterval(loadAccount,           30000);
     setInterval(loadGlancePnl,         30000);
@@ -3587,6 +3617,7 @@
     setInterval(refreshLivePnl,        10000);
     setInterval(loadDashPerfSummary,  300000); // refresh every 5 min
     setInterval(loadDayTypeTape,     1800000);  // day-type board — refresh every 30 min
+    setInterval(loadRvolPulse,          45000);  // RVOL pulse — live, ~45s
 
     // Sets used to star Open Positions chips. Both ticker- and strategy-level so
     // the chip can use exact strategy attribution when we have it (purple only if
@@ -3704,6 +3735,41 @@
       } catch (e) {
         track.innerHTML = '<span class="dt-item" style="color:#555">Day-type board unavailable.</span>';
       }
+    }
+
+    function _rpZoneColor(z) {
+      return z === 'sweet' ? '#7FE098' : z === 'warming' ? '#d4b45c'
+           : z === 'blowoff' ? '#ef7a78' : z === 'dead' ? '#5a5d6e' : '#3a3d4a';
+    }
+    async function loadRvolPulse() {
+      const tilesEl = document.getElementById('rpTiles');
+      if (!tilesEl) return;
+      try {
+        const d = await fetch('/api/rvol/pulse').then(r => r.json());
+        // Market pulse label + aggregate
+        const plColor = d.pulse_label === 'Frenzy' ? '#ef7a78'
+          : d.pulse_label === 'Active' ? '#7FE098'
+          : d.pulse_label === 'Normal' ? '#7bb3d6' : '#777';
+        document.getElementById('rpPulse').innerHTML =
+          `<span style="color:#666;font-weight:400;font-size:0.7rem">market</span> `
+          + `<span style="color:${plColor}">${d.pulse_label || '—'}</span> `
+          + `<span style="color:#888">${d.market_pulse == null ? '—' : d.market_pulse + '×'}</span>`;
+        // Index pills
+        document.getElementById('rpIndexes').innerHTML = (d.indexes || []).map(r =>
+          `<span class="rp-idxpill"><b style="color:#cdd6e6">${r.ticker}</b> `
+          + `<span style="color:${_rpZoneColor(r.zone)}">${r.rvol == null ? '—' : r.rvol + '×'}</span></span>`).join('');
+        // Gate status
+        const g = d.gate || {};
+        document.getElementById('rpGate').textContent = g.enabled
+          ? `gate ON · ≥${g.min}× · cap ${g.short_cap}× · ${g.lookback}-bar`
+          : `gate off · sweet band ≥${g.min}×`;
+        // Watchlist heat tiles (already sorted hottest-first)
+        const badge = r => r.zone === 'sweet' ? ' ★' : r.zone === 'blowoff' ? ' ⛔' : '';
+        tilesEl.innerHTML = (d.watch || []).map(r =>
+          `<div class="rp-tile rpz-${r.zone}"><span class="rp-tk">${r.ticker}${badge(r)}</span>`
+          + `<span class="rp-rv">${r.rvol == null ? '—' : r.rvol + '×'}</span></div>`).join('')
+          || '<span style="color:#555;font-size:0.75rem">No watchlist tickers yet.</span>';
+      } catch (e) { /* leave last render in place */ }
     }
 
     async function loadAccount() {

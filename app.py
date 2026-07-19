@@ -13473,6 +13473,87 @@ def api_debug_rvol():
     })
 
 
+_PULSE_INDEXES = ["SPY", "QQQ", "IWM"]
+
+def _pulse_watchlist(limit=18):
+    """Distinct tickers recently routed (for the RVOL Pulse), most-recent first.
+    Falls back to a sensible default if the trades table can't be read."""
+    _default = ["NVDA", "TSLA", "AAPL", "SMH", "HOOD", "AMZN", "META", "PLTR"]
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT ticker FROM trades WHERE ticker IS NOT NULL AND ticker != '' "
+                    f"ORDER BY id DESC LIMIT {placeholder()}", (600,))
+        rows = cur.fetchall(); conn.close()
+    except Exception:
+        return _default
+    seen, out = set(), []
+    for r in rows:
+        t = ((r[0] if not isinstance(r, dict) else r["ticker"]) or "").upper()
+        if t and t not in seen and t.isalpha() and len(t) <= 5 and t not in _PULSE_INDEXES:
+            seen.add(t); out.append(t)
+        if len(out) >= limit:
+            break
+    return out or _default
+
+
+@app.route("/api/rvol/pulse")
+def api_rvol_pulse():
+    """Live RVOL Pulse: current entry-bar relative volume for the indexes + a
+    recently-traded watchlist, zoned against the gate band (dead / warming / sweet /
+    blow-off) with a live gate-pass preview. Powers the dashboard RVOL Pulse card.
+    ?tickers=CSV overrides the watchlist."""
+    import concurrent.futures as _cf
+    import datetime as _dtp
+    _req = (request.args.get("tickers") or "").strip()
+    watch = ([t.strip().upper() for t in _req.split(",") if t.strip()] if _req
+             else _pulse_watchlist(limit=18))
+    seen, universe = set(), []
+    for t in _PULSE_INDEXES + watch:
+        if t and t not in seen:
+            seen.add(t); universe.append(t)
+    lookback = RVOL_GATE_LOOKBACK
+    rvols = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_live_rvol, t, lookback): t for t in universe}
+        for f in _cf.as_completed(futs):
+            t = futs[f]
+            try:    rvols[t] = f.result()
+            except Exception: rvols[t] = None
+
+    def _zone(rv):
+        if rv is None:                                             return "nodata"
+        if RVOL_GATE_SHORT_CAP > 0 and rv >= RVOL_GATE_SHORT_CAP:  return "blowoff"
+        if rv >= RVOL_GATE_MIN:                                    return "sweet"
+        if rv >= 1.0:                                              return "warming"
+        return "dead"
+
+    def _row(t):
+        rv = rvols.get(t)
+        return {
+            "ticker": t, "rvol": (round(rv, 2) if rv is not None else None),
+            "zone": _zone(rv), "index": t in _PULSE_INDEXES,
+            "pass_long":  rv is not None and rv >= RVOL_GATE_MIN,
+            "pass_short": (rv is not None and rv >= RVOL_GATE_MIN
+                           and not (RVOL_GATE_SHORT_CAP > 0 and rv >= RVOL_GATE_SHORT_CAP)),
+        }
+
+    idx_rows   = [_row(t) for t in _PULSE_INDEXES if t in universe]
+    watch_rows = [_row(t) for t in universe if t not in _PULSE_INDEXES]
+    watch_rows.sort(key=lambda r: (r["rvol"] is None, -(r["rvol"] or 0)))
+
+    _idx_vals = [r["rvol"] for r in idx_rows if r["rvol"] is not None]
+    pulse = round(sum(_idx_vals) / len(_idx_vals), 2) if _idx_vals else None
+    label = ("—" if pulse is None else "Quiet" if pulse < 0.8 else
+             "Normal" if pulse < 1.3 else "Active" if pulse < 2.0 else "Frenzy")
+    return jsonify({
+        "market_pulse": pulse, "pulse_label": label,
+        "gate": {"enabled": RVOL_GATE_ENABLED, "min": RVOL_GATE_MIN,
+                 "short_cap": RVOL_GATE_SHORT_CAP, "lookback": lookback},
+        "indexes": idx_rows, "watch": watch_rows,
+        "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
+    })
+
+
 # ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────
 # For each closed Refined round-trip, fetch 1-min bars between entry and exit,
 # compute the Maximum Favorable Excursion (how far it ran in your favor), then
