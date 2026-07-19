@@ -138,3 +138,48 @@ def test_endpoint_threshold_sweep(_synthetic):
     # The 3.0x cap column removes the >=3.0x winner from the >=1.0x floor row.
     assert sw[1.0]["with_cap_trades"] == 0
     assert sw[1.0]["with_cap_pnl"] == 0.0
+
+
+@pytest.fixture()
+def _multi(monkeypatch):
+    """Two accounts, distinct trades, so the per-account reports must differ."""
+    per_acct = {
+        "2": [{"ticker": "AAA", "side": "SHORT", "pnl": -30.0, "entry_price": 10, "qty": 10,
+               "strategy": "AAA_CAM_BREAKOUT_R4S4_V02_5MIN",
+               "entry_time": "2026-07-10T13:55:00+00:00", "exit_time": "2026-07-10T14:30:00+00:00"}],
+        "3": [{"ticker": "FAT", "side": "LONG", "pnl": 90.0, "entry_price": 10, "qty": 10,
+               "strategy": "FAT_CAM_BREAKOUT_R4S4_V02_5MIN",
+               "entry_time": "2026-07-10T13:55:00+00:00", "exit_time": "2026-07-10T14:30:00+00:00"}],
+    }
+    bars = {"AAA": _rth_bars(13, 55, 100, 40), "FAT": _rth_bars(13, 55, 100, 300)}
+    monkeypatch.setattr(a, "_build_signal_lookup_for_alpaca", lambda *ar, **kw: {})
+    monkeypatch.setattr(a, "_alpaca_account_ctx",
+                        lambda acct: (object(), "alpaca" + acct, {"2": "TV Refined", "3": "Kairos Refined"}[acct],
+                                      lambda: []))
+
+    def _pair(fills, from_date="", to_date="", signal_lookup=None):
+        # Return the right trades based on which account we're inside — track via a nonlocal counter.
+        return {"closed_clean": _pair.queue.pop(0)}
+    _pair.queue = [per_acct["2"], per_acct["3"]]
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", _pair)
+    monkeypatch.setattr(a, "_fetch_day_bars", lambda tk, ds: bars.get(tk.upper(), []))
+    monkeypatch.setattr(a, "_persist_trade_rvol", lambda *ar, **kw: None)
+    return per_acct
+
+
+def test_separate_report_per_account(_multi):
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.post("/api/simulate/rvol_breakdown",
+                   json={"accounts": ["2", "3"], "from_date": "2026-07-01",
+                         "to_date": "2026-07-17"}).get_json()
+    # Aggregate stays at the top level (2 trades total).
+    assert d["trade_count"] == 2
+    # But there are two separate, labelled reports in request order.
+    assert [r["account"] for r in d["reports"]] == ["TV Refined", "Kairos Refined"]
+    tv, kr = d["reports"]
+    assert tv["trade_count"] == 1 and tv["side_counts"]["short"] == 1
+    assert kr["trade_count"] == 1 and kr["side_counts"]["long"] == 1
+    # Each report is scoped to its own book, not the average.
+    assert tv["by_ticker"][0]["ticker"] == "AAA"
+    assert kr["by_ticker"][0]["ticker"] == "FAT"

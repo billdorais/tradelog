@@ -1060,14 +1060,15 @@
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 
-  // Copy-for-Claude: holds the last RVOL result as markdown, written to the clipboard.
-  let _rvolCopy = '';
-  function copyRvol(btn) {
-    if (!_rvolCopy) return;
+  // Copy-for-Claude: one markdown snapshot per account report, written to clipboard.
+  let _rvolCopies = [];
+  function copyRvolReport(idx, btn) {
+    const text = _rvolCopies[idx];
+    if (!text) return;
     const done = () => { const o = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = o, 1500); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(_rvolCopy).then(done).catch(() => _copyFallback(_rvolCopy, done, btn));
-    } else { _copyFallback(_rvolCopy, done, btn); }
+      navigator.clipboard.writeText(text).then(done).catch(() => _copyFallback(text, done, btn));
+    } else { _copyFallback(text, done, btn); }
   }
   function _copyFallback(text, done, btn) {
     try {
@@ -1101,9 +1102,11 @@
       const d = await r.json();
       if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
 
-      const bucketTable = (key, title, color, n) => {
+      // Table builders take a report object (per-account or aggregate).
+      const bucketTable = (rep, key, title, color) => {
+        const n = rep.side_counts[key];
         if (!n) return `<div style="margin-top:12px"><div style="font-weight:700;color:${color};font-size:0.86rem">${title}</div><div style="font-size:0.8rem;color:#666">No ${title.toLowerCase()} in this window.</div></div>`;
-        const rows = (d.by_bucket[key] || []).map(b => {
+        const rows = (rep.by_bucket[key] || []).map(b => {
           if (!b.trades) return `<tr style="opacity:0.4"><td style="padding:5px 12px;color:#ccc">${b.bucket}</td><td style="padding:5px 12px;text-align:right;color:#666">0</td><td></td><td></td><td></td></tr>`;
           const thin = b.bucket === '< 0.5×' || b.bucket === '0.5–1.0×';
           return `<tr style="${thin ? 'background:rgba(239,83,80,0.06)' : ''}">`
@@ -1119,10 +1122,10 @@
           + `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
       };
 
-      // Threshold sweep: for each candidate RVOL floor, the kept book (+ ≥cap guard).
-      const sweepTable = (key, title, color, n) => {
+      const sweepTable = (rep, key, title, color) => {
+        const n = rep.side_counts[key];
         if (!n) return '';
-        const sw = d.sweeps[key] || [];
+        const sw = rep.sweeps[key] || [];
         const scored = sw.filter(s => s.trades >= 15);   // ignore tiny-sample rows for "best"
         const bestPnl = scored.length ? Math.max(...scored.map(s => s.total_pnl)) : null;
         const rows = sw.map(s => {
@@ -1142,66 +1145,79 @@
           + `<th style="text-align:left;padding:5px 12px">Require</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L</th><th style="text-align:right;padding:5px 12px">Avg/trade</th><th style="text-align:right;padding:5px 12px" title="Also block ≥${d.cap}× (blow-off)">+ cap ≥${d.cap}×</th>`
           + `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
       };
-      const sweepBlocks = `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"><div style="font-size:0.78rem;color:#888;margin-bottom:2px">Threshold sweep <span style="color:#666;font-weight:400">— kept book at each RVOL floor (★ = best P&amp;L with ≥15 trades). Last column also blocks the ≥${d.cap}× blow-off.</span></div>`
-        + sweepTable('short', 'Short book', '#ef9a9a', d.side_counts.short)
-        + sweepTable('long',  'Long book',  '#8fd4a0', d.side_counts.long)
-        + sweepTable('all',   'All trades', '#9ab7d6', d.side_counts.all) + `</div>`;
+      const sweepBlocks = (rep) => `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"><div style="font-size:0.78rem;color:#888;margin-bottom:2px">Threshold sweep <span style="color:#666;font-weight:400">— kept book at each RVOL floor (★ = best P&amp;L with ≥15 trades). Last column also blocks the ≥${d.cap}× blow-off.</span></div>`
+        + sweepTable(rep, 'short', 'Short book', '#ef9a9a')
+        + sweepTable(rep, 'long',  'Long book',  '#8fd4a0')
+        + sweepTable(rep, 'all',   'All trades', '#9ab7d6') + `</div>`;
 
-      // Per-ticker profile — chronically-thin tickers first.
-      const tk = (d.by_ticker || []).slice(0, 25).map(t => {
-        const thinCol = t.avg_rvol < 1.0 ? '#ef5350' : t.avg_rvol < 1.5 ? '#F2E7AC' : '#7FE098';
-        return `<tr>`
-          + `<td style="padding:5px 12px;color:#ccc;font-weight:600">${t.ticker}</td>`
-          + `<td style="padding:5px 12px;text-align:right;color:#aaa">${t.trades}</td>`
-          + `<td style="padding:5px 12px;text-align:right;color:${thinCol};font-weight:600">${t.avg_rvol.toFixed(2)}×</td>`
-          + `<td style="padding:5px 12px;text-align:right;color:#888">${t.min_rvol.toFixed(2)}×</td>`
-          + `<td style="padding:5px 12px;text-align:right;color:#888">${t.thin_rate}%</td>`
-          + `<td style="padding:5px 12px;text-align:right">${wr(t.win_rate)}</td>`
-          + `<td style="padding:5px 12px;text-align:right;font-weight:600;color:${t.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(t.total_pnl)}</td></tr>`;
-      }).join('');
-      const tkBlock = `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"><div style="font-weight:700;color:#9ab7d6;font-size:0.86rem;margin-bottom:3px">Per-ticker RVOL profile <span style="color:#666;font-weight:400;font-size:0.72rem">· sorted thinnest first · ${d.by_ticker.length} tickers</span></div>`
-        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem"><thead><tr style="color:#555;font-size:0.64rem;text-transform:uppercase">`
-        + `<th style="text-align:left;padding:5px 12px">Ticker</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Avg RVOL</th><th style="text-align:right;padding:5px 12px">Min</th><th style="text-align:right;padding:5px 12px" title="% of entries under 1.0× RVOL">Thin %</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L</th>`
-        + `</tr></thead><tbody>${tk}</tbody></table></div></div>`;
+      const tkBlock = (rep) => {
+        const tkr = (rep.by_ticker || []).slice(0, 25).map(t => {
+          const thinCol = t.avg_rvol < 1.0 ? '#ef5350' : t.avg_rvol < 1.5 ? '#F2E7AC' : '#7FE098';
+          return `<tr>`
+            + `<td style="padding:5px 12px;color:#ccc;font-weight:600">${t.ticker}</td>`
+            + `<td style="padding:5px 12px;text-align:right;color:#aaa">${t.trades}</td>`
+            + `<td style="padding:5px 12px;text-align:right;color:${thinCol};font-weight:600">${t.avg_rvol.toFixed(2)}×</td>`
+            + `<td style="padding:5px 12px;text-align:right;color:#888">${t.min_rvol.toFixed(2)}×</td>`
+            + `<td style="padding:5px 12px;text-align:right;color:#888">${t.thin_rate}%</td>`
+            + `<td style="padding:5px 12px;text-align:right">${wr(t.win_rate)}</td>`
+            + `<td style="padding:5px 12px;text-align:right;font-weight:600;color:${t.total_pnl >= 0 ? '#7FE098' : '#ef5350'}">${money(t.total_pnl)}</td></tr>`;
+        }).join('');
+        return `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"><div style="font-weight:700;color:#9ab7d6;font-size:0.86rem;margin-bottom:3px">Per-ticker RVOL profile <span style="color:#666;font-weight:400;font-size:0.72rem">· sorted thinnest first · ${(rep.by_ticker || []).length} tickers</span></div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem"><thead><tr style="color:#555;font-size:0.64rem;text-transform:uppercase">`
+          + `<th style="text-align:left;padding:5px 12px">Ticker</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Avg RVOL</th><th style="text-align:right;padding:5px 12px">Min</th><th style="text-align:right;padding:5px 12px" title="% of entries under 1.0× RVOL">Thin %</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L</th>`
+          + `</tr></thead><tbody>${tkr}</tbody></table></div></div>`;
+      };
 
-      // Markdown snapshot for the Copy-for-Claude button.
-      const mdHead = `RVOL at entry — ${(d.accounts || []).join(' · ')} · ${d.from_date}→${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''} · ${d.trade_count} resolved${d.unresolved ? ` · ${d.unresolved} unresolved` : ''}`;
-      const mdBucket = (key, title) => {
-        const bs = (d.by_bucket[key] || []).filter(b => b.trades > 0);
+      // Per-report markdown for the Copy-for-Claude button.
+      const metaSuffix = `${d.from_date}→${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''}`;
+      const mdBucket = (rep, key, title) => {
+        const bs = (rep.by_bucket[key] || []).filter(b => b.trades > 0);
         if (!bs.length) return '';
         let s = `\n**${title}**\n\n| RVOL bucket | Trades | Win% | Total P&L | Avg/trade |\n|---|--:|--:|--:|--:|\n`;
         bs.forEach(b => { s += `| ${b.bucket} | ${b.trades} | ${b.win_rate}% | ${money(b.total_pnl)} | ${money(b.avg_pnl)} |\n`; });
         return s;
       };
-      const mdTickers = () => {
-        if (!(d.by_ticker || []).length) return '';
-        let s = `\n**Per-ticker (thinnest first)**\n\n| Ticker | Trades | Avg RVOL | Min | Thin% | Win% | Total P&L |\n|---|--:|--:|--:|--:|--:|--:|\n`;
-        d.by_ticker.forEach(t => { s += `| ${t.ticker} | ${t.trades} | ${t.avg_rvol}× | ${t.min_rvol}× | ${t.thin_rate}% | ${t.win_rate}% | ${money(t.total_pnl)} |\n`; });
-        return s;
-      };
-      const mdSweep = (key, title) => {
-        const sw = d.sweeps[key] || [];
+      const mdSweep = (rep, key, title) => {
+        const sw = rep.sweeps[key] || [];
         if (!sw.length) return '';
         let s = `\n**${title} — floor sweep**\n\n| Require | Trades | %book | Win% | Total P&L | Avg/trade | +cap≥${d.cap}× |\n|---|--:|--:|--:|--:|--:|--:|\n`;
         sw.forEach(x => { s += `| ${x.min_rvol === 0 ? 'No gate' : '≥ ' + x.min_rvol + '×'} | ${x.trades} | ${x.pct_book}% | ${x.win_rate}% | ${money(x.total_pnl)} | ${money(x.avg_pnl)} | ${money(x.with_cap_pnl)} |\n`; });
         return s;
       };
-      _rvolCopy = mdHead + '\n' + mdBucket('short', 'Short book') + mdBucket('long', 'Long book')
-        + mdBucket('all', 'All trades')
-        + mdSweep('short', 'Short book') + mdSweep('long', 'Long book') + mdSweep('all', 'All trades')
-        + mdTickers();
+      const mdTickers = (rep) => {
+        if (!(rep.by_ticker || []).length) return '';
+        let s = `\n**Per-ticker (thinnest first)**\n\n| Ticker | Trades | Avg RVOL | Min | Thin% | Win% | Total P&L |\n|---|--:|--:|--:|--:|--:|--:|\n`;
+        rep.by_ticker.forEach(t => { s += `| ${t.ticker} | ${t.trades} | ${t.avg_rvol}× | ${t.min_rvol}× | ${t.thin_rate}% | ${t.win_rate}% | ${money(t.total_pnl)} |\n`; });
+        return s;
+      };
+
+      // One panel per account report (curated scope → 3), each with its own Copy button.
+      const reports = (d.reports && d.reports.length) ? d.reports
+        : [Object.assign({ account: (d.accounts || []).join(' · ') }, d)];
+      _rvolCopies = [];
+      const html = reports.map((rep, i) => {
+        _rvolCopies.push(`RVOL at entry — ${rep.account} · ${metaSuffix} · ${rep.trade_count} resolved\n`
+          + mdBucket(rep, 'short', 'Short book') + mdBucket(rep, 'long', 'Long book') + mdBucket(rep, 'all', 'All trades')
+          + mdSweep(rep, 'short', 'Short book') + mdSweep(rep, 'long', 'Long book') + mdSweep(rep, 'all', 'All trades')
+          + mdTickers(rep));
+        return `<div style="margin-top:${i ? 16 : 6}px;padding:12px;border:1px solid #22283a;border-radius:8px;background:#12151d">`
+          + `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:2px">`
+          + `<div style="font-weight:700;color:#cdd6e6;font-size:0.95rem">${rep.account} <span style="color:#666;font-weight:400;font-size:0.72rem">· ${rep.trade_count} resolved</span></div>`
+          + `<button onclick="copyRvolReport(${i}, this)" style="flex:none;background:#1b1f2b;border:1px solid #2a2d3e;color:#9ab7d6;border-radius:6px;padding:4px 10px;font-size:0.72rem;cursor:pointer;white-space:nowrap">📋 Copy for Claude</button></div>`
+          + bucketTable(rep, 'short', 'Short book', '#ef9a9a')
+          + bucketTable(rep, 'long',  'Long book',  '#8fd4a0')
+          + bucketTable(rep, 'all',   'All trades', '#9ab7d6')
+          + sweepBlocks(rep)
+          + tkBlock(rep)
+          + `</div>`;
+      }).join('');
 
       out.innerHTML =
-        `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">`
-        + `<div style="font-size:0.72rem;color:#666">${(d.accounts || []).join(' · ')} · ${d.from_date} → ${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''} · ${d.trade_count} resolved`
-        + (d.unresolved ? ` · <span style="color:#c98b4b">${d.unresolved} unresolved (no bars / too near open)</span>` : '') + `</div>`
-        + `<button onclick="copyRvol(this)" style="flex:none;background:#1b1f2b;border:1px solid #2a2d3e;color:#9ab7d6;border-radius:6px;padding:4px 10px;font-size:0.72rem;cursor:pointer;white-space:nowrap">📋 Copy for Claude</button></div>`
-        + bucketTable('short', 'Short book', '#ef9a9a', d.side_counts.short)
-        + bucketTable('long',  'Long book',  '#8fd4a0', d.side_counts.long)
-        + bucketTable('all',   'All trades', '#9ab7d6', d.side_counts.all)
-        + sweepBlocks
-        + tkBlock
-        + `<div style="font-size:0.72rem;color:#666;margin-top:10px">Rows saved to <code>trade_rvol</code> as you run this, so the per-ticker history accrues. If the thin buckets are the losers, that's the case for an RVOL entry gate — validate here first, then we build the node.</div>`;
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:2px">${metaSuffix}`
+        + (d.unresolved ? ` · <span style="color:#c98b4b">${d.unresolved} unresolved (no bars / too near open)</span>` : '')
+        + (reports.length > 1 ? ` · <b style="color:#888">${reports.length} accounts, separate reports</b>` : '') + `</div>`
+        + html
+        + `<div style="font-size:0.72rem;color:#666;margin-top:10px">Each account has its own <b>Copy for Claude</b> button. Rows saved to <code>trade_rvol</code> as you run this. Validate the cutoff per book here first, then we build the gate node.</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 

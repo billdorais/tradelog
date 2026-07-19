@@ -6731,7 +6731,7 @@ def simulate_rvol_breakdown():
             log.debug("rvol_breakdown pair %s: %s", acct, _e)
             continue
         for t in paired.get("closed_clean", []):
-            t = dict(t); t["_tag"] = tag
+            t = dict(t); t["_tag"] = tag; t["_acct"] = label
             trades.append(t)
     if bo_only:
         trades = [t for t in trades if "BREAKOUT" in (t.get("strategy") or "").upper()]
@@ -6759,7 +6759,7 @@ def simulate_rvol_breakdown():
             unresolved += 1; continue
         side = "SHORT" if (t.get("side") or "").upper() == "SHORT" else "LONG"
         rows.append({"ticker": ticker, "side": side, "rvol": rv["rvol"],
-                     "pnl": float(t.get("pnl") or 0)})
+                     "pnl": float(t.get("pnl") or 0), "acct": t.get("_acct")})
         try:    _persist_trade_rvol(t.get("_tag") or "", t, rv)   # opportunistic backfill
         except Exception: pass
     if not rows:
@@ -6778,29 +6778,6 @@ def simulate_rvol_breakdown():
             grp = [r for r in subset if r["rvol"] >= lo and (hi is None or r["rvol"] < hi)]
             s = _stats(grp); s["bucket"] = lab; out.append(s)
         return out
-
-    longs  = [r for r in rows if r["side"] == "LONG"]
-    shorts = [r for r in rows if r["side"] == "SHORT"]
-
-    # Per-ticker profile — chronically-thin tickers float to the top (avg RVOL asc).
-    by_ticker = {}
-    for r in rows:
-        d = by_ticker.setdefault(r["ticker"], {"rvols": [], "pnls": [], "thin": 0})
-        d["rvols"].append(r["rvol"]); d["pnls"].append(r["pnl"])
-        if r["rvol"] < 1.0:
-            d["thin"] += 1
-    tickers = []
-    for tk, d in by_ticker.items():
-        n = len(d["rvols"]); wins = sum(1 for p in d["pnls"] if p > 0)
-        tickers.append({
-            "ticker": tk, "trades": n,
-            "avg_rvol": round(sum(d["rvols"]) / n, 2),
-            "min_rvol": round(min(d["rvols"]), 2),
-            "thin_rate": round(d["thin"] / n * 100, 0),
-            "win_rate": round(wins / n * 100, 1),
-            "total_pnl": round(sum(d["pnls"]), 2),
-        })
-    tickers.sort(key=lambda x: (x["avg_rvol"], -x["trades"]))
 
     # Threshold sweep — for each candidate RVOL floor, what the kept book looks
     # like, plus the marginal effect of also capping the ≥cap blow-off. Per side,
@@ -6822,14 +6799,54 @@ def simulate_rvol_breakdown():
             })
         return out
 
+    def _ticker_profile(subset):
+        # Chronically-thin tickers float to the top (avg RVOL ascending).
+        prof = {}
+        for r in subset:
+            d0 = prof.setdefault(r["ticker"], {"rvols": [], "pnls": [], "thin": 0})
+            d0["rvols"].append(r["rvol"]); d0["pnls"].append(r["pnl"])
+            if r["rvol"] < 1.0:
+                d0["thin"] += 1
+        out = []
+        for tk, d0 in prof.items():
+            n = len(d0["rvols"]); wins = sum(1 for p in d0["pnls"] if p > 0)
+            out.append({
+                "ticker": tk, "trades": n,
+                "avg_rvol": round(sum(d0["rvols"]) / n, 2),
+                "min_rvol": round(min(d0["rvols"]), 2),
+                "thin_rate": round(d0["thin"] / n * 100, 0),
+                "win_rate": round(wins / n * 100, 1),
+                "total_pnl": round(sum(d0["pnls"]), 2),
+            })
+        out.sort(key=lambda x: (x["avg_rvol"], -x["trades"]))
+        return out
+
+    def _report(subset):
+        lg = [r for r in subset if r["side"] == "LONG"]
+        sh = [r for r in subset if r["side"] == "SHORT"]
+        return {
+            "trade_count": len(subset),
+            "side_counts": {"all": len(subset), "long": len(lg), "short": len(sh)},
+            "by_bucket": {"all": _buckets(subset), "long": _buckets(lg), "short": _buckets(sh)},
+            "sweeps":    {"all": _sweep(subset),   "long": _sweep(lg),   "short": _sweep(sh)},
+            "by_ticker": _ticker_profile(subset),
+        }
+
+    # One report per account (in the requested order), so the three curated books
+    # can be read individually rather than as their average. The aggregate stays at
+    # the top level for the single-account case (and backward compatibility).
+    from collections import defaultdict as _dd
+    by_acct = _dd(list)
+    for r in rows:
+        by_acct[r.get("acct") or "?"].append(r)
+    reports = [dict(account=lbl, **_report(by_acct[lbl])) for lbl in labels if by_acct.get(lbl)]
+
     return jsonify({
         "from_date": from_date, "to_date": to_date, "accounts": labels,
         "lookback": lookback, "breakouts_only": bo_only, "cap": _CAP,
-        "trade_count": len(rows), "unresolved": unresolved,
-        "side_counts": {"all": len(rows), "long": len(longs), "short": len(shorts)},
-        "by_bucket": {"all": _buckets(rows), "long": _buckets(longs), "short": _buckets(shorts)},
-        "sweeps": {"all": _sweep(rows), "long": _sweep(longs), "short": _sweep(shorts)},
-        "by_ticker": tickers,
+        "unresolved": unresolved,
+        **_report(rows),        # aggregate — top-level by_bucket/sweeps/by_ticker/etc.
+        "reports": reports,
     })
 
 
