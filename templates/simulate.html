@@ -593,6 +593,23 @@
     <div id="shortFilterResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Max-loss stop test — how often would a hard $ stop cut a trade that came back? -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Max-Loss Stop Test <span style="font-size:0.72rem;color:#666;font-weight:400">— of your real trades, how many dipped past a hard $ stop then recovered and closed higher? (Maximum Adverse Excursion)</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Scope</label>
+        <select id="ssScope" style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.82rem;font-family:inherit">
+          <option value="curated">Curated books (TV Refined · Kairos Refined · Crew)</option>
+          <option value="account">Selected account (above)</option>
+        </select></div>
+      <div class="param-group"><label>Stop levels ($)</label><div class="input-wrap"><input type="text" id="ssStops" value="50, 75, 100, 125, 150, 200" style="width:190px"></div></div>
+      <button class="run-btn" onclick="runStopSweep()" style="padding:8px 18px">&#9654; Run Stop Test</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Real round-trips · MAE from 1-min bars · uses From/To above.</span>
+    </div>
+    <div style="font-size:0.7rem;color:#666;margin-top:6px"><b>Recovered</b> = touched the stop then closed higher (the stop's <b>cost</b>). <b>Bled</b> = touched it and closed at/below (the stop's <b>saving</b>). <b>Net Δ</b> = book P&amp;L with the stop minus without — positive means the stop would have helped. Stop fills are modeled at the level (no slippage haircut).</div>
+    <div id="stopSweepResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Regime backtest -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Regime Backtest
@@ -968,6 +985,60 @@
         + `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130"></div>`
         + section(d.reversal, 'Reversal shorts (reject R4/R3 · above 20-EMA)', '#F2C07A', 'above EMA')
         + `<div style="font-size:0.72rem;color:#666;margin-top:10px">If <b>+both</b> lifts win rate and P&amp;L over baseline, the volume-EMA confirmation is filtering losers — a candidate short-entry gate. Watch the trade count: a filter that only keeps a handful isn't robust. Note the EMA condition is <b>inverted</b> — breakouts want price below the 20-EMA (momentum), reversals want it above (fading an overextension).</div>`;
+    } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  // Max-loss stop test (MAE): would a hard $ stop have cut winners-that-came-back?
+  async function runStopSweep() {
+    const out = document.getElementById('stopSweepResult');
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
+    const scope = document.getElementById('ssScope').value;
+    const stops = (document.getElementById('ssStops').value || '')
+      .split(',').map(s => parseFloat(s.trim())).filter(v => v > 0);
+    const bodyReq = {
+      from_date: document.getElementById('fromDate').value,
+      to_date:   document.getElementById('toDate').value,
+      stops,
+    };
+    if (scope === 'account') bodyReq.account = document.getElementById('account').value;
+    else bodyReq.accounts = ['2', '3', '4'];
+    out.innerHTML = '<span style="color:#888">Walking bars for the worst point of every trade…</span>';
+    try {
+      const r = await fetch('/api/simulate/stop_sweep', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyReq),
+      });
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<span style="color:#e74c3c">${d.error || 'Failed.'}</span>`; return; }
+
+      // One table per side; rows = stop levels. Highlight the best Net Δ row.
+      const sideTable = (key, title, color, n) => {
+        if (!n) return `<div style="margin-top:10px"><div style="font-weight:700;color:${color};font-size:0.86rem">${title}</div><div style="font-size:0.8rem;color:#666">No ${title.toLowerCase()} in this window.</div></div>`;
+        const cells = d.levels.map(L => L[key]);
+        const bestNet = Math.max(...cells.map(c => c.net_delta));
+        const rows = d.levels.map(L => {
+          const c = L[key], isBest = c.net_delta === bestNet && c.hit > 0;
+          const netCol = c.net_delta > 0 ? '#7FE098' : c.net_delta < 0 ? '#ef5350' : '#888';
+          return `<tr style="${isBest ? 'background:rgba(127,224,152,0.10)' : ''}">`
+            + `<td style="padding:6px 12px;color:#ccc">-$${L.stop}${isBest ? ' <span style="color:#7FE098">★</span>' : ''}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#aaa">${c.hit}</td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#c98b8b">${c.recovered.count} <span style="color:#666;font-size:0.72rem">(${money(-c.recovered.cost)})</span></td>`
+            + `<td style="padding:6px 12px;text-align:right;color:#7FE098">${c.bled.count} <span style="color:#666;font-size:0.72rem">(${money(c.bled.saved)})</span></td>`
+            + `<td style="padding:6px 12px;text-align:right;font-weight:600;color:${netCol}">${c.net_delta >= 0 ? '+' : ''}${money(c.net_delta)}</td></tr>`;
+        }).join('');
+        return `<div style="margin-top:12px"><div style="font-weight:700;color:${color};font-size:0.86rem;margin-bottom:3px">${title} <span style="color:#666;font-weight:400;font-size:0.72rem">· ${n} trades</span></div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.83rem"><thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">`
+          + `<th style="text-align:left;padding:5px 12px">Stop</th><th style="text-align:right;padding:5px 12px">Hit</th><th style="text-align:right;padding:5px 12px" title="Closed higher than the stop — the stop's cost">Recovered</th><th style="text-align:right;padding:5px 12px" title="Closed at/below the stop — the stop's saving">Bled</th><th style="text-align:right;padding:5px 12px">Net Δ vs book</th>`
+          + `</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      };
+
+      out.innerHTML =
+        `<div style="font-size:0.72rem;color:#666;margin-bottom:6px">${(d.accounts || []).join(' · ')} · ${d.from_date} → ${d.to_date} · ${d.trade_count} resolved round-trips`
+        + (d.unresolved ? ` · <span style="color:#c98b4b">${d.unresolved} unresolved (no bars)</span>` : '') + `</div>`
+        + sideTable('short', 'Short book', '#ef9a9a', d.side_counts.short)
+        + sideTable('long',  'Long book',  '#8fd4a0', d.side_counts.long)
+        + sideTable('all',   'All trades', '#9ab7d6', d.side_counts.all)
+        + `<div style="font-size:0.72rem;color:#666;margin-top:10px"><b>Recovered</b> trades are the ones a stop would hurt (dipped past it, then closed higher); <b>Bled</b> are the ones it rescues. Pick the level where <b>Net Δ</b> is most positive — and weigh it against how many recovered trades you'd sacrifice. A stop that saves little but cuts many winners-that-came-back is net-negative even if it feels safer.</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 

@@ -6498,6 +6498,159 @@ def simulate_tp_sweep():
                     "strategies": strategy_results})
 
 
+def _trade_mae_dollars(side, entry_px, qty, entry_dt, exit_dt, bars):
+    """Maximum Adverse Excursion in DOLLARS for one round-trip: the worst (most
+    negative) unrealized P&L the position touched between entry and exit, using
+    intrabar extremes — LONG digs to bar.low, SHORT to bar.high. Seeded at 0
+    (unrealized at entry), so the result is always <= 0. Returns None when no bar
+    covers the hold window (can't assess). Same bar walk as _compute_trade_hwm,
+    mirrored to the adverse side."""
+    from datetime import timezone as _tz_m
+    is_long = (side or "").upper() == "LONG"
+    worst = 0.0
+    seen = False
+    for b in bars:
+        _ts = b.timestamp
+        if _ts.tzinfo is None:
+            _ts = _ts.replace(tzinfo=_tz_m.utc)
+        if _ts < entry_dt or (exit_dt and _ts > exit_dt):
+            continue
+        seen = True
+        adverse_px = b.low if is_long else b.high
+        u = (adverse_px - entry_px) * qty if is_long else (entry_px - adverse_px) * qty
+        if u < worst:
+            worst = u
+    if not seen:
+        return None
+    return round(worst, 2)
+
+
+@app.route("/api/simulate/stop_sweep", methods=["POST"])
+def simulate_stop_sweep():
+    """Max-loss stop test on REAL round-trips (Maximum Adverse Excursion).
+
+    For every closed round-trip on the selected books we walk 1-min bars over the
+    actual hold window and find the worst unrealized $ it touched (MAE). Then, for
+    each candidate hard $ stop, split the stopped trades into:
+      • recovered — dipped past the stop then closed HIGHER (the stop's COST: it
+        would have cut a trade that came back)
+      • bled      — dipped past the stop and closed at/below it (the stop's SAVING:
+        it caps the loss there)
+    and report the net P&L delta vs the real book. Directly answers 'how often
+    would a -$100 stop have cut a trade that turned around?'. Split by side because
+    the short book is the one under scrutiny. Body: accounts (list of nums, default
+    curated 2/3/4) or account (single), from_date, to_date, stops (list of positive
+    dollars, default [50,75,100,125,150,200])."""
+    import datetime as _dt
+    import concurrent.futures as _cf
+    body      = request.get_json() or {}
+    accounts  = body.get("accounts") or ([str(body["account"])] if body.get("account") else ["2", "3", "4"])
+    accounts  = [str(a) for a in accounts]
+    from_date = body.get("from_date", "")
+    to_date   = body.get("to_date",   "")
+    stops_in  = body.get("stops") or [50, 75, 100, 125, 150, 200]
+    try:
+        stops = sorted({round(abs(float(s)), 2) for s in stops_in if float(s) > 0})
+    except (TypeError, ValueError):
+        return jsonify({"error": "stops must be a list of numbers"}), 400
+    if not from_date or not to_date:
+        return jsonify({"error": "from_date and to_date are required"}), 400
+    if not stops:
+        return jsonify({"error": "Provide at least one positive stop level"}), 400
+
+    # Gather real round-trips across the selected books.
+    signal_lookup = _build_signal_lookup_for_alpaca()
+    trades, labels = [], []
+    for acct in accounts:
+        broker, _tag, label, fills_fn = _alpaca_account_ctx(acct)
+        if broker is None:
+            continue
+        labels.append(label)
+        try:
+            paired = _pair_alpaca_fills_lifo(fills_fn(), from_date=from_date,
+                                             to_date=to_date, signal_lookup=signal_lookup)
+        except Exception as _e:
+            log.debug("stop_sweep pair %s: %s", acct, _e)
+            continue
+        for t in paired.get("closed_clean", []):
+            trades.append(t)
+    if not trades:
+        return jsonify({"error": "No completed round-trips found for the selected period"}), 404
+
+    # Fetch 1-min bars once per (ticker, date).
+    ticker_dates = {((t.get("ticker") or "").upper(), (t.get("entry_time") or "")[:10])
+                    for t in trades if t.get("ticker") and t.get("entry_time")}
+    day_bars = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_fetch_day_bars, tk, dt): (tk, dt) for tk, dt in ticker_dates}
+        for f in _cf.as_completed(futs):
+            tk, dt = futs[f]
+            try:    day_bars[(tk, dt)] = f.result()
+            except Exception: day_bars[(tk, dt)] = []
+
+    # Per-trade Maximum Adverse Excursion.
+    rows, unresolved = [], 0
+    for t in trades:
+        ticker   = (t.get("ticker") or "").upper()
+        side     = (t.get("side")   or "").upper()
+        entry_px = float(t.get("entry_price") or 0)
+        qty      = abs(float(t.get("qty") or 0))
+        realized = float(t.get("pnl") or 0)
+        e_iso    = t.get("entry_time") or ""
+        x_iso    = t.get("exit_time")  or ""
+        if not (ticker and side and entry_px and qty and e_iso and x_iso):
+            unresolved += 1; continue
+        try:
+            entry_dt = _dt.datetime.fromisoformat(e_iso.replace("Z", "+00:00"))
+            exit_dt  = _dt.datetime.fromisoformat(x_iso.replace("Z", "+00:00"))
+        except Exception:
+            unresolved += 1; continue
+        mae = _trade_mae_dollars(side, entry_px, qty, entry_dt, exit_dt,
+                                 day_bars.get((ticker, e_iso[:10]), []))
+        if mae is None:
+            unresolved += 1; continue
+        rows.append({"side": "LONG" if side == "LONG" else "SHORT",
+                     "realized": realized, "mae": mae})
+    if not rows:
+        return jsonify({"error": "No round-trips could be resolved to bars"}), 404
+
+    def _side_stats(subset, stop):
+        S = -abs(stop)
+        hit = rec_n = bled_n = 0
+        rec_cost = bled_saved = base = stopped = 0.0
+        for r in subset:
+            base += r["realized"]
+            if r["mae"] <= S:                 # worst point breached the stop → it fires
+                hit += 1
+                stopped += S                  # stopped out ~at the level
+                if r["realized"] > S:         # but the trade closed higher → cost
+                    rec_n += 1; rec_cost += (r["realized"] - S)
+                else:                         # closed at/below the level → saved
+                    bled_n += 1; bled_saved += (S - r["realized"])
+            else:
+                stopped += r["realized"]      # untouched by the stop
+        return {
+            "trades": len(subset), "hit": hit,
+            "recovered": {"count": rec_n, "cost": round(rec_cost, 2)},
+            "bled":      {"count": bled_n, "saved": round(bled_saved, 2)},
+            "baseline":  round(base, 2), "stopped_total": round(stopped, 2),
+            "net_delta": round(stopped - base, 2),
+        }
+
+    longs  = [r for r in rows if r["side"] == "LONG"]
+    shorts = [r for r in rows if r["side"] == "SHORT"]
+    levels = [{"stop": stop,
+               "all":   _side_stats(rows,   stop),
+               "long":  _side_stats(longs,  stop),
+               "short": _side_stats(shorts, stop)} for stop in stops]
+    return jsonify({
+        "from_date": from_date, "to_date": to_date, "accounts": labels,
+        "trade_count": len(rows), "unresolved": unresolved,
+        "side_counts": {"all": len(rows), "long": len(longs), "short": len(shorts)},
+        "levels": levels,
+    })
+
+
 @app.route("/api/simulate/chat", methods=["POST"])
 def simulate_chat():
     """Chat with Claude about simulation results. Streams SSE.
