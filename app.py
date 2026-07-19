@@ -13474,26 +13474,64 @@ def api_debug_rvol():
 
 
 _PULSE_INDEXES = ["SPY", "QQQ", "IWM"]
+# Broker targets that mean "a refined book" (TV Refined = ...-2, Kairos Refined = ...-3).
+_REFINED_PULSE_BROKERS = {"alpaca-paper-2", "alpaca-live-2", "alpaca-paper-3", "alpaca-live-3"}
+
+def _pulse_strat_ticker(val):
+    u = (val or "").upper(); i = u.find("_CAM_")
+    return u[:i] if i > 0 else None
 
 def _pulse_watchlist(limit=18):
-    """Distinct tickers recently routed (for the RVOL Pulse), most-recent first.
-    Falls back to a sensible default if the trades table can't be read."""
+    """Tickers the RVOL gate actually applies to: the distinct symbols of ENABLED
+    routing rules targeting the refined books (TV Refined / Kairos Refined), so the
+    Pulse is a true preview of what those books would trade. Falls back to
+    recently-traded tickers, then a default, if none resolve."""
     _default = ["NVDA", "TSLA", "AAPL", "SMH", "HOOD", "AMZN", "META", "PLTR"]
+
+    def _keep(t, seen):
+        return t and t not in seen and t.isalpha() and len(t) <= 5 and t not in _PULSE_INDEXES
+
+    # 1) Refined-book tickers from the router (the real "refined stocks").
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1 ORDER BY id DESC")
+        rows = cur.fetchall(); conn.close()
+        seen, out = set(), []
+        for r in rows:
+            nraw = r[0] if not isinstance(r, dict) else r["nodes"]
+            try:    nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
+            except Exception: continue
+            brokers = {(n.get("value") or "") for n in nodes if n.get("type") == "broker"}
+            if not (brokers & _REFINED_PULSE_BROKERS):
+                continue
+            for n in nodes:
+                if n.get("type") == "strategy":
+                    tk = _pulse_strat_ticker(n.get("value"))
+                    if _keep(tk, seen):
+                        seen.add(tk); out.append(tk)
+        if out:
+            return out[:limit]
+    except Exception:
+        pass
+
+    # 2) Fallback: recently-traded tickers across all signals.
     try:
         conn = get_db(); cur = conn.cursor()
         cur.execute(f"SELECT ticker FROM trades WHERE ticker IS NOT NULL AND ticker != '' "
                     f"ORDER BY id DESC LIMIT {placeholder()}", (600,))
         rows = cur.fetchall(); conn.close()
+        seen, out = set(), []
+        for r in rows:
+            t = ((r[0] if not isinstance(r, dict) else r["ticker"]) or "").upper()
+            if _keep(t, seen):
+                seen.add(t); out.append(t)
+            if len(out) >= limit:
+                break
+        if out:
+            return out
     except Exception:
-        return _default
-    seen, out = set(), []
-    for r in rows:
-        t = ((r[0] if not isinstance(r, dict) else r["ticker"]) or "").upper()
-        if t and t not in seen and t.isalpha() and len(t) <= 5 and t not in _PULSE_INDEXES:
-            seen.add(t); out.append(t)
-        if len(out) >= limit:
-            break
-    return out or _default
+        pass
+    return _default
 
 
 @app.route("/api/rvol/pulse")

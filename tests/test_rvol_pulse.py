@@ -68,3 +68,34 @@ def test_tickers_param_overrides_watchlist(_pulse):
     with a.app.test_client() as c:
         d = c.get("/api/rvol/pulse?tickers=NVDA,AAPL").get_json()
     assert {r["ticker"] for r in d["watch"]} == {"NVDA", "AAPL"}
+
+
+def test_watchlist_is_the_refined_books_tickers(monkeypatch, tmp_path):
+    """_pulse_watchlist pulls tickers from enabled rules targeting the refined
+    books (alpaca-paper-2/-3), not just any recently-traded name."""
+    import json
+    import shutil
+    import sqlite3
+    db = tmp_path / "wl.db"; shutil.copy("trades.db", db)
+    conn = sqlite3.connect(db); conn.execute("DELETE FROM routing_rules")
+    def _rule(name, strat, broker, enabled=1):
+        conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,?,?)",
+                     (name, enabled, json.dumps([
+                         {"type": "strategy", "value": strat},
+                         {"type": "broker",   "value": broker}])))
+    # Refined-book rules → should appear.
+    _rule("NVDA->TVRef",   "NVDA_CAM_BREAKOUT_R4S4_V02_5MIN", "alpaca-paper-2")
+    _rule("HOOD->Kairos",  "HOOD_CAM_BREAKOUT_R4S4_V02_5MIN", "alpaca-paper-3")
+    # A farm-only rule (Paper All) → should NOT appear.
+    _rule("ZZZZ->Farm",    "ZZZZ_CAM_BREAKOUT_R4S4_V02_5MIN", "alpaca-paper-1")
+    # A disabled refined rule → should NOT appear.
+    _rule("MSTR->TVRef",   "MSTR_CAM_BREAKOUT_R4S4_V02_5MIN", "alpaca-paper-2", enabled=0)
+    conn.commit(); conn.close()
+
+    def _fake_db():
+        c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
+    monkeypatch.setattr(a, "get_db", _fake_db)
+    wl = a._pulse_watchlist(limit=18)
+    assert "NVDA" in wl and "HOOD" in wl        # refined-book tickers
+    assert "ZZZZ" not in wl                      # farm-only, excluded
+    assert "MSTR" not in wl                      # disabled rule, excluded
