@@ -119,3 +119,22 @@ def test_endpoint_buckets_and_ticker_profile(_synthetic):
     assert thn["thin_rate"] == 100
     assert thn["total_pnl"] == -100.0
     assert d["by_ticker"][-1]["ticker"] == "FAT"
+
+
+def test_endpoint_threshold_sweep(_synthetic):
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.post("/api/simulate/rvol_breakdown",
+                   json={"accounts": ["2"], "from_date": "2026-07-01",
+                         "to_date": "2026-07-17"}).get_json()
+    sw = {s["min_rvol"]: s for s in d["sweeps"]["short"]}
+    # No gate keeps all 3 shorts; net = -60 -40 +80 = -20.
+    assert sw[0.0]["trades"] == 3
+    assert sw[0.0]["total_pnl"] == -20.0
+    # Require >=1.0x drops the two thin (0.4x) losers, keeps only the 3.0x winner.
+    assert sw[1.0]["trades"] == 1
+    assert sw[1.0]["total_pnl"] == 80.0
+    assert sw[1.0]["pct_book"] == 33            # 1 of 3
+    # The 3.0x cap column removes the >=3.0x winner from the >=1.0x floor row.
+    assert sw[1.0]["with_cap_trades"] == 0
+    assert sw[1.0]["with_cap_pnl"] == 0.0

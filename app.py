@@ -6802,12 +6802,33 @@ def simulate_rvol_breakdown():
         })
     tickers.sort(key=lambda x: (x["avg_rvol"], -x["trades"]))
 
+    # Threshold sweep — for each candidate RVOL floor, what the kept book looks
+    # like, plus the marginal effect of also capping the ≥cap blow-off. Per side,
+    # so shorts and longs can take different cutoffs.
+    _FLOORS = [0.0, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5]
+    _CAP = 3.0
+    def _sweep(subset):
+        total_n = len(subset)
+        out = []
+        for L in _FLOORS:
+            kept     = [r for r in subset if r["rvol"] >= L]
+            kept_cap = [r for r in kept if r["rvol"] < _CAP]
+            s, sc = _stats(kept), _stats(kept_cap)
+            out.append({
+                "min_rvol": L, "trades": s["trades"],
+                "pct_book": round(s["trades"] / total_n * 100) if total_n else 0,
+                "win_rate": s["win_rate"], "total_pnl": s["total_pnl"], "avg_pnl": s["avg_pnl"],
+                "with_cap_trades": sc["trades"], "with_cap_pnl": sc["total_pnl"],
+            })
+        return out
+
     return jsonify({
         "from_date": from_date, "to_date": to_date, "accounts": labels,
-        "lookback": lookback, "breakouts_only": bo_only,
+        "lookback": lookback, "breakouts_only": bo_only, "cap": _CAP,
         "trade_count": len(rows), "unresolved": unresolved,
         "side_counts": {"all": len(rows), "long": len(longs), "short": len(shorts)},
         "by_bucket": {"all": _buckets(rows), "long": _buckets(longs), "short": _buckets(shorts)},
+        "sweeps": {"all": _sweep(rows), "long": _sweep(longs), "short": _sweep(shorts)},
         "by_ticker": tickers,
     })
 
