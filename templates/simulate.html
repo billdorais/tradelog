@@ -1060,6 +1060,24 @@
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
   }
 
+  // Copy-for-Claude: holds the last RVOL result as markdown, written to the clipboard.
+  let _rvolCopy = '';
+  function copyRvol(btn) {
+    if (!_rvolCopy) return;
+    const done = () => { const o = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = o, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(_rvolCopy).then(done).catch(() => _copyFallback(_rvolCopy, done, btn));
+    } else { _copyFallback(_rvolCopy, done, btn); }
+  }
+  function _copyFallback(text, done, btn) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta); done();
+    } catch (e) { btn.textContent = 'Copy failed'; }
+  }
+
   // Relative volume at entry: do thin-volume entries lose? Bucket P&L by RVOL + per-ticker profile.
   async function runRvolBreakdown() {
     const out = document.getElementById('rvolResult');
@@ -1118,9 +1136,29 @@
         + `<th style="text-align:left;padding:5px 12px">Ticker</th><th style="text-align:right;padding:5px 12px">Trades</th><th style="text-align:right;padding:5px 12px">Avg RVOL</th><th style="text-align:right;padding:5px 12px">Min</th><th style="text-align:right;padding:5px 12px" title="% of entries under 1.0× RVOL">Thin %</th><th style="text-align:right;padding:5px 12px">Win %</th><th style="text-align:right;padding:5px 12px">Total P&amp;L</th>`
         + `</tr></thead><tbody>${tk}</tbody></table></div></div>`;
 
+      // Markdown snapshot for the Copy-for-Claude button.
+      const mdHead = `RVOL at entry — ${(d.accounts || []).join(' · ')} · ${d.from_date}→${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''} · ${d.trade_count} resolved${d.unresolved ? ` · ${d.unresolved} unresolved` : ''}`;
+      const mdBucket = (key, title) => {
+        const bs = (d.by_bucket[key] || []).filter(b => b.trades > 0);
+        if (!bs.length) return '';
+        let s = `\n**${title}**\n\n| RVOL bucket | Trades | Win% | Total P&L | Avg/trade |\n|---|--:|--:|--:|--:|\n`;
+        bs.forEach(b => { s += `| ${b.bucket} | ${b.trades} | ${b.win_rate}% | ${money(b.total_pnl)} | ${money(b.avg_pnl)} |\n`; });
+        return s;
+      };
+      const mdTickers = () => {
+        if (!(d.by_ticker || []).length) return '';
+        let s = `\n**Per-ticker (thinnest first)**\n\n| Ticker | Trades | Avg RVOL | Min | Thin% | Win% | Total P&L |\n|---|--:|--:|--:|--:|--:|--:|\n`;
+        d.by_ticker.forEach(t => { s += `| ${t.ticker} | ${t.trades} | ${t.avg_rvol}× | ${t.min_rvol}× | ${t.thin_rate}% | ${t.win_rate}% | ${money(t.total_pnl)} |\n`; });
+        return s;
+      };
+      _rvolCopy = mdHead + '\n' + mdBucket('short', 'Short book') + mdBucket('long', 'Long book')
+        + mdBucket('all', 'All trades') + mdTickers();
+
       out.innerHTML =
-        `<div style="font-size:0.72rem;color:#666;margin-bottom:6px">${(d.accounts || []).join(' · ')} · ${d.from_date} → ${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''} · ${d.trade_count} resolved`
+        `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">`
+        + `<div style="font-size:0.72rem;color:#666">${(d.accounts || []).join(' · ')} · ${d.from_date} → ${d.to_date} · baseline ${d.lookback} bars${d.breakouts_only ? ' · breakouts only' : ''} · ${d.trade_count} resolved`
         + (d.unresolved ? ` · <span style="color:#c98b4b">${d.unresolved} unresolved (no bars / too near open)</span>` : '') + `</div>`
+        + `<button onclick="copyRvol(this)" style="flex:none;background:#1b1f2b;border:1px solid #2a2d3e;color:#9ab7d6;border-radius:6px;padding:4px 10px;font-size:0.72rem;cursor:pointer;white-space:nowrap">📋 Copy for Claude</button></div>`
         + bucketTable('short', 'Short book', '#ef9a9a', d.side_counts.short)
         + bucketTable('long',  'Long book',  '#8fd4a0', d.side_counts.long)
         + bucketTable('all',   'All trades', '#9ab7d6', d.side_counts.all)
