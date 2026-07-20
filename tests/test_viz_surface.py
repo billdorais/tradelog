@@ -104,7 +104,16 @@ def test_price_lines_groups_and_volume(monkeypatch):
     spy = idx[0]
     assert spy["last_price"] == 553.5                       # price series
     assert spy["vol_max"] == 1 and "last_vol" in spy        # volume series present for the toggle
+    assert "rvol" in spy and "rvol_last" in spy             # per-ticker RVOL drives the emphasis
     assert [p["s"] for p in spy["points"]] == ["pre", "pre", "rth", "rth"]
+
+
+def test_series_rvol_peak_and_last():
+    # flat then a 3x spike, then back to baseline: peak=3.0, last≈1.0
+    vols = [100] * 20 + [300, 100]
+    peak, last = a._series_rvol(vols, lookback=20)
+    assert peak == 3.0
+    assert last < 1.5
 
 
 def test_price_timeline_excludes_out_of_window(monkeypatch):

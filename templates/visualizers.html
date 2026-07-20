@@ -46,6 +46,13 @@
   .vlabel b { color:#fff; } .vlabel span { opacity:0.8; margin-left:4px; }
   .vlabel.grp { font-size:0.66rem; letter-spacing:0.16em; font-weight:800; background:none; border:none; }
   .vlabel.open { color:#c9d4ff; }
+  /* RVOL emphasis: <1.5x small/grey → >=3x large/glowing */
+  .vlabel.rv1 { font-size:9px; color:#8b91a3; opacity:0.6; }
+  .vlabel.rv2 { font-size:11px; }
+  .vlabel.rv3 { font-size:13px; color:#ffe08a; border-color:rgba(255,205,130,0.55); }
+  .vlabel.rv3 b { color:#fff5db; }
+  .vlabel.rv4 { font-size:15.5px; color:#fff; border-color:rgba(255,170,220,0.75);
+    box-shadow:0 0 14px rgba(255,120,200,0.45); text-shadow:0 0 10px rgba(255,120,200,0.85); }
 
   #overlay { position:fixed; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
     background:#06070c; color:#8a90a2; font-size:0.9rem; text-align:center; padding:24px; }
@@ -68,7 +75,7 @@
 <div class="legend">
   <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
   <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.66rem">dim = pre-market · grey = future · colour = value height</span>
+  <span style="color:#5b6a85;font-size:0.64rem">grey = RVOL &lt;1.5× · brighter + bigger label = higher relative volume · dim = pre-market</span>
 </div>
 
 <div class="panel">
@@ -162,6 +169,14 @@
     return '' + v;
   }
 
+  const GREY = new THREE.Color(0x565c70);
+  // RVOL → colour saturation: <1.5x greyed out, 1.5x = 75%, >=2x = full.
+  function rvolSat(rvol) {
+    if (rvol < 1.5) return 0.12;
+    if (rvol < 2.0) return 0.75 + (rvol - 1.5) / 0.5 * 0.25;
+    return 1.0;
+  }
+
   function buildLine(s, pal, z) {
     const pts = s.points || []; if (!pts.length) return;
     const isVol = document.getElementById('vizMetric').value === 'volume';
@@ -169,10 +184,12 @@
     let lo = isVol ? (s.vol_min ?? 0) : s.price_min, hi = isVol ? (s.vol_max ?? 1) : s.price_max;
     if (hi === lo) hi = lo + 1;
     const yFor = v => ((v - lo) / (hi - lo)) * BAND - BAND / 2;
+
+    const rvol = s.rvol ?? 0, sat = rvolSat(rvol);
     const verts = [], cols = [];
     for (const pt of pts) {
-      const val = valOf(pt), n = (val - lo) / (hi - lo);
-      const c = pal.lo.clone().lerp(pal.hi, Math.max(0, Math.min(1, n)));   // gradient by height
+      const val = valOf(pt), n = Math.max(0, Math.min(1, (val - lo) / (hi - lo)));
+      const c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, n), sat);     // gradient by height, de-sat by RVOL
       if (pt.s === 'pre') c.multiplyScalar(0.5);                            // pre-market dimmer
       verts.push(xFor(pt.t), yFor(val), z);
       cols.push(c.r, c.g, c.b);
@@ -180,16 +197,20 @@
     const last = pts[pts.length - 1];
     if (last.t < AXIS - 1) { verts.push(xFor(AXIS), yFor(valOf(last)), z); cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b); }
 
+    const lw = rvol < 1.5 ? 1.7 : rvol < 2 ? 2.6 : rvol < 3 ? 3.4 : 4.3;    // hotter = thicker
     const g = new LineGeometry(); g.setPositions(verts); g.setColors(cols);
-    const m = new LineMaterial({ linewidth: 2.6, vertexColors: true, transparent: true });
+    const m = new LineMaterial({ linewidth: lw, vertexColors: true, transparent: true });
     m.resolution.set(innerWidth, innerHeight);
     const line = new Line2(g, m); line.computeLineDistances(); group.add(line);
 
     const mx = xFor(last.t), my = yFor(valOf(last));
-    const mk = new THREE.Mesh(new THREE.SphereGeometry(1.2, 14, 14), new THREE.MeshBasicMaterial({ color: pal.mk }));
+    const mk = new THREE.Mesh(new THREE.SphereGeometry(1.2 + Math.max(0, rvol - 1.5) * 0.5, 14, 14),
+      new THREE.MeshBasicMaterial({ color: GREY.clone().lerp(new THREE.Color(pal.mk), sat) }));
     mk.position.set(mx, my, z); group.add(mk); markers.push(mk);
-    const tag = isVol ? fmtVol(s.last_vol) : '$' + (s.last_price ?? 0).toFixed(2);
-    mkLabel('', `<b>${s.ticker}</b><span>${tag}</span>`, mx + 3, my + 2.5, z);
+
+    const rvClass = rvol < 1.5 ? 'rv1' : rvol < 2 ? 'rv2' : rvol < 3 ? 'rv3' : 'rv4';
+    const tag = isVol ? `${rvol.toFixed(1)}×` : '$' + (s.last_price ?? 0).toFixed(2);
+    mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, mx + 3, my + 2.5, z);
   }
 
   function buildGroup(list, name, pal) {

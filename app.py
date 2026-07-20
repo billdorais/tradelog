@@ -13717,6 +13717,19 @@ def _fetch_intraday_ext(ticker, date_str):
         return []
 
 
+def _series_rvol(vols, lookback=20):
+    """(peak, last) relative volume over a bar sequence — each bar's volume ÷ the
+    mean of the prior `lookback` bars. Drives the visualizer's per-ticker emphasis."""
+    best = last = 0.0
+    for k in range(len(vols)):
+        base = vols[max(0, k - lookback):k]
+        avg = (sum(base) / len(base)) if base else 0.0
+        last = (vols[k] / avg) if avg > 0 else 0.0
+        if last > best:
+            best = last
+    return round(best, 2), round(last, 2)
+
+
 def _price_points(bars, et, ax_start, ax_end, pre_end):
     """1-min closes on the [ax_start, ax_end) minute-of-day axis, tagged pre/rth."""
     import datetime as _dtp
@@ -13837,13 +13850,15 @@ def api_viz_price_lines():
         pts = series.get(t) or []
         prices = [p["p"] for p in pts]
         vols   = [p["v"] for p in pts]
+        rvol_peak, rvol_last = _series_rvol(vols)
         return {"ticker": t, "points": pts,
                 "price_min": round(min(prices), 4) if prices else None,
                 "price_max": round(max(prices), 4) if prices else None,
                 "last_price": pts[-1]["p"] if pts else None,
                 "vol_min": min(vols) if vols else None,
                 "vol_max": max(vols) if vols else None,
-                "last_vol": pts[-1]["v"] if pts else None}
+                "last_vol": pts[-1]["v"] if pts else None,
+                "rvol": rvol_peak, "rvol_last": rvol_last}   # peak drives the emphasis
 
     grp_index   = [_pack(t) for t in indexes if series.get(t)]
     grp_refined = [_pack(t) for t in refined if series.get(t) and t not in indexes]
