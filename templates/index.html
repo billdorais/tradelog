@@ -720,6 +720,7 @@
       <thead><tr>
         <th>Symbol</th><th>Broker</th><th>Strategy</th><th style="width:420px">Price Range</th><th>Qty</th>
         <th>Unrealized P&amp;L</th><th style="width:60px">Held</th>
+        <th style="width:118px;text-align:right" title="Manually tighten the stop or flatten the position — bypasses the routing rule">Stop</th>
       </tr></thead>
       <tbody id="openPositionsTbody"></tbody>
     </table>
@@ -3346,6 +3347,62 @@
       }
     }
 
+    // Session-cached webhook token so per-row Stop actions don't prompt on
+    // every click. Cleared when the tab closes.
+    function _getWebhookToken() {
+      let t = sessionStorage.getItem('webhook_token') || '';
+      if (!t) {
+        t = prompt('Enter your webhook token (cached for this tab):') || '';
+        if (t) sessionStorage.setItem('webhook_token', t);
+      }
+      return t;
+    }
+
+    async function pullStop(symbol, account, mode) {
+      const label = mode === 'breakeven' ? 'Move stop to BREAKEVEN' : 'Move stop HALFWAY to price';
+      if (!confirm(`${label} on ${symbol} (acct ${account})?`)) return;
+      const token = _getWebhookToken();
+      if (!token) return;
+      try {
+        const url = `/api/alpaca/pull_stop/${encodeURIComponent(symbol)}`
+                  + `?account=${account}&token=${encodeURIComponent(token)}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+        const d = await res.json();
+        if (!res.ok || !d.success) {
+          alert(`Stop pull failed: ${d.error || res.status}`);
+          return;
+        }
+        const prev = d.prev_stop_price != null ? `$${d.prev_stop_price.toFixed(2)}` : 'n/a';
+        alert(`✓ ${symbol} stop moved: ${prev} → $${d.new_stop_price.toFixed(2)} (${mode})`);
+        loadOpenPositionsTable();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    async function closePosition(symbol, account) {
+      if (!confirm(`Close ${symbol} position on acct ${account}? Cannot be undone.`)) return;
+      const token = _getWebhookToken();
+      if (!token) return;
+      try {
+        const url = `/api/alpaca/close/${encodeURIComponent(symbol)}`
+                  + `?account=${account}&token=${encodeURIComponent(token)}`;
+        const res = await fetch(url, { method: 'POST' });
+        const d = await res.json();
+        if (!res.ok || !d.success) {
+          alert(`Close failed: ${d.error || res.status}`);
+          return;
+        }
+        loadOpenPositionsTable();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
     const _DISMISS_KEY = 'alpaca_dismissed_opens';
     function _loadDismissed() {
       try { return new Set(JSON.parse(localStorage.getItem(_DISMISS_KEY) || '[]')); }
@@ -4076,6 +4133,23 @@
           const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
           const brokerLabel = ({ 'alpaca': 'TV Farm', 'alpaca2': 'TV Refined', 'alpaca3': 'Kairos Refined',
                                  'alpaca4': 'Crew Paper', 'alpaca5': 'Kairos Farm' })[p.broker] || escHtml(p.broker);
+          // Per-row Stop actions: Break-Even / Halfway / Close. Pass the broker
+          // account and symbol so the handler routes to the right alpaca acct.
+          const _acctForBroker = { alpaca: 1, alpaca2: 2, alpaca3: 3, alpaca4: 4, alpaca5: 5 };
+          const _acct = _acctForBroker[p.broker] || 1;
+          const _sym  = escHtml((p.symbol || '').toUpperCase());
+          const actionsCell = `
+            <div style="display:flex;gap:3px;justify-content:flex-end">
+              <button onclick="pullStop('${_sym}', ${_acct}, 'breakeven')"
+                title="Move stop to entry price (breakeven)"
+                style="background:transparent;border:1px solid #2a4a30;color:#7FE098;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">BE</button>
+              <button onclick="pullStop('${_sym}', ${_acct}, 'halfway')"
+                title="Move stop halfway between current stop and current price"
+                style="background:transparent;border:1px solid #4a4020;color:#F2C07A;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">½</button>
+              <button onclick="closePosition('${_sym}', ${_acct})"
+                title="Close position (broker close_position + market-order fallback)"
+                style="background:transparent;border:1px solid #4a2020;color:#ef5350;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">✕</button>
+            </div>`;
           return `<tr${rowCls}>
             <td style="font-weight:600;color:#ccc">${animal}${kairosBolt}${escHtml(p.symbol)}</td>
             <td style="color:#666;font-size:0.75rem">${brokerLabel}</td>
@@ -4084,6 +4158,7 @@
             <td style="color:#aaa">${escHtml(p.qty)}</td>
             <td style="color:${color};font-weight:600">${sign}$${upnl.toFixed(2)}${pctTag}</td>
             <td>${heldCell}</td>
+            <td>${actionsCell}</td>
           </tr>`;
         }).join('');
       } catch (e) { /* risk endpoint not available */ }

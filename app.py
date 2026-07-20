@@ -3566,6 +3566,96 @@ def broker_close_all():
     return jsonify({"closed": closed_count, "detail": results, "errors": errors})
 
 
+@app.route("/api/alpaca/pull_stop/<symbol>", methods=["POST"])
+def alpaca_pull_stop(symbol):
+    """Move the exit stop on an open position without editing the routing
+    rule. Body: {"mode": "breakeven" | "halfway"[, "price": <explicit stop>]}.
+
+    - breakeven: new stop = position's avg_entry_price
+    - halfway:   new stop = midpoint between current stop and current price
+                 (tightens the stop toward price; same formula either side)
+    - price:     override — use this exact stop price
+
+    ?account=N picks the alpaca account (defaults 1). Rejects moves that
+    would immediately trigger (stop on the wrong side of price) via the
+    broker's own guard."""
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    account = request.args.get("account") or "1"
+    broker, broker_tag, _label, _ = _alpaca_account_ctx(account)
+    if broker is None:
+        return jsonify({"success": False, "error": f"Alpaca {_label} not configured"}), 400
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "").lower().strip()
+    sym  = symbol.upper()
+
+    # Snapshot the position so we can compute entry / current / current stop.
+    try:
+        broker._ensure_client()
+        pos = broker._trading.get_open_position(sym)
+    except Exception as _pe:
+        return jsonify({"success": False, "error": f"no open position for {sym}: {_pe}"}), 400
+    try:
+        entry_px = float(pos.avg_entry_price or 0)
+        cur_px   = float(pos.current_price   or 0)
+        qty_val  = float(pos.qty or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "position fields unparseable"}), 400
+    is_long = qty_val > 0
+
+    # Resolve target stop price.
+    new_stop = None
+    if data.get("price") is not None:
+        try:    new_stop = float(data["price"])
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "price must be numeric"}), 400
+    elif mode == "breakeven":
+        if entry_px <= 0:
+            return jsonify({"success": False, "error": "entry price unknown — cannot compute breakeven"}), 400
+        new_stop = entry_px
+    elif mode == "halfway":
+        # Find the current stop (from an open stop-family order for this symbol).
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums   import QueryOrderStatus
+            _oreq   = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[sym])
+            _orders = broker._trading.get_orders(filter=_oreq)
+        except Exception as _oe:
+            return jsonify({"success": False, "error": f"could not read open orders: {_oe}"}), 400
+        cur_stop = None
+        for o in _orders:
+            ot = str(getattr(o, "order_type", "")).lower()
+            if not any(k in ot for k in ("stop", "trailing")):
+                continue
+            for attr in ("stop_price", "trail_price", "hwm"):
+                try:
+                    v = getattr(o, attr, None)
+                    if v is not None:
+                        cur_stop = float(v); break
+                except Exception:
+                    pass
+            if cur_stop is not None:
+                break
+        if cur_stop is None:
+            return jsonify({"success": False,
+                            "error": "no existing stop order to compute halfway from"}), 400
+        if cur_px <= 0:
+            return jsonify({"success": False, "error": "current price unknown"}), 400
+        # Midpoint between current stop and current price — same formula both sides.
+        new_stop = round((cur_stop + cur_px) / 2, 4)
+    else:
+        return jsonify({"success": False,
+                        "error": "mode required: 'breakeven' | 'halfway' (or pass 'price')"}), 400
+
+    result = broker.replace_stop(sym, new_stop)
+    if result.get("success"):
+        log.info("Manual stop pull: %s [%s] mode=%s → stop=%.4f",
+                 sym, broker_tag, mode or "price", result.get("new_stop_price"))
+        return jsonify({**result, "mode": mode or "price"})
+    return jsonify(result), 400
+
+
 @app.route("/api/alpaca/close/<symbol>", methods=["POST"])
 def alpaca_close_position(symbol):
     """Manually close a single Alpaca position by symbol. Pass ?account=2 or

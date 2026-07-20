@@ -190,6 +190,113 @@ class AlpacaBroker:
                 return last_order
         return last_order
 
+    def replace_stop(self, ticker, new_stop_price):
+        """Cancel any existing open stop / trailing-stop orders for `ticker`
+        and submit a fresh hard StopOrderRequest at `new_stop_price`. Used by
+        the dashboard's Pull-Stop-to-Breakeven and Halfway-Trail buttons so
+        the user can tighten a stop mid-trade without editing the routing rule.
+
+        Returns dict {success, symbol, side, qty, prev_stop_price,
+        new_stop_price, cancelled_ids, order_id}. On error returns
+        {success:False, error}."""
+        from alpaca.trading.requests import GetOrdersRequest, StopOrderRequest
+        from alpaca.trading.enums   import QueryOrderStatus, OrderSide, TimeInForce
+        self._ensure_client()
+        sym = ticker.upper()
+
+        # 1) Current position — we need side + qty to submit the exit stop.
+        try:
+            pos = self._trading.get_open_position(sym)
+        except Exception as _pe:
+            return {"success": False, "error": f"no open position for {sym}: {_pe}"}
+        qty = abs(float(pos.qty or 0))
+        if qty <= 0:
+            return {"success": False, "error": f"{sym} qty is 0 — nothing to protect"}
+        is_long   = float(pos.qty) > 0
+        exit_side = OrderSide.SELL if is_long else OrderSide.BUY
+
+        # 2) Sanity-check the requested stop is on the right side of price so
+        #    we don't accidentally submit an instantly-triggering stop.
+        try:    cur_px = float(pos.current_price or 0)
+        except (TypeError, ValueError): cur_px = 0.0
+        _np = float(new_stop_price)
+        if cur_px > 0:
+            if is_long and _np >= cur_px:
+                return {"success": False,
+                        "error": f"stop {_np:.4f} at/above current {cur_px:.4f} for LONG — would trigger immediately"}
+            if not is_long and _np <= cur_px:
+                return {"success": False,
+                        "error": f"stop {_np:.4f} at/below current {cur_px:.4f} for SHORT — would trigger immediately"}
+
+        # 3) Cancel every open stop-family order for this symbol. Read the
+        #    previous stop price if we can find it, so the caller can log the
+        #    move. Order types considered stops: 'stop', 'stop_limit',
+        #    'trailing_stop'.
+        prev_stop_price = None
+        cancelled_ids   = []
+        try:
+            open_req    = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[sym])
+            open_orders = self._trading.get_orders(filter=open_req)
+        except Exception as _oe:
+            log.warning("replace_stop %s: get_orders failed: %s", sym, _oe)
+            open_orders = []
+        for o in open_orders:
+            ot = str(getattr(o, "order_type", "")).lower()
+            if not any(k in ot for k in ("stop", "trailing")):
+                continue
+            # Best-effort read of the current stop level for logging.
+            for attr in ("stop_price", "trail_price", "hwm"):
+                try:
+                    v = getattr(o, attr, None)
+                    if v is not None:
+                        prev_stop_price = float(v)
+                        break
+                except Exception:
+                    pass
+            try:
+                self._trading.cancel_order_by_id(o.id)
+                cancelled_ids.append(str(o.id))
+                log.info("replace_stop %s: cancelled prior %s order %s (stop=%s)",
+                         sym, ot, o.id, prev_stop_price)
+            except Exception as _ce:
+                log.warning("replace_stop %s: cancel order %s failed: %s", sym, o.id, _ce)
+
+        # Give Alpaca a beat to release the qty from held_for_orders. If we
+        # skip this, the fresh StopOrderRequest below can be rejected as
+        # 'insufficient qty available' even though we just cancelled the stop.
+        if cancelled_ids:
+            time.sleep(0.4)
+
+        # 4) Submit the replacement stop.
+        try:
+            req = StopOrderRequest(
+                symbol=sym, qty=qty, side=exit_side,
+                time_in_force=TimeInForce.GTC,
+                stop_price=round(_np, 4),
+            )
+            order = self._trading.submit_order(req)
+            self._invalidate_pos_cache()
+            log.info("replace_stop %s: %s qty=%s new_stop=%.4f (prev=%s) → id=%s",
+                     sym, exit_side.value, qty, _np,
+                     f"{prev_stop_price:.4f}" if prev_stop_price is not None else "n/a",
+                     order.id)
+            return {
+                "success":         True,
+                "symbol":          sym,
+                "side":            "long" if is_long else "short",
+                "qty":             qty,
+                "prev_stop_price": prev_stop_price,
+                "new_stop_price":  round(_np, 4),
+                "current_price":   cur_px or None,
+                "cancelled_ids":   cancelled_ids,
+                "order_id":        str(order.id),
+                "status":          str(order.status),
+            }
+        except Exception as e:
+            log.error("replace_stop %s: submit_order failed: %s", sym, e)
+            return {"success": False, "error": str(e),
+                    "cancelled_ids": cancelled_ids, "prev_stop_price": prev_stop_price}
+
     def _ensure_client(self):
         if self._trading is not None:
             return
