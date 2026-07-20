@@ -25,7 +25,7 @@ def _pulse(monkeypatch):
             "AAPL": 1.2, "GLD": None}                # warming / no-data
     monkeypatch.setattr(a, "_live_rvol", lambda t, lookback=20, now_dt=None: vals.get(t.upper()))
     monkeypatch.setattr(a, "_pulse_watchlist",
-                        lambda limit=18: ["NVDA", "TSLA", "UNH", "AAPL", "GLD"])
+                        lambda limit=18, include_indexes=False: ["NVDA", "TSLA", "UNH", "AAPL", "GLD"])
     return vals
 
 
@@ -52,6 +52,9 @@ def test_market_pulse_aggregate(_pulse):
     assert d["market_pulse"] == 1.7
     assert d["pulse_label"] == "Active"
     assert [r["ticker"] for r in d["indexes"]] == ["SPY", "QQQ", "IWM"]
+    # refined_count reflects the watchlist (fixture has 5, none are indexes here)
+    assert d["refined_count"] == 5
+    assert d["refined_index_count"] == 0
 
 
 def test_watch_sorted_hottest_first_nodata_last(_pulse):
@@ -92,6 +95,15 @@ def test_watchlist_is_the_refined_books_tickers(monkeypatch, tmp_path):
     _rule("MSTR->TVRef",   "MSTR_CAM_BREAKOUT_R4S4_V02_5MIN", "alpaca-paper-2", enabled=0)
     conn.commit(); conn.close()
 
+    # A refined rule on an index ticker (SPY) → excluded from tiles, but counted
+    # when include_indexes=True (it's shown as a gauge, not a tile).
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
+                 ("SPY->TVRef", json.dumps([
+                     {"type": "strategy", "value": "SPY_CAM_BREAKOUT_R4S4_V02_5MIN"},
+                     {"type": "broker",   "value": "alpaca-paper-2"}])))
+    conn.commit(); conn.close()
+
     def _fake_db():
         c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
     monkeypatch.setattr(a, "get_db", _fake_db)
@@ -99,3 +111,6 @@ def test_watchlist_is_the_refined_books_tickers(monkeypatch, tmp_path):
     assert "NVDA" in wl and "HOOD" in wl        # refined-book tickers
     assert "ZZZZ" not in wl                      # farm-only, excluded
     assert "MSTR" not in wl                      # disabled rule, excluded
+    assert "SPY" not in wl                       # index → not a tile by default
+    # ...but include_indexes counts it (shown as a gauge, part of the honest total).
+    assert "SPY" in a._pulse_watchlist(limit=18, include_indexes=True)

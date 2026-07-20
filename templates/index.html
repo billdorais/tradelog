@@ -568,7 +568,7 @@
   <div id="rvolPulse" title="Live relative volume (SIP tape). Indexes gauge market participation; tiles are the refined books' tickers (TV Refined + Kairos Refined) with each name's current entry-bar RVOL, zoned against the gate band — ★ in the 1.5–3.0× sweet spot, ⛔ blow-off, dim = thin. Refreshes ~45s.">
     <div class="rp-head">
       <span class="rp-title">◆ RVOL PULSE</span>
-      <span style="font-size:0.62rem;color:#555;font-weight:400">refined books</span>
+      <span id="rpUniverse" style="font-size:0.62rem;color:#555;font-weight:400">refined books</span>
       <span class="rp-pulse" id="rpPulse">—</span>
       <span class="rp-idx" id="rpIndexes"></span>
       <span id="rpGate" style="margin-left:auto;font-size:0.66rem;color:#555"></span>
@@ -3748,6 +3748,12 @@
       if (!tilesEl) return;
       try {
         const d = await fetch('/api/rvol/pulse').then(r => r.json());
+        // Universe label: total refined tickers (indexes counted, shown as gauges).
+        const uni = document.getElementById('rpUniverse');
+        if (uni && d.refined_count != null) {
+          uni.textContent = `refined books · ${d.refined_count} tickers`
+            + (d.refined_index_count ? ` (${d.refined_index_count} idx)` : '');
+        }
         // Market closed → clean "closed" state instead of a wall of dashes.
         if (d.market_open === false && d.market_pulse == null) {
           document.getElementById('rpPulse').innerHTML =
@@ -3758,7 +3764,9 @@
           document.getElementById('rpGate').textContent = g0.enabled
             ? `gate ON · ≥${g0.min}× · resumes at the open` : `gate off · resumes at the open`;
           document.getElementById('rpTiles').innerHTML =
-            `<span style="color:#555;font-size:0.75rem">🌙 Market closed — live volume resumes at the next open (${(d.watch || []).length} refined tickers watched).</span>`;
+            `<span style="color:#555;font-size:0.75rem">🌙 Market closed — live volume resumes at the next open`
+            + ` (${d.refined_count ?? (d.watch || []).length} refined tickers`
+            + (d.refined_index_count ? `, ${d.refined_index_count} shown as index gauges` : '') + `).</span>`;
           return;
         }
         // Market pulse label + aggregate

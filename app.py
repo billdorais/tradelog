@@ -13481,15 +13481,19 @@ def _pulse_strat_ticker(val):
     u = (val or "").upper(); i = u.find("_CAM_")
     return u[:i] if i > 0 else None
 
-def _pulse_watchlist(limit=18):
+def _pulse_watchlist(limit=18, include_indexes=False):
     """Tickers the RVOL gate actually applies to: the distinct symbols of ENABLED
     routing rules targeting the refined books (TV Refined / Kairos Refined), so the
     Pulse is a true preview of what those books would trade. Falls back to
-    recently-traded tickers, then a default, if none resolve."""
+    recently-traded tickers, then a default, if none resolve. `include_indexes`
+    keeps SPY/QQQ/IWM in the list (for an honest total count); the tile display drops
+    them since they're already shown as the index gauges."""
     _default = ["NVDA", "TSLA", "AAPL", "SMH", "HOOD", "AMZN", "META", "PLTR"]
 
     def _keep(t, seen):
-        return t and t not in seen and t.isalpha() and len(t) <= 5 and t not in _PULSE_INDEXES
+        if not (t and t not in seen and t.isalpha() and len(t) <= 5):
+            return False
+        return include_indexes or t not in _PULSE_INDEXES
 
     # 1) Refined-book tickers from the router (the real "refined stocks").
     try:
@@ -13543,8 +13547,14 @@ def api_rvol_pulse():
     import concurrent.futures as _cf
     import datetime as _dtp
     _req = (request.args.get("tickers") or "").strip()
-    watch = ([t.strip().upper() for t in _req.split(",") if t.strip()] if _req
-             else _pulse_watchlist(limit=18))
+    if _req:
+        watch = [t.strip().upper() for t in _req.split(",") if t.strip()]
+        refined_count, refined_index_count = len(watch), 0
+    else:
+        _refined_all = _pulse_watchlist(limit=24, include_indexes=True)
+        refined_index_count = sum(1 for t in _refined_all if t in _PULSE_INDEXES)
+        watch = [t for t in _refined_all if t not in _PULSE_INDEXES][:18]
+        refined_count = len(_refined_all)   # distinct refined tickers, indexes included
     seen, universe = set(), []
     for t in _PULSE_INDEXES + watch:
         if t and t not in seen:
@@ -13594,6 +13604,7 @@ def api_rvol_pulse():
         "gate": {"enabled": RVOL_GATE_ENABLED, "min": RVOL_GATE_MIN,
                  "short_cap": RVOL_GATE_SHORT_CAP, "lookback": lookback},
         "indexes": idx_rows, "watch": watch_rows,
+        "refined_count": refined_count, "refined_index_count": refined_index_count,
         "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
     })
 
