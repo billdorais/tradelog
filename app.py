@@ -13730,8 +13730,10 @@ def _series_rvol(vols, lookback=20):
     return round(best, 2), round(last, 2)
 
 
-def _price_points(bars, et, ax_start, ax_end, pre_end):
-    """1-min closes on the [ax_start, ax_end) minute-of-day axis, tagged pre/rth."""
+def _price_points(bars, et, ax_start, ax_end, pre_end, lookback=20):
+    """1-min closes on the [ax_start, ax_end) minute-of-day axis, tagged pre/rth,
+    each carrying price (p), volume (v) and per-minute relative volume (r =
+    bar volume ÷ mean of the prior `lookback` bars)."""
     import datetime as _dtp
     pts = []
     for b in bars:
@@ -13744,6 +13746,11 @@ def _price_points(bars, et, ax_start, ax_end, pre_end):
             pts.append({"t": mod - ax_start, "p": round(float(b.close), 4),
                         "v": round(float(getattr(b, "volume", 0) or 0)),
                         "s": "rth" if pre_end <= mod < ax_end else "pre"})
+    vols = [p["v"] for p in pts]
+    for k, p in enumerate(pts):
+        base = vols[max(0, k - lookback):k]
+        avg = (sum(base) / len(base)) if base else 0.0
+        p["r"] = round(vols[k] / avg, 3) if avg > 0 else 0.0
     return pts
 
 
@@ -13850,7 +13857,9 @@ def api_viz_price_lines():
         pts = series.get(t) or []
         prices = [p["p"] for p in pts]
         vols   = [p["v"] for p in pts]
-        rvol_peak, rvol_last = _series_rvol(vols)
+        rs     = [p["r"] for p in pts]
+        rvol_peak = round(max(rs), 2) if rs else 0.0
+        rvol_last = round(rs[-1], 2) if rs else 0.0
         return {"ticker": t, "points": pts,
                 "price_min": round(min(prices), 4) if prices else None,
                 "price_max": round(max(prices), 4) if prices else None,

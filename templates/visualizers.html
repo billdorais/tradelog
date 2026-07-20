@@ -75,7 +75,7 @@
 <div class="legend">
   <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
   <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.64rem">grey = RVOL &lt;1.5× · brighter + bigger label = higher relative volume · dim = pre-market</span>
+  <span style="color:#5b6a85;font-size:0.64rem">height = RVOL (ridges cross the 1.5/2/3× planes) · grey = &lt;1.5× · dim = pre-market</span>
 </div>
 
 <div class="panel">
@@ -88,8 +88,9 @@
   <div class="row" style="margin-top:10px">
     <label class="toggle">height:
       <select id="vizMetric" style="background:#0c0f16;border:1px solid #2a3050;color:#cfe0ff;border-radius:6px;padding:4px 7px;font-size:0.78rem;font-family:inherit;cursor:pointer">
+        <option value="rvol" selected>RVOL</option>
+        <option value="volume">volume</option>
         <option value="price">price</option>
-        <option value="volume" selected>volume</option>
       </select></label>
     <label class="toggle"><input type="checkbox" id="vizLive" checked> live</label>
     <label class="toggle"><input type="checkbox" id="vizRotate"> auto-rotate</label>
@@ -142,7 +143,7 @@
     refined: { lo: new THREE.Color(0xfbbf24), hi: new THREE.Color(0xf472b6), mk: 0xffc4e6, back: false },
   };
   const COL_FUT = new THREE.Color(0x39415e);
-  let group = null, markers = [];
+  let group = null, markers = [], rvolMax = 3.5;   // shared RVOL height scale
 
   const xFor = t => (t / AXIS) * WIDTH - WIDTH / 2;
 
@@ -179,9 +180,14 @@
 
   function buildLine(s, pal, z) {
     const pts = s.points || []; if (!pts.length) return;
-    const isVol = document.getElementById('vizMetric').value === 'volume';
-    const valOf = pt => isVol ? pt.v : pt.p;
-    let lo = isVol ? (s.vol_min ?? 0) : s.price_min, hi = isVol ? (s.vol_max ?? 1) : s.price_max;
+    const metric = document.getElementById('vizMetric').value;
+    const valOf = pt => metric === 'rvol' ? (pt.r ?? 0) : metric === 'volume' ? pt.v : pt.p;
+    // RVOL uses a SHARED 0→rvolMax scale (so 1.5/2/3× line up across tickers);
+    // price/volume normalise per-ticker.
+    let lo, hi;
+    if (metric === 'rvol')        { lo = 0; hi = rvolMax; }
+    else if (metric === 'volume') { lo = s.vol_min ?? 0; hi = s.vol_max ?? 1; }
+    else                          { lo = s.price_min; hi = s.price_max; }
     if (hi === lo) hi = lo + 1;
     const yFor = v => ((v - lo) / (hi - lo)) * BAND - BAND / 2;
 
@@ -209,7 +215,7 @@
     mk.position.set(mx, my, z); group.add(mk); markers.push(mk);
 
     const rvClass = rvol < 1.5 ? 'rv1' : rvol < 2 ? 'rv2' : rvol < 3 ? 'rv3' : 'rv4';
-    const tag = isVol ? `${rvol.toFixed(1)}×` : '$' + (s.last_price ?? 0).toFixed(2);
+    const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${rvol.toFixed(1)}×`;
     mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, mx + 3, my + 2.5, z);
   }
 
@@ -233,11 +239,29 @@
     mkLabel('open', '9:30 open', xo, BAND / 2 + 6, 4);
   }
 
+  function buildRefPlanes() {
+    // Faint horizontal reference planes at the 1.5 / 2 / 3× RVOL gate levels.
+    const yFor = r => (r / rvolMax) * BAND - BAND / 2;
+    const levels = [[1.5, 0x2b70b0], [2.0, 0xb08a2b], [3.0, 0xb02b6a]];
+    for (const [r, col] of levels) {
+      if (r > rvolMax) continue;
+      const y = yFor(r);
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(WIDTH, 210),
+        new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.06, side: THREE.DoubleSide }));
+      plane.rotation.x = -Math.PI / 2; plane.position.set(0, y, 4); group.add(plane);
+      mkLabel('open', `${r}×`, -WIDTH / 2 - 8, y, 4);
+    }
+  }
+
   function build(d) {
     clearScene();
     const gi = (d.groups && d.groups.index) || [], gr = (d.groups && d.groups.refined) || [];
     if (!gi.length && !gr.length) { overlay.className = ''; overlay.textContent = 'No price data for this session yet.'; overlay.style.display = 'flex'; return; }
+    // Shared RVOL scale from the hottest ticker (headroom above 3× so peaks read).
+    const allPeaks = [...gi, ...gr].map(s => s.rvol || 0);
+    rvolMax = Math.max(3.5, Math.ceil(Math.max(0, ...allPeaks) * 1.1));
     buildDecor();
+    if (document.getElementById('vizMetric').value === 'rvol') buildRefPlanes();
     buildGroup(gi, 'INDEXES', PAL.index);
     buildGroup(gr, 'REFINED', PAL.refined);
     const showLabels = document.getElementById('vizLabels').checked;
