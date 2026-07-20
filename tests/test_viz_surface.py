@@ -11,10 +11,12 @@ for _k in ("ALPACA_KEY", "COINBASE_KEY", "IB_HOST", "IB_HOST_LIVE", "DATABASE_UR
 
 import datetime as dt
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import app as a
 
 UTC = dt.timezone.utc
+ET = ZoneInfo("America/New_York")
 
 
 def _bars(n=21, spike_at=20, vol=100, spike=300):
@@ -63,3 +65,46 @@ def test_surface_endpoint_drops_tickers_without_data(monkeypatch):
     with a.app.test_client() as c:
         d = c.get("/api/viz/rvol_surface?tickers=AAA,BBB&date=2026-07-10").get_json()
     assert d["tickers"] == ["AAA"] and d["rows"] == 1
+
+
+# ── Price timeline (live 3D price line, pre-market + RTH) ────────────────────
+
+def _pbars(date_str):
+    day = dt.date.fromisoformat(date_str)
+    def bar(h, m, close):
+        return SimpleNamespace(timestamp=dt.datetime(day.year, day.month, day.day, h, m, tzinfo=ET),
+                               close=float(close), volume=1.0, high=close, low=close, open=close)
+    # two pre-market (08:00, 09:00 ET) + two RTH (09:30, 10:00 ET)
+    return [bar(8, 0, 550.0), bar(9, 0, 551.0), bar(9, 30, 552.0), bar(10, 0, 553.5)]
+
+
+def test_price_timeline_sessions_and_axis(monkeypatch):
+    monkeypatch.setattr(a, "_fetch_intraday_ext", lambda tk, ds: _pbars(ds))
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/viz/price_timeline?ticker=SPY&date=2026-07-10").get_json()
+    assert d["ticker"] == "SPY" and d["date"] == "2026-07-10"
+    assert d["axis_minutes"] == 720 and d["pre_end_t"] == 330   # 04:00→16:00, 09:30 open
+    pts = d["points"]
+    assert [p["s"] for p in pts] == ["pre", "pre", "rth", "rth"]
+    assert [p["t"] for p in pts] == [240, 300, 330, 360]        # minutes past 04:00
+    assert d["last_price"] == 553.5
+    assert d["price_min"] == 550.0 and d["price_max"] == 553.5
+    assert d["live"] is False                                   # a past date is static
+
+
+def test_price_timeline_excludes_out_of_window(monkeypatch):
+    day = "2026-07-10"
+    def _mix(tk, ds):
+        base = _pbars(ds)
+        d = dt.date.fromisoformat(ds)
+        # 03:00 ET (before the 04:00 axis) must be dropped.
+        early = SimpleNamespace(timestamp=dt.datetime(d.year, d.month, d.day, 3, 0, tzinfo=ET),
+                                close=549.0, volume=1.0, high=549.0, low=549.0, open=549.0)
+        return [early] + base
+    monkeypatch.setattr(a, "_fetch_intraday_ext", _mix)
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/viz/price_timeline?ticker=SPY&date=%s" % day).get_json()
+    assert len(d["points"]) == 4                                # the 03:00 bar is excluded
+    assert d["points"][0]["t"] == 240

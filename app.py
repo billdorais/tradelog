@@ -13690,6 +13690,99 @@ def api_viz_rvol_surface():
                     "max_rvol": round(mx, 3), "lookback": lookback})
 
 
+def _fetch_intraday_ext(ticker, date_str):
+    """1-min bars for a session INCLUDING pre-market: 04:00–16:00 ET. SIP returns
+    extended-hours bars (the standard _fetch_day_bars starts at 08:00 UTC / 4am ET's
+    winter offset and misses early pre-market). DST-safe via ET-aware bounds."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        try:    et = ZoneInfo("America/New_York")
+        except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+        day   = _dt.date.fromisoformat(date_str)
+        start = _dt.datetime(day.year, day.month, day.day, 4,  0, tzinfo=et)
+        end   = _dt.datetime(day.year, day.month, day.day, 16, 0, tzinfo=et)
+        client = StockHistoricalDataClient(api_key=alpaca_broker._key,
+                                           secret_key=alpaca_broker._secret)
+        req = StockBarsRequest(symbol_or_symbols=ticker.upper(),
+                               timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+                               start=start, end=end, feed=_alpaca_data_feed())
+        return sorted(client.get_stock_bars(req)[ticker.upper()], key=lambda b: b.timestamp)
+    except Exception as _e:
+        log.debug("fetch_intraday_ext %s %s: %s", ticker, date_str, _e)
+        return []
+
+
+@app.route("/api/viz/price_timeline")
+def api_viz_price_timeline():
+    """Live 3D price-timeline data for one ticker: the day's 1-min closes laid on a
+    fixed 04:00→16:00 ET axis (720 slots), each tagged pre-market vs RTH, up to now.
+    Defaults to today when it's a live session (so you see the pre-market forming),
+    else the most recent session. ?ticker=SPY, ?date=YYYY-MM-DD."""
+    import datetime as _dtp
+    ticker = (request.args.get("ticker") or "SPY").upper()
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dtp.timezone(_dtp.timedelta(hours=-4))
+    now_et = _dtp.datetime.now(et)
+    AX_START, AX_END = 4 * 60, 16 * 60          # minutes-of-day: 04:00 → 16:00
+    PRE_END = 9 * 60 + 30                        # 09:30 open
+
+    date_str = (request.args.get("date") or "").strip()
+    bars, live = [], False
+    if date_str:
+        bars = _fetch_intraday_ext(ticker, date_str)
+        live = (date_str == now_et.date().isoformat())
+    else:
+        cand = now_et.date()
+        for _ in range(8):                       # today first, else walk back to a real session
+            if cand.weekday() < 5:
+                bars = _fetch_intraday_ext(ticker, cand.isoformat())
+                if bars:
+                    date_str = cand.isoformat(); live = (cand == now_et.date()); break
+            cand -= _dtp.timedelta(days=1)
+        if not date_str:
+            date_str = now_et.date().isoformat()
+
+    points = []
+    for b in bars:
+        ts = b.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dtp.timezone.utc)
+        te  = ts.astimezone(et)
+        mod = te.hour * 60 + te.minute
+        if AX_START <= mod < AX_END:
+            points.append({"t": mod - AX_START, "p": round(float(b.close), 4),
+                           "s": "rth" if PRE_END <= mod < AX_END else "pre"})
+
+    now_mod = now_et.hour * 60 + now_et.minute
+    if live:
+        now_t = max(0, min(AX_END - AX_START, now_mod - AX_START))
+        phase = ("pre"  if AX_START <= now_mod < PRE_END else
+                 "rth"  if PRE_END <= now_mod < AX_END else
+                 "post" if AX_END <= now_mod < 20 * 60 else "closed")
+    else:
+        now_t = points[-1]["t"] if points else 0
+        phase = "closed"
+
+    prices = [pt["p"] for pt in points]
+    return jsonify({
+        "ticker": ticker, "date": date_str, "live": live, "phase": phase,
+        "now_et": now_et.strftime("%H:%M"),
+        "axis_minutes": AX_END - AX_START,       # 720
+        "pre_end_t": PRE_END - AX_START,         # 330 (09:30)
+        "rth_end_t": AX_END - AX_START,          # 720 (16:00)
+        "now_t": now_t, "points": points,
+        "price_min": round(min(prices), 4) if prices else None,
+        "price_max": round(max(prices), 4) if prices else None,
+        "last_price": points[-1]["p"] if points else None,
+        "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
+    })
+
+
 # ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────
 # For each closed Refined round-trip, fetch 1-min bars between entry and exit,
 # compute the Maximum Favorable Excursion (how far it ran in your favor), then
