@@ -73,9 +73,9 @@
 </div>
 
 <div class="legend">
-  <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
-  <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.64rem">phases: <span style="color:#7b83a3">pre</span> · rth · <span style="color:#b388ff">post</span> — height = RVOL · tag = current RVOL × (matches 1.5× / 2× / 3× gate lines)</span>
+  <span><i style="background:linear-gradient(90deg,#3a6ea5,#66d99c,#f5d453,#f59e4a,#ef4a5c)"></i>RVOL heat: 0→3× · red hits the blowoff gate</span>
+  <span style="color:#5b6a85;font-size:0.64rem">saturation = ticker's rank in the pack (grey = lowest RVOL, full color = highest) · line height caps at 6×</span>
+  <span style="color:#5b6a85;font-size:0.64rem">phases: <span style="color:#7b83a3">pre</span> · rth · <span style="color:#b388ff">post</span> · tag = current RVOL ×</span>
 </div>
 
 <div class="panel">
@@ -143,8 +143,29 @@
     refined: { lo: new THREE.Color(0xfbbf24), hi: new THREE.Color(0xf472b6), mk: 0xffc4e6, back: false },
   };
   const COL_FUT = new THREE.Color(0x39415e);
-  let group = null, rvolMax = 6, maxRvol = 6, avgRvol = 1;   // RVOL scale + relative-emphasis stats
+  let group = null, rvolMax = 6, maxRvol = 6, minRvol = 0, avgRvol = 1;   // RVOL scale + emphasis stats
   const NOISE = 0.7;               // RVOL noise floor — below this reads as flat (baseline)
+  // Heat palette for RVOL — matches the gate-line colors so a bar sitting at
+  // the 2× ring reads the same warm-orange as the ring itself.
+  const HEAT_STOPS = [
+    { at: 0.0, c: new THREE.Color(0x3a6ea5) },   // cool blue = quiet volume
+    { at: 1.0, c: new THREE.Color(0x66d99c) },   // green    = normal
+    { at: 1.5, c: new THREE.Color(0xf5d453) },   // yellow   = 1.5× gate
+    { at: 2.0, c: new THREE.Color(0xf59e4a) },   // orange   = 2× gate
+    { at: 3.0, c: new THREE.Color(0xef4a5c) },   // red      = 3× gate (blowoff)
+    { at: 6.0, c: new THREE.Color(0xff7ad9) },   // pink     = extreme
+  ];
+  function heatColor(rvolVal) {
+    const v = Math.max(0, rvolVal || 0);
+    for (let i = 0; i < HEAT_STOPS.length - 1; i++) {
+      const a = HEAT_STOPS[i], b = HEAT_STOPS[i + 1];
+      if (v <= b.at) {
+        const span = b.at - a.at || 1;
+        return a.c.clone().lerp(b.c, Math.max(0, Math.min(1, (v - a.at) / span)));
+      }
+    }
+    return HEAT_STOPS[HEAT_STOPS.length - 1].c.clone();
+  }
 
   const xFor = t => (t / AXIS) * WIDTH - WIDTH / 2;
 
@@ -199,21 +220,28 @@
                              : Math.max(0, Math.min(1, (v - lo) / top));
     const yFor = v => norm(v) * BAND - BAND / 2;
 
-    // Relative emphasis: grey below the group average, full saturation for the hottest.
+    // Saturation ranks the WHOLE field on RVOL: lowest-RVOL ticker fully
+    // desaturated (grey), highest fully saturated. Spreads variation across
+    // every ticker instead of flooring the below-average half at grey.
     const rvol = s.rvol ?? 0;
-    const emph = maxRvol > avgRvol ? Math.max(0, Math.min(1, (rvol - avgRvol) / (maxRvol - avgRvol)))
-                                   : (rvol >= 1.5 ? 1 : 0.15);
-    const sat = 0.08 + 0.92 * emph;
+    const spread = Math.max(1e-6, maxRvol - minRvol);
+    const emph = Math.max(0, Math.min(1, (rvol - minRvol) / spread));
+    const sat  = 0.08 + 0.92 * emph;
 
     const sm = movingAvg(pts.map(valOf), 7);       // smooth to de-noise / curve the line
-    // Session tints: pre = dim cool bias, post = violet bias. Regular hours
-    // gets the base palette gradient unmodified so it visually dominates.
+    // Line color: for RVOL, use the shared HEAT palette so a bar at 3× reads
+    // the same red as the 3× gate ring. For price/volume, keep the per-ticker
+    // group palette gradient (cool→warm within its own range). Session tints
+    // stack on top: pre = 0.5× brightness, post = violet blend.
     const VIOLET = new THREE.Color(0xb388ff);
     const verts = [], cols = [];
     for (let i = 0; i < pts.length; i++) {
-      let c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, norm(sm[i])), sat);
-      if      (pts[i].s === 'pre')  c.multiplyScalar(0.5);         // dim pre-open
-      else if (pts[i].s === 'post') c.lerp(VIOLET, 0.55).multiplyScalar(0.85);  // violet-tinted after-hours
+      const base = isRvol
+        ? heatColor(sm[i])
+        : pal.lo.clone().lerp(pal.hi, norm(sm[i]));
+      let c = GREY.clone().lerp(base, sat);
+      if      (pts[i].s === 'pre')  c.multiplyScalar(0.5);
+      else if (pts[i].s === 'post') c.lerp(VIOLET, 0.55).multiplyScalar(0.85);
       verts.push(xFor(pts[i].t), yFor(sm[i]), z);
       cols.push(c.r, c.g, c.b);
     }
@@ -238,13 +266,17 @@
     mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, lastY + 2.5, z);
   }
 
+  // Returns [zMin, zMax] the group actually occupies so buildRefLevels can
+  // size the gate rings to enclose EVERY ticker (fixed bounds cut off books
+  // once you cross ~6 refined tickers).
   function buildGroup(list, name, pal) {
-    if (!list.length) return 0;
+    if (!list.length) return null;
     const zBase = pal.back ? -18 : 26, dir = pal.back ? -1 : 1;
     list.forEach((s, i) => buildLine(s, pal, zBase + dir * i * LANE));
-    const zc = zBase + dir * (list.length - 1) * LANE / 2;
+    const zFar = zBase + dir * (list.length - 1) * LANE;
+    const zc   = (zBase + zFar) / 2;
     mkLabel('grp', `<span style="color:#${pal.hi.getHexString()}">${name}</span>`, xFor(0) - 20, BAND / 2 + 10, zc);
-    return zBase + dir * (list.length - 1) * LANE;
+    return [Math.min(zBase, zFar), Math.max(zBase, zFar)];
   }
 
   function buildDecor() {
@@ -266,12 +298,13 @@
     _boundary(720, 0x8060b0, '16:00');  // close
   }
 
-  function buildRefLevels() {
-    // Thin outline rectangles at the 1.5 / 2 / 3× RVOL gate levels — no grey fill.
+  function buildRefLevels(zA, zB) {
+    // Thin outline rectangles at the 1.5 / 2 / 3× RVOL gate levels. Z bounds
+    // are passed in from build() so the rings dynamically enclose however
+    // many tickers are being rendered (16 pt margin on each side).
     const top = rvolMax - NOISE;
     const yFor = r => Math.max(0, Math.min(1, (Math.min(r, rvolMax) - NOISE) / top)) * BAND - BAND / 2;
     const levels = [[1.5, 0x3a6ea5], [2.0, 0xa5892b], [3.0, 0xa53a6a]];
-    const zA = -52, zB = 104;
     for (const [r, col] of levels) {
       if (r > rvolMax) continue;
       const y = yFor(r);
@@ -287,15 +320,26 @@
     clearScene();
     const gi = (d.groups && d.groups.index) || [], gr = (d.groups && d.groups.refined) || [];
     if (!gi.length && !gr.length) { overlay.className = ''; overlay.textContent = 'No price data for this session yet.'; overlay.style.display = 'flex'; return; }
-    // Fixed RVOL height scale + relative-emphasis stats (avg/max peak across tickers).
+    // Fixed RVOL height scale + emphasis stats (min/avg/max peak across tickers).
+    // minRvol drives the rank-based saturation spread — every ticker slots in
+    // between grey (min) and full color (max) so the ranking is visible at a
+    // glance, not only for the hottest.
     rvolMax = 6;
     const peaks = [...gi, ...gr].map(x => x.rvol || 0);
     maxRvol = Math.max(1e-6, ...peaks);
+    minRvol = Math.min(...peaks, maxRvol);
     avgRvol = peaks.length ? peaks.reduce((a, b) => a + b, 0) / peaks.length : 1;
     buildDecor();
-    if (document.getElementById('vizMetric').value === 'rvol') buildRefLevels();
-    buildGroup(gi, 'INDEXES', PAL.index);
-    buildGroup(gr, 'REFINED', PAL.refined);
+    // Draw groups first so we know their Z extents, THEN wrap the level rings
+    // around them (with a 16pt margin) instead of the old hardcoded -52..104
+    // that cut off any book beyond ~6 tickers.
+    const eIx = buildGroup(gi, 'INDEXES', PAL.index);
+    const eRf = buildGroup(gr, 'REFINED', PAL.refined);
+    if (document.getElementById('vizMetric').value === 'rvol') {
+      const zLo = Math.min(...[eIx, eRf].filter(Boolean).map(e => e[0])) - 16;
+      const zHi = Math.max(...[eIx, eRf].filter(Boolean).map(e => e[1])) + 16;
+      buildRefLevels(zLo, zHi);
+    }
     const showLabels = document.getElementById('vizLabels').checked;
     group.traverse(o => { if (o.isCSS2DObject) o.visible = showLabels; });
 
