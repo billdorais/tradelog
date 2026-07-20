@@ -82,7 +82,7 @@
     <label class="toggle">height:
       <select id="vizMetric" style="background:#0c0f16;border:1px solid #2a3050;color:#cfe0ff;border-radius:6px;padding:4px 7px;font-size:0.78rem;font-family:inherit;cursor:pointer">
         <option value="price">price</option>
-        <option value="volume">volume</option>
+        <option value="volume" selected>volume</option>
       </select></label>
     <label class="toggle"><input type="checkbox" id="vizLive" checked> live</label>
     <label class="toggle"><input type="checkbox" id="vizRotate"> auto-rotate</label>
@@ -140,7 +140,15 @@
   const xFor = t => (t / AXIS) * WIDTH - WIDTH / 2;
 
   function clearScene() {
-    if (group) { scene.remove(group); group.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); }); }
+    if (group) {
+      // Remove CSS2D label DOM elements too — otherwise old labels linger in the
+      // DOM frozen at their last screen position (stale "camera-locked" labels).
+      group.traverse(o => {
+        if (o.isCSS2DObject && o.element && o.element.parentNode) o.element.parentNode.removeChild(o.element);
+        o.geometry?.dispose?.(); o.material?.dispose?.();
+      });
+      scene.remove(group);
+    }
     group = new THREE.Group(); scene.add(group); markers = [];
   }
   function mkLabel(cls, html, x, y, z) {
