@@ -75,7 +75,7 @@
 <div class="legend">
   <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
   <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.64rem">height = RVOL (smoothed, noise-floored) · saturation = hottest vs the pack · tag = RVOL %</span>
+  <span style="color:#5b6a85;font-size:0.64rem">phases: <span style="color:#7b83a3">pre</span> · rth · <span style="color:#b388ff">post</span> — height = RVOL · tag = current RVOL %</span>
 </div>
 
 <div class="panel">
@@ -136,7 +136,7 @@
   controls.autoRotateSpeed = 0.45; controls.target.set(0, 2, 8);
   controls.minDistance = 70; controls.maxDistance = 900;
 
-  const WIDTH = 300, BAND = 52, AXIS = 720, LANE = 14;   // LANE = Z gap between tickers
+  const WIDTH = 300, BAND = 52, AXIS = 960, LANE = 14;   // AXIS: 04:00 → 20:00 ET (960 min)
   // Colour-ways: cool for indexes, warm for refined (low price → high price).
   const PAL = {
     index:   { lo: new THREE.Color(0x22d3ee), hi: new THREE.Color(0x818cf8), mk: 0x9fb4ff, back: true  },
@@ -206,10 +206,14 @@
     const sat = 0.08 + 0.92 * emph;
 
     const sm = movingAvg(pts.map(valOf), 7);       // smooth to de-noise / curve the line
+    // Session tints: pre = dim cool bias, post = violet bias. Regular hours
+    // gets the base palette gradient unmodified so it visually dominates.
+    const VIOLET = new THREE.Color(0xb388ff);
     const verts = [], cols = [];
     for (let i = 0; i < pts.length; i++) {
-      const c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, norm(sm[i])), sat);
-      if (pts[i].s === 'pre') c.multiplyScalar(0.5);
+      let c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, norm(sm[i])), sat);
+      if      (pts[i].s === 'pre')  c.multiplyScalar(0.5);         // dim pre-open
+      else if (pts[i].s === 'post') c.lerp(VIOLET, 0.55).multiplyScalar(0.85);  // violet-tinted after-hours
       verts.push(xFor(pts[i].t), yFor(sm[i]), z);
       cols.push(c.r, c.g, c.b);
     }
@@ -223,7 +227,12 @@
     const line = new Line2(g, m); line.computeLineDistances(); group.add(line);
 
     const rvClass = emph < 0.25 ? 'rv1' : emph < 0.5 ? 'rv2' : emph < 0.8 ? 'rv3' : 'rv4';
-    const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${Math.round(rvol * 100)}%`;
+    // Label uses the CURRENT rvol (uncapped raw) so a 950% spike doesn't get
+    // squashed to 600% — and so the number reads as the true real-time value,
+    // not the day's peak. Falls back to capped fields for older responses.
+    const rvLast = (s.rvol_last_raw != null) ? s.rvol_last_raw
+                 : (s.rvol_last     != null) ? s.rvol_last     : rvol;
+    const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${Math.round(rvLast * 100)}%`;
     mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, lastY + 2.5, z);
   }
 
@@ -237,17 +246,22 @@
   }
 
   function buildDecor() {
-    const xo = xFor(330);
     if (document.getElementById('vizGrid').checked) {
-      const grid = new THREE.GridHelper(WIDTH, 24, 0x1b2236, 0x0f1420);
+      const grid = new THREE.GridHelper(WIDTH, 32, 0x1b2236, 0x0f1420);
       grid.position.y = -BAND / 2 - 2; grid.material.transparent = true; grid.material.opacity = 0.45; group.add(grid);
     }
-    // 09:30 open — a thin line + label (no filled plane).
-    const ln = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(xo, -BAND / 2, 4), new THREE.Vector3(xo, BAND / 2, 4)]),
-      new THREE.LineBasicMaterial({ color: 0x33507a, transparent: true, opacity: 0.4 }));
-    group.add(ln);
-    mkLabel('open', '9:30', xo, BAND / 2 + 5, 4);
+    // Session boundary lines — 09:30 open (blue) + 16:00 close (violet, matches
+    // the after-hours tint). Thin lines + labels, no filled plane.
+    const _boundary = (t, colorHex, label) => {
+      const x = xFor(t);
+      const ln = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, -BAND / 2, 4), new THREE.Vector3(x, BAND / 2, 4)]),
+        new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity: 0.4 }));
+      group.add(ln);
+      mkLabel('open', label, x, BAND / 2 + 5, 4);
+    };
+    _boundary(330, 0x33507a, '9:30');   // open
+    _boundary(720, 0x8060b0, '16:00');  // close
   }
 
   function buildRefLevels() {

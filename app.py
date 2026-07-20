@@ -13781,9 +13781,13 @@ def api_viz_rvol_surface():
 
 
 def _fetch_intraday_ext(ticker, date_str):
-    """1-min bars for a session INCLUDING pre-market: 04:00–16:00 ET. SIP returns
-    extended-hours bars (the standard _fetch_day_bars starts at 08:00 UTC / 4am ET's
-    winter offset and misses early pre-market). DST-safe via ET-aware bounds."""
+    """1-min bars for a session INCLUDING pre- AND post-market: 04:00-20:00 ET.
+    SIP returns extended-hours bars (the standard _fetch_day_bars starts at
+    08:00 UTC / 4am ET's winter offset and misses early pre-market). DST-safe
+    via ET-aware bounds. Post-market bumped from the old 16:00 end so the
+    visualizer can render the after-hours tail — trades and price discovery
+    continue there and it's often the most informative window for earnings
+    reactions."""
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
@@ -13795,7 +13799,7 @@ def _fetch_intraday_ext(ticker, date_str):
         except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
         day   = _dt.date.fromisoformat(date_str)
         start = _dt.datetime(day.year, day.month, day.day, 4,  0, tzinfo=et)
-        end   = _dt.datetime(day.year, day.month, day.day, 16, 0, tzinfo=et)
+        end   = _dt.datetime(day.year, day.month, day.day, 20, 0, tzinfo=et)
         client = StockHistoricalDataClient(api_key=alpaca_broker._key,
                                            secret_key=alpaca_broker._secret)
         req = StockBarsRequest(symbol_or_symbols=ticker.upper(),
@@ -13820,11 +13824,18 @@ def _series_rvol(vols, lookback=20):
     return round(best, 2), round(last, 2)
 
 
-def _price_points(bars, et, ax_start, ax_end, pre_end, lookback=20):
-    """1-min closes on the [ax_start, ax_end) minute-of-day axis, tagged pre/rth,
-    each carrying price (p), volume (v) and per-minute relative volume (r =
-    bar volume ÷ mean of the prior `lookback` bars)."""
+def _price_points(bars, et, ax_start, ax_end, pre_end, rth_end=None, lookback=20):
+    """1-min closes on the [ax_start, ax_end) minute-of-day axis, tagged
+    pre/rth/post, each carrying price (p), volume (v), per-minute relative
+    volume for VISUAL height (r, capped) plus the RAW ratio (r_raw, uncapped)
+    for the label so a spike still reads truthfully as e.g. 950% instead of
+    always showing the visual cap of 600%.
+
+    `rth_end` defaults to 16:00 ET (960); bars past that up to `ax_end` are
+    tagged 'post' so the frontend can color the after-hours differently."""
     import datetime as _dtp
+    if rth_end is None:
+        rth_end = 16 * 60
     pts = []
     for b in bars:
         ts = b.timestamp
@@ -13833,19 +13844,24 @@ def _price_points(bars, et, ax_start, ax_end, pre_end, lookback=20):
         te  = ts.astimezone(et)
         mod = te.hour * 60 + te.minute
         if ax_start <= mod < ax_end:
+            _sess = ("rth"  if pre_end <= mod < rth_end else
+                     "post" if rth_end <= mod < ax_end else "pre")
             pts.append({"t": mod - ax_start, "p": round(float(b.close), 4),
                         "v": round(float(getattr(b, "volume", 0) or 0)),
-                        "s": "rth" if pre_end <= mod < ax_end else "pre"})
-    # Per-minute RVOL = bar volume ÷ trailing-`lookback` average, but the baseline is
-    # FLOORED at 20% of the session mean so a near-empty pre-market average can't blow
-    # the ratio up to 15×+, and capped at 6× (the height scale) so it stays sane.
+                        "s": _sess})
+    # Per-minute RVOL = bar volume ÷ trailing-`lookback` average. Baseline is
+    # FLOORED at 20% of the session mean so a near-empty pre-market can't blow
+    # the ratio up to 15×+. `r` is capped at 6× for VISUAL scaling (matches
+    # the fixed height); `r_raw` is the truthful uncapped ratio for the label.
     vols = [p["v"] for p in pts]
     mean_v = (sum(vols) / len(vols)) if vols else 0.0
     floor = 0.2 * mean_v
     for k, p in enumerate(pts):
         base = vols[max(0, k - lookback):k]
         avg = max((sum(base) / len(base)) if base else 0.0, floor)
-        p["r"] = round(min(vols[k] / avg, 6.0), 3) if avg > 0 else 0.0
+        _raw = (vols[k] / avg) if avg > 0 else 0.0
+        p["r"]     = round(min(_raw, 6.0), 3)
+        p["r_raw"] = round(_raw, 3)
     return pts
 
 
@@ -13860,8 +13876,10 @@ def api_viz_price_timeline():
     try:    et = ZoneInfo("America/New_York")
     except Exception: et = _dtp.timezone(_dtp.timedelta(hours=-4))
     now_et = _dtp.datetime.now(et)
-    AX_START, AX_END = 4 * 60, 16 * 60          # minutes-of-day: 04:00 → 16:00
+    # Axis now runs 04:00 → 20:00 ET to include the after-hours tail.
+    AX_START, AX_END = 4 * 60, 20 * 60          # minutes-of-day
     PRE_END = 9 * 60 + 30                        # 09:30 open
+    RTH_END = 16 * 60                            # 16:00 close (pre|rth|post boundary)
 
     date_str = (request.args.get("date") or "").strip()
     bars, live = [], False
@@ -13879,14 +13897,14 @@ def api_viz_price_timeline():
         if not date_str:
             date_str = now_et.date().isoformat()
 
-    points = _price_points(bars, et, AX_START, AX_END, PRE_END)
+    points = _price_points(bars, et, AX_START, AX_END, PRE_END, rth_end=RTH_END)
 
     now_mod = now_et.hour * 60 + now_et.minute
     if live:
         now_t = max(0, min(AX_END - AX_START, now_mod - AX_START))
         phase = ("pre"  if AX_START <= now_mod < PRE_END else
-                 "rth"  if PRE_END <= now_mod < AX_END else
-                 "post" if AX_END <= now_mod < 20 * 60 else "closed")
+                 "rth"  if PRE_END <= now_mod < RTH_END else
+                 "post" if RTH_END <= now_mod < AX_END else "closed")
     else:
         now_t = points[-1]["t"] if points else 0
         phase = "closed"
@@ -13895,9 +13913,10 @@ def api_viz_price_timeline():
     return jsonify({
         "ticker": ticker, "date": date_str, "live": live, "phase": phase,
         "now_et": now_et.strftime("%H:%M"),
-        "axis_minutes": AX_END - AX_START,       # 720
-        "pre_end_t": PRE_END - AX_START,         # 330 (09:30)
-        "rth_end_t": AX_END - AX_START,          # 720 (16:00)
+        "axis_minutes": AX_END - AX_START,       # 960 (04:00 → 20:00)
+        "pre_end_t":    PRE_END - AX_START,      # 330 (09:30)
+        "rth_end_t":    RTH_END - AX_START,      # 720 (16:00)
+        "post_end_t":   AX_END - AX_START,       # 960 (20:00)
         "now_t": now_t, "points": points,
         "price_min": round(min(prices), 4) if prices else None,
         "price_max": round(max(prices), 4) if prices else None,
@@ -13917,7 +13936,8 @@ def api_viz_price_lines():
     try:    et = ZoneInfo("America/New_York")
     except Exception: et = _dtp.timezone(_dtp.timedelta(hours=-4))
     now_et = _dtp.datetime.now(et)
-    AX_START, AX_END, PRE_END = 4 * 60, 16 * 60, 9 * 60 + 30
+    # Axis 04:00 → 20:00 ET so the after-hours tail is visible.
+    AX_START, AX_END, PRE_END, RTH_END = 4 * 60, 20 * 60, 9 * 60 + 30, 16 * 60
 
     # Optional ?limit=N cap so the client can throttle when tickers get busy.
     # Defaults sized for a typical refined snapshot (~15-20 unique symbols) —
@@ -13952,16 +13972,19 @@ def api_viz_price_lines():
         futs = {pool.submit(_fetch_intraday_ext, t, date_str): t for t in universe}
         for f in _cf.as_completed(futs):
             t = futs[f]
-            try:    series[t] = _price_points(f.result(), et, AX_START, AX_END, PRE_END)
+            try:    series[t] = _price_points(f.result(), et, AX_START, AX_END, PRE_END, rth_end=RTH_END)
             except Exception: series[t] = []
 
     def _pack(t):
         pts = series.get(t) or []
         prices = [p["p"] for p in pts]
         vols   = [p["v"] for p in pts]
-        rs     = [p["r"] for p in pts]
-        rvol_peak = round(max(rs), 2) if rs else 0.0
-        rvol_last = round(rs[-1], 2) if rs else 0.0
+        rs     = [p["r"] for p in pts]                        # visual (capped at 6)
+        rs_raw = [p.get("r_raw", p["r"]) for p in pts]        # truthful (uncapped)
+        rvol_peak     = round(max(rs), 2) if rs else 0.0
+        rvol_last     = round(rs[-1], 2) if rs else 0.0
+        rvol_last_raw = round(rs_raw[-1], 2) if rs_raw else 0.0
+        rvol_peak_raw = round(max(rs_raw), 2) if rs_raw else 0.0
         return {"ticker": t, "points": pts,
                 "price_min": round(min(prices), 4) if prices else None,
                 "price_max": round(max(prices), 4) if prices else None,
@@ -13969,7 +13992,10 @@ def api_viz_price_lines():
                 "vol_min": min(vols) if vols else None,
                 "vol_max": max(vols) if vols else None,
                 "last_vol": pts[-1]["v"] if pts else None,
-                "rvol": rvol_peak, "rvol_last": rvol_last}   # peak drives the emphasis
+                # peak drives the visual emphasis; the *_raw fields feed the label
+                # so 950% doesn't get squashed to a misleading 600%.
+                "rvol": rvol_peak, "rvol_last": rvol_last,
+                "rvol_last_raw": rvol_last_raw, "rvol_peak_raw": rvol_peak_raw}
 
     grp_index   = [_pack(t) for t in indexes if series.get(t)]
     grp_refined = [_pack(t) for t in refined if series.get(t) and t not in indexes]
@@ -13978,15 +14004,18 @@ def api_viz_price_lines():
     if live:
         now_t = max(0, min(AX_END - AX_START, now_mod - AX_START))
         phase = ("pre"  if AX_START <= now_mod < PRE_END else
-                 "rth"  if PRE_END <= now_mod < AX_END else
-                 "post" if AX_END <= now_mod < 20 * 60 else "closed")
+                 "rth"  if PRE_END <= now_mod < RTH_END else
+                 "post" if RTH_END <= now_mod < AX_END else "closed")
     else:
         now_t, phase = 0, "closed"
 
     return jsonify({
         "date": date_str, "live": live, "phase": phase, "now_et": now_et.strftime("%H:%M"),
-        "axis_minutes": AX_END - AX_START, "pre_end_t": PRE_END - AX_START,
-        "rth_end_t": AX_END - AX_START, "now_t": now_t,
+        "axis_minutes": AX_END - AX_START,       # 960 (04:00 → 20:00)
+        "pre_end_t":    PRE_END - AX_START,      # 330 (09:30)
+        "rth_end_t":    RTH_END - AX_START,      # 720 (16:00)
+        "post_end_t":   AX_END - AX_START,       # 960 (20:00)
+        "now_t": now_t,
         "groups": {"index": grp_index, "refined": grp_refined},
         "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
     })
