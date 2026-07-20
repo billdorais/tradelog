@@ -5581,6 +5581,11 @@ def about():
     return render_template("about.html")
 
 
+@app.route("/visualizers")
+def visualizers():
+    return render_template("visualizers.html")
+
+
 @app.route("/simulate")
 def simulate():
     # Registry-driven account dropdown — every configured paper account shows up.
@@ -13607,6 +13612,82 @@ def api_rvol_pulse():
         "refined_count": refined_count, "refined_index_count": refined_index_count,
         "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
     })
+
+
+_RTH_MINUTES = 390   # 09:30–15:59 inclusive
+
+def _rvol_surface_row(ticker, date_str, lookback=20):
+    """Per-minute RVOL series for one ticker on one RTH session, aligned to a fixed
+    390-slot minute grid (09:30→15:59), 0 where a minute is missing. RVOL[i] =
+    bar volume ÷ mean of the prior `lookback` bars' volume. None if no RTH bars."""
+    import datetime as _dts
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dts.timezone.utc
+    bars = _fetch_day_bars(ticker, date_str)
+    seq = []   # (minute_index, volume) in time order
+    for b in bars:
+        ts = b.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dts.timezone.utc)
+        te = ts.astimezone(et)
+        if _dts.time(9, 30) <= te.time() < _dts.time(16, 0):
+            mi = (te.hour - 9) * 60 + te.minute - 30
+            if 0 <= mi < _RTH_MINUTES:
+                seq.append((mi, float(getattr(b, "volume", 0) or 0)))
+    if not seq:
+        return None
+    seq.sort()
+    vols = [v for _mi, v in seq]
+    out = [0.0] * _RTH_MINUTES
+    for k, (mi, v) in enumerate(seq):
+        base = vols[max(0, k - lookback):k]
+        avg = (sum(base) / len(base)) if base else 0.0
+        out[mi] = round(v / avg, 3) if avg > 0 else 0.0
+    return out
+
+
+@app.route("/api/viz/rvol_surface")
+def api_viz_rvol_surface():
+    """3D-surface data for the Visualizers page: a per-minute RVOL grid
+    (rows = tickers, cols = 390 RTH minutes) for one session. Defaults the ticker
+    set to the indexes + refined watchlist, and the date to the most recent session
+    with data (so it's never blank on weekends/holidays). ?tickers=CSV, ?date=YYYY-MM-DD."""
+    import datetime as _dtp
+    import concurrent.futures as _cf
+    _req = (request.args.get("tickers") or "").strip()
+    if _req:
+        tickers = [t.strip().upper() for t in _req.split(",") if t.strip()][:20]
+    else:
+        tickers = _PULSE_INDEXES + [t for t in _pulse_watchlist(limit=12)
+                                    if t not in _PULSE_INDEXES]
+    lookback = max(3, int(request.args.get("lookback", 20)))
+
+    date_str = (request.args.get("date") or "").strip()
+    if not date_str:
+        cand = _dtp.date.today()
+        for _ in range(8):                       # walk back to the last session with data
+            if cand.weekday() < 5 and _rvol_surface_row("SPY", cand.isoformat(), lookback):
+                break
+            cand -= _dtp.timedelta(days=1)
+        date_str = cand.isoformat()
+
+    rows = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_rvol_surface_row, t, date_str, lookback): t for t in tickers}
+        for f in _cf.as_completed(futs):
+            t = futs[f]
+            try:    rows[t] = f.result()
+            except Exception: rows[t] = None
+
+    grid, labels = [], []
+    for t in tickers:
+        s = rows.get(t)
+        if s:
+            grid.append(s); labels.append(t)
+    mx = max((max(r) for r in grid), default=0.0)
+    return jsonify({"date": date_str, "tickers": labels, "cols": _RTH_MINUTES,
+                    "rows": len(labels), "grid": grid,
+                    "max_rvol": round(mx, 3), "lookback": lookback})
 
 
 # ── Take-profit sweep — retrospective MFE analysis per Refined band ──────────

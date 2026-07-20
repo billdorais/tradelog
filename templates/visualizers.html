@@ -1,0 +1,201 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visualizers · Kairos</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:#06070c; color:#cdd6e6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  /* Soft radial glow behind the mesh */
+  #glow { position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 22%, rgba(80,120,200,0.12), rgba(6,7,12,0) 60%); }
+  #stage { position:fixed; inset:0; z-index:1; }
+  canvas { display:block; }
+
+  .topbar { position:fixed; top:0; left:0; right:0; z-index:5; display:flex; align-items:center;
+    gap:14px; padding:12px 18px; }
+  .brand { font-weight:700; letter-spacing:0.02em; color:#e6eaf5; }
+  .brand small { color:#6f7a99; }
+  .nav-link { color:#8a90a2; text-decoration:none; font-size:0.82rem; padding:5px 10px;
+    border:1px solid #232840; border-radius:6px; background:rgba(18,21,29,0.6); }
+  .nav-link:hover { color:#cdd6e6; border-color:#3a4a6a; }
+
+  .panel { position:fixed; z-index:5; bottom:16px; left:16px; background:rgba(12,14,20,0.82);
+    border:1px solid #222840; border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px);
+    max-width:min(94vw,560px); }
+  .panel .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .panel label { font-size:0.7rem; color:#7c8399; }
+  .panel input[type=text], .panel input[type=date] { background:#0c0f16; border:1px solid #2a3050;
+    color:#e0e0e0; border-radius:6px; padding:6px 9px; font-size:0.8rem; font-family:inherit; }
+  .panel input#vizTickers { width:230px; }
+  .btn { background:#182038; border:1px solid #2f3a63; color:#cfe0ff; border-radius:6px;
+    padding:6px 13px; font-size:0.8rem; cursor:pointer; }
+  .btn:hover { background:#202a4a; }
+  .toggle { font-size:0.76rem; color:#9aa2b8; display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
+  .meta { font-size:0.72rem; color:#666f85; margin-top:8px; }
+  .title { position:fixed; z-index:5; top:14px; left:50%; transform:translateX(-50%); text-align:center;
+    pointer-events:none; }
+  .title h1 { margin:0; font-size:0.95rem; font-weight:700; letter-spacing:0.14em; color:#aab4cc; text-transform:uppercase; }
+  .title .sub { font-size:0.72rem; color:#6a7690; margin-top:2px; }
+  .legend { position:fixed; z-index:5; bottom:18px; right:18px; text-align:right; font-size:0.68rem; color:#7c8399; }
+  .legend .bar { width:150px; height:8px; border-radius:4px; margin-top:4px; margin-left:auto;
+    background:linear-gradient(90deg,#22d3ee,#3b82f6,#8b5cf6,#d946ef); }
+  #overlay { position:fixed; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
+    background:#06070c; color:#8a90a2; font-size:0.9rem; text-align:center; padding:24px; }
+  #overlay.err { color:#e08a8a; }
+</style>
+
+<div id="glow"></div>
+<div id="stage"></div>
+
+<div class="topbar">
+  <span class="brand">◆ Kairos <small>Visualizers</small></span>
+  <a class="nav-link" href="/">← Dashboard</a>
+</div>
+
+<div class="title">
+  <h1 id="vizTitle">RVOL Landscape</h1>
+  <div class="sub" id="vizSub">loading…</div>
+</div>
+
+<div class="legend">relative volume<div class="bar"></div><div style="display:flex;justify-content:space-between;width:150px;margin-left:auto">low<span>high</span></div></div>
+
+<div class="panel">
+  <div class="row">
+    <div><label>Tickers</label><br><input type="text" id="vizTickers" placeholder="blank = refined books + indexes"></div>
+    <div><label>Session</label><br><input type="date" id="vizDate"></div>
+    <button class="btn" id="vizReload">Render</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label class="toggle"><input type="checkbox" id="vizRotate" checked> auto-rotate</label>
+    <label class="toggle"><input type="checkbox" id="vizFlow" checked> flow</label>
+    <label class="toggle"><input type="checkbox" id="vizWire" checked> wireframe</label>
+    <span class="meta" id="vizMeta"></span>
+  </div>
+</div>
+
+<div id="overlay">Loading Three.js…</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  const overlay = document.getElementById('overlay');
+  const stage = document.getElementById('stage');
+
+  // ── Scene ────────────────────────────────────────────────────────────────
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x06070c, 0.0016);
+  const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 3000);
+  camera.position.set(0, 78, 190);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  stage.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true; controls.dampingFactor = 0.06;
+  controls.autoRotate = true; controls.autoRotateSpeed = 0.55;
+  controls.target.set(0, 10, 0);
+  controls.minDistance = 60; controls.maxDistance = 520;
+
+  const WIDTH = 220, HEIGHT = 34;   // X span (time), Y span (rvol)
+  let mesh, wire, geom, baseY = null, cols = 0, rows = 0, phase = 0;
+
+  function colorFor(t) {                       // t in 0..1 → cyan→blue→purple→magenta
+    const c = new THREE.Color();
+    c.setHSL(0.5 + t * 0.33, 0.85, 0.42 + t * 0.26);
+    return c;
+  }
+
+  function buildSurface(data) {
+    if (mesh) { scene.remove(mesh); geom.dispose(); mesh.material.dispose(); }
+    if (wire) { scene.remove(wire); wire.material.dispose(); }
+    const grid = data.grid || [];
+    rows = grid.length; cols = data.cols || (grid[0] ? grid[0].length : 0);
+    if (!rows || !cols) { overlay.textContent = 'No session data to render.'; overlay.style.display = 'flex'; return; }
+    const depth = Math.max(24, rows * 5);      // Z span scales with #tickers
+    const mx = data.max_rvol || 1;
+
+    geom = new THREE.PlaneGeometry(WIDTH, depth, cols - 1, rows - 1);
+    geom.rotateX(-Math.PI / 2);                // lay flat, Y is up
+    const pos = geom.attributes.position;
+    const col = new Float32Array(pos.count * 3);
+    baseY = new Float32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) {
+      const iy = Math.floor(i / cols), ix = i % cols;
+      const v = (grid[iy] && grid[iy][ix]) ? grid[iy][ix] : 0;
+      const h = (v / mx) * HEIGHT;
+      baseY[i] = h;
+      pos.array[i * 3 + 1] = h;
+      const c = colorFor(Math.min(1, v / mx));
+      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    }
+    geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    pos.needsUpdate = true; geom.computeVertexNormals();
+
+    mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+      vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
+    scene.add(mesh);
+    wire = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+      color: 0xbfe9ff, wireframe: true, transparent: true, opacity: 0.10 }));
+    wire.visible = document.getElementById('vizWire').checked;
+    scene.add(wire);
+
+    document.getElementById('vizSub').textContent =
+      `${data.date} · ${rows} tickers · ${cols} min · peak RVOL ${mx}×`;
+    document.getElementById('vizMeta').textContent = (data.tickers || []).join(' · ');
+    document.getElementById('vizDate').value = data.date || '';
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (mesh && baseY && document.getElementById('vizFlow').checked) {
+      phase += 0.018;
+      const pos = geom.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const iy = Math.floor(i / cols), ix = i % cols;
+        pos.array[i * 3 + 1] = baseY[i] * (0.9 + 0.1 * Math.sin(phase + ix * 0.12 + iy * 0.5)) + Math.sin(phase * 0.6 + ix * 0.05) * 0.4;
+      }
+      pos.needsUpdate = true;
+    }
+    controls.autoRotate = document.getElementById('vizRotate').checked;
+    if (wire) wire.visible = document.getElementById('vizWire').checked;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  async function load() {
+    overlay.style.display = 'flex'; overlay.className = ''; overlay.textContent = 'Fetching SIP volume…';
+    const p = new URLSearchParams();
+    const tk = document.getElementById('vizTickers').value.trim();
+    const dt = document.getElementById('vizDate').value.trim();
+    if (tk) p.set('tickers', tk);
+    if (dt) p.set('date', dt);
+    try {
+      const d = await fetch('/api/viz/rvol_surface?' + p).then(r => r.json());
+      if (d.error) throw new Error(d.error);
+      buildSurface(d);
+      overlay.style.display = 'none';
+    } catch (e) {
+      overlay.className = 'err';
+      overlay.textContent = 'Could not load surface: ' + e.message;
+      overlay.style.display = 'flex';
+    }
+  }
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  document.getElementById('vizReload').addEventListener('click', load);
+
+  animate();
+  load();
+</script>
