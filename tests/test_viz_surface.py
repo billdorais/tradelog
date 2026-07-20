@@ -93,6 +93,20 @@ def test_price_timeline_sessions_and_axis(monkeypatch):
     assert d["live"] is False                                   # a past date is static
 
 
+def test_price_lines_groups_and_volume(monkeypatch):
+    monkeypatch.setattr(a, "_fetch_intraday_ext", lambda tk, ds: _pbars(ds))
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/viz/price_lines?indexes=SPY,QQQ&refined=AAA&date=2026-07-10").get_json()
+    idx = d["groups"]["index"]; ref = d["groups"]["refined"]
+    assert [s["ticker"] for s in idx] == ["SPY", "QQQ"]     # index group, in order
+    assert [s["ticker"] for s in ref] == ["AAA"]            # refined group, separate
+    spy = idx[0]
+    assert spy["last_price"] == 553.5                       # price series
+    assert spy["vol_max"] == 1 and "last_vol" in spy        # volume series present for the toggle
+    assert [p["s"] for p in spy["points"]] == ["pre", "pre", "rth", "rth"]
+
+
 def test_price_timeline_excludes_out_of_window(monkeypatch):
     day = "2026-07-10"
     def _mix(tk, ds):

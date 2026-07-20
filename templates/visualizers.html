@@ -18,31 +18,33 @@
   .nav-link:hover { color:#cdd6e6; border-color:#3a4a6a; }
 
   .title { position:fixed; z-index:6; top:14px; left:50%; transform:translateX(-50%); text-align:center; pointer-events:none; }
-  .title h1 { margin:0; font-size:1.05rem; font-weight:800; letter-spacing:0.04em; color:#e6eaf5; }
+  .title h1 { margin:0; font-size:1.0rem; font-weight:800; letter-spacing:0.06em; color:#e6eaf5; text-transform:uppercase; }
   .title .sub { font-size:0.74rem; color:#7c8399; margin-top:2px; }
   .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#38e08a;
     box-shadow:0 0 8px #38e08a; margin-right:5px; animation:pulse 1.6s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
   .legend { position:fixed; z-index:6; top:14px; right:18px; font-size:0.72rem; color:#8a90a2;
-    display:flex; gap:14px; align-items:center; }
-  .legend i { display:inline-block; width:14px; height:3px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+    display:flex; flex-direction:column; gap:6px; align-items:flex-end; }
+  .legend span { display:inline-flex; align-items:center; }
+  .legend i { display:inline-block; width:26px; height:5px; border-radius:3px; margin-right:6px; }
 
   .panel { position:fixed; z-index:6; bottom:16px; left:16px; background:rgba(12,14,20,0.82);
-    border:1px solid #222840; border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); }
+    border:1px solid #222840; border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); max-width:min(94vw,620px); }
   .panel .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  .panel label { font-size:0.7rem; color:#7c8399; }
+  .panel label { font-size:0.68rem; color:#7c8399; }
   .panel input[type=text], .panel input[type=date] { background:#0c0f16; border:1px solid #2a3050;
     color:#e0e0e0; border-radius:6px; padding:6px 9px; font-size:0.8rem; font-family:inherit; }
-  .panel input#vizTicker { width:90px; text-transform:uppercase; }
+  .panel input#vizIndexes { width:150px; } .panel input#vizRefined { width:170px; }
   .btn { background:#182038; border:1px solid #2f3a63; color:#cfe0ff; border-radius:6px; padding:6px 13px; font-size:0.8rem; cursor:pointer; }
   .btn:hover { background:#202a4a; }
   .toggle { font-size:0.76rem; color:#9aa2b8; display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
 
-  .vlabel { font:600 11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; white-space:nowrap;
-    pointer-events:none; padding:1px 6px; border-radius:5px; background:rgba(10,12,20,0.6);
-    border:1px solid rgba(160,190,255,0.22); text-shadow:0 0 6px rgba(0,0,0,0.9); }
-  .vlabel.now { color:#fff; border-color:rgba(120,230,180,0.5); }
+  .vlabel { font:600 10.5px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; white-space:nowrap;
+    pointer-events:none; padding:1px 6px; border-radius:5px; background:rgba(10,12,20,0.55);
+    border:1px solid rgba(160,190,255,0.18); text-shadow:0 0 6px rgba(0,0,0,0.9); }
+  .vlabel b { color:#fff; } .vlabel span { opacity:0.8; margin-left:4px; }
+  .vlabel.grp { font-size:0.66rem; letter-spacing:0.16em; font-weight:800; background:none; border:none; }
   .vlabel.open { color:#c9d4ff; }
 
   #overlay { position:fixed; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
@@ -59,26 +61,33 @@
 </div>
 
 <div class="title">
-  <h1 id="vizTitle">SPY</h1>
+  <h1 id="vizTitle">Price Timelines</h1>
   <div class="sub" id="vizSub">loading…</div>
 </div>
 
 <div class="legend">
-  <span><i style="background:#22d3ee"></i>pre-market</span>
-  <span><i style="background:#f472b6"></i>regular hours</span>
-  <span><i style="background:#39415e"></i>future</span>
+  <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
+  <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
+  <span style="color:#5b6a85;font-size:0.66rem">dim = pre-market · grey = future · colour = value height</span>
 </div>
 
 <div class="panel">
   <div class="row">
-    <div><label>Ticker</label><br><input type="text" id="vizTicker" value="SPY"></div>
+    <div><label>Indexes</label><br><input type="text" id="vizIndexes" placeholder="SPY,QQQ,SMH"></div>
+    <div><label>Refined</label><br><input type="text" id="vizRefined" placeholder="blank = refined books"></div>
     <div><label>Session</label><br><input type="date" id="vizDate"></div>
     <button class="btn" id="vizReload">Render</button>
   </div>
   <div class="row" style="margin-top:10px">
+    <label class="toggle">height:
+      <select id="vizMetric" style="background:#0c0f16;border:1px solid #2a3050;color:#cfe0ff;border-radius:6px;padding:4px 7px;font-size:0.78rem;font-family:inherit;cursor:pointer">
+        <option value="price">price</option>
+        <option value="volume">volume</option>
+      </select></label>
     <label class="toggle"><input type="checkbox" id="vizLive" checked> live</label>
     <label class="toggle"><input type="checkbox" id="vizRotate"> auto-rotate</label>
     <label class="toggle"><input type="checkbox" id="vizGrid" checked> grid</label>
+    <label class="toggle"><input type="checkbox" id="vizLabels" checked> labels</label>
   </div>
 </div>
 
@@ -100,106 +109,117 @@
   import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 
   const overlay = document.getElementById('overlay');
-  const stage = document.getElementById('stage');
-
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x06070c, 0.0012);
-  const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 4000);
-  camera.position.set(0, 26, 205);
+  scene.fog = new THREE.FogExp2(0x06070c, 0.0011);
+  const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 5000);
+  camera.position.set(6, 62, 285);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
-  stage.appendChild(renderer.domElement);
+  document.getElementById('stage').appendChild(renderer.domElement);
 
   const labelRenderer = new CSS2DRenderer();
   labelRenderer.setSize(innerWidth, innerHeight);
-  Object.assign(labelRenderer.domElement.style, { position: 'fixed', top: '0', left: '0', pointerEvents: 'none', zIndex: '4' });
+  Object.assign(labelRenderer.domElement.style, { position:'fixed', top:'0', left:'0', pointerEvents:'none', zIndex:'4' });
   document.body.appendChild(labelRenderer.domElement);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.dampingFactor = 0.06;
-  controls.autoRotateSpeed = 0.5; controls.target.set(0, 6, 0);
-  controls.minDistance = 60; controls.maxDistance = 700;
+  controls.autoRotateSpeed = 0.45; controls.target.set(0, 2, 8);
+  controls.minDistance = 70; controls.maxDistance = 900;
 
-  const WIDTH = 300, HEIGHT = 70, AXIS = 720;          // X span, Y span, minutes 04:00→16:00
-  const COL_PRE = new THREE.Color(0x22d3ee), COL_RTH = new THREE.Color(0xf472b6), COL_FUT = new THREE.Color(0x39415e);
-  let group = null, marker = null, pmin = 0, pmax = 1, curveObjs = [];
+  const WIDTH = 300, BAND = 52, AXIS = 720, LANE = 14;   // LANE = Z gap between tickers
+  // Colour-ways: cool for indexes, warm for refined (low price → high price).
+  const PAL = {
+    index:   { lo: new THREE.Color(0x22d3ee), hi: new THREE.Color(0x818cf8), mk: 0x9fb4ff, back: true  },
+    refined: { lo: new THREE.Color(0xfbbf24), hi: new THREE.Color(0xf472b6), mk: 0xffc4e6, back: false },
+  };
+  const COL_FUT = new THREE.Color(0x39415e);
+  let group = null, markers = [];
 
   const xFor = t => (t / AXIS) * WIDTH - WIDTH / 2;
-  const yFor = p => (pmax === pmin ? 0 : ((p - pmin) / (pmax - pmin)) * HEIGHT - HEIGHT / 2);
 
   function clearScene() {
     if (group) { scene.remove(group); group.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); }); }
-    curveObjs.forEach(o => scene.remove(o)); curveObjs = [];
-    group = new THREE.Group(); scene.add(group);
+    group = new THREE.Group(); scene.add(group); markers = [];
   }
-
   function mkLabel(cls, html, x, y, z) {
     const el = document.createElement('div'); el.className = 'vlabel ' + cls; el.innerHTML = html;
     const o = new CSS2DObject(el); o.position.set(x, y, z); group.add(o); return o;
   }
 
-  function fatLine(verts, colors, width) {
-    const g = new LineGeometry(); g.setPositions(verts); g.setColors(colors);
-    const m = new LineMaterial({ linewidth: width, vertexColors: true, transparent: true, dashed: false });
-    m.resolution.set(innerWidth, innerHeight);
-    const l = new Line2(g, m); l.computeLineDistances(); group.add(l); curveObjs.push(l); return l;
+  function fmtVol(v) {
+    if (v == null) return '—';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(0) + 'K';
+    return '' + v;
   }
 
-  function buildGrid() {
+  function buildLine(s, pal, z) {
+    const pts = s.points || []; if (!pts.length) return;
+    const isVol = document.getElementById('vizMetric').value === 'volume';
+    const valOf = pt => isVol ? pt.v : pt.p;
+    let lo = isVol ? (s.vol_min ?? 0) : s.price_min, hi = isVol ? (s.vol_max ?? 1) : s.price_max;
+    if (hi === lo) hi = lo + 1;
+    const yFor = v => ((v - lo) / (hi - lo)) * BAND - BAND / 2;
+    const verts = [], cols = [];
+    for (const pt of pts) {
+      const val = valOf(pt), n = (val - lo) / (hi - lo);
+      const c = pal.lo.clone().lerp(pal.hi, Math.max(0, Math.min(1, n)));   // gradient by height
+      if (pt.s === 'pre') c.multiplyScalar(0.5);                            // pre-market dimmer
+      verts.push(xFor(pt.t), yFor(val), z);
+      cols.push(c.r, c.g, c.b);
+    }
+    const last = pts[pts.length - 1];
+    if (last.t < AXIS - 1) { verts.push(xFor(AXIS), yFor(valOf(last)), z); cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b); }
+
+    const g = new LineGeometry(); g.setPositions(verts); g.setColors(cols);
+    const m = new LineMaterial({ linewidth: 2.6, vertexColors: true, transparent: true });
+    m.resolution.set(innerWidth, innerHeight);
+    const line = new Line2(g, m); line.computeLineDistances(); group.add(line);
+
+    const mx = xFor(last.t), my = yFor(valOf(last));
+    const mk = new THREE.Mesh(new THREE.SphereGeometry(1.2, 14, 14), new THREE.MeshBasicMaterial({ color: pal.mk }));
+    mk.position.set(mx, my, z); group.add(mk); markers.push(mk);
+    const tag = isVol ? fmtVol(s.last_vol) : '$' + (s.last_price ?? 0).toFixed(2);
+    mkLabel('', `<b>${s.ticker}</b><span>${tag}</span>`, mx + 3, my + 2.5, z);
+  }
+
+  function buildGroup(list, name, pal) {
+    if (!list.length) return 0;
+    const zBase = pal.back ? -18 : 26, dir = pal.back ? -1 : 1;
+    list.forEach((s, i) => buildLine(s, pal, zBase + dir * i * LANE));
+    const zc = zBase + dir * (list.length - 1) * LANE / 2;
+    mkLabel('grp', `<span style="color:#${pal.hi.getHexString()}">${name}</span>`, xFor(0) - 20, BAND / 2 + 10, zc);
+    return zBase + dir * (list.length - 1) * LANE;
+  }
+
+  function buildDecor() {
     if (!document.getElementById('vizGrid').checked) return;
-    const grid = new THREE.GridHelper(WIDTH, 24, 0x1b2236, 0x121826);
-    grid.position.y = -HEIGHT / 2 - 1; grid.material.transparent = true; grid.material.opacity = 0.5;
-    group.add(grid);
-    // 09:30 open divider
-    const xo = xFor(330);
-    const dv = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(xo, -HEIGHT/2, 0), new THREE.Vector3(xo, HEIGHT/2, 0)]),
-      new THREE.LineBasicMaterial({ color: 0x33507a, transparent: true, opacity: 0.5 }));
-    group.add(dv);
-    mkLabel('open', '9:30 open', xo, HEIGHT / 2 + 4, 0);
+    const grid = new THREE.GridHelper(WIDTH, 24, 0x1b2236, 0x0f1420);
+    grid.position.y = -BAND / 2 - 2; grid.material.transparent = true; grid.material.opacity = 0.5; group.add(grid);
+    const xo = xFor(330);                               // 09:30 open — a faint wall across Z
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(240, BAND + 8),
+      new THREE.MeshBasicMaterial({ color: 0x2b70b0, transparent: true, opacity: 0.05, side: THREE.DoubleSide }));
+    wall.rotation.y = Math.PI / 2; wall.position.set(xo, 0, 4); group.add(wall);
+    mkLabel('open', '9:30 open', xo, BAND / 2 + 6, 4);
   }
 
   function build(d) {
     clearScene();
-    const pts = d.points || [];
-    if (!pts.length) { overlay.className = ''; overlay.textContent = 'No price data for this session yet.'; overlay.style.display = 'flex'; return; }
-    pmin = d.price_min; pmax = d.price_max;
-    if (pmax === pmin) { pmax = pmin + 1; }
-    const pad = (pmax - pmin) * 0.12; pmin -= pad; pmax += pad;
+    const gi = (d.groups && d.groups.index) || [], gr = (d.groups && d.groups.refined) || [];
+    if (!gi.length && !gr.length) { overlay.className = ''; overlay.textContent = 'No price data for this session yet.'; overlay.style.display = 'flex'; return; }
+    buildDecor();
+    buildGroup(gi, 'INDEXES', PAL.index);
+    buildGroup(gr, 'REFINED', PAL.refined);
+    const showLabels = document.getElementById('vizLabels').checked;
+    group.traverse(o => { if (o.isCSS2DObject) o.visible = showLabels; });
 
-    buildGrid();
-
-    // Price line — split pre vs rth so each segment carries its own color, joined continuously.
-    const verts = [], cols = [];
-    for (const pt of pts) {
-      verts.push(xFor(pt.t), yFor(pt.p), 0);
-      const c = pt.s === 'rth' ? COL_RTH : COL_PRE;
-      cols.push(c.r, c.g, c.b);
-    }
-    // Flat future: horizontal leader from the last point to 16:00, fading to grey.
-    const last = pts[pts.length - 1];
-    if (last.t < AXIS - 1) {
-      verts.push(xFor(AXIS), yFor(last.p), 0);
-      cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b);
-    }
-    fatLine(verts, cols, 3.4);
-
-    // Leading-edge "now" marker + price label.
-    const mx = xFor(last.t), my = yFor(last.p);
-    marker = new THREE.Mesh(new THREE.SphereGeometry(1.4, 16, 16),
-      new THREE.MeshBasicMaterial({ color: d.phase === 'rth' ? 0xf472b6 : 0x22d3ee }));
-    marker.position.set(mx, my, 0); group.add(marker);
-    mkLabel('now', `${d.ticker} <b>$${last.p.toFixed(2)}</b>`, mx, my + 5, 0);
-
-    // Title / status
-    document.getElementById('vizTitle').textContent = d.ticker;
-    const phaseTxt = d.live
-      ? (d.phase === 'pre' ? 'pre-market' : d.phase === 'rth' ? 'regular hours' : d.phase === 'post' ? 'after-hours' : 'closed')
-      : 'last session';
+    document.getElementById('vizTitle').textContent = 'Price Timelines';
+    const phaseTxt = d.live ? (d.phase === 'pre' ? 'pre-market' : d.phase === 'rth' ? 'regular hours' : d.phase === 'post' ? 'after-hours' : 'closed') : 'last session';
     document.getElementById('vizSub').innerHTML =
       (d.live ? `<span class="live-dot"></span>LIVE · ${phaseTxt} · ${d.now_et} ET · ` : '')
-      + `${d.date} · last $${(d.last_price ?? 0).toFixed(2)}`;
+      + `${d.date} · ${gi.length} indexes · ${gr.length} refined`;
     document.getElementById('vizDate').value = d.date || '';
     overlay.style.display = 'none';
   }
@@ -207,41 +227,45 @@
   function animate() {
     requestAnimationFrame(animate);
     controls.autoRotate = document.getElementById('vizRotate').checked;
-    if (marker) marker.scale.setScalar(1 + 0.25 * Math.sin(performance.now() * 0.004));
+    const showLabels = document.getElementById('vizLabels').checked;
+    if (group) group.traverse(o => { if (o.isCSS2DObject && o.element.className.indexOf('grp') < 0 && o.element.className.indexOf('open') < 0) o.visible = showLabels; });
+    const s = 1 + 0.25 * Math.sin(performance.now() * 0.004);
+    markers.forEach(m => m.scale.setScalar(s));
     controls.update();
     renderer.render(scene, camera);
     labelRenderer.render(scene, camera);
   }
 
-  let _timer = null;
+  let _timer = null, _data = null;
   async function load() {
-    overlay.className = ''; if (!group || !curveObjs.length) { overlay.textContent = 'Fetching SIP prices…'; overlay.style.display = 'flex'; }
     const p = new URLSearchParams();
-    const tk = document.getElementById('vizTicker').value.trim().toUpperCase();
+    const ix = document.getElementById('vizIndexes').value.trim();
+    const rf = document.getElementById('vizRefined').value.trim();
     const dt = document.getElementById('vizDate').value.trim();
-    if (tk) p.set('ticker', tk);
+    if (ix) p.set('indexes', ix);
+    if (rf) p.set('refined', rf);
     if (dt) p.set('date', dt);
     try {
-      const d = await fetch('/api/viz/price_timeline?' + p).then(r => r.json());
+      const d = await fetch('/api/viz/price_lines?' + p).then(r => r.json());
       if (d.error) throw new Error(d.error);
-      build(d);
-      scheduleLive(d.live);
+      _data = d; build(d);
+      if (_timer) clearInterval(_timer);
+      if (d.live && document.getElementById('vizLive').checked) _timer = setInterval(load, 20000);
     } catch (e) {
       overlay.className = 'err'; overlay.textContent = 'Could not load: ' + e.message; overlay.style.display = 'flex';
     }
   }
-  function scheduleLive(isLive) {
-    if (_timer) clearInterval(_timer);
-    if (isLive && document.getElementById('vizLive').checked) _timer = setInterval(load, 20000);
-  }
+  // Metric / grid toggles rebuild from cached data — no refetch.
+  document.getElementById('vizMetric').addEventListener('change', () => { if (_data) build(_data); });
+  document.getElementById('vizGrid').addEventListener('change', () => { if (_data) build(_data); });
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight); labelRenderer.setSize(innerWidth, innerHeight);
-    curveObjs.forEach(l => l.material.resolution.set(innerWidth, innerHeight));
+    if (group) group.traverse(o => { if (o.material && o.material.resolution) o.material.resolution.set(innerWidth, innerHeight); });
   });
-  document.getElementById('vizReload').addEventListener('click', () => { overlay.textContent = 'Fetching SIP prices…'; overlay.style.display='flex'; load(); });
-  document.getElementById('vizLive').addEventListener('change', () => scheduleLive(true));
+  document.getElementById('vizReload').addEventListener('click', () => { overlay.textContent = 'Fetching SIP prices…'; overlay.style.display = 'flex'; load(); });
+  document.getElementById('vizLive').addEventListener('change', load);
   document.getElementById('vizDate').addEventListener('change', () => { document.getElementById('vizLive').checked = false; });
 
   animate();

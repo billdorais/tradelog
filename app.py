@@ -13717,6 +13717,23 @@ def _fetch_intraday_ext(ticker, date_str):
         return []
 
 
+def _price_points(bars, et, ax_start, ax_end, pre_end):
+    """1-min closes on the [ax_start, ax_end) minute-of-day axis, tagged pre/rth."""
+    import datetime as _dtp
+    pts = []
+    for b in bars:
+        ts = b.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dtp.timezone.utc)
+        te  = ts.astimezone(et)
+        mod = te.hour * 60 + te.minute
+        if ax_start <= mod < ax_end:
+            pts.append({"t": mod - ax_start, "p": round(float(b.close), 4),
+                        "v": round(float(getattr(b, "volume", 0) or 0)),
+                        "s": "rth" if pre_end <= mod < ax_end else "pre"})
+    return pts
+
+
 @app.route("/api/viz/price_timeline")
 def api_viz_price_timeline():
     """Live 3D price-timeline data for one ticker: the day's 1-min closes laid on a
@@ -13747,16 +13764,7 @@ def api_viz_price_timeline():
         if not date_str:
             date_str = now_et.date().isoformat()
 
-    points = []
-    for b in bars:
-        ts = b.timestamp
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=_dtp.timezone.utc)
-        te  = ts.astimezone(et)
-        mod = te.hour * 60 + te.minute
-        if AX_START <= mod < AX_END:
-            points.append({"t": mod - AX_START, "p": round(float(b.close), 4),
-                           "s": "rth" if PRE_END <= mod < AX_END else "pre"})
+    points = _price_points(bars, et, AX_START, AX_END, PRE_END)
 
     now_mod = now_et.hour * 60 + now_et.minute
     if live:
@@ -13779,6 +13787,81 @@ def api_viz_price_timeline():
         "price_min": round(min(prices), 4) if prices else None,
         "price_max": round(max(prices), 4) if prices else None,
         "last_price": points[-1]["p"] if points else None,
+        "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
+    })
+
+
+@app.route("/api/viz/price_lines")
+def api_viz_price_lines():
+    """Multi-ticker price timeline in two groups — the INDEXES (SPY/QQQ/SMH…) and the
+    REFINED books' tickers — each on the fixed 04:00→16:00 ET axis. The page draws
+    them as separate Z-clusters with their own colour-ways. ?indexes=CSV,
+    ?refined=CSV (blank = the refined watchlist), ?date=YYYY-MM-DD."""
+    import datetime as _dtp
+    import concurrent.futures as _cf
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dtp.timezone(_dtp.timedelta(hours=-4))
+    now_et = _dtp.datetime.now(et)
+    AX_START, AX_END, PRE_END = 4 * 60, 16 * 60, 9 * 60 + 30
+
+    indexes = [t.strip().upper() for t in (request.args.get("indexes") or "SPY,QQQ,SMH").split(",") if t.strip()][:6]
+    _ref = (request.args.get("refined") or "").strip()
+    if _ref:
+        refined = [t.strip().upper() for t in _ref.split(",") if t.strip()][:8]
+    else:
+        refined = [t for t in _pulse_watchlist(limit=10) if t not in indexes][:6]
+
+    date_str = (request.args.get("date") or "").strip()
+    live = False
+    if date_str:
+        live = (date_str == now_et.date().isoformat())
+    else:
+        cand = now_et.date()
+        for _ in range(8):
+            if cand.weekday() < 5 and _fetch_intraday_ext("SPY", cand.isoformat()):
+                date_str = cand.isoformat(); live = (cand == now_et.date()); break
+            cand -= _dtp.timedelta(days=1)
+        if not date_str:
+            date_str = now_et.date().isoformat()
+
+    universe = indexes + [t for t in refined if t not in indexes]
+    series = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_fetch_intraday_ext, t, date_str): t for t in universe}
+        for f in _cf.as_completed(futs):
+            t = futs[f]
+            try:    series[t] = _price_points(f.result(), et, AX_START, AX_END, PRE_END)
+            except Exception: series[t] = []
+
+    def _pack(t):
+        pts = series.get(t) or []
+        prices = [p["p"] for p in pts]
+        vols   = [p["v"] for p in pts]
+        return {"ticker": t, "points": pts,
+                "price_min": round(min(prices), 4) if prices else None,
+                "price_max": round(max(prices), 4) if prices else None,
+                "last_price": pts[-1]["p"] if pts else None,
+                "vol_min": min(vols) if vols else None,
+                "vol_max": max(vols) if vols else None,
+                "last_vol": pts[-1]["v"] if pts else None}
+
+    grp_index   = [_pack(t) for t in indexes if series.get(t)]
+    grp_refined = [_pack(t) for t in refined if series.get(t) and t not in indexes]
+
+    now_mod = now_et.hour * 60 + now_et.minute
+    if live:
+        now_t = max(0, min(AX_END - AX_START, now_mod - AX_START))
+        phase = ("pre"  if AX_START <= now_mod < PRE_END else
+                 "rth"  if PRE_END <= now_mod < AX_END else
+                 "post" if AX_END <= now_mod < 20 * 60 else "closed")
+    else:
+        now_t, phase = 0, "closed"
+
+    return jsonify({
+        "date": date_str, "live": live, "phase": phase, "now_et": now_et.strftime("%H:%M"),
+        "axis_minutes": AX_END - AX_START, "pre_end_t": PRE_END - AX_START,
+        "rth_end_t": AX_END - AX_START, "now_t": now_t,
+        "groups": {"index": grp_index, "refined": grp_refined},
         "asof": _dtp.datetime.now(_dtp.timezone.utc).isoformat(),
     })
 
