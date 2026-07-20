@@ -75,7 +75,7 @@
 <div class="legend">
   <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
   <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.64rem">phases: <span style="color:#7b83a3">pre</span> · rth · <span style="color:#b388ff">post</span> — height = RVOL · tag = current RVOL %</span>
+  <span style="color:#5b6a85;font-size:0.64rem">phases: <span style="color:#7b83a3">pre</span> · rth · <span style="color:#b388ff">post</span> — height = RVOL · tag = current RVOL × (matches 1.5× / 2× / 3× gate lines)</span>
 </div>
 
 <div class="panel">
@@ -227,12 +227,14 @@
     const line = new Line2(g, m); line.computeLineDistances(); group.add(line);
 
     const rvClass = emph < 0.25 ? 'rv1' : emph < 0.5 ? 'rv2' : emph < 0.8 ? 'rv3' : 'rv4';
-    // Label uses the CURRENT rvol (uncapped raw) so a 950% spike doesn't get
-    // squashed to 600% — and so the number reads as the true real-time value,
-    // not the day's peak. Falls back to capped fields for older responses.
+    // Label = current RVOL as a multiple (matches the 1.5× / 2× / 3× gate
+    // lines drawn behind the chart). Uses the uncapped raw value so a 12×
+    // spike reads truthfully; the visual line height still caps at 6×.
     const rvLast = (s.rvol_last_raw != null) ? s.rvol_last_raw
                  : (s.rvol_last     != null) ? s.rvol_last     : rvol;
-    const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${Math.round(rvLast * 100)}%`;
+    const tag = metric === 'price'
+      ? '$' + (s.last_price ?? 0).toFixed(2)
+      : (rvLast >= 10 ? rvLast.toFixed(0) : rvLast.toFixed(1)) + '×';
     mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, lastY + 2.5, z);
   }
 
