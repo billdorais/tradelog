@@ -13746,11 +13746,16 @@ def _price_points(bars, et, ax_start, ax_end, pre_end, lookback=20):
             pts.append({"t": mod - ax_start, "p": round(float(b.close), 4),
                         "v": round(float(getattr(b, "volume", 0) or 0)),
                         "s": "rth" if pre_end <= mod < ax_end else "pre"})
+    # Per-minute RVOL = bar volume ÷ trailing-`lookback` average, but the baseline is
+    # FLOORED at 20% of the session mean so a near-empty pre-market average can't blow
+    # the ratio up to 15×+, and capped at 6× (the height scale) so it stays sane.
     vols = [p["v"] for p in pts]
+    mean_v = (sum(vols) / len(vols)) if vols else 0.0
+    floor = 0.2 * mean_v
     for k, p in enumerate(pts):
         base = vols[max(0, k - lookback):k]
-        avg = (sum(base) / len(base)) if base else 0.0
-        p["r"] = round(vols[k] / avg, 3) if avg > 0 else 0.0
+        avg = max((sum(base) / len(base)) if base else 0.0, floor)
+        p["r"] = round(min(vols[k] / avg, 6.0), 3) if avg > 0 else 0.0
     return pts
 
 
