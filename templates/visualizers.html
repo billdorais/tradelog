@@ -141,14 +141,13 @@
 
   function clearScene() {
     if (group) {
-      // Remove CSS2D label DOM elements too — otherwise old labels linger in the
-      // DOM frozen at their last screen position (stale "camera-locked" labels).
-      group.traverse(o => {
-        if (o.isCSS2DObject && o.element && o.element.parentNode) o.element.parentNode.removeChild(o.element);
-        o.geometry?.dispose?.(); o.material?.dispose?.();
-      });
+      group.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
       scene.remove(group);
     }
+    // Wipe every label DOM node — otherwise a de-anchored label stops being
+    // re-projected and freezes at its last screen position (looks "stuck to the
+    // camera" as you orbit). CSS2DRenderer re-appends the fresh labels on next render.
+    labelRenderer.domElement.replaceChildren();
     group = new THREE.Group(); scene.add(group); markers = [];
   }
   function mkLabel(cls, html, x, y, z) {
