@@ -75,7 +75,7 @@
 <div class="legend">
   <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
   <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.64rem">height = RVOL (crosses the 1.5/2/3× lines) · tag = RVOL % · grey = &lt;1.5× · dim = pre-market</span>
+  <span style="color:#5b6a85;font-size:0.64rem">height = RVOL (smoothed, noise-floored) · saturation = hottest vs the pack · tag = RVOL %</span>
 </div>
 
 <div class="panel">
@@ -143,7 +143,8 @@
     refined: { lo: new THREE.Color(0xfbbf24), hi: new THREE.Color(0xf472b6), mk: 0xffc4e6, back: false },
   };
   const COL_FUT = new THREE.Color(0x39415e);
-  let group = null, rvolMax = 6;   // fixed RVOL height scale
+  let group = null, rvolMax = 6, maxRvol = 6, avgRvol = 1;   // RVOL scale + relative-emphasis stats
+  const NOISE = 0.7;               // RVOL noise floor — below this reads as flat (baseline)
 
   const xFor = t => (t / AXIS) * WIDTH - WIDTH / 2;
 
@@ -171,48 +172,59 @@
   }
 
   const GREY = new THREE.Color(0x565c70);
-  // RVOL → colour saturation: <1.5x greyed out, 1.5x = 75%, >=2x = full.
-  function rvolSat(rvol) {
-    if (rvol < 1.5) return 0.12;
-    if (rvol < 2.0) return 0.75 + (rvol - 1.5) / 0.5 * 0.25;
-    return 1.0;
+  function movingAvg(arr, w) {                     // centred moving average → de-noise + curve
+    const h = Math.floor(w / 2), out = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      let s = 0, c = 0;
+      for (let j = Math.max(0, i - h); j <= Math.min(arr.length - 1, i + h); j++) { s += arr[j]; c++; }
+      out[i] = s / c;
+    }
+    return out;
   }
 
   function buildLine(s, pal, z) {
     const pts = s.points || []; if (!pts.length) return;
     const metric = document.getElementById('vizMetric').value;
     const valOf = pt => metric === 'rvol' ? (pt.r ?? 0) : metric === 'volume' ? pt.v : pt.p;
-    // RVOL uses a SHARED 0→rvolMax scale (so 1.5/2/3× line up across tickers);
-    // price/volume normalise per-ticker.
+    const isRvol = metric === 'rvol';
     let lo, hi;
-    if (metric === 'rvol')        { lo = 0; hi = rvolMax; }
+    if (isRvol)                   { lo = 0; hi = rvolMax; }
     else if (metric === 'volume') { lo = s.vol_min ?? 0; hi = s.vol_max ?? 1; }
     else                          { lo = s.price_min; hi = s.price_max; }
     if (hi === lo) hi = lo + 1;
-    const yFor = v => ((v - lo) / (hi - lo)) * BAND - BAND / 2;
+    // RVOL: subtract a noise floor so normal volume sits near the baseline and only
+    // surges rise (0..rvolMax). price/volume: per-ticker min→max.
+    const top = isRvol ? (rvolMax - NOISE) : (hi - lo);
+    const norm = v => isRvol ? Math.max(0, Math.min(1, (Math.min(v, rvolMax) - NOISE) / top))
+                             : Math.max(0, Math.min(1, (v - lo) / top));
+    const yFor = v => norm(v) * BAND - BAND / 2;
 
-    const rvol = s.rvol ?? 0, sat = rvolSat(rvol);
-    const clampY = v => metric === 'rvol' ? Math.min(v, hi) : v;           // spikes flat-top at the scale max
+    // Relative emphasis: grey below the group average, full saturation for the hottest.
+    const rvol = s.rvol ?? 0;
+    const emph = maxRvol > avgRvol ? Math.max(0, Math.min(1, (rvol - avgRvol) / (maxRvol - avgRvol)))
+                                   : (rvol >= 1.5 ? 1 : 0.15);
+    const sat = 0.08 + 0.92 * emph;
+
+    const sm = movingAvg(pts.map(valOf), 7);       // smooth to de-noise / curve the line
     const verts = [], cols = [];
-    for (const pt of pts) {
-      const val = valOf(pt), n = Math.max(0, Math.min(1, (val - lo) / (hi - lo)));
-      const c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, n), sat);     // gradient by height, de-sat by RVOL
-      if (pt.s === 'pre') c.multiplyScalar(0.5);                            // pre-market dimmer
-      verts.push(xFor(pt.t), yFor(clampY(val)), z);
+    for (let i = 0; i < pts.length; i++) {
+      const c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, norm(sm[i])), sat);
+      if (pts[i].s === 'pre') c.multiplyScalar(0.5);
+      verts.push(xFor(pts[i].t), yFor(sm[i]), z);
       cols.push(c.r, c.g, c.b);
     }
-    const last = pts[pts.length - 1];
-    if (last.t < AXIS - 1) { verts.push(xFor(AXIS), yFor(clampY(valOf(last))), z); cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b); }
+    const last = pts[pts.length - 1], lastY = yFor(sm[sm.length - 1]);
+    if (last.t < AXIS - 1) { verts.push(xFor(AXIS), lastY, z); cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b); }
 
-    const lw = rvol < 1.5 ? 1.0 : rvol < 2 ? 1.4 : rvol < 3 ? 1.8 : 2.2;    // hotter = a touch thicker (thin overall)
+    const lw = 1.0 + 1.3 * emph;                   // only the hottest thicken up
     const g = new LineGeometry(); g.setPositions(verts); g.setColors(cols);
     const m = new LineMaterial({ linewidth: lw, vertexColors: true, transparent: true });
     m.resolution.set(innerWidth, innerHeight);
     const line = new Line2(g, m); line.computeLineDistances(); group.add(line);
 
-    const rvClass = rvol < 1.5 ? 'rv1' : rvol < 2 ? 'rv2' : rvol < 3 ? 'rv3' : 'rv4';
+    const rvClass = emph < 0.25 ? 'rv1' : emph < 0.5 ? 'rv2' : emph < 0.8 ? 'rv3' : 'rv4';
     const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${Math.round(rvol * 100)}%`;
-    mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, yFor(clampY(valOf(last))) + 2.5, z);
+    mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, lastY + 2.5, z);
   }
 
   function buildGroup(list, name, pal) {
@@ -240,7 +252,8 @@
 
   function buildRefLevels() {
     // Thin outline rectangles at the 1.5 / 2 / 3× RVOL gate levels — no grey fill.
-    const yFor = r => (r / rvolMax) * BAND - BAND / 2;
+    const top = rvolMax - NOISE;
+    const yFor = r => Math.max(0, Math.min(1, (Math.min(r, rvolMax) - NOISE) / top)) * BAND - BAND / 2;
     const levels = [[1.5, 0x3a6ea5], [2.0, 0xa5892b], [3.0, 0xa53a6a]];
     const zA = -52, zB = 104;
     for (const [r, col] of levels) {
@@ -258,9 +271,11 @@
     clearScene();
     const gi = (d.groups && d.groups.index) || [], gr = (d.groups && d.groups.refined) || [];
     if (!gi.length && !gr.length) { overlay.className = ''; overlay.textContent = 'No price data for this session yet.'; overlay.style.display = 'flex'; return; }
-    // Fixed RVOL height scale so the 1.5/2/3× levels always sit at readable heights;
-    // taller pre-market spikes flat-top at the max (their true % still shows in the tag).
+    // Fixed RVOL height scale + relative-emphasis stats (avg/max peak across tickers).
     rvolMax = 6;
+    const peaks = [...gi, ...gr].map(x => x.rvol || 0);
+    maxRvol = Math.max(1e-6, ...peaks);
+    avgRvol = peaks.length ? peaks.reduce((a, b) => a + b, 0) / peaks.length : 1;
     buildDecor();
     if (document.getElementById('vizMetric').value === 'rvol') buildRefLevels();
     buildGroup(gi, 'INDEXES', PAL.index);
