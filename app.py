@@ -13919,12 +13919,19 @@ def api_viz_price_lines():
     now_et = _dtp.datetime.now(et)
     AX_START, AX_END, PRE_END = 4 * 60, 16 * 60, 9 * 60 + 30
 
-    indexes = [t.strip().upper() for t in (request.args.get("indexes") or "SPY,QQQ,SMH").split(",") if t.strip()][:6]
+    # Optional ?limit=N cap so the client can throttle when tickers get busy.
+    # Defaults sized for a typical refined snapshot (~15-20 unique symbols) —
+    # the old caps of 6/8 silently dropped over half of them.
+    try:    _cap = int(request.args.get("limit") or 25)
+    except (TypeError, ValueError): _cap = 25
+    _cap = max(1, min(50, _cap))
+
+    indexes = [t.strip().upper() for t in (request.args.get("indexes") or "SPY,QQQ,SMH").split(",") if t.strip()][:10]
     _ref = (request.args.get("refined") or "").strip()
     if _ref:
-        refined = [t.strip().upper() for t in _ref.split(",") if t.strip()][:8]
+        refined = [t.strip().upper() for t in _ref.split(",") if t.strip()][:_cap]
     else:
-        refined = [t for t in _pulse_watchlist(limit=10) if t not in indexes][:6]
+        refined = [t for t in _pulse_watchlist(limit=_cap * 2) if t not in indexes][:_cap]
 
     date_str = (request.args.get("date") or "").strip()
     live = False
