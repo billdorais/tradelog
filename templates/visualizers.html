@@ -75,7 +75,7 @@
 <div class="legend">
   <span><i style="background:linear-gradient(90deg,#22d3ee,#818cf8)"></i>indexes · back</span>
   <span><i style="background:linear-gradient(90deg,#fbbf24,#f472b6)"></i>refined · front</span>
-  <span style="color:#5b6a85;font-size:0.64rem">height = RVOL (ridges cross the 1.5/2/3× planes) · grey = &lt;1.5× · dim = pre-market</span>
+  <span style="color:#5b6a85;font-size:0.64rem">height = RVOL (crosses the 1.5/2/3× lines) · tag = RVOL % · grey = &lt;1.5× · dim = pre-market</span>
 </div>
 
 <div class="panel">
@@ -143,7 +143,7 @@
     refined: { lo: new THREE.Color(0xfbbf24), hi: new THREE.Color(0xf472b6), mk: 0xffc4e6, back: false },
   };
   const COL_FUT = new THREE.Color(0x39415e);
-  let group = null, markers = [], rvolMax = 3.5;   // shared RVOL height scale
+  let group = null, rvolMax = 6;   // fixed RVOL height scale
 
   const xFor = t => (t / AXIS) * WIDTH - WIDTH / 2;
 
@@ -156,7 +156,7 @@
     // re-projected and freezes at its last screen position (looks "stuck to the
     // camera" as you orbit). CSS2DRenderer re-appends the fresh labels on next render.
     labelRenderer.domElement.replaceChildren();
-    group = new THREE.Group(); scene.add(group); markers = [];
+    group = new THREE.Group(); scene.add(group);
   }
   function mkLabel(cls, html, x, y, z) {
     const el = document.createElement('div'); el.className = 'vlabel ' + cls; el.innerHTML = html;
@@ -192,31 +192,27 @@
     const yFor = v => ((v - lo) / (hi - lo)) * BAND - BAND / 2;
 
     const rvol = s.rvol ?? 0, sat = rvolSat(rvol);
+    const clampY = v => metric === 'rvol' ? Math.min(v, hi) : v;           // spikes flat-top at the scale max
     const verts = [], cols = [];
     for (const pt of pts) {
       const val = valOf(pt), n = Math.max(0, Math.min(1, (val - lo) / (hi - lo)));
       const c = GREY.clone().lerp(pal.lo.clone().lerp(pal.hi, n), sat);     // gradient by height, de-sat by RVOL
       if (pt.s === 'pre') c.multiplyScalar(0.5);                            // pre-market dimmer
-      verts.push(xFor(pt.t), yFor(val), z);
+      verts.push(xFor(pt.t), yFor(clampY(val)), z);
       cols.push(c.r, c.g, c.b);
     }
     const last = pts[pts.length - 1];
-    if (last.t < AXIS - 1) { verts.push(xFor(AXIS), yFor(valOf(last)), z); cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b); }
+    if (last.t < AXIS - 1) { verts.push(xFor(AXIS), yFor(clampY(valOf(last))), z); cols.push(COL_FUT.r, COL_FUT.g, COL_FUT.b); }
 
-    const lw = rvol < 1.5 ? 1.7 : rvol < 2 ? 2.6 : rvol < 3 ? 3.4 : 4.3;    // hotter = thicker
+    const lw = rvol < 1.5 ? 1.0 : rvol < 2 ? 1.4 : rvol < 3 ? 1.8 : 2.2;    // hotter = a touch thicker (thin overall)
     const g = new LineGeometry(); g.setPositions(verts); g.setColors(cols);
     const m = new LineMaterial({ linewidth: lw, vertexColors: true, transparent: true });
     m.resolution.set(innerWidth, innerHeight);
     const line = new Line2(g, m); line.computeLineDistances(); group.add(line);
 
-    const mx = xFor(last.t), my = yFor(valOf(last));
-    const mk = new THREE.Mesh(new THREE.SphereGeometry(1.2 + Math.max(0, rvol - 1.5) * 0.5, 14, 14),
-      new THREE.MeshBasicMaterial({ color: GREY.clone().lerp(new THREE.Color(pal.mk), sat) }));
-    mk.position.set(mx, my, z); group.add(mk); markers.push(mk);
-
     const rvClass = rvol < 1.5 ? 'rv1' : rvol < 2 ? 'rv2' : rvol < 3 ? 'rv3' : 'rv4';
-    const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${rvol.toFixed(1)}×`;
-    mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, mx + 3, my + 2.5, z);
+    const tag = metric === 'price' ? '$' + (s.last_price ?? 0).toFixed(2) : `${Math.round(rvol * 100)}%`;
+    mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, yFor(clampY(valOf(last))) + 2.5, z);
   }
 
   function buildGroup(list, name, pal) {
@@ -229,27 +225,32 @@
   }
 
   function buildDecor() {
-    if (!document.getElementById('vizGrid').checked) return;
-    const grid = new THREE.GridHelper(WIDTH, 24, 0x1b2236, 0x0f1420);
-    grid.position.y = -BAND / 2 - 2; grid.material.transparent = true; grid.material.opacity = 0.5; group.add(grid);
-    const xo = xFor(330);                               // 09:30 open — a faint wall across Z
-    const wall = new THREE.Mesh(new THREE.PlaneGeometry(240, BAND + 8),
-      new THREE.MeshBasicMaterial({ color: 0x2b70b0, transparent: true, opacity: 0.05, side: THREE.DoubleSide }));
-    wall.rotation.y = Math.PI / 2; wall.position.set(xo, 0, 4); group.add(wall);
-    mkLabel('open', '9:30 open', xo, BAND / 2 + 6, 4);
+    const xo = xFor(330);
+    if (document.getElementById('vizGrid').checked) {
+      const grid = new THREE.GridHelper(WIDTH, 24, 0x1b2236, 0x0f1420);
+      grid.position.y = -BAND / 2 - 2; grid.material.transparent = true; grid.material.opacity = 0.45; group.add(grid);
+    }
+    // 09:30 open — a thin line + label (no filled plane).
+    const ln = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(xo, -BAND / 2, 4), new THREE.Vector3(xo, BAND / 2, 4)]),
+      new THREE.LineBasicMaterial({ color: 0x33507a, transparent: true, opacity: 0.4 }));
+    group.add(ln);
+    mkLabel('open', '9:30', xo, BAND / 2 + 5, 4);
   }
 
-  function buildRefPlanes() {
-    // Faint horizontal reference planes at the 1.5 / 2 / 3× RVOL gate levels.
+  function buildRefLevels() {
+    // Thin outline rectangles at the 1.5 / 2 / 3× RVOL gate levels — no grey fill.
     const yFor = r => (r / rvolMax) * BAND - BAND / 2;
-    const levels = [[1.5, 0x2b70b0], [2.0, 0xb08a2b], [3.0, 0xb02b6a]];
+    const levels = [[1.5, 0x3a6ea5], [2.0, 0xa5892b], [3.0, 0xa53a6a]];
+    const zA = -52, zB = 104;
     for (const [r, col] of levels) {
       if (r > rvolMax) continue;
       const y = yFor(r);
-      const plane = new THREE.Mesh(new THREE.PlaneGeometry(WIDTH, 210),
-        new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.06, side: THREE.DoubleSide }));
-      plane.rotation.x = -Math.PI / 2; plane.position.set(0, y, 4); group.add(plane);
-      mkLabel('open', `${r}×`, -WIDTH / 2 - 8, y, 4);
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-WIDTH / 2, y, zA), new THREE.Vector3(WIDTH / 2, y, zA),
+        new THREE.Vector3(WIDTH / 2, y, zB), new THREE.Vector3(-WIDTH / 2, y, zB), new THREE.Vector3(-WIDTH / 2, y, zA)]);
+      group.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.35 })));
+      mkLabel('open', `${r}×`, -WIDTH / 2 - 8, y, zA);
     }
   }
 
@@ -257,11 +258,11 @@
     clearScene();
     const gi = (d.groups && d.groups.index) || [], gr = (d.groups && d.groups.refined) || [];
     if (!gi.length && !gr.length) { overlay.className = ''; overlay.textContent = 'No price data for this session yet.'; overlay.style.display = 'flex'; return; }
-    // Shared RVOL scale from the hottest ticker (headroom above 3× so peaks read).
-    const allPeaks = [...gi, ...gr].map(s => s.rvol || 0);
-    rvolMax = Math.max(3.5, Math.ceil(Math.max(0, ...allPeaks) * 1.1));
+    // Fixed RVOL height scale so the 1.5/2/3× levels always sit at readable heights;
+    // taller pre-market spikes flat-top at the max (their true % still shows in the tag).
+    rvolMax = 6;
     buildDecor();
-    if (document.getElementById('vizMetric').value === 'rvol') buildRefPlanes();
+    if (document.getElementById('vizMetric').value === 'rvol') buildRefLevels();
     buildGroup(gi, 'INDEXES', PAL.index);
     buildGroup(gr, 'REFINED', PAL.refined);
     const showLabels = document.getElementById('vizLabels').checked;
@@ -281,8 +282,6 @@
     controls.autoRotate = document.getElementById('vizRotate').checked;
     const showLabels = document.getElementById('vizLabels').checked;
     if (group) group.traverse(o => { if (o.isCSS2DObject && o.element.className.indexOf('grp') < 0 && o.element.className.indexOf('open') < 0) o.visible = showLabels; });
-    const s = 1 + 0.25 * Math.sin(performance.now() * 0.004);
-    markers.forEach(m => m.scale.setScalar(s));
     controls.update();
     renderer.render(scene, camera);
     labelRenderer.render(scene, camera);
