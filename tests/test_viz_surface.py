@@ -84,7 +84,8 @@ def test_price_timeline_sessions_and_axis(monkeypatch):
     with a.app.test_client() as c:
         d = c.get("/api/viz/price_timeline?ticker=SPY&date=2026-07-10").get_json()
     assert d["ticker"] == "SPY" and d["date"] == "2026-07-10"
-    assert d["axis_minutes"] == 720 and d["pre_end_t"] == 330   # 04:00→16:00, 09:30 open
+    # Axis is 04:00→20:00 (pre + rth + after-hours); 09:30 open, 16:00 close.
+    assert d["axis_minutes"] == 960 and d["pre_end_t"] == 330 and d["rth_end_t"] == 720
     pts = d["points"]
     assert [p["s"] for p in pts] == ["pre", "pre", "rth", "rth"]
     assert [p["t"] for p in pts] == [240, 300, 330, 360]        # minutes past 04:00
