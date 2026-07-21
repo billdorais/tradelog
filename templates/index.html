@@ -3377,7 +3377,8 @@
           return;
         }
         const prev = d.prev_stop_price != null ? `$${d.prev_stop_price.toFixed(2)}` : 'n/a';
-        alert(`✓ ${symbol} stop moved: ${prev} → $${d.new_stop_price.toFixed(2)} (${mode})`);
+        const trail = d.new_trail_pct != null ? ` · now trailing at ${d.new_trail_pct}%` : '';
+        alert(`✓ ${symbol} stop moved: ${prev} → $${d.new_stop_price.toFixed(2)} (${mode})${trail}`);
         loadOpenPositionsTable();
       } catch (e) {
         alert('Error: ' + e.message);

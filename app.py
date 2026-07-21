@@ -331,7 +331,20 @@ _position_peaks       = {}      # {(broker, SYMBOL): peak_unrealized_pnl}; clear
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
 _max_hold_fail_ticks  = {}      # {(broker_tag, SYMBOL): consecutive_fail_count}
+# Per-position trail override set by the dashboard Pull-Stop buttons: the gap the
+# pull created (peak→new stop, as %) becomes the NEW trailing distance for that
+# position, replacing the routing rule's trail_pct in the Kairos trail monitor.
+# Cleared on close. {(broker_tag, SYMBOL): trail_pct}
+_manual_trail_pct     = {}
 _risk_lock            = threading.Lock()
+
+def _set_manual_trail(broker_tag, symbol, pct):
+    with _risk_lock:
+        _manual_trail_pct[(broker_tag, symbol.upper())] = float(pct)
+
+def _get_manual_trail(broker_tag, symbol):
+    with _risk_lock:
+        return _manual_trail_pct.get((broker_tag, symbol.upper()))
 
 # Phase-2 engine pilot runtime state. `entered` = setup keys already armed today
 # (one entry per setup/day); `prev_px` = last seen price per ticker for fresh-cross
@@ -1383,6 +1396,7 @@ def _check_position_stops():
         stale_peaks = [k for k in _position_peaks if k not in open_keys]
         for k in stale_peaks:
             _position_peaks.pop(k, None)
+            _manual_trail_pct.pop(k, None)   # drop any manual trail override too
         stale_holds = [k for k in _max_hold_positions if k[0] in nonempty_brokers and k not in open_keys]
         for k in stale_holds:
             _max_hold_positions.pop(k, None)
@@ -1471,7 +1485,10 @@ def _check_position_stops():
             qty_f      = float(pos.get("qty") or 0)
             if entry_px and current_px and qty_f:
                 strat     = _pos_strat
-                trail_pct = _get_route_trail_pct(strat or "")
+                # A manual Pull-Stop override becomes THE trailing distance for this
+                # position (takes precedence over the rule's trail, and bypasses tiers).
+                _manual   = _get_manual_trail(broker, sym_u)
+                trail_pct = _manual if _manual else _get_route_trail_pct(strat or "")
                 if trail_pct:
                     is_long  = qty_f > 0
                     qty_abs  = abs(qty_f)
@@ -1485,8 +1502,9 @@ def _check_position_stops():
                     # at +0.5%), locking in profit without an unprotected early window.
                     peak_gain_pct = ((peak_px - entry_px) / entry_px * 100) if is_long \
                                     else ((entry_px - peak_px) / entry_px * 100)
-                    _tiers    = _get_route_trail_tiers(strat or "")
-                    eff_trail = _get_tiered_trail(peak_gain_pct, _tiers, trail_pct) if _tiers else trail_pct
+                    _tiers    = None if _manual else _get_route_trail_tiers(strat or "")
+                    eff_trail = _manual if _manual else (
+                        _get_tiered_trail(peak_gain_pct, _tiers, trail_pct) if _tiers else trail_pct)
                     # Stop level: effective trail % below peak for long, above for short
                     stop_px  = (peak_px * (1 - eff_trail / 100) if is_long
                                 else peak_px * (1 + eff_trail / 100))
@@ -3650,9 +3668,26 @@ def alpaca_pull_stop(symbol):
 
     result = broker.replace_stop(sym, new_stop)
     if result.get("success"):
-        log.info("Manual stop pull: %s [%s] mode=%s → stop=%.4f",
-                 sym, broker_tag, mode or "price", result.get("new_stop_price"))
-        return jsonify({**result, "mode": mode or "price"})
+        # The gap this pull created becomes the NEW trailing distance: measure it
+        # peak→new-stop (so the trail starts exactly at the pulled level and rides up
+        # from the peak at that %). Falls back to current price if no peak tracked yet.
+        new_trail_pct = None
+        try:
+            with _risk_lock:
+                _peak_pnl = _position_peaks.get((broker_tag, sym))
+            peak_px = cur_px
+            if _peak_pnl is not None and qty_val:
+                peak_px = entry_px + (_peak_pnl / abs(qty_val)) if is_long \
+                          else entry_px - (_peak_pnl / abs(qty_val))
+            ref = max(peak_px, cur_px) if is_long else min(peak_px, cur_px)
+            if ref > 0:
+                new_trail_pct = round(max(0.05, abs(ref - new_stop) / ref * 100), 3)
+                _set_manual_trail(broker_tag, sym, new_trail_pct)
+        except Exception as _te:
+            log.warning("pull_stop %s: could not set manual trail: %s", sym, _te)
+        log.info("Manual stop pull: %s [%s] mode=%s → stop=%.4f, new trail=%s%%",
+                 sym, broker_tag, mode or "price", result.get("new_stop_price"), new_trail_pct)
+        return jsonify({**result, "mode": mode or "price", "new_trail_pct": new_trail_pct})
     return jsonify(result), 400
 
 
