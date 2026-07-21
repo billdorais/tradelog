@@ -329,6 +329,13 @@ class AlpacaBroker:
         acct = self._trading.get_account()
         return float(acct.equity) - float(acct.last_equity)
 
+    def account_equity(self):
+        """Current account equity. Unlike daily_pnl (equity − last_equity), this is
+        independent of Alpaca's last_equity roll timing, so the daily-loss guard can
+        measure the day's P&L from a baseline it captures itself at the ET-midnight roll."""
+        self._ensure_client()
+        return float(self._trading.get_account().equity)
+
     def _activate_trail_on_trigger(self, ticker, qty, action, trail_trigger, trail_offset,
                                     trail_mode, hard_stop_id, ref_price, strat_slug):
         """Background thread: polls unrealized P&L and swaps the hard stop for a

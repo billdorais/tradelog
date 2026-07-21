@@ -321,6 +321,7 @@ def _reversal_gate_block(strategy: str, side: str, account_tag: str) -> bool:
 _risk_halted          = False   # True when ANY account's daily-loss guard is halted (back-compat badge)
 _daily_loss_halted    = {}      # {account_tag: bool} — that account hit MAX_DAILY_LOSS → halted + liquidated
 _daily_loss_day       = None    # ET date the daily-loss halt state applies to (auto-resets daily)
+_daily_loss_baseline  = {}      # {account_tag: equity captured at the day roll} — the guard's daily-P&L baseline (independent of Alpaca's last_equity timing)
 _profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
 _profit_lock_halted   = {}      # {account_tag: bool} — armed then gave back → its new entries blocked
 _profit_lock_day      = None    # ET date the arm/halt state applies to (auto-resets daily)
@@ -1169,59 +1170,73 @@ def _compute_daily_pnl():
         return _daily_pnl_cache["value"]
 
 
+def _daily_loss_guard_tick():
+    """One daily-loss-guard evaluation (extracted for testability). Each guarded
+    account (Refined/Kairos/Crew; farms exempt) halts + liquidates INDEPENDENTLY when
+    its P&L since today's baseline hits MAX_DAILY_LOSS. The baseline is each account's
+    equity captured at the ET-midnight roll — NOT broker.daily_pnl() (equity −
+    last_equity), whose baseline only rolls at the market open, so after a loss day it
+    would keep re-halting through pre-market and never clear. Resets at ET midnight."""
+    global _risk_halted, _daily_loss_day
+    if MAX_DAILY_LOSS >= 0:
+        return
+    try:
+        try:
+            _dl_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        except Exception:
+            from datetime import timedelta as _td
+            _dl_today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+        with _risk_lock:
+            if _daily_loss_day != _dl_today:
+                _daily_loss_day = _dl_today
+                _daily_loss_halted.clear()     # new trading day → clear halts
+                _daily_loss_baseline.clear()   # ...and re-capture equity baselines
+        _any_dl_halt = False
+        for _acct in ALPACA_ACCOUNTS:
+            _tag, _br = _acct["tag"], _acct["broker"]
+            if _br is None or not _acct.get("daily_loss_guard", True):
+                continue   # farms exempt
+            try:
+                _eq = _br.account_equity()
+            except Exception as _de:
+                log.debug("Daily-loss guard: account_equity failed for %s: %s", _tag, _de)
+                continue
+            if _eq is None:
+                continue
+            _just_halted = _new_baseline = False
+            with _risk_lock:
+                if _tag not in _daily_loss_baseline:
+                    _daily_loss_baseline[_tag] = float(_eq)   # first tick of the day
+                    _new_baseline = True
+                _apnl = float(_eq) - _daily_loss_baseline[_tag]
+                if not _daily_loss_halted.get(_tag) and _apnl <= MAX_DAILY_LOSS:
+                    _daily_loss_halted[_tag] = True
+                    _just_halted = True
+                if _daily_loss_halted.get(_tag):
+                    _any_dl_halt = True
+            if _new_baseline or _just_halted:
+                _persist_risk_day_state()       # survive a mid-session restart
+            if _just_halted:
+                log.error("DAILY LOSS HALT [%s]: P&L $%.2f reached limit $%.2f — liquidating this account",
+                          _tag, _apnl, MAX_DAILY_LOSS)
+                try:
+                    _br.close_all_positions()
+                    log.info("Daily-loss liquidation: %s positions closed", _tag)
+                except Exception as _le:
+                    log.error("Daily-loss liquidation failed [%s]: %s", _tag, _le)
+        with _risk_lock:
+            _risk_halted = _any_dl_halt   # back-compat: "any account halted" badge
+    except Exception as _e:
+        log.warning("Daily-loss monitor error: %s", _e)
+
+
 def _risk_monitor_loop():
     """Background thread: poll daily P&L every 60s.
     When P&L hits MAX_DAILY_LOSS, set _risk_halted and close all positions."""
-    global _risk_halted, _daily_loss_day
     time.sleep(20)  # wait for broker connections to establish
     while True:
-        # Max daily loss — PER ACCOUNT. Each guarded account (Refined/Kairos/Crew;
-        # Paper All exempt) halts + liquidates INDEPENDENTLY when its OWN daily P&L
-        # hits MAX_DAILY_LOSS. The halt blocks that account's new entries (webhook +
-        # engine) and closes its open positions once; resets at ET midnight.
-        if MAX_DAILY_LOSS < 0:
-            try:
-                try:
-                    _dl_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-                except Exception:
-                    from datetime import timedelta as _td
-                    _dl_today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
-                with _risk_lock:
-                    if _daily_loss_day != _dl_today:
-                        _daily_loss_day = _dl_today
-                        _daily_loss_halted.clear()   # new trading day → clear per-account halts
-                _any_dl_halt = False
-                for _acct in ALPACA_ACCOUNTS:
-                    _tag, _br = _acct["tag"], _acct["broker"]
-                    if _br is None or not _acct.get("daily_loss_guard", True):
-                        continue   # Paper All exempt
-                    try:
-                        _apnl = _br.daily_pnl()
-                    except Exception as _de:
-                        log.debug("Daily-loss guard: daily_pnl failed for %s: %s", _tag, _de)
-                        continue
-                    if _apnl is None:
-                        continue
-                    _just_halted = False
-                    with _risk_lock:
-                        if not _daily_loss_halted.get(_tag) and _apnl <= MAX_DAILY_LOSS:
-                            _daily_loss_halted[_tag] = True
-                            _just_halted = True
-                        if _daily_loss_halted.get(_tag):
-                            _any_dl_halt = True
-                    if _just_halted:
-                        log.error("DAILY LOSS HALT [%s]: P&L $%.2f reached limit $%.2f — liquidating this account",
-                                  _tag, _apnl, MAX_DAILY_LOSS)
-                        _persist_risk_day_state()   # survive a mid-session restart
-                        try:
-                            _br.close_all_positions()
-                            log.info("Daily-loss liquidation: %s positions closed", _tag)
-                        except Exception as _le:
-                            log.error("Daily-loss liquidation failed [%s]: %s", _tag, _le)
-                with _risk_lock:
-                    _risk_halted = _any_dl_halt   # back-compat: "any account halted" badge
-            except Exception as _e:
-                log.warning("Daily-loss monitor error: %s", _e)
+        # Per-account daily-loss guard — halt + liquidate a book at its own loss limit.
+        _daily_loss_guard_tick()
 
         # Profit lock — PER ACCOUNT. Once an account's daily P&L reaches the floor,
         # arm it; if a later trade drags that account back below the floor, halt its
@@ -1330,6 +1345,7 @@ def _persist_risk_day_state():
             "pl_halted": sorted(k for k, v in _profit_lock_halted.items() if v),
             "dl_day":    _daily_loss_day,
             "dl_halted": sorted(k for k, v in _daily_loss_halted.items() if v),
+            "dl_baseline": {k: float(v) for k, v in _daily_loss_baseline.items()},
         }))
     except Exception as _e:
         log.debug("Risk day-state persist failed: %s", _e)
@@ -17740,6 +17756,7 @@ def _restore_risk_settings():
                 if _st.get("dl_day") == _today:
                     _daily_loss_day = _st["dl_day"]
                     _daily_loss_halted.update({k: True for k in (_st.get("dl_halted") or [])})
+                    _daily_loss_baseline.update({k: float(v) for k, v in (_st.get("dl_baseline") or {}).items()})
                     if _daily_loss_halted:
                         log.warning("Restored same-day daily-loss halts: %s", sorted(_daily_loss_halted))
         except Exception as _e:
