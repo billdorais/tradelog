@@ -7557,6 +7557,7 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                 # known exit doesn't get filed under "Unknown".
                 pair_strat = es if (es and es != "Unknown") else strat
                 closed.append({"pnl": round((ep - price) * m, 2), "strategy": pair_strat,
+                               "entry_strategy": es, "exit_strategy": strat,
                                "ticker": sym, "date": date_str, "side": "SHORT",
                                "entry_price": ep, "exit_price": price, "qty": m,
                                "entry_time": et, "exit_time": fill_ts,
@@ -7576,6 +7577,7 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                 m = min(qty, eq)
                 pair_strat = es if (es and es != "Unknown") else strat
                 closed.append({"pnl": round((price - ep) * m, 2), "strategy": pair_strat,
+                               "entry_strategy": es, "exit_strategy": strat,
                                "ticker": sym, "date": date_str, "side": "LONG",
                                "entry_price": ep, "exit_price": price, "qty": m,
                                "entry_time": et, "exit_time": fill_ts,
@@ -17160,9 +17162,13 @@ def api_alpaca_analysis():
             ticker_map.setdefault(c["ticker"], []).append(c)
         per_ticker = {tk: _stats(tl) for tk, tl in ticker_map.items() if _stats(tl)}
 
+        # Daily/weekly aggregates use the same LIFO closed_clean source as the
+        # equity curve above so every bar/line agrees. Each pair's bucket is
+        # keyed by the exit fill's date (same convention daily_closed used).
         daily_map = {}
-        for c in daily_closed:
-            daily_map.setdefault(c["date"] or "unknown", []).append(c["pnl"])
+        for c in closed:
+            _bucket = (c.get("exit_time") or "")[:10] or (c.get("date") or "unknown")
+            daily_map.setdefault(_bucket, []).append(c["pnl"])
         daily, cum = [], 0
         for d in sorted(daily_map):
             day_pnl = round(sum(daily_map[d]), 2)
@@ -17170,9 +17176,10 @@ def api_alpaca_analysis():
             daily.append({"date": d, "pnl": day_pnl, "trades": len(daily_map[d]), "cumulative": cum})
 
         weekly_map = {}
-        for c in daily_closed:
+        for c in closed:
+            _bucket = (c.get("exit_time") or "")[:10] or (c.get("date") or "")
             try:
-                dt = _dt.fromisoformat(c["date"])
+                dt = _dt.fromisoformat(_bucket)
                 wk = dt.strftime("%Y-W%W")
                 wl = dt.strftime("Week of %b %d, %Y")
             except Exception:
@@ -17315,9 +17322,15 @@ def api_alpaca_analysis():
                 })
 
         else:
+            # Use LIFO closed_clean (same source as the Today's P&L card) so the
+            # chart and card can never disagree. Per-day FIFO daily_closed was
+            # dropping legitimate pairs on account 2 (chart empty while card
+            # showed −$133.30 realized). Since EOD close flattens positions and
+            # _classify_orphan excludes cross-day intraday holds, LIFO within the
+            # date range is the safer authoritative source.
             cum_pnl = 0
             equity_curve = []
-            for c in sorted(daily_closed, key=lambda x: x["exit_time"]):
+            for c in sorted(closed, key=lambda x: x["exit_time"]):
                 cum_pnl = round(cum_pnl + c["pnl"], 2)
                 equity_curve.append({
                     "time":          c["exit_time"],
