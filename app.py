@@ -3633,35 +3633,55 @@ def alpaca_pull_stop(symbol):
             return jsonify({"success": False, "error": "entry price unknown — cannot compute breakeven"}), 400
         new_stop = entry_px
     elif mode == "halfway":
-        # Find the current stop (from an open stop-family order for this symbol).
-        try:
-            from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums   import QueryOrderStatus
-            _oreq   = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[sym])
-            _orders = broker._trading.get_orders(filter=_oreq)
-        except Exception as _oe:
-            return jsonify({"success": False, "error": f"could not read open orders: {_oe}"}), 400
-        cur_stop = None
-        for o in _orders:
-            ot = str(getattr(o, "order_type", "")).lower()
-            if not any(k in ot for k in ("stop", "trailing")):
-                continue
-            for attr in ("stop_price", "trail_price", "hwm"):
-                try:
-                    v = getattr(o, attr, None)
-                    if v is not None:
-                        cur_stop = float(v); break
-                except Exception:
-                    pass
-            if cur_stop is not None:
-                break
-        if cur_stop is None:
-            return jsonify({"success": False,
-                            "error": "no existing stop order to compute halfway from"}), 400
         if cur_px <= 0:
             return jsonify({"success": False, "error": "current price unknown"}), 400
-        # Midpoint between current stop and current price — same formula both sides.
-        new_stop = round((cur_stop + cur_px) / 2, 4)
+        # Split from the LIVE trailing level (peak × (1 − trail%)) when a trail is
+        # active — so every press halves the gap to where the trail actually is now
+        # and always TIGHTENS (a manual pull leaves the broker order fixed, so
+        # referencing it would go stale and could loosen after a run-up). Fall back to
+        # the broker stop order only when no trail is running.
+        ref_stop = None
+        _mt = _get_manual_trail(broker_tag, sym)
+        if _mt:
+            eff_trail = _mt
+        else:
+            _strat, _ = _resolve_position_entry(sym, broker_tag)
+            eff_trail = _get_route_trail_pct(_strat or "") or 0.0
+        if eff_trail > 0:
+            with _risk_lock:
+                _pk = _position_peaks.get((broker_tag, sym))
+            peak_px = cur_px
+            if _pk is not None and qty_val:
+                peak_px = entry_px + (_pk / abs(qty_val)) if is_long else entry_px - (_pk / abs(qty_val))
+            ref = max(peak_px, cur_px) if is_long else min(peak_px, cur_px)
+            ref_stop = ref * (1 - eff_trail / 100) if is_long else ref * (1 + eff_trail / 100)
+        if ref_stop is None:
+            # No trail active → split from the broker's open stop order (legacy).
+            try:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums   import QueryOrderStatus
+                _oreq   = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[sym])
+                _orders = broker._trading.get_orders(filter=_oreq)
+            except Exception as _oe:
+                return jsonify({"success": False, "error": f"could not read open orders: {_oe}"}), 400
+            for o in _orders:
+                ot = str(getattr(o, "order_type", "")).lower()
+                if not any(k in ot for k in ("stop", "trailing")):
+                    continue
+                for attr in ("stop_price", "trail_price", "hwm"):
+                    try:
+                        v = getattr(o, attr, None)
+                        if v is not None:
+                            ref_stop = float(v); break
+                    except Exception:
+                        pass
+                if ref_stop is not None:
+                    break
+            if ref_stop is None:
+                return jsonify({"success": False,
+                                "error": "no trail or stop order to compute halfway from"}), 400
+        # Midpoint between the reference stop and current price — same formula both sides.
+        new_stop = round((ref_stop + cur_px) / 2, 4)
     else:
         return jsonify({"success": False,
                         "error": "mode required: 'breakeven' | 'halfway' (or pass 'price')"}), 400
