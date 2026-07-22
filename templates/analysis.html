@@ -260,8 +260,16 @@
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
       <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#c4b5fd">Refined Snapshot</span>
       <span id="refinedSnapMeta" style="font-size:0.75rem;color:#666">loading…</span>
+      <!-- Stats-overlay account toggle (independent of the page tabs). Farm = the
+           snapshot's own audition pool; Refined = the curated book it feeds. -->
+      <div style="display:inline-flex;gap:2px;margin-left:auto">
+        <button id="refinedSnapAcct1" onclick="setRefinedSnapAcct('1')"
+                style="border:1px solid #4a5568;background:#1a1d2e;color:#e0e0e0;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer">TV Farm</button>
+        <button id="refinedSnapAcct2" onclick="setRefinedSnapAcct('2')"
+                style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;border-radius:0 6px 6px 0;font-size:0.7rem;cursor:pointer">TV Refined</button>
+      </div>
       <button id="refinedSnapToggle" onclick="toggleRefinedSnap()"
-              style="margin-left:auto;background:transparent;border:1px solid #2a2d3e;color:#888;
+              style="background:transparent;border:1px solid #2a2d3e;color:#888;
                      padding:4px 10px;border-radius:6px;font-size:0.72rem;cursor:pointer">Hide</button>
       <button onclick="refreshRefinedNow()"
               style="background:transparent;border:1px solid #a78bfa;color:#c4b5fd;
@@ -323,8 +331,16 @@
       <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#F2C07A">⚡ Kairos Refined Snapshot</span>
       <span id="kairosSnapMeta" style="font-size:0.75rem;color:#666">loading…</span>
       <span style="font-size:0.7rem;color:#555">· view only · gate ≥3 trades</span>
+      <!-- Stats-overlay account toggle: Kairos Farm (audition pool) vs Kairos
+           Refined (the curated book). -->
+      <div style="display:inline-flex;gap:2px;margin-left:auto">
+        <button id="kairosSnapAcct5" onclick="setKairosSnapAcct('5')"
+                style="border:1px solid #F2C07A;background:rgba(242,192,122,0.12);color:#F2C07A;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer">Kairos Farm</button>
+        <button id="kairosSnapAcct3" onclick="setKairosSnapAcct('3')"
+                style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;border-radius:0 6px 6px 0;font-size:0.7rem;cursor:pointer">Kairos Refined</button>
+      </div>
       <button id="kairosSnapToggle" onclick="toggleKairosSnap()"
-              style="margin-left:auto;background:transparent;border:1px solid #2a2d3e;color:#888;
+              style="background:transparent;border:1px solid #2a2d3e;color:#888;
                      padding:4px 10px;border-radius:6px;font-size:0.72rem;cursor:pointer">Hide</button>
       <button onclick="refreshKairosNow()"
               style="background:transparent;border:1px solid #F2C07A;color:#F2C07A;
@@ -1081,6 +1097,58 @@
   // what the user sees in the leaderboard below).
   let _snapshotData = null;
 
+  // Snapshot stat-overlay accounts — independent of the page tabs. Each snapshot
+  // panel toggles which paper account's per-strategy stats fill its Trades/Win%/
+  // PF/Total P&L columns. Refined snapshot: TV Farm (1) / TV Refined (2), default
+  // Farm. Kairos snapshot: Kairos Farm (5) / Kairos Refined (3), default Farm.
+  let _refinedSnapAcct = '1';
+  let _kairosSnapAcct  = '5';
+  const _SNAP_ACCT_LABEL = {'1':'TV Farm','2':'TV Refined','3':'Kairos Refined','5':'Kairos Farm'};
+  // Cache of per-account per_strategy over the current date range (keyed by acct
+  // + window so a date change invalidates it).
+  const _snapAcctStatsCache = {};
+  async function _fetchSnapAcctPerStrategy(acct) {
+    const fromDate = document.getElementById('analysisFrom').value;
+    const toDate   = document.getElementById('analysisTo').value;
+    const fromTime = document.getElementById('analysisFromTime')?.value || '';
+    const toTime   = document.getElementById('analysisToTime')?.value || '';
+    const key = `${acct}|${fromDate}|${toDate}|${fromTime}|${toTime}`;
+    if (_snapAcctStatsCache[acct] && _snapAcctStatsCache[acct].key === key)
+      return _snapAcctStatsCache[acct].data;
+    const p = new URLSearchParams({ account: acct });
+    if (fromDate) p.set('from_date', fromDate);
+    if (toDate)   p.set('to_date',   toDate);
+    if (fromTime) p.set('from_time', fromTime);
+    if (toTime)   p.set('to_time',   toTime);
+    let ps = {};
+    try {
+      const d = await fetch('/api/alpaca/analysis?' + p).then(r => r.json());
+      ps = d.per_strategy || {};
+    } catch (e) { ps = {}; }
+    _snapAcctStatsCache[acct] = { key, data: ps };
+    return ps;
+  }
+  function _syncSnapAcctButtons(pref, sel, opts) {
+    for (const a of opts) {
+      const b = document.getElementById(pref + a);
+      if (!b) continue;
+      const on = a === sel;
+      b.style.background  = on ? (pref.startsWith('kairos') ? 'rgba(242,192,122,0.12)' : '#1a1d2e') : 'transparent';
+      b.style.color       = on ? (pref.startsWith('kairos') ? '#F2C07A' : '#e0e0e0') : '#666';
+      b.style.borderColor = on ? (pref.startsWith('kairos') ? '#F2C07A' : '#4a5568') : '#2a2d3e';
+    }
+  }
+  function setRefinedSnapAcct(acct) {
+    _refinedSnapAcct = acct;
+    _syncSnapAcctButtons('refinedSnapAcct', acct, ['1','2']);
+    _loadRefinedSnapshot();
+  }
+  function setKairosSnapAcct(acct) {
+    _kairosSnapAcct = acct;
+    _syncSnapAcctButtons('kairosSnapAcct', acct, ['5','3']);
+    _loadKairosSnapshot();
+  }
+
   async function _loadRefinedSnapshot() {
     const meta   = document.getElementById('refinedSnapMeta');
     const status = document.getElementById('refinedSnapStatus');
@@ -1097,18 +1165,13 @@
         return;
       }
       _snapshotData = d;
+      // Overlay stats from the SELECTED snapshot account (toggle), independent
+      // of the page tabs.
+      const _overlayPs = await _fetchSnapAcctPerStrategy(_refinedSnapAcct);
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
       const cnt = (d.top_strategies || []).length;
       const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
-      const overlayNote = (activeSource === 'alpaca2')
-        ? ' · stats reflect TV Refined account for current date range'
-        : (activeSource === 'alpaca3')
-        ? ' · stats reflect the Kairos Refined account (acct 3) for current date range'
-        : (activeSource === 'alpaca4')
-        ? ' · stats reflect the Crew Paper account (acct 4) for current date range'
-        : (activeSource === 'alpaca5')
-        ? ' · stats reflect the Kairos Farm account (acct 5) for current date range'
-        : '';
+      const overlayNote = ` · stats reflect ${_SNAP_ACCT_LABEL[_refinedSnapAcct]} for current date range`;
       meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · last run ${d.run_at}${overlayNote}`;
 
       // Status line: ✓ updated · removed · ⚠ not matched (with names if any).
@@ -1170,17 +1233,17 @@
         const color = days > 10 ? '#e74c3c' : days > 5 ? '#F2E7AC' : '#888';
         return `<span style="color:${color}" title="Last closed trade ${iso}">${label}</span>`;
       };
-      // Overlay: when on Paper Refined tab, replace the Trades/Win%/PF/Total P&L
-      // columns with stats from analysisData.per_strategy so the rows reflect what
-      // the user actually sees in their Refined account (date-range scoped).
-      const useTabStats = (activeSource === 'alpaca2' || activeSource === 'alpaca3' || activeSource === 'alpaca4' || activeSource === 'alpaca5') && analysisData && analysisData.per_strategy;
+      // Overlay the Trades/Win%/PF/Total P&L columns with stats from the SELECTED
+      // snapshot account (TV Farm / TV Refined toggle), date-range scoped — always
+      // on now, independent of the page tabs.
+      const useTabStats = true;
       rows.innerHTML = scored.map((r, i) => {
-        const ps = useTabStats ? analysisData.per_strategy[r.name] : null;
-        const trades  = useTabStats ? (ps ? ps.trades        : 0)    : r.trades;
-        const winRate = useTabStats ? (ps ? ps.win_rate      : 0)    : r.win_rate;
-        const pf      = useTabStats ? (ps ? ps.profit_factor : null) : r.profit_factor;
-        const total   = useTabStats ? (ps ? ps.total_pnl     : 0)    : r.total_pnl;
-        const noTabTrades = useTabStats && !ps;
+        const ps = _overlayPs[r.name];
+        const trades  = ps ? ps.trades        : 0;
+        const winRate = ps ? ps.win_rate      : 0;
+        const pf      = ps ? ps.profit_factor : null;
+        const total   = ps ? ps.total_pnl     : 0;
+        const noTabTrades = !ps;
         const pnlCls = (total || 0) >= 0 ? 'pos' : 'neg';
         const wrCls  = (winRate || 0) >= 50  ? 'pos' : 'neg';
         const scorePct = Math.round((r.score || 0) * 100);
@@ -1227,12 +1290,12 @@
         onDeckWrap.style.display = '';
         const baseRank = (d.top_strategies || []).length;
         document.getElementById('onDeckTbody').innerHTML = onDeck.map((r, j) => {
-          const ps = useTabStats ? analysisData.per_strategy[r.name] : null;
-          const trades  = useTabStats ? (ps ? ps.trades        : 0)    : r.trades;
-          const winRate = useTabStats ? (ps ? ps.win_rate      : 0)    : r.win_rate;
-          const pf      = useTabStats ? (ps ? ps.profit_factor : null) : r.profit_factor;
-          const total   = useTabStats ? (ps ? ps.total_pnl     : 0)    : r.total_pnl;
-          const noTabTrades = useTabStats && !ps;
+          const ps = _overlayPs[r.name];
+          const trades  = ps ? ps.trades        : 0;
+          const winRate = ps ? ps.win_rate      : 0;
+          const pf      = ps ? ps.profit_factor : null;
+          const total   = ps ? ps.total_pnl     : 0;
+          const noTabTrades = !ps;
           const pnlCls = (total || 0) >= 0 ? 'pos' : 'neg';
           const wrCls  = (winRate || 0) >= 50  ? 'pos' : 'neg';
           const scorePct = Math.round((r.score || 0) * 100);
@@ -1443,10 +1506,13 @@
         _renderKairosOnDeck([]);
         return;
       }
+      // Overlay stats from the SELECTED Kairos account (Kairos Farm / Kairos
+      // Refined toggle), date-range scoped.
+      const _overlayPs = await _fetchSnapAcctPerStrategy(_kairosSnapAcct);
       const windowLabel = d.from_date ? `anchor ${d.from_date}` : `${d.days || 30}d rolling`;
       const cnt  = (d.top_strategies || []).length;
       const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
-      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · sourced from Kairos Farm · last run ${d.run_at}`;
+      meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · ranked from Kairos Farm · stats reflect ${_SNAP_ACCT_LABEL[_kairosSnapAcct]} · last run ${d.run_at}`;
 
       // Daily-diff status line — same shape as the TV snapshot minus the
       // "added to N rules / stripped from M prior / not matched" bits (Kairos
@@ -1489,10 +1555,15 @@
       rows.innerHTML = scored.map((s, i) => {
         const t   = tenureMap[s.name];
         const ten = (t == null) ? '<span style="color:#F2C07A;font-weight:600" title="First run">NEW</span>' : (t + 'd');
-        const wr  = s.win_rate == null ? '—' : (s.win_rate.toFixed(1) + '%');
-        const pf  = s.profit_factor == null ? '∞' : s.profit_factor.toFixed(2);
-        const pn  = s.total_pnl == null ? '—' : fmt(s.total_pnl);
-        const pnCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+        // Overlay the stat columns from the selected Kairos account; dim if the
+        // strategy hasn't traded there in the current window.
+        const _ps = _overlayPs[s.name];
+        const _noTr = !_ps;
+        const wr  = _noTr ? '—' : ((_ps.win_rate ?? 0).toFixed(1) + '%');
+        const pf  = _noTr ? '—' : (_ps.profit_factor == null ? '∞' : _ps.profit_factor.toFixed(2));
+        const pn  = _noTr ? '—' : fmt(_ps.total_pnl);
+        const pnCls = ((_ps && _ps.total_pnl) || 0) >= 0 ? 'pos' : 'neg';
+        const _trCell = _noTr ? '<span style="color:#444">0</span>' : (_ps.trades ?? 0);
         const lt  = s.last_trade_at
           ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
           : '—';
@@ -1518,30 +1589,34 @@
           <td style="text-align:right;color:#F2C07A;font-weight:600">${(s.score * 100).toFixed(0)}</td>
           <td style="text-align:right;color:#aaa">${sh}</td>
           <td style="text-align:right;color:#888">${px}</td>
-          <td style="text-align:right">${s.trades}</td>
+          <td style="text-align:right">${_trCell}</td>
           <td style="text-align:right">${wr}</td>
           <td style="text-align:right">${pf}</td>
           <td style="text-align:right" class="${pnCls}">${pn}</td>
         </tr>`;
       }).join('');
-      _renderKairosOnDeck(d.on_deck_scored || []);
+      _renderKairosOnDeck(d.on_deck_scored || [], _overlayPs);
     } catch (e) {
       meta.textContent = 'load failed: ' + (e.message || e);
       rows.innerHTML   = '<tr><td colspan="11" class="empty" style="color:#e74c3c">Load failed.</td></tr>';
     }
   }
 
-  function _renderKairosOnDeck(scored) {
+  function _renderKairosOnDeck(scored, overlayPs) {
     const wrap = document.getElementById('kairosOnDeckWrap');
     const tb   = document.getElementById('kairosOnDeckTbody');
     if (!scored || !scored.length) { wrap.style.display = 'none'; return; }
     wrap.style.display = '';
+    overlayPs = overlayPs || {};
     const topN = (_snapshotData && _snapshotData.top_strategies || []).length || 20;
     tb.innerHTML = scored.map((s, i) => {
-      const wr  = s.win_rate == null ? '—' : (s.win_rate.toFixed(1) + '%');
-      const pf  = s.profit_factor == null ? '∞' : s.profit_factor.toFixed(2);
-      const pn  = s.total_pnl == null ? '—' : fmt(s.total_pnl);
-      const pnCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
+      const _ps = overlayPs[s.name];
+      const _noTr = !_ps;
+      const wr  = _noTr ? '—' : ((_ps.win_rate ?? 0).toFixed(1) + '%');
+      const pf  = _noTr ? '—' : (_ps.profit_factor == null ? '∞' : _ps.profit_factor.toFixed(2));
+      const pn  = _noTr ? '—' : fmt(_ps.total_pnl);
+      const pnCls = ((_ps && _ps.total_pnl) || 0) >= 0 ? 'pos' : 'neg';
+      const _trCell = _noTr ? '<span style="color:#444">0</span>' : (_ps.trades ?? 0);
       const lt  = s.last_trade_at
         ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
         : '—';
@@ -1563,7 +1638,7 @@
         <td style="text-align:right;color:#F2C07A;font-weight:600">${(s.score * 100).toFixed(0)}</td>
         <td style="text-align:right;color:#aaa">${sh}</td>
         <td style="text-align:right;color:#888">${px}</td>
-        <td style="text-align:right">${s.trades}</td>
+        <td style="text-align:right">${_trCell}</td>
         <td style="text-align:right">${wr}</td>
         <td style="text-align:right">${pf}</td>
         <td style="text-align:right" class="${pnCls}">${pn}</td>
