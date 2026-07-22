@@ -13858,6 +13858,124 @@ def api_debug_rvol():
     })
 
 
+@app.route("/api/rvol/ab_compare")
+def api_rvol_ab_compare():
+    """A/B the two RVOL gate methods on recorded fills. Reads trade_rvol (which
+    carries both the trailing-bar rvol and the time-of-day rvol_tod per trade),
+    replays the CURRENT gate thresholds (min floor + short blow-off cap) against
+    each method, and reports what each would have allowed vs blocked — overall
+    and for the morning window (< cutoff ET) where the two diverge most.
+
+    Only BREAKOUT trades are considered (the only ones the gate touches). A method
+    is 'good' when the trades it BLOCKS are net losers (blocked_pnl < 0 → you saved
+    money by skipping them) and the trades it ALLOWS stay net positive.
+
+    Query: days (default 30), account (tag or num; default = all curated),
+    min (default RVOL_GATE_MIN), short_cap (default RVOL_GATE_SHORT_CAP),
+    morning_cutoff (HH:MM ET, default 10:00)."""
+    import datetime as _dt
+    days = max(1, min(180, int(request.args.get("days") or 30)))
+    gmin = float(request.args.get("min") or RVOL_GATE_MIN)
+    gcap = float(request.args.get("short_cap") or RVOL_GATE_SHORT_CAP)
+    cutoff = (request.args.get("morning_cutoff") or "10:00").strip()
+    acct_q = (request.args.get("account") or "").strip()
+
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
+    to_d   = _dt.datetime.now(et).date()
+    from_s = (to_d - _dt.timedelta(days=days)).isoformat()
+
+    # Resolve an optional account filter to a broker_tag.
+    tag_filter = None
+    if acct_q:
+        if acct_q.isdigit():
+            _rec = ACCOUNTS_BY_NUM.get(acct_q)
+            tag_filter = _rec["tag"] if _rec else None
+        else:
+            tag_filter = acct_q
+
+    _p = placeholder()
+    conn = get_db(); cur = conn.cursor()
+    q = (f"SELECT broker_tag, symbol, side, strategy, entry_time, realized_pnl, "
+         f"rvol, rvol_tod FROM trade_rvol WHERE entry_time >= {_p} "
+         f"AND strategy LIKE {_p}")
+    params = [from_s + "T00:00:00+00:00", "%BREAKOUT%"]
+    if tag_filter:
+        q += f" AND broker_tag = {_p}"; params.append(tag_filter)
+    try:
+        cur.execute(q, tuple(params))
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as _e:
+        conn.close()
+        return jsonify({"error": f"trade_rvol query failed: {_e}"}), 500
+    conn.close()
+
+    def _et_hhmm(iso):
+        try:
+            d = _dt.datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_dt.timezone.utc)
+            return d.astimezone(et).strftime("%H:%M")
+        except Exception:
+            return None
+
+    def _blocks(rv, side):
+        # Mirror _rvol_gate_block: None → fails open (allowed). Below floor → blocked.
+        # Shorts at/above the cap → blocked. Returns True if the gate would BLOCK.
+        if rv is None:
+            return False
+        if rv < gmin:
+            return True
+        if (side or "").lower() == "short" and gcap > 0 and rv >= gcap:
+            return True
+        return False
+
+    def _summ(subset, rv_key):
+        allowed, blocked = [], []
+        cov = 0   # how many rows had a non-null rvol for this method (gate had an opinion)
+        for r in subset:
+            rv = r.get(rv_key)
+            if rv is not None:
+                cov += 1
+            (blocked if _blocks(rv, r.get("side")) else allowed).append(r)
+        def _agg(g):
+            n = len(g); pnl = sum(float(x["realized_pnl"] or 0) for x in g)
+            w = sum(1 for x in g if float(x["realized_pnl"] or 0) > 0)
+            return {"trades": n, "pnl": round(pnl, 2),
+                    "win_rate": round(w / n * 100, 1) if n else 0.0}
+        return {
+            "allowed": _agg(allowed), "blocked": _agg(blocked),
+            # 'saved' = P&L you avoided by blocking (positive = the blocked set
+            # was a net loser, i.e. the gate helped). This is the headline metric.
+            "saved":   round(-sum(float(x["realized_pnl"] or 0) for x in blocked), 2),
+            "coverage": cov, "n": len(subset),
+        }
+
+    morning = [r for r in rows if (_et_hhmm(r.get("entry_time")) or "99:99") < cutoff]
+
+    return jsonify({
+        "days": days, "from": from_s, "to": to_d.isoformat(),
+        "thresholds": {"min": gmin, "short_cap": gcap, "morning_cutoff": cutoff},
+        "account": tag_filter or "all curated",
+        "active_method": RVOL_GATE_METHOD,
+        "total_breakout_trades": len(rows),
+        "all": {
+            "trailing": _summ(rows, "rvol"),
+            "tod":      _summ(rows, "rvol_tod"),
+        },
+        "morning": {
+            "n": len(morning),
+            "trailing": _summ(morning, "rvol"),
+            "tod":      _summ(morning, "rvol_tod"),
+        },
+        "hint": "‘saved’ = P&L avoided by blocking (higher = the gate skipped net "
+                "losers). ‘coverage’ = trades where that method produced a number "
+                "(the trailing method is null more often near the open → lower "
+                "morning coverage). Compare tod vs trailing, especially in ‘morning’.",
+    })
+
+
 _PULSE_INDEXES = ["SPY", "QQQ", "IWM"]
 # Broker targets that mean "a refined book" (TV Refined = ...-2, Kairos Refined = ...-3).
 _REFINED_PULSE_BROKERS = {"alpaca-paper-2", "alpaca-live-2", "alpaca-paper-3", "alpaca-live-3"}

@@ -576,6 +576,29 @@
     <div id="cutoffImpactResult"></div>
   </div>
 
+  <!-- RVOL gate A/B: trailing-bar vs time-of-day method, on recorded fills -->
+  <div class="section">
+    <div class="section-title">⚡ RVOL Gate A/B <span>trailing-bar vs time-of-day — which gate skips more losers, especially at the open</span></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+      <label style="font-size:0.78rem;color:#888">Window (days)</label>
+      <input type="number" id="rvolAbDays" value="30" min="1" max="180" step="1"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.82rem;outline:none;width:70px">
+      <label style="font-size:0.78rem;color:#888">Min ×</label>
+      <input type="number" id="rvolAbMin" value="1.5" min="0" step="0.1"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.82rem;outline:none;width:64px">
+      <label style="font-size:0.78rem;color:#888">Short cap ×</label>
+      <input type="number" id="rvolAbCap" value="3.0" min="0" step="0.1"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.82rem;outline:none;width:64px">
+      <label style="font-size:0.78rem;color:#888">Morning &lt;</label>
+      <input type="time" id="rvolAbCutoff" value="10:00"
+             style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.82rem;outline:none">
+      <button onclick="loadRvolAb()"
+              style="background:#517356;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:0.82rem;font-weight:600;cursor:pointer;font-family:inherit">Compare</button>
+      <span id="rvolAbActive" style="font-size:0.72rem;color:#666"></span>
+    </div>
+    <div id="rvolAbResult" style="font-size:0.82rem;color:#888">Click Compare to A/B the two RVOL methods on your recorded breakout fills.</div>
+  </div>
+
   <!-- Take-profit sweep: best TP per band from reconstructed high-water marks -->
   <div class="section">
     <div class="section-title">Take-Profit Sweep <span>where your best take-profit sits per band — reconstructed from 1-min high-water marks</span></div>
@@ -2055,6 +2078,68 @@
         + `<th style="text-align:right;color:#555;font-size:0.7rem">Trades</th><th style="text-align:right;color:#555;font-size:0.7rem">Win %</th>`
         + `<th style="text-align:right;color:#555;font-size:0.7rem">Refined P&amp;L</th><th style="text-align:right;color:#555;font-size:0.7rem">Paper P&amp;L</th></tr></thead>`
         + `<tbody>${ps}</tbody></table></div>`;
+    } catch (e) {
+      out.innerHTML = `<div style="color:#e74c3c">Error: ${e.message}</div>`;
+    }
+  }
+
+  // RVOL gate A/B — trailing-bar vs time-of-day, replayed on recorded fills.
+  async function loadRvolAb() {
+    const out = document.getElementById('rvolAbResult');
+    const p = new URLSearchParams({
+      days:           document.getElementById('rvolAbDays').value || '30',
+      min:            document.getElementById('rvolAbMin').value || '1.5',
+      short_cap:      document.getElementById('rvolAbCap').value || '3.0',
+      morning_cutoff: document.getElementById('rvolAbCutoff').value || '10:00',
+    });
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Comparing…</div>';
+    const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+    try {
+      const r = await fetch('/api/rvol/ab_compare?' + p);
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = `<div style="color:#e74c3c">${d.error || 'Failed.'}</div>`; return; }
+      document.getElementById('rvolAbActive').textContent =
+        `live method: ${d.active_method} · ${d.total_breakout_trades} breakout fills in window`;
+      if (!d.total_breakout_trades) {
+        out.innerHTML = '<div style="color:#888;font-size:0.85rem">No recorded breakout fills with RVOL yet — the backfill records these every 5 min. Check back after some breakout trades close.</div>';
+        return;
+      }
+      // One method's block: allowed/blocked cards + the headline 'saved'.
+      const methodCol = (m, label, accent) => {
+        const a = m.allowed, b = m.blocked;
+        const savedGood = m.saved > 0;
+        return `<div style="flex:1;min-width:230px;background:#1c1f2e;border:1px solid ${accent}44;border-radius:8px;padding:12px 14px">
+          <div style="font-size:0.8rem;font-weight:700;color:${accent};margin-bottom:8px">${label}</div>
+          <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:#aaa;margin-bottom:3px">
+            <span>Allowed</span><span>${a.trades} · ${a.win_rate}% · <span class="${a.pnl>=0?'pos':'neg'}">${money(a.pnl)}</span></span></div>
+          <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:#aaa;margin-bottom:8px">
+            <span>Blocked</span><span>${b.trades} · ${b.win_rate}% · <span class="${b.pnl>=0?'pos':'neg'}">${money(b.pnl)}</span></span></div>
+          <div style="border-top:1px solid #2a2d3e;padding-top:8px;font-size:0.9rem">
+            <span style="color:#666;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em">Saved by blocking</span><br>
+            <strong style="color:${savedGood?'#7FE098':'#ef5350'};font-size:1.1rem">${money(m.saved)}</strong>
+            <span style="font-size:0.7rem;color:#666">· ${m.coverage}/${m.n} scored</span>
+          </div></div>`;
+      };
+      const block = (title, section) => `
+        <div style="margin-bottom:6px;font-size:0.8rem;color:#ccc;font-weight:600">${title}
+          <span style="font-weight:400;color:#666">(${section.n} trades)</span></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+          ${methodCol(section.trailing, 'Trailing-bar', '#9aa0b5')}
+          ${methodCol(section.tod, '⚡ Time-of-day', '#F2C07A')}
+        </div>`;
+      // Verdict: compare 'saved' between methods in the morning window (where they diverge).
+      const mt = d.morning.trailing.saved, md = d.morning.tod.saved;
+      const mcT = d.morning.trailing.coverage, mcD = d.morning.tod.coverage;
+      const verdict = (md > mt)
+        ? `<span style="color:#7FE098">✓ In the morning (&lt; ${d.thresholds.morning_cutoff}), time-of-day skipped <strong>${money(md - mt)}</strong> more losers than trailing — and covered ${mcD} vs ${mcT} trades (trailing is blind at the open).</span>`
+        : (md < mt)
+        ? `<span style="color:#F2C76B">⚠ In the morning, trailing skipped ${money(mt - md)} more than time-of-day here. Look at coverage: ToD covered ${mcD} vs trailing ${mcT}.</span>`
+        : `<span style="color:#888">Morning ‘saved’ is a wash between the two — decide on coverage (ToD ${mcD} vs trailing ${mcT}).</span>`;
+      out.innerHTML =
+        `<div style="font-size:0.82rem;margin-bottom:12px">${verdict}</div>`
+        + block('All day', d.all)
+        + block(`Morning only (< ${d.thresholds.morning_cutoff} ET)`, d.morning)
+        + `<div style="font-size:0.72rem;color:#666">‘Saved by blocking’ = P&amp;L you avoided by skipping the blocked set (higher = the gate skipped net losers). ‘Coverage’ = fills where that method produced a number — the trailing method is null more often near the open, so it silently allows everything there. Thresholds: min ${d.thresholds.min}× · short cap ${d.thresholds.short_cap}×.</div>`;
     } catch (e) {
       out.innerHTML = `<div style="color:#e74c3c">Error: ${e.message}</div>`;
     }
