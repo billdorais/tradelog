@@ -12577,43 +12577,61 @@ def _backfill_trade_rvol(lookback_days: int = 5, per_account_cap: int = 50):
         except Exception as _e:
             log.debug("rvol backfill fills failed [%s]: %s", tag, _e)
             continue
-        conn = get_db(); cur = conn.cursor()
+        # Preload the already-scored keys for this account in ONE query, then
+        # close the connection BEFORE the network loop — never hold a DB
+        # connection across Alpaca bar fetches (that stalls the whole pool).
+        _p = placeholder()
+        existing = set()
+        _c = get_db(); _cur = _c.cursor()
         try:
-            processed = 0
-            for t in reversed(trades):    # newest first — bar cache stays warm
-                if processed >= per_account_cap:
-                    break
-                entry_time = t.get("entry_time")
-                exit_time  = t.get("exit_time")
-                symbol     = (t.get("ticker") or "").upper()
-                if not (entry_time and exit_time and symbol):
-                    continue
-                if _rvol_key_exists(cur, tag, symbol, entry_time, exit_time):
-                    continue
-                # Fetch the entry day's bars once, feed BOTH methods so a closed
-                # trade carries the trailing-bar and time-of-day RVOL side by side.
-                _day_bars = _fetch_day_bars(symbol, (entry_time or "")[:10])
-                rv = _compute_trade_rvol(t, bars=_day_bars)
-                if rv is None:
-                    continue
-                rv_tod = _compute_trade_rvol_tod(t, today_bars=_day_bars)
-                _persist_trade_rvol(tag, t, rv, rv_tod=rv_tod)
-                processed += 1
-                total     += 1
+            _cur.execute(f"SELECT symbol, entry_time, exit_time FROM trade_rvol WHERE broker_tag={_p}", (tag,))
+            for _s, _et, _xt in _cur.fetchall():
+                existing.add(((_s or "").upper(), _et, _xt))
+        except Exception as _qe:
+            log.debug("rvol backfill key preload failed [%s]: %s", tag, _qe)
         finally:
-            conn.close()
+            _c.close()
+        processed = 0
+        for t in reversed(trades):    # newest first — bar cache stays warm
+            if processed >= per_account_cap:
+                break
+            entry_time = t.get("entry_time")
+            exit_time  = t.get("exit_time")
+            symbol     = (t.get("ticker") or "").upper()
+            if not (entry_time and exit_time and symbol):
+                continue
+            if (symbol, entry_time, exit_time) in existing:
+                continue
+            # Network fetches happen with NO DB connection held; _persist_trade_rvol
+            # opens its own short-lived connection per write.
+            _day_bars = _fetch_day_bars(symbol, (entry_time or "")[:10])
+            rv = _compute_trade_rvol(t, bars=_day_bars)
+            if rv is None:
+                continue
+            rv_tod = _compute_trade_rvol_tod(t, today_bars=_day_bars)
+            _persist_trade_rvol(tag, t, rv, rv_tod=rv_tod)
+            processed += 1
+            total     += 1
         if processed:
             log.info("RVOL backfill [%s]: %d round-trips scored", tag, processed)
     return total
 
 
-def _backfill_trade_rvol_tod_missing(cap: int = 200):
-    """One-time (repeating) fill of the time-of-day RVOL onto rows that already
-    have the trailing-bar rvol but a NULL rvol_tod — i.e. rows persisted before
-    the *_tod columns existed. Reconstructs the trade dict straight from the DB
-    row (no fills re-pairing needed) and computes ToD from the day-profile.
-    Bounded per run so it churns through the backlog over a few loop cycles."""
+def _backfill_trade_rvol_tod_missing(cap: int = 60):
+    """Fill the time-of-day RVOL onto rows that have the trailing rvol but a NULL
+    rvol_tod (persisted before the *_tod columns existed). Reconstructs the trade
+    from the DB row (no fills re-pairing).
+
+    CRITICAL: the per-row ToD compute does slow Alpaca network fetches. We must
+    NOT hold a DB connection across those, or every other request on the small
+    Postgres pool stalls behind the open transaction (froze the whole app). So:
+      1) read the NULL rows (short), close the connection,
+      2) compute all ToD values with NO db held (the slow part),
+      3) reopen and write the UPDATEs in one short transaction.
+    `cap` kept small (60) so a batch is quick and the background loop chips away
+    over multiple cycles."""
     _p = placeholder()
+    # 1) Read — short, then close immediately.
     conn = get_db(); cur = conn.cursor()
     try:
         cur.execute(
@@ -12625,24 +12643,31 @@ def _backfill_trade_rvol_tod_missing(cap: int = 200):
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     except Exception as _e:
-        conn.close()
         log.debug("rvol tod backfill query failed: %s", _e)
-        return 0
-    if not rows:
+        rows = []
+    finally:
         conn.close()
+    if not rows:
         return 0
+    # 2) Compute — network I/O, NO db connection held.
+    pending = []
+    for r in rows:
+        trade = {
+            "ticker":     r["symbol"], "side": r["side"],
+            "strategy":   r["strategy"], "entry_time": r["entry_time"],
+            "exit_time":  r["exit_time"], "entry_price": r["entry_price"],
+            "pnl":        r["realized_pnl"],
+        }
+        rv_tod = _compute_trade_rvol_tod(trade)
+        if rv_tod is not None:
+            pending.append((rv_tod, r))
+    if not pending:
+        return 0
+    # 3) Write — one short transaction.
+    conn = get_db(); cur = conn.cursor()
     updated = 0
     try:
-        for r in rows:
-            trade = {
-                "ticker":      r["symbol"], "side": r["side"],
-                "strategy":    r["strategy"], "entry_time": r["entry_time"],
-                "exit_time":   r["exit_time"], "entry_price": r["entry_price"],
-                "pnl":         r["realized_pnl"],
-            }
-            rv_tod = _compute_trade_rvol_tod(trade)
-            if rv_tod is None:
-                continue
+        for rv_tod, r in pending:
             cur.execute(
                 f"UPDATE trade_rvol SET rvol_tod={_p}, baseline_tod={_p}, entry_vol_tod={_p} "
                 f"WHERE broker_tag={_p} AND symbol={_p} AND entry_time={_p} AND exit_time={_p}",
@@ -12654,7 +12679,7 @@ def _backfill_trade_rvol_tod_missing(cap: int = 200):
     except Exception as _e:
         try: conn.rollback()
         except Exception: pass
-        log.warning("rvol tod backfill failed: %s", _e)
+        log.warning("rvol tod backfill write failed: %s", _e)
     finally:
         conn.close()
     if updated:
@@ -12730,8 +12755,9 @@ def _trade_hwm_loop():
         except Exception as _e:
             log.debug("trade rvol loop: %s", _e)
         # Fill the ToD column on historical rows saved before it existed.
+        # Small cap so each batch stays quick (network fetches per row).
         try:
-            _backfill_trade_rvol_tod_missing(cap=200)
+            _backfill_trade_rvol_tod_missing(cap=60)
         except Exception as _e:
             log.debug("trade rvol tod backfill: %s", _e)
         time.sleep(300)
