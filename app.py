@@ -14336,11 +14336,16 @@ def _entry_engine_setups():
         existing.append(t)
         return t
 
-    # Source 1: Refined snapshot — implicit alpaca3 target
-    snap = _refined_last_result or {}
+    # Source 1: KAIROS Refined snapshot — implicit alpaca3 target.
+    # acct3 now graduates off the TV snapshot and onto its own book, so it's
+    # tracking picks earned under the SAME entry mechanism it executes with
+    # (engine-driven, not TV-driven). The Kairos snapshot has fewer trades per
+    # strategy (min_trades=3 gate vs TV's 7), so the top-N can be thinner —
+    # that's the intended state until Kairos Farm accrues more history.
+    snap = _kairos_refined_last_result or {}
     if not snap.get("top_strategies"):
         try:
-            stored = _load_setting("REFINED_LAST_RESULT")
+            stored = _load_setting("KAIROS_REFINED_LAST_RESULT")
             if stored:
                 snap = json.loads(stored)
         except Exception:
@@ -14357,10 +14362,10 @@ def _entry_engine_setups():
         _add_target(su, "alpaca3")                       # acct3 = score-band (qty_override=None)
         for xtag, xamt, xunit in _extra:
             _add_sized_target(su, xtag, xamt, xunit)      # extra accounts = flat shares or $ target
-    # acct3 mirrors Refined EXACTLY: only the current top-N leaderboard (refreshed
-    # daily at 4:15 PM ET). We intentionally do NOT include "everything that traded
-    # on Refined recently" — a demoted strategy goes cold on acct3 the same day it
-    # leaves the top-N, so acct3 is a faithful template for an eventual live account.
+    # acct3 tracks the Kairos snapshot verbatim: only the current top-N
+    # leaderboard (refreshed daily at 4:16 PM ET). A demoted strategy goes cold
+    # on acct3 the same day it leaves the top-N — engine-mechanism-native
+    # symmetry vs the earlier design where TV Farm picks drove acct3.
     for nm in (snap.get("top_strategies") or []):
         _add_snapshot_targets(str(nm).upper())
 
