@@ -1475,12 +1475,21 @@
           : '—';
         const sh  = s.shares != null ? s.shares : '—';
         const px  = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
+        // Rank-tier animal — top 5 crocodile, 6-10 king cobra, 11-20 lizard.
+        // Mirrors the TV snapshot's GOAT/horse/bee tiering, Kairos-flavored.
+        const _kAnimal = i < 5
+          ? '<span title="Top 5 Kairos — Apex Croc" style="margin-right:4px">🐊</span>'
+          : i < 10
+          ? '<span title="Ranks 6-10 Kairos — King Cobra" style="margin-right:4px">🐍</span>'
+          : i < 20
+          ? '<span title="Ranks 11-20 Kairos — Lizard" style="margin-right:4px">🦎</span>'
+          : '';
         return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}"
           data-snap-trades="${s.trades ?? 0}" data-snap-wr="${s.win_rate ?? 0}"
           data-snap-pnl="${s.total_pnl ?? 0}"
           title="Click to see round-trip pairs">
           <td>${i + 1}</td>
-          <td class="mono">${esc(s.name)}${_rankChip(s.rank_delta)}</td>
+          <td class="mono">${_kAnimal}${esc(s.name)}${_rankChip(s.rank_delta)}</td>
           <td style="text-align:right;color:#aaa">${ten}</td>
           <td style="text-align:right;color:#888">${lt}</td>
           <td style="text-align:right;color:#F2C07A;font-weight:600">${(s.score * 100).toFixed(0)}</td>
@@ -1515,12 +1524,18 @@
         : '—';
       const sh = s.shares != null ? s.shares : '—';
       const px = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
+      // On-deck ranks continue past the top-N cutoff (rank = topN + i + 1),
+      // so a rank of e.g. 15 (topN=10, i=4) still lands in the 11-20 lizard tier.
+      const _absRank = topN + i + 1;
+      const _kAnimal = _absRank <= 20
+        ? '<span title="Ranks 11-20 Kairos — Lizard" style="margin-right:4px">🦎</span>'
+        : '';
       return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}"
         data-snap-trades="${s.trades ?? 0}" data-snap-wr="${s.win_rate ?? 0}"
         data-snap-pnl="${s.total_pnl ?? 0}"
         title="Click to see round-trip pairs">
-        <td>${topN + i + 1}</td>
-        <td class="mono">${esc(s.name)}</td>
+        <td>${_absRank}</td>
+        <td class="mono">${_kAnimal}${esc(s.name)}</td>
         <td style="text-align:right;color:#888">${lt}</td>
         <td style="text-align:right;color:#F2C07A;font-weight:600">${(s.score * 100).toFixed(0)}</td>
         <td style="text-align:right;color:#aaa">${sh}</td>
