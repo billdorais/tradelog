@@ -219,7 +219,13 @@ class AlpacaBroker:
         #    we don't accidentally submit an instantly-triggering stop.
         try:    cur_px = float(pos.current_price or 0)
         except (TypeError, ValueError): cur_px = 0.0
+        # Alpaca price increment rule: stocks >= $1 must be in PENNY increments
+        # (2 decimals); sub-$1 allows 4. Submitting 4 decimals on a >=$1 stock is
+        # rejected ("sub-penny increment does not fulfill minimum pricing
+        # criteria"), which would cancel the old stop then fail to place the new
+        # one — leaving the position unprotected. Round to the legal increment.
         _np = float(new_stop_price)
+        _np = round(_np, 2) if abs(_np) >= 1.0 else round(_np, 4)
         if cur_px > 0:
             if is_long and _np >= cur_px:
                 return {"success": False,
@@ -267,12 +273,13 @@ class AlpacaBroker:
         if cancelled_ids:
             time.sleep(0.4)
 
-        # 4) Submit the replacement stop.
+        # 4) Submit the replacement stop. _np is already rounded to the legal
+        #    increment above.
         try:
             req = StopOrderRequest(
                 symbol=sym, qty=qty, side=exit_side,
                 time_in_force=TimeInForce.GTC,
-                stop_price=round(_np, 4),
+                stop_price=_np,
             )
             order = self._trading.submit_order(req)
             self._invalidate_pos_cache()
