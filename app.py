@@ -262,6 +262,15 @@ RVOL_GATE_MIN       = float(os.environ.get("RVOL_GATE_MIN", "1.5"))        # req
 RVOL_GATE_SHORT_CAP = float(os.environ.get("RVOL_GATE_SHORT_CAP", "3.0"))  # block shorts >= this (0 = off)
 RVOL_GATE_LOOKBACK  = int(os.environ.get("RVOL_GATE_LOOKBACK", "20"))      # baseline bars
 RVOL_GATE_ACCOUNTS  = _accounts_with("rvol_gate")
+# Which RVOL definition the LIVE gate uses:
+#   'trailing' — entry bar vs prior N bars of the same session (self-deflates at
+#                the open; silent for the first ~5 min until min_bars exist).
+#   'tod'      — entry bar vs the average for that clock-minute over the prior 20
+#                sessions (valid from the first bar; the open matters here). A/B
+#                the two on closed fills (trade_rvol.rvol vs .rvol_tod) before
+#                flipping this. Default 'trailing' — unchanged behavior until set.
+RVOL_GATE_METHOD    = (os.environ.get("RVOL_GATE_METHOD", "trailing") or "trailing").strip().lower()
+RVOL_GATE_TOD_WINDOW = int(os.environ.get("RVOL_GATE_TOD_WINDOW", "1"))    # ToD smoothing window (minutes)
 
 def _strike_limit(level, account_tag):
     """Strikes-per-level for this (level, account): SHORT levels (S3/S4) on a
@@ -2256,6 +2265,17 @@ def init_db():
         )
     """)
     conn.commit()
+    # A/B columns: the time-of-day-normalized RVOL alongside the trailing-bar
+    # one, so a closed trade carries BOTH numbers for comparison. Idempotent
+    # ALTERs (swallow "already exists") — must rollback on Postgres or the whole
+    # init txn aborts. See project-postgres-migration-rollback.
+    for _col in ("rvol_tod REAL", "baseline_tod REAL", "entry_vol_tod REAL"):
+        try:
+            cur.execute(f"ALTER TABLE trade_rvol ADD COLUMN {_col}")
+            conn.commit()
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
 
     conn.close()
 
@@ -3049,6 +3069,7 @@ def risk_status():
         "rvol_gate_enabled":   RVOL_GATE_ENABLED,
         "rvol_gate_min":       RVOL_GATE_MIN,
         "rvol_gate_short_cap": RVOL_GATE_SHORT_CAP,
+        "rvol_gate_method":    RVOL_GATE_METHOD,
         "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
         "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
@@ -3103,7 +3124,7 @@ def _update_env_file(key, value):
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -3258,6 +3279,15 @@ def risk_set_limit():
         _save_setting("RVOL_GATE_SHORT_CAP", f"{RVOL_GATE_SHORT_CAP:g}")
         log.info("RVOL_GATE_SHORT_CAP set to %g× (0=off)", RVOL_GATE_SHORT_CAP)
         changed.append("rvol_gate_short_cap")
+    if "rvol_gate_method" in data:
+        _m = (str(data["rvol_gate_method"]) or "trailing").strip().lower()
+        if _m not in ("trailing", "tod"):
+            return jsonify({"error": "rvol_gate_method must be 'trailing' or 'tod'"}), 400
+        RVOL_GATE_METHOD = _m
+        _update_env_file("RVOL_GATE_METHOD", RVOL_GATE_METHOD)
+        _save_setting("RVOL_GATE_METHOD", RVOL_GATE_METHOD)
+        log.info("RVOL_GATE_METHOD set to %s", RVOL_GATE_METHOD)
+        changed.append("rvol_gate_method")
     if "paper_hours" in data:
         _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END")
     if "refined_hours" in data:
@@ -12238,6 +12268,171 @@ def _backfill_trade_hwm(lookback_days: int = 5, per_account_cap: int = 50):
     return total
 
 
+# ── Time-of-day-normalized RVOL (day-profile baseline) ───────────────────────
+# The trailing-bar method (below) divides the entry bar by the prior ~20 bars of
+# the SAME session — which self-deflates at the open (the prior bars ARE the
+# opening surge). This method instead divides today's volume-at-this-clock-minute
+# by the AVERAGE volume for that same clock-minute over the prior N sessions.
+# Valid from the very first bar (baseline is historical, not built from today),
+# and it treats "the open is busy" as the normal expectation. method='tod_profile'.
+_vol_profile_cache = {}   # (ticker, asof_date, days) -> {minute_of_day: avg_vol} | None
+
+def _volume_profile(ticker, asof_date, days=20):
+    """Per-clock-minute average RTH volume for `ticker` over the `days` trading
+    sessions BEFORE asof_date (asof_date itself is excluded so today never leaks
+    into its own baseline). Returns {minute_of_day: avg_volume} or None if there
+    isn't enough history. Cached per (ticker, asof_date, days) — the key includes
+    the date so it naturally refreshes once per day."""
+    import datetime as _dtp
+    ticker = (ticker or "").upper()
+    key = (ticker, asof_date, int(days))
+    if key in _vol_profile_cache:
+        return _vol_profile_cache[key]
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        if alpaca_broker is None:
+            _vol_profile_cache[key] = None
+            return None
+        try:    et = ZoneInfo("America/New_York")
+        except Exception: et = _dtp.timezone(_dtp.timedelta(hours=-4))
+        asof = _dtp.date.fromisoformat(asof_date)
+        # Pull a generous calendar window to cover `days` trading days + weekends
+        # /holidays. End at asof (exclusive of asof's own bars via the loop below).
+        start_d = asof - _dtp.timedelta(days=int(days) * 2 + 10)
+        client  = StockHistoricalDataClient(api_key=alpaca_broker._key,
+                                            secret_key=alpaca_broker._secret)
+        req = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+            start=_dtp.datetime(start_d.year, start_d.month, start_d.day, tzinfo=_dtp.timezone.utc),
+            end=_dtp.datetime(asof.year, asof.month, asof.day, tzinfo=_dtp.timezone.utc),
+            feed=_alpaca_data_feed(),
+        )
+        bars = list(client.get_stock_bars(req)[ticker])
+    except Exception as _e:
+        log.debug("volume_profile fetch %s %s: %s", ticker, asof_date, _e)
+        _vol_profile_cache[key] = None
+        return None
+    # Sum volume per clock-minute, tracking distinct dates so partial-history
+    # minutes average over the days that actually had them.
+    from collections import defaultdict
+    _sum  = defaultdict(float)
+    _days = defaultdict(set)
+    for b in bars:
+        _ts = b.timestamp
+        if _ts.tzinfo is None:
+            _ts = _ts.replace(tzinfo=_dtp.timezone.utc)
+        t_et = _ts.astimezone(et)
+        if not (_dtp.time(9, 30) <= t_et.time() < _dtp.time(16, 0)):
+            continue
+        d = t_et.date()
+        if d >= asof:                     # never include asof or later
+            continue
+        mod = t_et.hour * 60 + t_et.minute
+        _sum[mod]  += float(getattr(b, "volume", 0) or 0)
+        _days[mod].add(d)
+    # Need at least ~5 distinct sessions of history for a usable profile.
+    distinct_days = set().union(*_days.values()) if _days else set()
+    if len(distinct_days) < 5:
+        _vol_profile_cache[key] = None
+        return None
+    profile = {m: (_sum[m] / len(_days[m])) for m in _sum if _days[m]}
+    _vol_profile_cache[key] = profile
+    return profile
+
+
+def _rvol_tod_from_bars(ticker, entry_dt, today_bars, profile, window=1):
+    """Core ToD RVOL math shared by the live + backfill paths. today_bars is a
+    list of raw bar objects for the entry's own session; profile is the output
+    of _volume_profile. `window` sums this many trailing minutes (>=1) on both
+    today and the profile to smooth single-bar noise. Returns a dict or None."""
+    import datetime as _dtr
+    if not profile or not today_bars:
+        return None
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dtr.timezone.utc
+    # Build today's per-minute volume up to the entry bar (RTH only).
+    today_vol = {}
+    for b in today_bars:
+        _ts = b.timestamp
+        if _ts.tzinfo is None:
+            _ts = _ts.replace(tzinfo=_dtr.timezone.utc)
+        t_et = _ts.astimezone(et)
+        if not (_dtr.time(9, 30) <= t_et.time() < _dtr.time(16, 0)):
+            continue
+        if _ts > entry_dt:
+            continue
+        today_vol[t_et.hour * 60 + t_et.minute] = float(getattr(b, "volume", 0) or 0)
+    if not today_vol:
+        return None
+    entry_mod = max(today_vol)            # the entry bar's clock-minute
+    w = max(1, int(window))
+    mods = [entry_mod - k for k in range(w)]
+    tv = sum(today_vol.get(m, 0.0) for m in mods)
+    bv = sum(profile.get(m, 0.0)   for m in mods)
+    if bv <= 0:
+        return None
+    return {
+        "entry_volume":    round(tv, 2),
+        "baseline_volume": round(bv, 2),
+        "rvol":            round(tv / bv, 3),
+        "lookback":        w,
+        "method":          "tod_profile",
+        "entry_bar_time":  None,
+    }
+
+
+def _compute_trade_rvol_tod(trade, today_bars=None, profile_days=20, window=1):
+    """Time-of-day-normalized RVOL for a closed trade (backfill/A-B). Mirrors
+    _compute_trade_rvol's return shape with method='tod_profile'. None on
+    insufficient history."""
+    import datetime as _dtr
+    ticker    = (trade.get("ticker") or "").upper()
+    entry_iso = trade.get("entry_time")
+    if not (ticker and entry_iso):
+        return None
+    try:
+        entry_dt = _dtr.datetime.fromisoformat(entry_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    date = entry_iso[:10]
+    profile = _volume_profile(ticker, date, days=profile_days)
+    if not profile:
+        return None
+    if today_bars is None:
+        today_bars = _fetch_day_bars(ticker, date)
+    return _rvol_tod_from_bars(ticker, entry_dt, today_bars, profile, window=window)
+
+
+_live_rvol_tod_cache = {}   # (ticker, window) -> (ts, val)
+
+def _live_rvol_tod(ticker, now_dt=None, window=1):
+    """Live time-of-day-normalized RVOL right now (or at now_dt). Cached ~20s so
+    the same ticker across two gated accounts on one signal fetches once. Returns
+    a float or None (no profile / no today bars)."""
+    import datetime as _dtl
+    ticker = (ticker or "").upper()
+    key = (ticker, int(window))
+    _c = _live_rvol_tod_cache.get(key)
+    if now_dt is None and _c and (time.time() - _c[0]) < 20:
+        return _c[1]
+    now = now_dt or _dtl.datetime.now(_dtl.timezone.utc)
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dtl.timezone.utc
+    date = now.astimezone(et).date().isoformat()
+    profile = _volume_profile(ticker, date, days=20)
+    val = None
+    if profile:
+        today_bars = _fetch_day_bars(ticker, date)
+        rv = _rvol_tod_from_bars(ticker, now, today_bars, profile, window=window)
+        val = rv["rvol"] if rv else None
+    if now_dt is None:
+        _live_rvol_tod_cache[key] = (time.time(), val)
+    return val
+
+
 # ── Relative volume at entry (bar-derived, SIP tape) ─────────────────────────
 # Trailing-bar RVOL: the entry 1-min bar's volume vs the average of the prior N
 # RTH bars. Real SIP volume finally makes this trustworthy (IEX was ~3% of the
@@ -12310,24 +12505,30 @@ def _rvol_key_exists(cur, broker_tag, symbol, entry_time, exit_time):
     return cur.fetchone() is not None
 
 
-def _persist_trade_rvol(broker_tag, trade, rv):
-    """Idempotent upsert (PK = broker_tag+symbol+entry_time+exit_time)."""
+def _persist_trade_rvol(broker_tag, trade, rv, rv_tod=None):
+    """Idempotent upsert (PK = broker_tag+symbol+entry_time+exit_time). The
+    trailing-bar RVOL goes in rvol/baseline_volume/entry_volume; the optional
+    time-of-day RVOL (rv_tod) goes in the parallel *_tod columns for A/B."""
     import datetime as _dt_p
     _p = placeholder()
     level = _trade_level(trade.get("strategy") or "", (trade.get("side") or "").upper())
+    _tod_rvol = rv_tod["rvol"]            if rv_tod else None
+    _tod_base = rv_tod["baseline_volume"] if rv_tod else None
+    _tod_evol = rv_tod["entry_volume"]    if rv_tod else None
     vals = (broker_tag, (trade.get("ticker") or "").upper(),
             (trade.get("side") or "").upper(), trade.get("strategy") or None, level,
             trade.get("entry_time"), float(trade.get("entry_price") or 0),
             trade.get("exit_time"), float(trade.get("pnl") or 0),
             rv["entry_volume"], rv["baseline_volume"], rv["rvol"],
             rv["lookback"], rv["method"], "bars_1m",
+            _tod_rvol, _tod_base, _tod_evol,
             _dt_p.datetime.now(_dt_p.timezone.utc).isoformat())
     conn = get_db(); cur = conn.cursor()
     try:
         cols = ("broker_tag, symbol, side, strategy, level, entry_time, entry_price, "
                 "exit_time, realized_pnl, entry_volume, baseline_volume, rvol, "
-                "lookback, method, source, computed_at")
-        ph = ",".join([_p] * 16)
+                "lookback, method, source, rvol_tod, baseline_tod, entry_vol_tod, computed_at")
+        ph = ",".join([_p] * 19)
         if DATABASE_URL:
             cur.execute(
                 f"INSERT INTO trade_rvol ({cols}) VALUES ({ph}) "
@@ -12335,6 +12536,8 @@ def _persist_trade_rvol(broker_tag, trade, rv):
                 f"entry_volume=EXCLUDED.entry_volume, baseline_volume=EXCLUDED.baseline_volume, "
                 f"rvol=EXCLUDED.rvol, lookback=EXCLUDED.lookback, method=EXCLUDED.method, "
                 f"realized_pnl=EXCLUDED.realized_pnl, source=EXCLUDED.source, "
+                f"rvol_tod=EXCLUDED.rvol_tod, baseline_tod=EXCLUDED.baseline_tod, "
+                f"entry_vol_tod=EXCLUDED.entry_vol_tod, "
                 f"computed_at=EXCLUDED.computed_at", vals)
         else:
             cur.execute(f"INSERT OR REPLACE INTO trade_rvol ({cols}) VALUES ({ph})", vals)
@@ -12381,10 +12584,14 @@ def _backfill_trade_rvol(lookback_days: int = 5, per_account_cap: int = 50):
                     continue
                 if _rvol_key_exists(cur, tag, symbol, entry_time, exit_time):
                     continue
-                rv = _compute_trade_rvol(t)
+                # Fetch the entry day's bars once, feed BOTH methods so a closed
+                # trade carries the trailing-bar and time-of-day RVOL side by side.
+                _day_bars = _fetch_day_bars(symbol, (entry_time or "")[:10])
+                rv = _compute_trade_rvol(t, bars=_day_bars)
                 if rv is None:
                     continue
-                _persist_trade_rvol(tag, t, rv)
+                rv_tod = _compute_trade_rvol_tod(t, today_bars=_day_bars)
+                _persist_trade_rvol(tag, t, rv, rv_tod=rv_tod)
                 processed += 1
                 total     += 1
         finally:
@@ -12432,7 +12639,10 @@ def _rvol_gate_block(strategy, side, ticker, account_tag, now_dt=None):
     if not ticker or "BREAKOUT" not in (strategy or "").upper():
         return (False, None, None)
     try:
-        rvol = _live_rvol(ticker, lookback=RVOL_GATE_LOOKBACK, now_dt=now_dt)
+        if RVOL_GATE_METHOD == "tod":
+            rvol = _live_rvol_tod(ticker, now_dt=now_dt, window=RVOL_GATE_TOD_WINDOW)
+        else:
+            rvol = _live_rvol(ticker, lookback=RVOL_GATE_LOOKBACK, now_dt=now_dt)
     except Exception as _e:
         log.warning("RVOL gate: live RVOL failed for %s — allowing (%s)", ticker, _e)
         return (False, None, None)
@@ -13622,22 +13832,29 @@ def api_debug_feed():
 @app.route("/api/debug/rvol")
 def api_debug_rvol():
     """Live entry-bar RVOL for a ticker right now — how the RVOL gate sees it, and
-    whether it would block. ?ticker=SPY"""
+    whether it would block. Shows BOTH methods (trailing-bar and time-of-day) so
+    you can compare, especially near the open where they diverge most. ?ticker=SPY"""
     ticker = (request.args.get("ticker") or "SPY").upper()
-    rvol = _live_rvol(ticker, lookback=RVOL_GATE_LOOKBACK)
+    rvol_trailing = _live_rvol(ticker, lookback=RVOL_GATE_LOOKBACK)
+    rvol_tod      = _live_rvol_tod(ticker, window=RVOL_GATE_TOD_WINDOW)
+    rvol_active   = rvol_tod if RVOL_GATE_METHOD == "tod" else rvol_trailing
     def _would_block(side):
         return _rvol_gate_block("X_CAM_BREAKOUT_R4S4_V02_5MIN", side, ticker, "alpaca3")[1]
     return jsonify({
-        "ticker": ticker, "rvol": rvol, "feed": str(_alpaca_data_feed()),
+        "ticker": ticker, "rvol": rvol_active, "feed": str(_alpaca_data_feed()),
+        "rvol_trailing": rvol_trailing,   # entry bar vs prior N bars, same session
+        "rvol_tod":      rvol_tod,         # entry bar vs 20-day avg for this clock-minute
         "gate": {
             "enabled": RVOL_GATE_ENABLED, "min": RVOL_GATE_MIN,
             "short_cap": RVOL_GATE_SHORT_CAP, "lookback": RVOL_GATE_LOOKBACK,
+            "method": RVOL_GATE_METHOD, "tod_window": RVOL_GATE_TOD_WINDOW,
             "accounts": sorted(RVOL_GATE_ACCOUNTS),
         },
         "would_block_long":  _would_block("long"),
         "would_block_short": _would_block("short"),
-        "hint": "rvol=null means no bars / too near the open → the gate FAILS OPEN "
-                "(entry allowed). Only breakout strategies are gated.",
+        "hint": "rvol=null means no data → the gate FAILS OPEN (entry allowed). "
+                "The 'trailing' method self-deflates at the open; 'tod' is valid from "
+                "the first bar. Flip live via rvol_gate_method=tod on /api/risk/limit.",
     })
 
 
@@ -17741,7 +17958,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -17868,6 +18085,10 @@ def _restore_risk_settings():
             log.info("Restored RVOL_GATE_SHORT_CAP=%g× from DB", RVOL_GATE_SHORT_CAP)
         except (TypeError, ValueError):
             pass
+    stored = _load_setting("RVOL_GATE_METHOD")
+    if stored in ("trailing", "tod"):
+        RVOL_GATE_METHOD = stored
+        log.info("Restored RVOL_GATE_METHOD=%s from DB", RVOL_GATE_METHOD)
     for _k in ("PAPER_HOURS_START", "PAPER_HOURS_END", "REFINED_HOURS_START", "REFINED_HOURS_END"):
         _v = _load_setting(_k)
         if _v is not None:
