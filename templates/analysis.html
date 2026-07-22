@@ -728,7 +728,19 @@
 
   <!-- Daily / Weekly summaries -->
   <div class="section">
-    <div class="section-title">Performance Summary <span style="font-size:0.7rem;font-weight:400;color:#c4b5fd;margin-left:8px">Refined account</span></div>
+    <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span>Performance Summary</span>
+      <!-- Curated-account toggle — default Crew. Independent of the page tabs. -->
+      <div style="display:inline-flex;gap:2px">
+        <button id="perfAcct4" onclick="setPerfAcct('4')"
+                style="border:1px solid #7FE098;background:rgba(127,224,152,0.12);color:#7FE098;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer">Crew Paper</button>
+        <button id="perfAcct2" onclick="setPerfAcct('2')"
+                style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;font-size:0.7rem;cursor:pointer">TV Refined</button>
+        <button id="perfAcct3" onclick="setPerfAcct('3')"
+                style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;border-radius:0 6px 6px 0;font-size:0.7rem;cursor:pointer">Kairos Refined</button>
+      </div>
+      <span id="perfSummaryLabel" style="font-size:0.7rem;font-weight:400;color:#7FE098"></span>
+    </div>
     <div class="tabs">
       <div class="tab active" onclick="showTab('daily')">Daily</div>
       <div class="tab"       onclick="showTab('weekly')">Weekly</div>
@@ -1048,16 +1060,9 @@
     if (params.toString()) endpoint += '?' + params.toString();
     document.getElementById('dataAge').textContent = 'Loading…';
     // Refresh routing-rule -> live-strategy map in parallel with the analysis fetch.
-    // Always fetch Refined (account 2) for the Performance Summary regardless of active tab.
-    const refinedPerfParams = new URLSearchParams({account: '2'});
-    if (fromDate) refinedPerfParams.set('from_date', fromDate);
-    if (toDate)   refinedPerfParams.set('to_date',   toDate);
-    if (fromTime) refinedPerfParams.set('from_time', fromTime);
-    if (toTime)   refinedPerfParams.set('to_time',   toTime);
-    const refinedPerfEndpoint = '/api/alpaca/analysis?' + refinedPerfParams.toString();
     const [res, refinedPerfRes] = await Promise.all([
       fetch(endpoint),
-      isAlpaca2 ? Promise.resolve(null) : fetch(refinedPerfEndpoint),
+      Promise.resolve(null),
       _refreshLiveStrategies(),
     ]);
     const data = await res.json();
@@ -1076,10 +1081,9 @@
     renderSignalTypeTable(data.per_strategy || {});
     renderStratTable(data.per_strategy || {});
     renderTickerTable(data.per_ticker  || {});
-    // Performance Summary always shows Refined account so you can track the curated portfolio
-    const perfData = isAlpaca2 ? data : (refinedPerfRes ? await refinedPerfRes.json().catch(() => ({})) : {});
-    renderDaily(perfData.daily   || []);
-    renderWeekly(perfData.weekly || []);
+    // Performance Summary is driven by its own account toggle (default Crew) —
+    // loaded independently so it doesn't follow the page tabs.
+    _loadPerfSummary();
     if (isAlpaca || isAlpaca2) loadReconciliation(isAlpaca2 ? '2' : '');
     _loadRefinedSnapshot();
     _loadKairosSnapshot();
@@ -1103,7 +1107,7 @@
   // Farm. Kairos snapshot: Kairos Farm (5) / Kairos Refined (3), default Farm.
   let _refinedSnapAcct = '1';
   let _kairosSnapAcct  = '5';
-  const _SNAP_ACCT_LABEL = {'1':'TV Farm','2':'TV Refined','3':'Kairos Refined','5':'Kairos Farm'};
+  const _SNAP_ACCT_LABEL = {'1':'TV Farm','2':'TV Refined','3':'Kairos Refined','4':'Crew Paper','5':'Kairos Farm'};
   // Cache of per-account per_strategy over the current date range (keyed by acct
   // + window so a date change invalidates it).
   const _snapAcctStatsCache = {};
@@ -1142,6 +1146,43 @@
     _refinedSnapAcct = acct;
     _syncSnapAcctButtons('refinedSnapAcct', acct, ['1','2']);
     _loadRefinedSnapshot();
+  }
+
+  // Performance Summary account — its own toggle (Crew / TV Refined / Kairos
+  // Refined), default Crew. Loads that account's daily/weekly independently.
+  let _perfSummaryAcct = '4';
+  const _PERF_ACCT_COLOR = {'4':'#7FE098','2':'#c4b5fd','3':'#F2C07A'};
+  function setPerfAcct(acct) {
+    _perfSummaryAcct = acct;
+    for (const a of ['4','2','3']) {
+      const b = document.getElementById('perfAcct' + a);
+      if (!b) continue;
+      const on = a === acct, c = _PERF_ACCT_COLOR[a];
+      b.style.background  = on ? c + '22' : 'transparent';   // 8-digit hex alpha tint
+      b.style.color       = on ? c : '#666';
+      b.style.borderColor = on ? c : '#2a2d3e';
+    }
+    _loadPerfSummary();
+  }
+  async function _loadPerfSummary() {
+    const fromDate = document.getElementById('analysisFrom').value;
+    const toDate   = document.getElementById('analysisTo').value;
+    const fromTime = document.getElementById('analysisFromTime')?.value || '';
+    const toTime   = document.getElementById('analysisToTime')?.value || '';
+    const p = new URLSearchParams({ account: _perfSummaryAcct });
+    if (fromDate) p.set('from_date', fromDate);
+    if (toDate)   p.set('to_date',   toDate);
+    if (fromTime) p.set('from_time', fromTime);
+    if (toTime)   p.set('to_time',   toTime);
+    const lbl = document.getElementById('perfSummaryLabel');
+    if (lbl) { lbl.textContent = _SNAP_ACCT_LABEL[_perfSummaryAcct] + ' account'; lbl.style.color = _PERF_ACCT_COLOR[_perfSummaryAcct]; }
+    try {
+      const d = await fetch('/api/alpaca/analysis?' + p).then(r => r.json());
+      renderDaily(d.daily   || []);
+      renderWeekly(d.weekly || []);
+    } catch (e) {
+      renderDaily([]); renderWeekly([]);
+    }
   }
   function setKairosSnapAcct(acct) {
     _kairosSnapAcct = acct;
