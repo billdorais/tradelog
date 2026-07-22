@@ -12601,6 +12601,61 @@ def _backfill_trade_rvol(lookback_days: int = 5, per_account_cap: int = 50):
     return total
 
 
+def _backfill_trade_rvol_tod_missing(cap: int = 200):
+    """One-time (repeating) fill of the time-of-day RVOL onto rows that already
+    have the trailing-bar rvol but a NULL rvol_tod — i.e. rows persisted before
+    the *_tod columns existed. Reconstructs the trade dict straight from the DB
+    row (no fills re-pairing needed) and computes ToD from the day-profile.
+    Bounded per run so it churns through the backlog over a few loop cycles."""
+    _p = placeholder()
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT broker_tag, symbol, side, strategy, entry_time, entry_price, "
+            f"exit_time, realized_pnl FROM trade_rvol "
+            f"WHERE rvol_tod IS NULL AND rvol IS NOT NULL "
+            f"ORDER BY entry_time DESC LIMIT {int(cap)}"
+        )
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as _e:
+        conn.close()
+        log.debug("rvol tod backfill query failed: %s", _e)
+        return 0
+    if not rows:
+        conn.close()
+        return 0
+    updated = 0
+    try:
+        for r in rows:
+            trade = {
+                "ticker":      r["symbol"], "side": r["side"],
+                "strategy":    r["strategy"], "entry_time": r["entry_time"],
+                "exit_time":   r["exit_time"], "entry_price": r["entry_price"],
+                "pnl":         r["realized_pnl"],
+            }
+            rv_tod = _compute_trade_rvol_tod(trade)
+            if rv_tod is None:
+                continue
+            cur.execute(
+                f"UPDATE trade_rvol SET rvol_tod={_p}, baseline_tod={_p}, entry_vol_tod={_p} "
+                f"WHERE broker_tag={_p} AND symbol={_p} AND entry_time={_p} AND exit_time={_p}",
+                (rv_tod["rvol"], rv_tod["baseline_volume"], rv_tod["entry_volume"],
+                 r["broker_tag"], r["symbol"], r["entry_time"], r["exit_time"]),
+            )
+            updated += 1
+        conn.commit()
+    except Exception as _e:
+        try: conn.rollback()
+        except Exception: pass
+        log.warning("rvol tod backfill failed: %s", _e)
+    finally:
+        conn.close()
+    if updated:
+        log.info("RVOL ToD backfill: filled %d rows (of %d NULL scanned)", updated, len(rows))
+    return updated
+
+
 # ── Live RVOL entry gate ─────────────────────────────────────────────────────
 _live_rvol_cache = {}     # (ticker, lookback) -> (mono_ts, rvol_or_None)
 
@@ -12668,6 +12723,11 @@ def _trade_hwm_loop():
             _backfill_trade_rvol(lookback_days=3, per_account_cap=100)
         except Exception as _e:
             log.debug("trade rvol loop: %s", _e)
+        # Fill the ToD column on historical rows saved before it existed.
+        try:
+            _backfill_trade_rvol_tod_missing(cap=200)
+        except Exception as _e:
+            log.debug("trade rvol tod backfill: %s", _e)
         time.sleep(300)
 
 threading.Thread(target=_trade_hwm_loop, daemon=True).start()
@@ -13880,6 +13940,20 @@ def api_rvol_ab_compare():
     cutoff = (request.args.get("morning_cutoff") or "10:00").strip()
     acct_q = (request.args.get("account") or "").strip()
 
+    # ?backfill=1 → fill ToD onto historical rows first. ONE bounded batch per
+    # request (each row does an Alpaca day-bars fetch, so a big batch would time
+    # out the request). The UI reports how many remain so you click Compare again
+    # to keep filling; the 5-min background loop also chips away at it. Idempotent.
+    _filled = _remaining = 0
+    if request.args.get("backfill") == "1":
+        _filled = _backfill_trade_rvol_tod_missing(cap=120)
+        try:
+            _cc = get_db(); _cur2 = _cc.cursor()
+            _cur2.execute("SELECT COUNT(*) FROM trade_rvol WHERE rvol_tod IS NULL AND rvol IS NOT NULL")
+            _remaining = int(_cur2.fetchone()[0]); _cc.close()
+        except Exception:
+            _remaining = 0
+
     try:    et = ZoneInfo("America/New_York")
     except Exception: et = _dt.timezone(_dt.timedelta(hours=-4))
     to_d   = _dt.datetime.now(et).date()
@@ -13959,6 +14033,8 @@ def api_rvol_ab_compare():
         "thresholds": {"min": gmin, "short_cap": gcap, "morning_cutoff": cutoff},
         "account": tag_filter or "all curated",
         "active_method": RVOL_GATE_METHOD,
+        "tod_backfilled": _filled,
+        "tod_remaining":  _remaining,
         "total_breakout_trades": len(rows),
         "all": {
             "trailing": _summ(rows, "rvol"),

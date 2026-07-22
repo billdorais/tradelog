@@ -2091,15 +2091,19 @@
       min:            document.getElementById('rvolAbMin').value || '1.5',
       short_cap:      document.getElementById('rvolAbCap').value || '3.0',
       morning_cutoff: document.getElementById('rvolAbCutoff').value || '10:00',
+      backfill:       '1',   // fill the ToD column on historical rows (one batch/click)
     });
-    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Comparing…</div>';
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Comparing (filling historical ToD values)…</div>';
     const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
     try {
       const r = await fetch('/api/rvol/ab_compare?' + p);
       const d = await r.json();
       if (!r.ok) { out.innerHTML = `<div style="color:#e74c3c">${d.error || 'Failed.'}</div>`; return; }
-      document.getElementById('rvolAbActive').textContent =
-        `live method: ${d.active_method} · ${d.total_breakout_trades} breakout fills in window`;
+      const remainNote = d.tod_remaining
+        ? ` · <span style="color:#F2C76B">${d.tod_remaining} rows still need ToD — click Compare again to fill the next batch</span>`
+        : '';
+      document.getElementById('rvolAbActive').innerHTML =
+        `live method: ${d.active_method} · ${d.total_breakout_trades} breakout fills in window${remainNote}`;
       if (!d.total_breakout_trades) {
         out.innerHTML = '<div style="color:#888;font-size:0.85rem">No recorded breakout fills with RVOL yet — the backfill records these every 5 min. Check back after some breakout trades close.</div>';
         return;
