@@ -1447,7 +1447,10 @@
           : '—';
         const sh  = s.shares != null ? s.shares : '—';
         const px  = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
-        return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}" title="Click to see round-trip pairs">
+        return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}"
+          data-snap-trades="${s.trades ?? 0}" data-snap-wr="${s.win_rate ?? 0}"
+          data-snap-pnl="${s.total_pnl ?? 0}"
+          title="Click to see round-trip pairs">
           <td>${i + 1}</td>
           <td class="mono">${esc(s.name)}${_rankChip(s.rank_delta)}</td>
           <td style="text-align:right;color:#aaa">${ten}</td>
@@ -1484,7 +1487,10 @@
         : '—';
       const sh = s.shares != null ? s.shares : '—';
       const px = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
-      return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}" title="Click to see round-trip pairs">
+      return `<tr class="drill" data-kind="strategy" data-key="${esc(s.name)}"
+        data-snap-trades="${s.trades ?? 0}" data-snap-wr="${s.win_rate ?? 0}"
+        data-snap-pnl="${s.total_pnl ?? 0}"
+        title="Click to see round-trip pairs">
         <td>${topN + i + 1}</td>
         <td class="mono">${esc(s.name)}</td>
         <td style="text-align:right;color:#888">${lt}</td>
@@ -2333,10 +2339,10 @@
       openPairs(tr.dataset.kind, tr.dataset.key);
     });
   }
-  // Refined snapshot rows pass their snapshot stats so openPairs can warn when
-  // the current-period data differs from the snapshot's 45-day window. Same
-  // delegated handler is bound to the on-deck tbody so those rows drill in too.
-  for (const id of ['refinedSnapRows', 'onDeckTbody']) {
+  // Snapshot rows pass their snapshot stats so openPairs can warn when the
+  // current-period data differs from the snapshot's window. Same delegated
+  // handler is bound to every snapshot tbody (TV + Kairos, top + on-deck).
+  for (const id of ['refinedSnapRows', 'onDeckTbody', 'kairosSnapRows', 'kairosOnDeckTbody']) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.addEventListener('click', e => {
