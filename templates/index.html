@@ -3324,7 +3324,7 @@
 
     async function closeAllPositions() {
       if (!confirm('Close ALL open positions on all connected brokers (Alpaca + IB)? This cannot be undone.')) return;
-      const token = prompt('Enter your webhook token to confirm:');
+      const token = _getWebhookToken();
       if (!token) return;
       const btn = document.getElementById('closeAllBtn');
       btn.textContent = 'Closing...';
@@ -3398,22 +3398,39 @@
       }
     }
 
-    async function closePosition(symbol, account) {
-      if (!confirm(`Close ${symbol} position on acct ${account}? Cannot be undone.`)) return;
+    // Row-action close (Open Positions ✕). Named distinctly to avoid colliding
+    // with the older IB closePosition(ticker, qty, direction) below — JS keeps
+    // the last definition, so a shared name made the ✕ call the wrong function
+    // (which prompted for a token and sent a bad IB order). No token prompt
+    // (uses the injected token); brief button flash instead of dialogs.
+    async function closeRowPosition(symbol, account, btn) {
       const token = _getWebhookToken();
       if (!token) return;
+      const _orig = btn ? btn.textContent : null;
+      if (btn) { btn.disabled = true; btn.textContent = '…'; }
+      const _flash = (txt, color, revert) => {
+        if (!btn) return;
+        btn.textContent = txt; btn.style.borderColor = color; btn.style.color = color;
+        if (revert) setTimeout(() => {
+          btn.disabled = false; btn.textContent = _orig;
+          btn.style.borderColor = ''; btn.style.color = '';
+        }, 1400);
+      };
       try {
         const url = `/api/alpaca/close/${encodeURIComponent(symbol)}`
                   + `?account=${account}&token=${encodeURIComponent(token)}`;
         const res = await fetch(url, { method: 'POST' });
         const d = await res.json();
         if (!res.ok || !d.success) {
-          alert(`Close failed: ${d.error || res.status}`);
+          _flash('✕', '#ef5350', true);
+          console.warn(`Close failed for ${symbol}:`, d.error || res.status);
           return;
         }
+        _flash('✓', '#7FE098', false);   // stays until the row re-renders
         loadOpenPositionsTable();
       } catch (e) {
-        alert('Error: ' + e.message);
+        _flash('✕', '#ef5350', true);
+        console.warn('Close error:', e.message);
       }
     }
 
@@ -3430,7 +3447,7 @@
     }
 
     async function closeAlpacaPosition(symbol, btn, openKey) {
-      const token = prompt(`Enter webhook token to close ${symbol} position on Alpaca:`);
+      const token = _getWebhookToken();
       if (!token) return;
       const orig = btn.textContent;
       btn.textContent = '...';
@@ -3462,7 +3479,7 @@
     }
 
     async function closePosition(ticker, qty, direction) {
-      const token = prompt(`Enter webhook token to close ${ticker} position:`);
+      const token = _getWebhookToken();
       if (!token) return;
       const action = direction === 'short' ? 'BUY' : 'SELL';
       try {
@@ -4160,7 +4177,7 @@
               <button onclick="pullStop('${_sym}', ${_acct}, 'halfway', this)"
                 title="Move stop halfway between current stop and current price"
                 style="background:transparent;border:1px solid #4a4020;color:#F2C07A;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">½</button>
-              <button onclick="closePosition('${_sym}', ${_acct})"
+              <button onclick="closeRowPosition('${_sym}', ${_acct}, this)"
                 title="Close position (broker close_position + market-order fallback)"
                 style="background:transparent;border:1px solid #4a2020;color:#ef5350;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">✕</button>
             </div>`;
