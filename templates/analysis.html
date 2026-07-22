@@ -1407,13 +1407,15 @@
   // ── Kairos Refined snapshot (mirror of the TV one, view-only) ─────────────
   // Sourced from Kairos Farm (acct5) fills; renders top-N + on-deck the same way.
   async function _loadKairosSnapshot() {
-    const meta = document.getElementById('kairosSnapMeta');
-    const rows = document.getElementById('kairosSnapRows');
+    const meta   = document.getElementById('kairosSnapMeta');
+    const status = document.getElementById('kairosSnapStatus');
+    const rows   = document.getElementById('kairosSnapRows');
     try {
       const res = await fetch('/api/kairos_refined/refresh');
       const d   = await res.json();
       if (!d.run_at) {
         meta.textContent = 'never run · scheduler fires at 4:16 PM ET on weekdays';
+        status.style.display = 'none';
         rows.innerHTML   = '<tr><td colspan="11" class="empty">No refresh yet — click ↻ Refresh Now to run one.</td></tr>';
         _renderKairosOnDeck([]);
         return;
@@ -1422,6 +1424,32 @@
       const cnt  = (d.top_strategies || []).length;
       const gate = (d.min_trades || 0) > 0 ? ` · min ${d.min_trades} trades` : '';
       meta.textContent = `${cnt} strateg${cnt === 1 ? 'y' : 'ies'} · ${windowLabel}${gate} · sourced from Kairos Farm · last run ${d.run_at}`;
+
+      // Daily-diff status line — same shape as the TV snapshot minus the
+      // "added to N rules / stripped from M prior / not matched" bits (Kairos
+      // is view-only and doesn't touch routing rules). Strategy names are
+      // clickable links into the round-trip modal via the shared drill handler.
+      const addedS   = d.added_strategies   || [];
+      const removedS = d.removed_strategies || [];
+      const _stratLink = (name) => {
+        const e = esc(name);
+        return `<span class="snap-strat-link" data-key="${e}" title="Click to see round-trip pairs">${e}</span>`;
+      };
+      const bits = [];
+      if (addedS.length) {
+        bits.push(`<span style="color:#7FE098" title="Strategies new to the Kairos top-N this run (not present in the previous run)">🆕 ${addedS.length} new: <span style="font-family:monospace">${addedS.map(_stratLink).join(', ')}</span></span>`);
+      }
+      if (removedS.length) {
+        bits.push(`<span style="color:#e74c3c" title="Strategies that were in the Kairos top-N last run but dropped out this run">↓ ${removedS.length} dropped: <span style="font-family:monospace">${removedS.map(_stratLink).join(', ')}</span></span>`);
+      }
+      if (bits.length) {
+        status.innerHTML = bits.join(' · ');
+        status.style.display = '';
+      } else {
+        status.textContent = 'no changes since last run';
+        status.style.display = '';
+      }
+
       const scored = d.top_scored || [];
       if (!scored.length) {
         rows.innerHTML = '<tr><td colspan="11" class="empty">No profitable strategies with ≥3 trades in the Kairos Farm window yet.</td></tr>';
@@ -2358,10 +2386,11 @@
   }
   // Added/dropped strategy names in the status line drill into the same pairs view.
   // No snapshot stats here — they aren't in the table, so openPairs computes from
-  // the current period only.
-  const _snapStatusEl = document.getElementById('refinedSnapStatus');
-  if (_snapStatusEl) {
-    _snapStatusEl.addEventListener('click', e => {
+  // the current period only. Bound to both TV and Kairos status divs.
+  for (const _statusId of ['refinedSnapStatus', 'kairosSnapStatus']) {
+    const _el = document.getElementById(_statusId);
+    if (!_el) continue;
+    _el.addEventListener('click', e => {
       const el = e.target.closest('.snap-strat-link');
       if (!el) return;
       openPairs('strategy', el.dataset.key);
