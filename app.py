@@ -2981,8 +2981,12 @@ def risk_status():
         p["entry_time"] = entry_t
         sym_u = (p.get("symbol") or "").upper()
         p["peak_unrealized_pnl"] = round(peaks_snap.get((p.get("broker",""), sym_u), p.get("unrealized_pnl") or 0), 2)
-        # Estimate trailing stop price from route trail_pct and peak price
-        trail_pct    = _trail_for(strat)
+        # Estimate trailing stop price from the effective trail % and peak price.
+        # A manual Pull-Stop (BE / ½) override wins over the rule's trail — same
+        # precedence the live stop monitor uses — so the yellow stop tick moves
+        # the instant you pull it, instead of showing the stale rule-based level.
+        _manual_trail = _get_manual_trail(p.get("broker",""), sym_u)
+        trail_pct    = _manual_trail if _manual_trail else _trail_for(strat)
         entry_px     = p.get("avg_entry_price") or 0
         current_px   = p.get("current_price")   or 0
         qty          = abs(p.get("qty") or 0)
@@ -3786,7 +3790,9 @@ def alpaca_close_position(symbol):
 
 @app.route("/")
 def dashboard():
-    return render_template("index.html")
+    # Pass the webhook token so the Open Positions row actions (BE / ½ / close)
+    # can authenticate silently — no password prompt on every click.
+    return render_template("index.html", webhook_token=WEBHOOK_TOKEN)
 
 
 @app.route("/routing")

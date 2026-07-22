@@ -3347,9 +3347,12 @@
       }
     }
 
-    // Session-cached webhook token so per-row Stop actions don't prompt on
-    // every click. Cleared when the tab closes.
+    // Webhook token injected server-side (dashboard route) so per-row Stop
+    // actions authenticate silently — no prompt. Falls back to a one-time
+    // prompt only if the template somehow didn't render it.
+    const _WEBHOOK_TOKEN = "{{ webhook_token|default('', true) }}";
     function _getWebhookToken() {
+      if (_WEBHOOK_TOKEN) return _WEBHOOK_TOKEN;
       let t = sessionStorage.getItem('webhook_token') || '';
       if (!t) {
         t = prompt('Enter your webhook token (cached for this tab):') || '';
@@ -3358,11 +3361,21 @@
       return t;
     }
 
-    async function pullStop(symbol, account, mode) {
-      const label = mode === 'breakeven' ? 'Move stop to BREAKEVEN' : 'Move stop HALFWAY to price';
-      if (!confirm(`${label} on ${symbol} (acct ${account})?`)) return;
+    // Instant — no confirm/success dialog. The stop tick moving on the meter is
+    // the confirmation. `btn` (the clicked element) gets a brief ✓ / ✕ flash.
+    async function pullStop(symbol, account, mode, btn) {
       const token = _getWebhookToken();
       if (!token) return;
+      const _orig = btn ? btn.textContent : null;
+      if (btn) { btn.disabled = true; btn.textContent = '…'; }
+      const _flash = (txt, color) => {
+        if (!btn) return;
+        btn.textContent = txt; btn.style.borderColor = color; btn.style.color = color;
+        setTimeout(() => {
+          btn.disabled = false; btn.textContent = _orig;
+          btn.style.borderColor = ''; btn.style.color = '';
+        }, 1400);
+      };
       try {
         const url = `/api/alpaca/pull_stop/${encodeURIComponent(symbol)}`
                   + `?account=${account}&token=${encodeURIComponent(token)}`;
@@ -3373,15 +3386,15 @@
         });
         const d = await res.json();
         if (!res.ok || !d.success) {
-          alert(`Stop pull failed: ${d.error || res.status}`);
+          _flash('✕', '#ef5350');
+          console.warn(`Stop pull failed for ${symbol}:`, d.error || res.status);
           return;
         }
-        const prev = d.prev_stop_price != null ? `$${d.prev_stop_price.toFixed(2)}` : 'n/a';
-        const trail = d.new_trail_pct != null ? ` · now trailing at ${d.new_trail_pct}%` : '';
-        alert(`✓ ${symbol} stop moved: ${prev} → $${d.new_stop_price.toFixed(2)} (${mode})${trail}`);
-        loadOpenPositionsTable();
+        _flash('✓', '#7FE098');
+        loadOpenPositionsTable();   // meter re-renders with the new stop tick
       } catch (e) {
-        alert('Error: ' + e.message);
+        _flash('✕', '#ef5350');
+        console.warn('Stop pull error:', e.message);
       }
     }
 
@@ -4141,10 +4154,10 @@
           const _sym  = escHtml((p.symbol || '').toUpperCase());
           const actionsCell = `
             <div style="display:flex;gap:3px;justify-content:flex-end">
-              <button onclick="pullStop('${_sym}', ${_acct}, 'breakeven')"
+              <button onclick="pullStop('${_sym}', ${_acct}, 'breakeven', this)"
                 title="Move stop to entry price (breakeven)"
                 style="background:transparent;border:1px solid #2a4a30;color:#7FE098;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">BE</button>
-              <button onclick="pullStop('${_sym}', ${_acct}, 'halfway')"
+              <button onclick="pullStop('${_sym}', ${_acct}, 'halfway', this)"
                 title="Move stop halfway between current stop and current price"
                 style="background:transparent;border:1px solid #4a4020;color:#F2C07A;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">½</button>
               <button onclick="closePosition('${_sym}', ${_acct})"
