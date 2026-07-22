@@ -12608,7 +12608,13 @@ def _backfill_trade_rvol(lookback_days: int = 5, per_account_cap: int = 50):
             rv = _compute_trade_rvol(t, bars=_day_bars)
             if rv is None:
                 continue
-            rv_tod = _compute_trade_rvol_tod(t, today_bars=_day_bars)
+            # ToD only for TODAY's trades — today's 20-day profile is fetched once
+            # per ticker and cached all day, so this stays cheap. Older trades in
+            # the window would each need their own ~20-day profile build (heavy),
+            # so they get trailing RVOL only (they were ToD-scored on their own day).
+            rv_tod = None
+            if (entry_time or "")[:10] == to_s:
+                rv_tod = _compute_trade_rvol_tod(t, today_bars=_day_bars)
             _persist_trade_rvol(tag, t, rv, rv_tod=rv_tod)
             processed += 1
             total     += 1
@@ -12754,12 +12760,13 @@ def _trade_hwm_loop():
             _backfill_trade_rvol(lookback_days=3, per_account_cap=100)
         except Exception as _e:
             log.debug("trade rvol loop: %s", _e)
-        # Fill the ToD column on historical rows saved before it existed.
-        # Small cap so each batch stays quick (network fetches per row).
-        try:
-            _backfill_trade_rvol_tod_missing(cap=60)
-        except Exception as _e:
-            log.debug("trade rvol tod backfill: %s", _e)
+        # NOTE: historical ToD backfill is intentionally NOT run on the loop —
+        # each row builds a ~20-day 1-min volume profile, and historical trades
+        # span many dates so the per-date cache doesn't help → dozens of huge
+        # fetches/parses per cycle, which saturated the app. ToD now accrues only
+        # on NEW trades (today's profile is fetched once and cached) via the
+        # forward backfill above. Fill history on demand via /api/rvol/ab_compare
+        # ?backfill=1 (bounded, opt-in) if you want the older rows scored.
         time.sleep(300)
 
 threading.Thread(target=_trade_hwm_loop, daemon=True).start()
