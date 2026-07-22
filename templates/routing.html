@@ -293,6 +293,16 @@
         </label>
       </div>
 
+      <div class="risk-divider"></div>
+
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Manual Halt — Lock In The Win
+        </div>
+        <div id="manualHaltRow" class="risk-input-row" style="flex-wrap:wrap;gap:8px;margin-top:2px"></div>
+        <div class="risk-hint">Had a big win? Halt an account for the rest of the day — blocks NEW entries only, leaves open positions alone. Auto-resets at midnight ET, or use “Clear Halt &amp; Resume”.</div>
+      </div>
+
       <div id="riskResetSection" style="display:none;margin-left:auto">
         <button class="btn btn-danger" onclick="resetRiskHalt()">&#9888; Clear Halt &amp; Resume Trading</button>
       </div>
@@ -590,7 +600,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpDollar()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpDollar()">Off</button>
         </div>
-        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount.</div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount. Applies to the three curated books (TV Refined · Kairos Refined · Crew Paper); farms run ungated.</div>
       </div>
       <div class="risk-section" style="margin-top:10px">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -606,7 +616,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpPct()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpPct()">Off</button>
         </div>
-        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to both accounts.</div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to all three curated books (TV Refined · Kairos Refined · Crew Paper), farms ungated.</div>
       </div>
       <div class="risk-section" style="margin-top:10px" id="tpByAccountSection">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -1093,6 +1103,19 @@
           }
         }
       }
+      // Manual halt — one toggle button per curated account
+      const mhRow = document.getElementById('manualHaltRow');
+      if (mhRow) {
+        const mhAccts = data.manual_halt_accounts || [];
+        mhRow.innerHTML = mhAccts.map(a => {
+          const on = !!a.halted;
+          const cls = on ? 'btn-danger' : 'btn-ghost';
+          const lbl = on ? `⛔ ${a.label} — Halted` : `Halt ${a.label}`;
+          return `<button class="btn ${cls}" style="padding:6px 12px;font-size:0.8rem"`
+               + ` onclick="toggleManualHalt('${a.num}', ${on ? 'false' : 'true'}, this)">${lbl}</button>`;
+        }).join('') || '<span style="color:#555;font-size:0.8rem">no accounts</span>';
+      }
+
       const posInput = document.getElementById('posLimitInput');
       if (document.activeElement !== posInput) {
         const posVal = data.max_position_loss_pct ?? null;
@@ -1401,6 +1424,8 @@
       }
       // Profit lock halt also surfaces the "Clear Halt & Resume" button.
       if (data.profit_lock_halted) resetSec.style.display = 'block';
+      // ...so does any manual halt.
+      if ((data.manual_halt_accounts || []).some(a => a.halted)) resetSec.style.display = 'block';
       // Blocked strategies + positions detail row
       const blocked   = data.blocked_strategies || {};
       const positions = data.positions || [];
@@ -1682,6 +1707,20 @@
                   {method: 'POST'});
       await loadRisk();
     } catch(e) { console.error('resetRiskHalt failed:', e); }
+  }
+
+  async function toggleManualHalt(num, halted, btn) {
+    if (halted && !confirm('Halt this account for the rest of the day? Blocks new entries only — open positions stay put.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      await fetch('/api/risk/manual_halt?token=' + encodeURIComponent(window._webhookToken || ''),
+                  {method: 'POST', headers: {'Content-Type': 'application/json'},
+                   body: JSON.stringify({account: num, halted: halted})});
+      await loadRisk();
+    } catch(e) {
+      console.error('toggleManualHalt failed:', e);
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function unblockStrategy(name) {

@@ -334,6 +334,8 @@ _daily_loss_baseline  = {}      # {account_tag: equity captured at the day roll}
 _profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
 _profit_lock_halted   = {}      # {account_tag: bool} — armed then gave back → its new entries blocked
 _profit_lock_day      = None    # ET date the arm/halt state applies to (auto-resets daily)
+_manual_halt          = {}      # {account_tag: bool} — user pressed "Halt" (lock in a win); blocks NEW entries only
+_manual_halt_day      = None    # ET date the manual halt applies to (auto-resets at ET midnight)
 _last_signal_ts       = {}      # {(strategy, ticker, action): unix timestamp}
 _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
 _auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed today; keyed per-account so same ticker on alpaca + alpaca2 trips independently
@@ -1322,6 +1324,28 @@ def _daily_loss_halted_for(tag):
         return bool(_daily_loss_halted.get(tag))
 
 
+def _et_today_iso():
+    try:    return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        from datetime import timedelta as _td
+        return (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+
+
+def _manual_halted_for(tag):
+    """True if the user manually halted this account today (lock-in-a-win). Auto-
+    expires at ET midnight — a manual halt set on a prior day is treated as clear."""
+    global _manual_halt_day
+    _today = _et_today_iso()
+    with _risk_lock:
+        if _manual_halt_day != _today:
+            # Day rolled — the halt was for a previous session; clear it lazily.
+            if _manual_halt_day is not None:
+                _manual_halt.clear()
+            _manual_halt_day = _today
+            return False
+        return bool(_manual_halt.get(tag))
+
+
 def _realized_daily_pnl(fills_fn):
     """Sum of CLOSED round-trip P&L for today (ET), using the same LIFO pairing
     as the analysis endpoints. Returns None on failure so the profit-lock loop
@@ -1355,6 +1379,8 @@ def _persist_risk_day_state():
             "dl_day":    _daily_loss_day,
             "dl_halted": sorted(k for k, v in _daily_loss_halted.items() if v),
             "dl_baseline": {k: float(v) for k, v in _daily_loss_baseline.items()},
+            "mh_day":    _manual_halt_day,
+            "mh":        sorted(k for k, v in _manual_halt.items() if v),
         }))
     except Exception as _e:
         log.debug("Risk day-state persist failed: %s", _e)
@@ -1468,15 +1494,19 @@ def _check_position_stops():
         else:
             _eff_tp_pct, _tp_src = 0.0, "global"
         triggered = None
-        if TAKE_PROFIT_DOLLARS > 0 and upnl >= TAKE_PROFIT_DOLLARS:
-            triggered = ("take-profit",
-                         f"unrealized P&L ${upnl:.2f} hit take-profit target ${TAKE_PROFIT_DOLLARS:.2f}")
-        elif _eff_tp_pct > 0:
-            _tp_mv = abs(float(pos.get("market_value") or 0))
-            _tp_gp = (upnl / _tp_mv * 100) if _tp_mv > 0 else 0.0
-            if _tp_gp >= _eff_tp_pct:
-                triggered = ("take-profit-pct",
-                             f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {_eff_tp_pct:.2f}% ({_tp_src})")
+        # Take-profit is curated-only (TV Refined · Kairos Refined · Crew Paper) —
+        # same scope as the loss stops. The farms stay ungated so their full-sample
+        # audition isn't biased by closing winners early.
+        if broker in _CURATED_TAGS:
+            if TAKE_PROFIT_DOLLARS > 0 and upnl >= TAKE_PROFIT_DOLLARS:
+                triggered = ("take-profit",
+                             f"unrealized P&L ${upnl:.2f} hit take-profit target ${TAKE_PROFIT_DOLLARS:.2f}")
+            elif _eff_tp_pct > 0:
+                _tp_mv = abs(float(pos.get("market_value") or 0))
+                _tp_gp = (upnl / _tp_mv * 100) if _tp_mv > 0 else 0.0
+                if _tp_gp >= _eff_tp_pct:
+                    triggered = ("take-profit-pct",
+                                 f"unrealized {_tp_gp:.2f}% (${upnl:.2f}) hit take-profit % target {_eff_tp_pct:.2f}% ({_tp_src})")
 
         # % stop + $ cap apply to the CURATED books (TV Refined, Kairos Refined,
         # Crew Paper) — same values across all three. The farms (TV Farm, Kairos
@@ -2941,6 +2971,8 @@ def risk_status():
         dl_halted       = dict(_daily_loss_halted)
         pl_armed        = dict(_profit_lock_armed)
         pl_halted       = dict(_profit_lock_halted)
+        # Manual halts are day-scoped; a prior-day marker means everything's clear.
+        mh_snap         = dict(_manual_halt) if _manual_halt_day == _et_today_iso() else {}
         blocked         = dict(_blocked_strategies)
         positions       = [dict(p) for p in _latest_positions]  # copy for mutation
         peaks_snap      = dict(_position_peaks)
@@ -3041,6 +3073,13 @@ def risk_status():
         "profit_lock_accounts": [
             {"tag": a["tag"], "label": a["label"],
              "armed": bool(pl_armed.get(a["tag"])), "halted": bool(pl_halted.get(a["tag"]))}
+            for a in ALPACA_ACCOUNTS if a.get("profit_lock", True)
+        ],
+        # Manual "lock in the win" halt — same curated set as the profit lock
+        # (the real trading accounts, not the farms). User-toggled, day-scoped.
+        "manual_halt_accounts": [
+            {"num": a["num"], "tag": a["tag"], "label": a["label"],
+             "halted": bool(mh_snap.get(a["tag"]))}
             for a in ALPACA_ACCOUNTS if a.get("profit_lock", True)
         ],
         "max_position_loss":          MAX_POSITION_LOSS if MAX_POSITION_LOSS != 0 else None,
@@ -3369,9 +3408,46 @@ def risk_reset():
         # trading resumes; each account re-arms if its P&L climbs back above the floor.
         _profit_lock_armed = {}
         _profit_lock_halted = {}
+        # ...and clear manual halts (the "Clear Halt & Resume" button resumes all).
+        _manual_halt.clear()
     _persist_risk_day_state()
-    log.info("Risk halt manually cleared (incl. daily-loss + profit lock)")
+    log.info("Risk halt manually cleared (daily-loss + profit lock + manual halts)")
     return jsonify({"halted": False})
+
+
+@app.route("/api/risk/manual_halt", methods=["POST"])
+def api_manual_halt():
+    """Toggle a user-initiated halt for one account (lock in a win). Blocks NEW
+    entries on that account for the rest of the ET day; open positions are left
+    alone (close them manually if you want). Auto-resets at ET midnight, or via
+    the Clear Halt & Resume button. Body: {account: <num|tag>, halted: bool}."""
+    token = request.args.get("token") or request.headers.get("X-Webhook-Token")
+    if token != WEBHOOK_TOKEN:
+        abort(401)
+    global _manual_halt_day
+    data    = request.get_json(silent=True) or {}
+    _acct   = str(data.get("account") or "").strip()
+    halted  = bool(data.get("halted"))
+    # Resolve num → tag; accept a tag directly too.
+    tag = None
+    if _acct in ACCOUNTS_BY_NUM:
+        tag = ACCOUNTS_BY_NUM[_acct]["tag"]
+    elif _acct in ACCOUNTS_BY_TAG:
+        tag = _acct
+    if not tag:
+        return jsonify({"error": f"unknown account '{_acct}'"}), 400
+    _today = _et_today_iso()
+    with _risk_lock:
+        if _manual_halt_day != _today:
+            _manual_halt_day = _today
+            _manual_halt.clear()
+        if halted:
+            _manual_halt[tag] = True
+        else:
+            _manual_halt.pop(tag, None)
+    _persist_risk_day_state()
+    log.info("Manual halt %s for %s", "SET" if halted else "cleared", tag)
+    return jsonify({"account": tag, "halted": halted})
 
 
 @app.route("/api/risk/unblock/<path:strategy_name>", methods=["POST"])
@@ -15577,6 +15653,9 @@ def _engine_pilot_tick(now_et, today):
             # Daily-loss guard — skip this account's entries if it hit its daily limit.
             if _daily_loss_halted_for(broker_tag):
                 continue
+            # Manual halt — user chose to lock in the day's win on this account.
+            if _manual_halted_for(broker_tag):
+                continue
             # Per-rule long/short gate: a side-gated kairos rule only arms its side.
             _tgt_gate = tgt.get("side_gate")
             if _tgt_gate in ("long", "short") and _tgt_gate != side.lower():
@@ -18201,7 +18280,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day, _manual_halt_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -18237,6 +18316,11 @@ def _restore_risk_settings():
                     _daily_loss_baseline.update({k: float(v) for k, v in (_st.get("dl_baseline") or {}).items()})
                     if _daily_loss_halted:
                         log.warning("Restored same-day daily-loss halts: %s", sorted(_daily_loss_halted))
+                if _st.get("mh_day") == _today:
+                    _manual_halt_day = _st["mh_day"]
+                    _manual_halt.update({k: True for k in (_st.get("mh") or [])})
+                    if _manual_halt:
+                        log.warning("Restored same-day manual halts: %s", sorted(_manual_halt))
         except Exception as _e:
             log.warning("RISK_DAY_STATE restore failed: %s", _e)
     stored = _load_setting("PROFIT_LOCK_DOLLARS")

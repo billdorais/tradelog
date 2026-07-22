@@ -939,6 +939,24 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _dl_kept
 
+    # Manual-halt gate (entries only): the user chose to lock in the day's win on
+    # one or more accounts. Per-account — a halted book is skipped while others
+    # keep trading. Open positions are untouched; exits always pass.
+    if not _is_exit and alpaca_targets:
+        _mh_kept = [bt for bt in alpaca_targets
+                    if not app._manual_halted_for(_alpaca_broker_name(bt[0]))]
+        if len(_mh_kept) != len(alpaca_targets):
+            _mh_dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
+                          - {_alpaca_broker_name(bt[0]) for bt in _mh_kept}
+            app.log.info("Manual halt gate: %s %s — skipped %s (locked in for the day)",
+                         order_action, ticker, ",".join(sorted(_mh_dropped)))
+            if not _mh_kept and conn:
+                app._update_exec(cur, trade_id, "blocked",
+                                 f"Manual halt: {', '.join(sorted(_mh_dropped))} "
+                                 f"locked in for the day")
+                conn.commit()
+        alpaca_targets = _mh_kept
+
     # --- Coinbase (sync-only; typically sub-second) ---
     for target, qty_override, _rs_cb in coinbase_targets:
         _qty       = qty_override if qty_override is not None else _rs_cb["quantity"]
