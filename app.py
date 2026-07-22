@@ -12747,9 +12747,22 @@ def _rvol_gate_block(strategy, side, ticker, account_tag, now_dt=None):
     return (False, None, rvol)
 
 
+# Background HWM/RVOL backfill loop. DISABLED by default (TRADE_BACKFILL_ENABLED)
+# after it saturated the app: the per-trade Alpaca bar fetches (and especially
+# the RVOL time-of-day 20-day volume-profile builds) churned hard enough on the
+# small worker pool to freeze the dashboard. The live RVOL gate does NOT depend
+# on this loop — it fetches its own cached bars only on an actual entry. This
+# loop only backfilled the HWM / RVOL DIAGNOSTIC tables (analysis panels), which
+# are non-critical. Re-enable deliberately with TRADE_BACKFILL_ENABLED=1 once the
+# fetch cost is reworked (bounded, off-thread, rate-limited).
+TRADE_BACKFILL_ENABLED = os.environ.get("TRADE_BACKFILL_ENABLED", "0") == "1"
+
 def _trade_hwm_loop():
-    """Every 5 min, backfill HWMs + RVOL for any newly-closed trades. Runs
-    quietly; logs only when it actually writes rows."""
+    """Every 5 min, backfill HWM + RVOL diagnostics for newly-closed trades.
+    Gated OFF by default — see TRADE_BACKFILL_ENABLED above."""
+    if not TRADE_BACKFILL_ENABLED:
+        log.info("Trade HWM/RVOL backfill loop disabled (TRADE_BACKFILL_ENABLED=0)")
+        return
     time.sleep(60)   # let the app finish booting + fills caches populate
     while True:
         try:
@@ -12760,13 +12773,6 @@ def _trade_hwm_loop():
             _backfill_trade_rvol(lookback_days=3, per_account_cap=100)
         except Exception as _e:
             log.debug("trade rvol loop: %s", _e)
-        # NOTE: historical ToD backfill is intentionally NOT run on the loop —
-        # each row builds a ~20-day 1-min volume profile, and historical trades
-        # span many dates so the per-date cache doesn't help → dozens of huge
-        # fetches/parses per cycle, which saturated the app. ToD now accrues only
-        # on NEW trades (today's profile is fetched once and cached) via the
-        # forward backfill above. Fill history on demand via /api/rvol/ab_compare
-        # ?backfill=1 (bounded, opt-in) if you want the older rows scored.
         time.sleep(300)
 
 threading.Thread(target=_trade_hwm_loop, daemon=True).start()
@@ -13983,9 +13989,13 @@ def api_rvol_ab_compare():
     # request (each row does an Alpaca day-bars fetch, so a big batch would time
     # out the request). The UI reports how many remain so you click Compare again
     # to keep filling; the 5-min background loop also chips away at it. Idempotent.
+    # Inline ToD backfill disabled — it did up to 120 synchronous Alpaca fetches
+    # in-request (each an ~20-day profile build), which could block a worker long
+    # enough to contribute to the freeze. Only runs when both the feature flag AND
+    # ?backfill=1 are set, so a stray/cached client request can't trigger it.
     _filled = _remaining = 0
-    if request.args.get("backfill") == "1":
-        _filled = _backfill_trade_rvol_tod_missing(cap=120)
+    if TRADE_BACKFILL_ENABLED and request.args.get("backfill") == "1":
+        _filled = _backfill_trade_rvol_tod_missing(cap=60)
         try:
             _cc = get_db(); _cur2 = _cc.cursor()
             _cur2.execute("SELECT COUNT(*) FROM trade_rvol WHERE rvol_tod IS NULL AND rvol IS NOT NULL")
