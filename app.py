@@ -2702,7 +2702,6 @@ def api_alpaca_account():
     Pass ?account=2 to query the Alpaca Refined (second) account."""
     account = request.args.get("account") or "1"
     broker, broker_tag, label, _ = _alpaca_account_ctx(account)
-    is_primary = str(account) == "1"
     if broker is None:
         return jsonify({"error": f"Alpaca {label} not configured"}), 400
     try:
@@ -2732,16 +2731,16 @@ def api_alpaca_account():
         pos_list.sort(key=lambda x: abs(x["market_value"]), reverse=True)
         bp       = float(acct.buying_power)
         equity   = float(acct.equity)
-        # Account 1 uses the cached _compute_daily_pnl() which also feeds the risk monitor.
-        # Accounts 2/3 call daily_pnl() directly — no cache, called only on page load.
-        if is_primary:
-            daily_pnl = _compute_daily_pnl()
-        else:
-            try:
-                daily_pnl = round(broker.daily_pnl(), 2)
-            except Exception as _e:
-                log.debug("api_alpaca_account: %s daily_pnl failed: %s", broker_tag, _e)
-                daily_pnl = None
+        # Realized P&L from today's closed round-trips (LIFO paired fills). This
+        # is the same source as the curated-accounts card, and is robust to
+        # Alpaca paper-account resets that zero out last_equity (which would
+        # make broker.daily_pnl() = equity - 0 = the entire balance).
+        try:
+            _, _, _, _acct_fills_fn = _alpaca_account_ctx(account)
+            daily_pnl = _realized_daily_pnl(_acct_fills_fn)
+        except Exception as _e:
+            log.debug("api_alpaca_account: %s realized daily_pnl failed: %s", broker_tag, _e)
+            daily_pnl = None
         return jsonify({
             "buying_power":     round(bp, 2),
             "equity":           round(equity, 2),
