@@ -3918,10 +3918,16 @@
         // reflects the correct positions (Refined tab → alpaca2, else alpaca).
         const _acctForCard = _acctForTab(activeTab);
         const _acctParam = _acctForCard ? ('?account=' + _acctForCard) : '';
+        // 2×2 pairing: the ★ Refined leaderboard follows the account you're viewing —
+        // Kairos side (Kairos Farm / Kairos Refined) uses the Kairos Refined snapshot +
+        // acct-3 rules; TV side (TV Farm / TV Refined / Crew) uses TV Refined + acct-2.
+        const _kairosSide = (activeTab === 'kairos' || activeTab === 'farm');
+        const _snapUrl    = _kairosSide ? '/api/kairos_refined/refresh' : '/api/routing/rules/refresh_refined';
+        const _refBrokers = _kairosSide ? ['alpaca-paper-3', 'alpaca-live-3'] : ['alpaca-paper-2', 'alpaca-live-2'];
         const [d, rules, snap] = await Promise.all([
           fetch(`/api/alpaca/account${_acctParam}`).then(r => r.json()),
           fetch('/api/routing/rules').then(r => r.json()).catch(() => null),
-          fetch('/api/routing/rules/refresh_refined').then(r => r.json()).catch(() => null),
+          fetch(_snapUrl).then(r => r.json()).catch(() => null),
         ]);
         // Build a strategy→rank map (1-based) from the Refined snapshot so open
         // positions can show their leaderboard badge (🐐 1–5, 🐎 6–10, 🐝 11–20).
@@ -3952,7 +3958,7 @@
             routedT.add(ticker);
             routedS.add(stratUpper);
             const hasRefinedBroker = (r.nodes || []).some(n =>
-              n.type === 'broker' && (n.value === 'alpaca-paper-2' || n.value === 'alpaca-live-2')
+              n.type === 'broker' && _refBrokers.includes(n.value)
             );
             if (hasRefinedBroker) {
               refinedT.add(ticker);
