@@ -1425,15 +1425,14 @@
     // "how did the leaderboard strategies actually fare" on the equity chart.
     async function selectRefined(e) {
       if (e) e.stopPropagation();
-      if (!_refinedStrategies || _refinedStrategies.size === 0) {
+      if (!_refinedRankNames || !_refinedRankNames.length) {
         alert('No Refined leaderboard strategies loaded yet — try again in a moment.');
         return;
       }
-      const refined = _allStrategyNames.filter(s => _refinedStrategies.has(s.toUpperCase()));
-      if (!refined.length) {
-        alert('None of the Refined leaderboard strategies have traded in this view.');
-        return;
-      }
+      // The full leaderboard band (snapshot top→on-deck) — include idle names too.
+      const refined = _refinedRankNames.slice();
+      for (const s of refined) if (!_allStrategyNames.includes(s)) _allStrategyNames.push(s);
+      _allStrategyNames.sort();
       selectedStrategies = new Set(refined);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
@@ -1484,15 +1483,16 @@
     // last refresh snapshot), so ★10 = ranks 1–10, independent of the date window.
     async function selectRefinedTopN(n, e) {
       if (e) e.stopPropagation();
-      if (!_refinedRank || !Object.keys(_refinedRank).length) {
+      if (!_refinedRankNames || !_refinedRankNames.length) {
         alert('Leaderboard ranking not loaded yet — try again in a moment.');
         return;
       }
-      const picks = _allStrategyNames.filter(s => {
-        const r = _refinedRank[s.toUpperCase()];
-        return r && r >= 1 && r <= n;
-      });
-      if (!picks.length) { alert(`No leaderboard top-${n} strategies are in this view.`); return; }
+      // Take the top-N ranked names directly from the snapshot — include ones that
+      // haven't traded in THIS view yet (add them to the picker, like the Crew button),
+      // otherwise ★N silently drops leaderboard strategies that are simply idle here.
+      const picks = _refinedRankNames.slice(0, n);
+      for (const s of picks) if (!_allStrategyNames.includes(s)) _allStrategyNames.push(s);
+      _allStrategyNames.sort();
       selectedStrategies = new Set(picks);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
@@ -3728,6 +3728,7 @@
     let _refinedStrategies = new Set();   // upper-case strategy names with alpaca-paper-2/-live-2 broker
     let _crewStrategies    = new Set();   // upper-case strategy names wired to Crew Paper (alpaca-paper-4/-live-4)
     let _refinedRank       = {};          // upper-case strategy name → Refined leaderboard rank (1-based)
+    let _refinedRankNames  = [];          // original-case strategy names in rank order (snapshot top→on-deck)
 
     // Leaderboard animal badge for an open position's strategy, by Refined rank.
     function _rankEmoji(stratU) {
@@ -3935,7 +3936,8 @@
           const ranked = (snap.top_strategies || []).concat(snap.on_deck_strategies || []);
           const rankMap = {};
           ranked.forEach((name, i) => { rankMap[String(name).toUpperCase()] = i + 1; });
-          _refinedRank = rankMap;
+          _refinedRank      = rankMap;
+          _refinedRankNames = ranked.map(String);   // original case, in rank order
         }
         // Refined and routed are both derived from routing_rules (persisted in DB).
         // The refresh_refined snapshot is an in-memory per-worker cache and is
