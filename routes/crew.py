@@ -268,7 +268,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         # ── Format pre-fetched data ───────────────────────────────────────────
         # Data was fetched in the Flask route handler and passed in directly.
 
-        def _fmt_strategies(data: dict, header: str = "REFINED ACCOUNT — STRATEGY LEADERBOARD (last ~20 days)",
+        def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATEGY LEADERBOARD (last ~20 days)",
                             empty_msg: str = "No strategy data available (Alpaca may not be configured).") -> str:
             overall   = (data or {}).get("overall", {})
             per_strat = (data or {}).get("per_strategy", {})
@@ -456,8 +456,8 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         strategy_block = _fmt_strategies(strat_data)
         engine_strat_block = _fmt_strategies(
             engine_strat_data,
-            header="KAIROS ENGINE (account 3, server-side entries) — STRATEGY LEADERBOARD",
-            empty_msg=("=== KAIROS ENGINE (account 3) — STRATEGY LEADERBOARD ===\n"
+            header="KAIROS REFINED (account 3, engine entries) — STRATEGY LEADERBOARD (co-equal to TV Refined; fed by the Kairos Farm)",
+            empty_msg=("=== KAIROS REFINED (account 3) — STRATEGY LEADERBOARD ===\n"
                        "No per-strategy data yet — Kairos Refined (acct3) has no closed round-trips "
                        "in this window. Treat the Kairos entries as not-yet-evaluable per strategy."),
         )
@@ -751,11 +751,17 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
-                "| Top 10 to run | ten strategy names sourced from BOTH books, ranked by each strategy's BEST side. "
+                "| Top 18 to run | eighteen strategy names sourced from BOTH refined books, ranked by each strategy's BEST side. "
                 "SOURCING RULES: (a) names positive on BOTH TV Refined (acct2) and Kairos Refined (acct3) are first-class picks; "
                 "(b) a name positive on only ONE book is an ENTRY-SPECIFIC bet — the entry mechanism is part of the "
                 "strategy (the two books have shown OPPOSITE edges on the same names) — include it only with a decent "
                 "sample on that book (≥15 trades) and it MUST carry that book's entry tag. "
+                "PER-BOOK QUOTA: at least 5 of the 18 must be earned on EACH book (TV Refined and Kairos Refined) so both "
+                "entry mechanisms are represented — don't let one book dominate all 18. "
+                "CHURN GUARD: this is a mostly-stable book. A strategy currently wired to Crew Paper (see the CURRENT CREW "
+                "PAPER BOOK block) that is net-positive KEEPS its slot by default; only DROP an incumbent if it's a clear "
+                "bleeder, and only ADD a challenger over an incumbent when it's CLEARLY better (not a marginal score edge). "
+                "When the current book is healthy, keep the roster mostly intact rather than reshuffling on one month's noise. "
                 "Tag each pick's ENTRY as [TV] (earned on Refined) or [Engine] (earned on Kairos) — the tag is REAL: "
                 "the wire button sets that rule's entry source per pick. "
                 "Tag each pick's SIDE long / short / both. A strategy may earn a slot on its single-side record — use "
@@ -768,6 +774,14 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "| Day-type gate | Read the LIVE SYSTEM GATE STATE block — report the ACTUAL state (ON/OFF + which books + allowed days). Do NOT claim it is missing or recommend building it if it is listed ON there. Only suggest a CHANGE to its threshold if the side×day-type data supports one. |\n"
                 "| Entries | Default for UNTAGGED picks only: Refined TV OR Kairos engine — per the engine-vs-TV read. Per-pick [TV]/[Engine] tags override this default. |\n"
                 "| Best indices | top index tickers · indices-only P&L from TV Farm: $X (from the card inputs) |\n\n"
+                "IMMEDIATELY AFTER the card, output a **### 🔄 Changes vs the Current Book** table so the trader can see "
+                "exactly what would change before deciding to re-wire. Compare the CURRENT CREW PAPER BOOK (every strategy "
+                "wired right now, with its live P&L since its wire date) against your Top 18. Columns: "
+                "Strategy | Entry [TV]/[Engine] | Live P&L now | Action. Mark every currently-wired strategy KEEP or DROP "
+                "(DROP only clear bleeders — give the $ reason), and every new pick ADD. Do NOT list unchanged picks as "
+                "changes. End with a one-line tally: 'KEEP N · ADD N · DROP N'. If the current book is healthy (most wired "
+                "strategies net-positive), bias toward KEEP, keep the change count LOW, and say so in one line — a winning "
+                "book should not be churned. If a re-wire isn't worth it this month, say that explicitly.\n\n"
                 "Then continue with the detailed sections:\n\n"
                 "0. **Last Picks — Grade Yourself** — If a PREVIOUS PICKS SCORECARD block is "
                 "present above, review it FIRST and let it shape this month's Top 10: state "
@@ -810,9 +824,9 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "3. **Stop & Parameter Check** — Given the regime tags and any sweep data in "
                 "the journal, are current trailing stops appropriate? Reference specific sweep "
                 "results and the trader's own notes if they offer relevant observations.\n\n"
-                "4. **Engine vs TV Pilot** — Using BOTH the KAIROS ENGINE STRATEGY LEADERBOARD "
-                "(acct 3 per-strategy) and the head-to-head PILOT data, is the server-side engine "
-                "(acct 3) beating, matching, or lagging the TV Refined account (acct 2)? "
+                "4. **Kairos Refined vs TV Refined** — Using BOTH the KAIROS REFINED STRATEGY LEADERBOARD "
+                "(acct 3 per-strategy, engine entries) and the head-to-head PILOT data, is the Kairos Refined book "
+                "(acct 3, server-side engine entries) beating, matching, or lagging the TV Refined account (acct 2)? "
                 "Name the specific Kairos ENTRIES (by strategy) that are working vs the ones "
                 "dragging the book, and compare each to the same strategy on acct 2 where possible "
                 "(breakouts likely lead the edge, reversals are the new/risky part). If there isn't "
