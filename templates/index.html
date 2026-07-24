@@ -1586,6 +1586,22 @@
       // full split so the "difference between categories" stays visible.
       const tvSelSide = _sideFilter ? tvSel.filter(t => (t.sentiment || '').toLowerCase() === _sideFilter) : tvSel;
       const curveSide = _sideFilter ? (equityCurve || []).filter(p => (p.side || '') === _sideFilter) : (equityCurve || []);
+      // Engine-driven books (Kairos Farm/Kairos Refined) trade via server-side entries,
+      // not TV webhook signals — those signals are mostly skipped, so TV-signal counts
+      // read as "1 executed" and mislead. On those tabs, when a strategy subset is
+      // selected, base every card on the actual round-trips shown on the chart instead.
+      const _engineTab = (activeTab === 'kairos' || activeTab === 'farm');
+      if (_stratSubset && _engineTab) {
+        const rt = _filterEquityCurve(equityCurve);   // subset-filtered round-trips (the chart)
+        document.getElementById('statLongs').textContent    = rt.filter(p => (p.side || '') === 'long').length;
+        document.getElementById('statShorts').textContent   = rt.filter(p => (p.side || '') === 'short').length;
+        document.getElementById('statTotal').textContent    = rt.length;
+        document.getElementById('statBuys').textContent     = '—';
+        document.getElementById('statSells').textContent    = '—';
+        document.getElementById('statTickers').textContent  = new Set(rt.map(p => p.ticker).filter(Boolean)).size;
+        document.getElementById('statExecuted').textContent = rt.length;
+        document.getElementById('statErrors').textContent   = '—';
+      } else {
       document.getElementById('statLongs').textContent    = tvSel.filter(t => (t.sentiment || '').toLowerCase() === 'long').length;
       document.getElementById('statShorts').textContent   = tvSel.filter(t => (t.sentiment || '').toLowerCase() === 'short').length;
       if (_stratSubset) {
@@ -1610,6 +1626,7 @@
         document.getElementById('statTickers').textContent  = new Set(deduped.map(e => e.symbol).filter(Boolean)).size;
         document.getElementById('statExecuted').textContent = overall.trades || closedTrades.length;
         document.getElementById('statErrors').textContent   = '—';
+      }
       }
 
       // Apply exclusions, signals-only, and strategy visibility filter — recalc cumulative
