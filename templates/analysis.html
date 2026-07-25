@@ -248,6 +248,38 @@
   <!-- Overall stats -->
   <div class="stat-grid" id="overallStats"></div>
 
+  <!-- Performance vs benchmark: rebased-% overlay of SPY vs the curated books -->
+  <div id="benchPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#7FE098">Performance vs SPY</span>
+      <span id="benchMeta" style="font-size:0.75rem;color:#666">loading…</span>
+      <div style="display:inline-flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap">
+        <label style="font-size:0.7rem;color:#777">Range
+          <select id="benchRange" onchange="loadBenchmarkChart()"
+                  style="background:#1a1d2e;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:3px 6px;font-size:0.72rem;cursor:pointer">
+            <option value="30">30d</option>
+            <option value="90" selected>90d</option>
+            <option value="180">6M</option>
+            <option value="365">1Y</option>
+          </select>
+        </label>
+        <label style="font-size:0.7rem;color:#777">Base
+          <select id="benchBase" onchange="loadBenchmarkChart()"
+                  style="background:#1a1d2e;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:3px 6px;font-size:0.72rem;cursor:pointer">
+            <option value="25000" selected>% of $25k</option>
+            <option value="50000">% of $50k</option>
+            <option value="100000">% of $100k</option>
+            <option value="equity">True equity %</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div style="font-size:0.68rem;color:#555;margin-bottom:8px">
+      Each line is rebased to 0% at the start. Books = cumulative realized P&amp;L scaled by the chosen capital base; SPY = buy-and-hold price change.
+    </div>
+    <div style="position:relative;height:280px"><canvas id="benchmarkChart"></canvas></div>
+  </div>
+
   <!-- Alpaca reconciliation panel (Alpaca mode only) -->
   <div id="reconPanel" style="display:none;background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-bottom:20px;font-size:0.85rem">
     <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:10px">Alpaca Reconciliation</div>
@@ -3344,6 +3376,64 @@
   restoreDates();
   restoreTimes();
   load();
+  loadBenchmarkChart();
+
+  // ── Performance vs SPY (rebased-% overlay) ──────────────────────────────────
+  // Account-agnostic (fixed: Crew / TV Refined / Kairos Refined vs SPY), driven
+  // by its own Range/Base selectors — independent of the page's account tab.
+  let _benchChartInstance = null;
+  async function loadBenchmarkChart() {
+    const meta = document.getElementById('benchMeta');
+    const days = document.getElementById('benchRange')?.value || '90';
+    const base = document.getElementById('benchBase')?.value || '25000';
+    try {
+      meta.textContent = 'loading…';
+      const p = new URLSearchParams({ accounts: '4,2,3', benchmark: 'SPY', days, base });
+      const d = await fetch('/api/perf/vs_benchmark?' + p).then(r => r.json());
+      if (d.error || !d.dates || !d.dates.length) {
+        meta.textContent = d.error ? ('— ' + d.error) : '— no data';
+        if (_benchChartInstance) { _benchChartInstance.destroy(); _benchChartInstance = null; }
+        return;
+      }
+      const COLORS = { 'SPY': '#9aa4b8', '4': '#7FE098', '2': '#c4b5fd', '3': '#F2C07A' };
+      const datasets = d.series.map(s => {
+        const color = COLORS[s.key] || '#888';
+        return {
+          label: s.benchmark ? s.label + ' (buy & hold)' : s.label,
+          data: s.values,
+          borderColor: color, backgroundColor: color,
+          borderWidth: 2, borderDash: s.benchmark ? [5, 4] : [],
+          pointRadius: 0, pointHoverRadius: 3, tension: 0.15, fill: false,
+        };
+      });
+      const ctx = document.getElementById('benchmarkChart').getContext('2d');
+      if (_benchChartInstance) _benchChartInstance.destroy();
+      _benchChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: { labels: d.dates, datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { labels: { color: '#ccc', usePointStyle: true, boxWidth: 8, font: { size: 11 } } },
+            tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y >= 0 ? '+' : ''}${c.parsed.y.toFixed(2)}%` } },
+          },
+          scales: {
+            x: { ticks: { color: '#666', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+            y: {
+              ticks: { color: '#666', font: { size: 10 }, callback: v => (v >= 0 ? '+' : '') + v + '%' },
+              grid: { color: c => (c.tick.value === 0 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.04)') },
+            },
+          },
+        },
+      });
+      const baseLabel = base === 'equity' ? 'true equity %' : ('% of $' + Number(base).toLocaleString());
+      meta.textContent = `${d.from_date} → ${d.to_date} · ${baseLabel}`;
+    } catch (e) {
+      meta.textContent = '— error';
+      console.warn('benchmark chart failed:', e);
+    }
+  }
 
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');

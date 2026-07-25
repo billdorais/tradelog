@@ -11145,6 +11145,96 @@ def alpaca_portfolio_history():
         return jsonify([])
 
 
+@app.route("/api/perf/vs_benchmark")
+def api_perf_vs_benchmark():
+    """Rebased-% overlay: a benchmark (default SPY) vs each account's performance
+    over a date range, every series starting at 0% on the first date so they line
+    up on one axis.
+
+      accounts=4,2,3   which accounts to include (default Crew, TV Refined, Kairos Refined)
+      benchmark=SPY    ticker to rebase as the market line
+      days=90          lookback if from_date is omitted
+      from_date/to_date  explicit range (override days)
+      base=25000       book scaling: cumulative realized P&L / this notional.
+                       base=equity rebases the account's true Alpaca equity instead.
+    """
+    import datetime as _dt
+    try:
+        accounts  = [a.strip() for a in (request.args.get("accounts") or "4,2,3").split(",") if a.strip()]
+        benchmark = (request.args.get("benchmark") or "SPY").upper()
+        base      = (request.args.get("base") or "25000").strip()
+        from_date = request.args.get("from_date") or ""
+        to_date   = request.args.get("to_date")   or ""
+        try:    days = int(request.args.get("days") or 90)
+        except Exception: days = 90
+
+        end   = _dt.date.fromisoformat(to_date) if to_date else _dt.date.today()
+        start = _dt.date.fromisoformat(from_date) if from_date else (end - _dt.timedelta(days=days))
+
+        # ── Benchmark: daily closes → % change from the first close ──────────
+        bench = _fetch_daily_closes(benchmark, start, end)
+        if not bench:
+            return jsonify({"error": f"no benchmark data for {benchmark}", "dates": [], "series": []})
+        dates  = [b["date"] for b in bench]
+        c0     = bench[0]["close"] or 1.0
+        series = [{"key": benchmark, "label": benchmark, "benchmark": True,
+                   "values": [round((b["close"] / c0 - 1) * 100, 3) for b in bench]}]
+
+        # Fixed-notional vs true-equity scaling for the books.
+        notional = None
+        if base.lower() != "equity":
+            try:    notional = float(base.replace("$", "").replace(",", "")) or 25000.0
+            except Exception: notional = 25000.0
+
+        _from = start.isoformat()
+        _to   = end.isoformat()
+        for acct in accounts:
+            _broker, _tag, _label, _ = _alpaca_account_ctx(acct)
+            if _broker is None:
+                continue
+            vals = []
+            if notional is not None:
+                # Cumulative realized P&L by date (reuse the analysis endpoint's LIFO
+                # pairing so the curve matches the Analysis page exactly), forward-
+                # filled onto the benchmark's trading days, scaled by the notional.
+                daily = []
+                try:
+                    with app.test_client() as _c:
+                        d = _c.get(f"/api/alpaca/analysis?account={acct}"
+                                   f"&from_date={_from}&to_date={_to}").get_json() or {}
+                        daily = d.get("daily") or []
+                except Exception:
+                    daily = []
+                cum_by_date = {row["date"]: row.get("cumulative", 0) for row in daily}
+                running = 0.0
+                for dt in dates:
+                    if dt in cum_by_date:
+                        running = cum_by_date[dt]
+                    vals.append(round(running / notional * 100, 3))
+            else:
+                # True account equity rebased to the first in-range point.
+                period = "1M" if days <= 31 else "3M" if days <= 93 else "6M" if days <= 186 else "1A"
+                hist   = []
+                try:    hist = _broker.get_portfolio_history(period=period, timeframe="1D") or []
+                except Exception: hist = []
+                eq_by_date = {h["time"]: h["equity"] for h in hist if h.get("equity")}
+                base_eq, running_pct = None, 0.0
+                for dt in dates:
+                    if dt in eq_by_date:
+                        if base_eq is None:
+                            base_eq = eq_by_date[dt] or None
+                        if base_eq:
+                            running_pct = (eq_by_date[dt] / base_eq - 1) * 100
+                    vals.append(round(running_pct, 3))
+            series.append({"key": acct, "label": _label, "values": vals})
+
+        return jsonify({"dates": dates, "base": base, "benchmark": benchmark,
+                        "from_date": _from, "to_date": _to, "series": series})
+    except Exception as e:
+        log.exception("perf vs_benchmark error")
+        return jsonify({"error": str(e), "dates": [], "series": []}), 200
+
+
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
     """Return filled Alpaca orders with resolved strategy names, cached.
@@ -16663,6 +16753,38 @@ def _fetch_daily_ohlc(ticker: str, date_str: str, n_days: int = 2):
         return result
     except Exception as _de:
         log.debug("fetch_daily_ohlc %s %s: %s", ticker, date_str, _de)
+        return []
+
+
+def _fetch_daily_closes(ticker: str, start_date, end_date):
+    """Daily closes for `ticker` from start_date through end_date (inclusive).
+    Returns [{date, close}] oldest-first, or [] on error. Used by the
+    performance-vs-benchmark overlay to rebase a benchmark (e.g. SPY) to %."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        import datetime as _dt
+        if alpaca_broker is None:
+            return []
+        client = StockHistoricalDataClient(
+            api_key    = alpaca_broker._key,
+            secret_key = alpaca_broker._secret,
+        )
+        req = StockBarsRequest(
+            symbol_or_symbols = ticker.upper(),
+            timeframe         = TimeFrame(1, TimeFrameUnit.Day),
+            start             = _dt.datetime(start_date.year, start_date.month, start_date.day,
+                                             tzinfo=_dt.timezone.utc),
+            end               = _dt.datetime(end_date.year, end_date.month, end_date.day,
+                                             23, 59, tzinfo=_dt.timezone.utc),
+            feed              = _alpaca_data_feed(),
+        )
+        bars_df = client.get_stock_bars(req)
+        bars    = list(bars_df[ticker.upper()])
+        return [{"date": str(b.timestamp)[:10], "close": float(b.close)} for b in bars]
+    except Exception as _de:
+        log.debug("fetch_daily_closes %s: %s", ticker, _de)
         return []
 
 
