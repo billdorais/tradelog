@@ -1132,6 +1132,29 @@
     _snapAcctStatsCache[acct] = { key, data: ps };
     return ps;
   }
+  // Full analysis payload (closed round-trips + orphans) for a snapshot account,
+  // over the current date range. Snapshot drill-downs use THIS — not the main
+  // tab's analysisData — so the round-trips match the snapshot's own account
+  // (the snapshot panels toggle account independently of the page tabs).
+  const _snapAcctAnalysisCache = {};
+  async function _fetchSnapAcctAnalysis(acct) {
+    const fromDate = document.getElementById('analysisFrom').value;
+    const toDate   = document.getElementById('analysisTo').value;
+    const fromTime = document.getElementById('analysisFromTime')?.value || '';
+    const toTime   = document.getElementById('analysisToTime')?.value || '';
+    const key = `${acct}|${fromDate}|${toDate}|${fromTime}|${toTime}`;
+    if (_snapAcctAnalysisCache[acct] && _snapAcctAnalysisCache[acct].key === key)
+      return _snapAcctAnalysisCache[acct].data;
+    const p = new URLSearchParams({ account: acct });
+    if (fromDate) p.set('from_date', fromDate);
+    if (toDate)   p.set('to_date',   toDate);
+    if (fromTime) p.set('from_time', fromTime);
+    if (toTime)   p.set('to_time',   toTime);
+    let data = { closed: [], orphans: [] };
+    try { data = await fetch('/api/alpaca/analysis?' + p).then(r => r.json()); } catch (e) {}
+    _snapAcctAnalysisCache[acct] = { key, data };
+    return data;
+  }
   function _syncSnapAcctButtons(pref, sel, opts) {
     for (const a of opts) {
       const b = document.getElementById(pref + a);
@@ -2497,9 +2520,13 @@
     await _loadStrategyStops(_sweepStrategy, _sweepAccount);
   }
 
-  function openPairs(kind, key, snapStats) {
-    const closed  = (analysisData && analysisData.closed)  || [];
-    const orphans = (analysisData && analysisData.orphans) || [];
+  function openPairs(kind, key, snapStats, opts) {
+    // Snapshot drills pass opts.data (the snapshot account's own analysis) so the
+    // round-trips reflect that account — not the main tab's activeSource, which
+    // may be a different account entirely (the empty-modal bug).
+    const src     = (opts && opts.data) || analysisData;
+    const closed  = (src && src.closed)  || [];
+    const orphans = (src && src.orphans) || [];
     const matches = arr => arr.filter(c => kind === 'strategy' ? c.strategy === key : c.ticker === key);
     const clean   = matches(closed).sort((a, b) => (b.entry_time || '').localeCompare(a.entry_time || ''));
     const orph    = matches(orphans).sort((a, b) => (b.entry_time || '').localeCompare(a.entry_time || ''));
@@ -2522,7 +2549,7 @@
     _renderTimeOfDayBreakdown(clean);
     // Load current stop settings for this strategy (only for strategy-level drills)
     if (kind === 'strategy') {
-      const acct = activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca5' ? '5' : activeSource === 'alpaca' ? '1' : '2';
+      const acct = (opts && opts.acct) || (activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca5' ? '5' : activeSource === 'alpaca' ? '1' : '2');
       _loadStrategyStops(key, acct);
       _load20dStats(key, acct);
     } else {
@@ -2592,7 +2619,8 @@
   for (const id of ['refinedSnapRows', 'onDeckTbody', 'kairosSnapRows', 'kairosOnDeckTbody']) {
     const el = document.getElementById(id);
     if (!el) continue;
-    el.addEventListener('click', e => {
+    const _isKairos = id.startsWith('kairos');
+    el.addEventListener('click', async e => {
       const tr = e.target.closest('tr.drill');
       if (!tr) return;
       const snapStats = {
@@ -2600,7 +2628,11 @@
         win_rate:  parseFloat(tr.dataset.snapWr  || '0'),
         total_pnl: parseFloat(tr.dataset.snapPnl || '0'),
       };
-      openPairs(tr.dataset.kind, tr.dataset.key, snapStats);
+      // Drill into the SNAPSHOT panel's own account (independent of the page tab)
+      // so the round-trips aren't pulled from a different account's fills.
+      const acct = _isKairos ? _kairosSnapAcct : _refinedSnapAcct;
+      const data = await _fetchSnapAcctAnalysis(acct);
+      openPairs(tr.dataset.kind, tr.dataset.key, snapStats, { data, acct });
     });
   }
   // Added/dropped strategy names in the status line drill into the same pairs view.
@@ -2609,10 +2641,13 @@
   for (const _statusId of ['refinedSnapStatus', 'kairosSnapStatus']) {
     const _el = document.getElementById(_statusId);
     if (!_el) continue;
-    _el.addEventListener('click', e => {
+    const _isKairos = _statusId.startsWith('kairos');
+    _el.addEventListener('click', async e => {
       const el = e.target.closest('.snap-strat-link');
       if (!el) return;
-      openPairs('strategy', el.dataset.key);
+      const acct = _isKairos ? _kairosSnapAcct : _refinedSnapAcct;
+      const data = await _fetchSnapAcctAnalysis(acct);
+      openPairs('strategy', el.dataset.key, undefined, { data, acct });
     });
   }
 
