@@ -197,6 +197,18 @@
     </div>
   </div>
 
+  <!-- Kairos/TV balance selector (kairos mode) — how hard to push engine entries -->
+  <div id="balanceRow" style="display:flex;gap:6px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:0.72rem;color:#555;margin-right:4px">Kairos balance:</span>
+    <select id="kairosTarget"
+            style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.78rem;font-family:inherit;cursor:pointer">
+      <option value="9" selected>Balanced (~9 of 18 Kairos)</option>
+      <option value="5">Refined-led (≥5 Kairos)</option>
+      <option value="max">Max Kairos (all the farm supports)</option>
+    </select>
+    <span style="font-size:0.68rem;color:#555">how many picks to earn on Kairos engine entries when the Kairos data supports them</span>
+  </div>
+
   <!-- Input (research mode only) -->
   <div class="input-row" id="topicRow" style="display:none">
     <input type="text" class="topic-input" id="topicInput"
@@ -359,6 +371,7 @@
     document.getElementById('modeResearch').style.cssText = `padding:7px 18px;border-radius:6px;font-size:0.82rem;font-family:inherit;cursor:pointer;font-weight:600;transition:all 0.15s;border:1px solid ${!isKairos?'#7FE098':'#2a2d3e'};background:${!isKairos?'rgba(127,224,152,0.12)':'transparent'};color:${!isKairos?'#7FE098':'#666'}`;
     document.getElementById('topicRow').style.display  = isKairos ? 'none' : '';
     document.getElementById('rangeRow').style.display  = isKairos ? '' : 'none';
+    document.getElementById('balanceRow').style.display = isKairos ? '' : 'none';
     document.getElementById('pageTitle').textContent  = isKairos ? '✦ Trading Analysis Crew' : '✦ Research Crew';
     document.getElementById('pageSub').textContent    = isKairos
       ? 'Fetches your live strategy leaderboard + journal — advises as a professional systematic trader'
@@ -473,7 +486,8 @@
       const res = await fetch('/api/crew/run', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ topic: _topic, crew_type: _crewMode, ..._getDateRange() }),
+        body:    JSON.stringify({ topic: _topic, crew_type: _crewMode, ..._getDateRange(),
+                                  kairos_target: (document.getElementById('kairosTarget')?.value || '9') }),
       });
       if (!res.ok) { setStatus('Error: ' + res.status); return; }
 

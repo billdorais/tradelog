@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "9") -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -747,6 +747,34 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 lines.append("")
             prev_block = "\n".join(lines)
 
+        # ── Kairos/TV balance directive (user knob) ───────────────────────────
+        # Controls how hard to push engine ([Kairos]) entries. The Kairos Farm
+        # (acct5) leaderboard is a first-class SOURCING pool here — top Kairos Farm
+        # names can win [Kairos] slots on their own, not just corroborate acct3.
+        _kt = str(kairos_target or "9").lower()
+        if _kt == "max":
+            balance_block = (
+                "KAIROS BALANCE = MAX: maximise [Kairos] picks. Take EVERY name from the top of the "
+                "KAIROS FARM (acct5) leaderboard + Kairos Refined (acct3) that clears the bar (net-positive, "
+                "≥5 farm trades, sane PF) as a first-class [Kairos] pick — the Kairos Farm is the audition "
+                "pool, so a strong farm name with thin/no acct3 trades STILL qualifies (mark '(farm-backed)'). "
+                "Only fill remaining slots with [TV] names the Kairos side can't cover. Ignore the 'farm-only "
+                "cap' for Kairos here — tapping the Kairos Farm edge is the whole point.")
+        elif _kt == "5":
+            balance_block = (
+                "KAIROS BALANCE = REFINED-LED: at LEAST 5 of 18 must be [Kairos]; TV may lead the rest. "
+                "Source the Kairos picks from the strongest KAIROS FARM (acct5) + Kairos Refined (acct3) names, "
+                "farm-backed allowed.")
+        else:  # "9" balanced (default)
+            balance_block = (
+                "KAIROS BALANCE = BALANCED: TARGET ~9 of 18 tagged [Kairos] for a roughly EVEN TV/Kairos split. "
+                "This is the priority instruction — draw the ~9 Kairos picks from the TOP of the KAIROS FARM "
+                "(acct5) leaderboard AND Kairos Refined (acct3): a strong Kairos Farm name is a FIRST-CLASS "
+                "[Kairos] pick in its own right, even with thin/no acct3 trades yet (mark '(farm-backed)'). "
+                "Do NOT fall short of ~9 Kairos just because the acct3 sample is thin — that is exactly what the "
+                "Kairos Farm full sample is for. Prefer the band/kind (R3S3/R4S4, breakout/reversal) that tops "
+                "the Kairos Farm leaderboard.")
+
         # ── Single task — all data embedded directly ──────────────────────────
 
         analysis_task = Task(
@@ -784,10 +812,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "but a deep, positive farm record on the SAME entry mechanism can still qualify — mark it '(farm-backed)' in "
                 "its Detail line. REFINED STAYS PRIMARY: never promote a name that is NEGATIVE on its Refined book on the "
                 "strength of the farm alone; use the farm only to clear the sample floor, corroborate a thin Refined edge, "
-                "and break ties. A name with NO Refined trades at all is a farm-only audition — at most 2 of the 18, clearly "
-                "flagged as unproven on the book. "
-                "PER-BOOK QUOTA: at least 5 of the 18 must be earned on EACH book (TV Refined and Kairos Refined) so both "
-                "entry mechanisms are represented — don't let one book dominate all 18. "
+                "and break ties. A [TV] name with NO TV Refined trades is a farm-only audition — at most 2 of the 18, "
+                "flagged as unproven on the book. (Kairos farm-only names are NOT capped that way — they are governed by "
+                "the KAIROS BALANCE directive below, since sourcing Kairos picks from the Kairos Farm is deliberate.) "
+                f"PER-BOOK QUOTA / BALANCE: {balance_block} At least 5 of the 18 must be earned on EACH book so both entry "
+                "mechanisms are represented — never let one book dominate all 18. "
                 "CHURN GUARD: this is a mostly-stable book. A strategy currently wired to Crew Paper (see the CURRENT CREW "
                 "PAPER BOOK block) that is net-positive KEEPS its slot by default; only DROP an incumbent if it's a clear "
                 "bleeder, and only ADD a challenger over an incumbent when it's CLEARLY better (not a marginal score edge). "
@@ -1989,6 +2018,7 @@ def api_crew_run():
         from_date    = (data.get("from") or "").strip()
         to_date      = (data.get("to")   or "").strip()
         range_label  = (data.get("label") or "").strip()
+        kairos_target = (str(data.get("kairos_target") or "9")).strip().lower()
         strat_data        = {}
         engine_strat_data = {}
         journal_data = []
@@ -2088,7 +2118,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data, _pa, _pa5),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data, _pa, _pa5, kairos_target),
             daemon=True,
         ).start()
     else:
