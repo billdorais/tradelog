@@ -772,8 +772,9 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "(acct5) leaderboard AND Kairos Refined (acct3): a strong Kairos Farm name is a FIRST-CLASS "
                 "[Kairos] pick in its own right, even with thin/no acct3 trades yet (mark '(farm-backed)'). "
                 "Do NOT fall short of ~9 Kairos just because the acct3 sample is thin — that is exactly what the "
-                "Kairos Farm full sample is for. Prefer the band/kind (R3S3/R4S4, breakout/reversal) that tops "
-                "the Kairos Farm leaderboard.")
+                "Kairos Farm full sample is for — EXCEPT where the KAIROS-TAG GUARDRAIL blocks it (a deep net-negative "
+                "Kairos Farm sample with no credible positive acct3 record → tag [TV] instead, even if that lands under 9). "
+                "Prefer the band/kind (R3S3/R4S4, breakout/reversal) that tops the Kairos Farm leaderboard.")
 
         # ── Single task — all data embedded directly ──────────────────────────
 
@@ -815,8 +816,17 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "and break ties. A [TV] name with NO TV Refined trades is a farm-only audition — at most 2 of the 18, "
                 "flagged as unproven on the book. (Kairos farm-only names are NOT capped that way — they are governed by "
                 "the KAIROS BALANCE directive below, since sourcing Kairos picks from the Kairos Farm is deliberate.) "
-                f"PER-BOOK QUOTA / BALANCE: {balance_block} At least 5 of the 18 must be earned on EACH book so both entry "
-                "mechanisms are represented — never let one book dominate all 18. "
+                "(d) KAIROS-TAG GUARDRAIL — a HARD rule that OVERRIDES the balance target below: do NOT tag a pick "
+                "[Kairos] when the Kairos side's most CREDIBLE sample is a loser. Concretely — if Kairos Farm (acct5, full "
+                "sample) is net-NEGATIVE with ≥5 trades (e.g. PF < 1), a positive Kairos Refined (acct3) reading overrides "
+                "it ONLY when acct3 itself has ≥5 trades; a 1–4 trade acct3 blip does NOT justify [Kairos] against a deep "
+                "negative farm sample. When the guardrail blocks [Kairos], tag [TV] if the TV side is positive, else drop "
+                "the name. TIE-BREAK: when a name could go either book, tag it for the side whose farm/refined record is the "
+                "STRONGER, more-credible one (bigger positive sample) — never flip to [Kairos] purely to hit the count. "
+                "Falling SHORT of the Kairos balance target with HONEST tags is REQUIRED over forcing a [Kairos] tag the "
+                "deeper Kairos data contradicts. "
+                f"PER-BOOK QUOTA / BALANCE: {balance_block} (This target yields to the (d) guardrail above.) At least 5 of "
+                "the 18 must be earned on EACH book so both entry mechanisms are represented — never let one book dominate all 18. "
                 "CHURN GUARD: this is a mostly-stable book. A strategy currently wired to Crew Paper (see the CURRENT CREW "
                 "PAPER BOOK block) that is net-positive KEEPS its slot by default; only DROP an incumbent if it's a clear "
                 "bleeder, and only ADD a challenger over an incumbent when it's CLEARLY better (not a marginal score edge). "
