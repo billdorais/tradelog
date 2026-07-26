@@ -1680,8 +1680,19 @@ def _parse_next_month_card(report):
                 # annotations can't bleed into the next pick's tags.
                 nxt  = matches[i + 1].start() if i + 1 < len(matches) else len(value)
                 tail = value[m.end():nxt].upper()
-                side = ("short" if "SHORT" in tail else
-                        "long"  if "LONG"  in tail else "both")
+                # First mention wins (mirrors the entry parser below): the side TAG
+                # sits right after the slug (e.g. "— LONG-only [TV]"), while the
+                # justification often names the OTHER side too ("...while SHORT
+                # bleeds"). A plain "SHORT in tail" check flipped LONG-only picks to
+                # short. Take whichever of LONG/SHORT appears FIRST.
+                i_long  = tail.find("LONG")
+                i_short = tail.find("SHORT")
+                if i_long < 0 and i_short < 0:
+                    side = "both"
+                elif i_short < 0 or (i_long >= 0 and i_long < i_short):
+                    side = "long"
+                else:
+                    side = "short"
                 # Per-pick entry source ([TV] / [Kairos] tag; [Engine] still accepted) — the entry mechanism
                 # is part of the strategy (Refined vs Kairos have shown OPPOSITE
                 # edges on the same names), so a Kairos-book pick keeps engine
