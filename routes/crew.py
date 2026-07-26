@@ -833,6 +833,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "When the current book is healthy, keep the roster mostly intact rather than reshuffling on one month's noise. "
                 "Tag each pick's ENTRY as [TV] (earned on TV Refined) or [Kairos] (earned on Kairos Refined) — the tag is REAL: "
                 "the wire button sets that rule's entry source per pick. "
+                "CRITICAL — THE LEADING TAG IS WHAT GETS WIRED: the [TV]/[Kairos] tag immediately after the strategy name "
+                "MUST be your FINAL decision AFTER applying the (d) guardrail. If the guardrail flips a Kairos candidate to "
+                "TV, write the leading tag as [TV] — do NOT write '[Kairos]' and then argue '[TV]' in the reasoning. Never "
+                "let the leading tag disagree with your conclusion; the parser reads the leading tag (and any explicit "
+                "'TAG [X]' phrase), not your prose. "
                 "Tag each pick's SIDE long / short / both. A strategy may earn a slot on its single-side record — use "
                 "the SIDE-GATED CANDIDATES in the card inputs (best_side score vs both-sides score): if a name scores "
                 "clearly higher gated to one side, include it tagged that side. The side tag is a REAL gate "
@@ -1735,13 +1740,23 @@ def _parse_next_month_card(report):
                 # Per-pick entry source ([TV] / [Kairos] tag; [Engine] still accepted) — the entry mechanism
                 # is part of the strategy (Refined vs Kairos have shown OPPOSITE
                 # edges on the same names), so a Kairos-book pick keeps engine
-                # entries even when the card's global Entries row says TV. First
-                # mention wins, mirroring the Entries-row disambiguation.
-                i_tv   = tail.find("TV")
-                _cands = [p for p in (tail.find("KAIROS"), tail.find("ENGINE")) if p >= 0]
-                i_eng  = min(_cands) if _cands else -1
-                entry  = ("kairos" if (i_eng >= 0 and (i_tv < 0 or i_eng < i_tv)) else
-                          "tv"     if i_tv >= 0 else None)
+                # entries even when the card's global Entries row says TV.
+                # An explicit final-decision phrase WINS over the leading tag: the
+                # crew sometimes writes "both [Kairos] (... guardrail BLOCKS [Kairos];
+                # TAG [TV] per guardrail ...)", flipping its own tag in the reasoning
+                # while leaving a stale leading [Kairos]. Honor the LAST "TAG [X]".
+                i_dec_tv  = tail.rfind("TAG [TV]")
+                i_dec_eng = max(tail.rfind("TAG [KAIROS]"), tail.rfind("TAG [ENGINE]"))
+                if i_dec_tv >= 0 or i_dec_eng >= 0:
+                    entry = "tv" if i_dec_tv > i_dec_eng else "kairos"
+                else:
+                    # No explicit decision phrase → first mention of the tag wins
+                    # (the tag sits right after the slug, before the reasoning).
+                    i_tv   = tail.find("TV")
+                    _cands = [p for p in (tail.find("KAIROS"), tail.find("ENGINE")) if p >= 0]
+                    i_eng  = min(_cands) if _cands else -1
+                    entry  = ("kairos" if (i_eng >= 0 and (i_tv < 0 or i_eng < i_tv)) else
+                              "tv"     if i_tv >= 0 else None)
                 picks.append({"strategy": slug, "side": side, "entry": entry})
         elif label == "entries":
             # First mention wins: whichever of TV / Kairos(engine) the cell names

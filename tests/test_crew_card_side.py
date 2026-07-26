@@ -29,6 +29,11 @@ def _side_of(report, slug):
     return next(p["side"] for p in picks if p["strategy"] == slug)
 
 
+def _entry_of(report, slug):
+    picks = crew._parse_next_month_card(report)["picks"]
+    return next(p["entry"] for p in picks if p["strategy"] == slug)
+
+
 def test_long_only_with_short_in_reasoning_stays_long():
     row = ("1. TSLA_CAM_BREAKOUT_R3S3_V02_5MIN — LONG-only [TV] "
            "(BREAKOUT R3S3 LONG earns $+692 on TV Refined while SHORT bleeds; "
@@ -45,6 +50,22 @@ def test_short_only_with_long_in_reasoning_stays_short():
 def test_untagged_pick_defaults_to_both():
     row = "1. NVDA_CAM_BREAKOUT_R4S4_V02_5MIN [TV] (positive on both books)"
     assert _side_of(_card(row), "NVDA_CAM_BREAKOUT_R4S4_V02_5MIN") == "both"
+
+
+def test_explicit_tag_phrase_overrides_stale_leading_tag():
+    """The guardrail can flip a Kairos candidate to TV in the reasoning while the
+    crew leaves a stale leading [Kairos]. An explicit 'TAG [TV]' phrase wins."""
+    row = ("1. NVDA_CAM_BREAKOUT_R4S4_V02_5MIN — both [Kairos] (acct3 $23.30/2t; "
+           "Kairos Farm $-1.76/15t/PF 0.57 — guardrail BLOCKS [Kairos]; TV Farm "
+           "$4.40/10t positive; TAG [TV] per guardrail)")
+    assert _entry_of(_card(row), "NVDA_CAM_BREAKOUT_R4S4_V02_5MIN") == "tv"
+
+
+def test_leading_tag_used_when_no_explicit_phrase():
+    """Without an explicit 'TAG [X]', first-mention (the leading tag) wins."""
+    row = ("1. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN — both [Kairos] (acct3 dominant; "
+           "acct2 also positive)")
+    assert _entry_of(_card(row), "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN") == "kairos"
 
 
 def test_multiple_picks_each_keep_their_own_side():
