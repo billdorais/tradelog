@@ -843,7 +843,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "clearly higher gated to one side, include it tagged that side. The side tag is a REAL gate "
                 "(long = long-only, short = short-only). "
                 "FORMAT: put each numbered pick on its OWN line, separated by <br> (one ticker per line) — e.g. "
-                "`1. SMH_CAM_... — SHORT-only [Kairos] (...)<br>2. SPY_CAM_... — both [TV] (...)<br>3. ...`. |\n"
+                "`1. SMH_CAM_... — SHORT-only [Kairos] (...)<br>2. SPY_CAM_... — both [TV] (...)<br>3. ...`. "
+                "The 'Top 18 to run' row must contain EXACTLY the 18 FINAL picks, numbered 1–18 with no duplicate numbers "
+                "— NEVER list a dropped/rejected strategy or a 'DROP — replace with X' line here; if you replace a "
+                "candidate, put ONLY the replacement in this row. ALL drop/replace decisions go in the 'Changes vs the "
+                "Current Book' table below, not in this row. |\n"
                 "| Sizing | Equal risk OR Scaled-by-score — one-clause why (equal risk is preferred for a fresh test until the score proves forward edge) |\n"
                 "| Day-type gate | Read the LIVE SYSTEM GATE STATE block — report the ACTUAL state (ON/OFF + which books + allowed days). Do NOT claim it is missing or recommend building it if it is listed ON there. Only suggest a CHANGE to its threshold if the side×day-type data supports one. |\n"
                 "| Entries | Default for UNTAGGED picks only: TV Refined OR Kairos Refined — per the TV-vs-Kairos read. Per-pick [TV]/[Kairos] tags override this default. |\n"
@@ -1724,6 +1728,12 @@ def _parse_next_month_card(report):
                 # annotations can't bleed into the next pick's tags.
                 nxt  = matches[i + 1].start() if i + 1 < len(matches) else len(value)
                 tail = value[m.end():nxt].upper()
+                # The Top-18 row must be FINAL picks only, but the crew sometimes
+                # leaves a "DROP — replace with X" line inline (listing both the
+                # dropped name and its replacement). Skip a slug the crew marked
+                # dropped so a rejected bleeder isn't silently wired.
+                if "DROP" in tail and ("REPLACE" in tail or "NEW DROP" in tail):
+                    continue
                 # First mention wins (mirrors the entry parser below): the side TAG
                 # sits right after the slug (e.g. "— LONG-only [TV]"), while the
                 # justification often names the OTHER side too ("...while SHORT

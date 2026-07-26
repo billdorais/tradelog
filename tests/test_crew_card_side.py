@@ -68,6 +68,20 @@ def test_leading_tag_used_when_no_explicit_phrase():
     assert _entry_of(_card(row), "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN") == "kairos"
 
 
+def test_dropped_pick_inline_is_not_wired():
+    """The crew sometimes leaves a 'DROP — replace with X' line in the Top-18 row
+    (both the dropped name and its replacement). The dropped slug must be skipped
+    so a rejected bleeder isn't silently wired."""
+    row = ("16. NEM_CAM_BREAKOUT_R3S3_V02_5MIN — LONG-only [TV] (TV Farm 0% WR/11t "
+           "— GUARDRAIL disqualifies; DROP — replace with stronger candidate; NEW "
+           "DROP — replace with MSFT_CAM_BREAKOUT_R3S3_V02_5MIN)<br>"
+           "16. MSFT_CAM_BREAKOUT_R3S3_V02_5MIN — both [TV] (TV Farm farm-backed; NEW KEEP)")
+    picks = crew._parse_next_month_card(_card(row))["picks"]
+    names = [p["strategy"] for p in picks]
+    assert "NEM_CAM_BREAKOUT_R3S3_V02_5MIN" not in names
+    assert "MSFT_CAM_BREAKOUT_R3S3_V02_5MIN" in names
+
+
 def test_multiple_picks_each_keep_their_own_side():
     row = ("1. TSLA_CAM_BREAKOUT_R3S3_V02_5MIN — LONG-only [TV] (SHORT bleeds)<br>"
            "2. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN — SHORT-only [Kairos] (LONG bleeds)<br>"
