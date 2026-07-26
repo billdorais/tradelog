@@ -195,7 +195,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -460,6 +460,24 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             empty_msg=("=== KAIROS REFINED (account 3) — STRATEGY LEADERBOARD ===\n"
                        "No per-strategy data yet — Kairos Refined (acct3) has no closed round-trips "
                        "in this window. Treat the Kairos entries as not-yet-evaluable per strategy."),
+        )
+        # Farm full-sample leaderboards — the audition pools the Refined books are
+        # drawn from. Deeper history / more trades per name than the curated Refined
+        # subset, so a thin-but-promising Refined name can be corroborated (and clear
+        # the sample floor) by its farm record on the SAME entry mechanism.
+        farm_strat_block = _fmt_strategies(
+            farm_strat_data,
+            header=("TV FARM (account 1) — FULL-SAMPLE STRATEGY LEADERBOARD "
+                    "(audition pool for TV Refined; TV entries; deeper history than acct2)"),
+            empty_msg=("=== TV FARM (account 1) — FULL-SAMPLE LEADERBOARD ===\n"
+                       "No TV Farm data in this window."),
+        )
+        kairos_farm_strat_block = _fmt_strategies(
+            kairos_farm_strat_data,
+            header=("KAIROS FARM (account 5) — FULL-SAMPLE STRATEGY LEADERBOARD "
+                    "(audition pool for Kairos Refined; server-side engine entries; deeper history than acct3)"),
+            empty_msg=("=== KAIROS FARM (account 5) — FULL-SAMPLE LEADERBOARD ===\n"
+                       "No Kairos Farm data in this window."),
         )
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
@@ -740,6 +758,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 + (f"{book_block}\n\n" if book_block else "")
                 + f"{strategy_block}\n\n"
                 f"{engine_strat_block}\n\n"
+                + "FARM LEADERBOARDS BELOW are the FULL-SAMPLE audition pools the Refined books are "
+                "drawn from — use them to corroborate thin Refined samples, NOT to override Refined "
+                "performance. TV Farm (acct1) backs [TV] picks; Kairos Farm (acct5) backs [Kairos] picks.\n\n"
+                + f"{farm_strat_block}\n\n"
+                f"{kairos_farm_strat_block}\n\n"
                 f"{card_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
@@ -751,11 +774,18 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
-                "| Top 18 to run | eighteen strategy names sourced from BOTH refined books, ranked by each strategy's BEST side. "
+                "| Top 18 to run | eighteen strategy names, RANKED PRIMARILY on the refined books, by each strategy's BEST side. "
                 "SOURCING RULES: (a) names positive on BOTH TV Refined (acct2) and Kairos Refined (acct3) are first-class picks; "
                 "(b) a name positive on only ONE book is an ENTRY-SPECIFIC bet — the entry mechanism is part of the "
-                "strategy (the two books have shown OPPOSITE edges on the same names) — include it only with a decent "
-                "sample on that book (≥15 trades) and it MUST carry that book's entry tag. "
+                "strategy (the two books have shown OPPOSITE edges on the same names) — and MUST carry that book's entry tag. "
+                "(c) SAMPLE FLOOR — an entry-specific bet needs ≥15 trades, BUT that sample may be met on the matching "
+                "FARM leaderboard (TV Farm acct1 for [TV] picks, Kairos Farm acct5 for [Kairos] picks), since the farm is "
+                "the full-sample audition pool the Refined book is a curated subset of. So a name with a THIN Refined sample "
+                "but a deep, positive farm record on the SAME entry mechanism can still qualify — mark it '(farm-backed)' in "
+                "its Detail line. REFINED STAYS PRIMARY: never promote a name that is NEGATIVE on its Refined book on the "
+                "strength of the farm alone; use the farm only to clear the sample floor, corroborate a thin Refined edge, "
+                "and break ties. A name with NO Refined trades at all is a farm-only audition — at most 2 of the 18, clearly "
+                "flagged as unproven on the book. "
                 "PER-BOOK QUOTA: at least 5 of the 18 must be earned on EACH book (TV Refined and Kairos Refined) so both "
                 "entry mechanisms are represented — don't let one book dominate all 18. "
                 "CHURN GUARD: this is a mostly-stable book. A strategy currently wired to Crew Paper (see the CURRENT CREW "
@@ -1955,6 +1985,8 @@ def api_crew_run():
         rules_data   = []
         engine_data  = {}
         card_data    = {}
+        _pa          = {}   # TV Farm (acct1) full-sample leaderboard
+        _pa5         = {}   # Kairos Farm (acct5) full-sample leaderboard
         try:
             _dr  = (f"&from_date={from_date}" if from_date else "") + (f"&to_date={to_date}" if to_date else "")
             _qs  = "account=2" + _dr
@@ -1970,6 +2002,9 @@ def api_crew_run():
                 engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
                 # Inputs for the "Next Month" card baked into the report.
                 _pa  = _c.get(f"/api/alpaca/analysis?account=1{_dr}").get_json() or {}
+                # Kairos Farm (acct5) full-sample leaderboard — the engine-entry
+                # audition pool that backs [Kairos] picks (acct1 above backs [TV]).
+                _pa5 = _c.get(f"/api/alpaca/analysis?account=5{_dr}").get_json() or {}
                 _s2  = _c.get(f"/api/alpaca/ls_breakdown?account=2{_dr}").get_json() or {}
                 _s3  = _c.get(f"/api/alpaca/ls_breakdown?account=3{_dr}").get_json() or {}
                 # Crew Paper's own book — the crew grades its picks via the scorecard
@@ -2042,7 +2077,7 @@ def api_crew_run():
             pass
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data, _pa, _pa5),
             daemon=True,
         ).start()
     else:
