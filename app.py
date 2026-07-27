@@ -14530,13 +14530,39 @@ def _pulse_strat_ticker(val):
     u = (val or "").upper(); i = u.find("_CAM_")
     return u[:i] if i > 0 else None
 
-def _pulse_watchlist(limit=18, include_indexes=False):
-    """Tickers the RVOL gate actually applies to: the distinct symbols of ENABLED
-    routing rules targeting the refined books (TV Refined / Kairos Refined), so the
-    Pulse is a true preview of what those books would trade. Falls back to
-    recently-traded tickers, then a default, if none resolve. `include_indexes`
-    keeps SPY/QQQ/IWM in the list (for an honest total count); the tile display drops
-    them since they're already shown as the index gauges."""
+def _pulse_snapshot_tickers(snap_key, mem_getter):
+    """Distinct tickers from a refined snapshot's top_strategies (in-memory, else
+    the DB-persisted copy). These are the leaderboards the refined books actually
+    trade — Kairos Refined (acct3) via the engine pilot, TV Refined (acct2) via the
+    TV snapshot — neither of which lives in routing_rules."""
+    snap = mem_getter() or {}
+    if not snap.get("top_strategies"):
+        try:
+            stored = _load_setting(snap_key)
+            if stored:
+                snap = json.loads(stored)
+        except Exception:
+            snap = {}
+    out = []
+    for nm in (snap.get("top_strategies") or []):
+        tk = _pulse_strat_ticker(nm)
+        if tk:
+            out.append(tk)
+    return out
+
+
+def _pulse_watchlist(limit=40, include_indexes=False):
+    """Tickers the RVOL gate actually applies to across BOTH refined books, so the
+    Pulse is a true preview of what they would trade:
+      1) Kairos Refined snapshot top_strategies (acct3 — engine-sourced, never in
+         routing_rules).
+      2) TV Refined snapshot top_strategies (acct2).
+      3) ENABLED routing rules whose broker targets a refined book (hand-wired /
+         crew rules and any per-rule Kairos opt-ins).
+    Union, de-duplicated, order-preserving. Falls back to recently-traded tickers,
+    then a default, if none resolve. `include_indexes` keeps SPY/QQQ/IWM in the list
+    (for an honest total count); the tile display drops them since they're already
+    shown as the index gauges."""
     _default = ["NVDA", "TSLA", "AAPL", "SMH", "HOOD", "AMZN", "META", "PLTR"]
 
     def _keep(t, seen):
@@ -14544,12 +14570,28 @@ def _pulse_watchlist(limit=18, include_indexes=False):
             return False
         return include_indexes or t not in _PULSE_INDEXES
 
-    # 1) Refined-book tickers from the router (the real "refined stocks").
+    seen, out = set(), []
+
+    def _absorb(tickers):
+        for t in tickers:
+            tk = (t or "").upper()
+            if _keep(tk, seen):
+                seen.add(tk); out.append(tk)
+
+    # 1) + 2) Both refined books' snapshot leaderboards (the real "refined stocks").
+    try:
+        _absorb(_pulse_snapshot_tickers("KAIROS_REFINED_LAST_RESULT",
+                                        lambda: _kairos_refined_last_result))
+        _absorb(_pulse_snapshot_tickers("REFINED_LAST_RESULT",
+                                        lambda: _refined_last_result))
+    except Exception:
+        pass
+
+    # 3) Refined-book tickers wired directly in the router (crew rules, opt-ins).
     try:
         conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1 ORDER BY id DESC")
         rows = cur.fetchall(); conn.close()
-        seen, out = set(), []
         for r in rows:
             nraw = r[0] if not isinstance(r, dict) else r["nodes"]
             try:    nodes = json.loads(nraw) if isinstance(nraw, str) else (nraw or [])
@@ -14557,27 +14599,22 @@ def _pulse_watchlist(limit=18, include_indexes=False):
             brokers = {(n.get("value") or "") for n in nodes if n.get("type") == "broker"}
             if not (brokers & _REFINED_PULSE_BROKERS):
                 continue
-            for n in nodes:
-                if n.get("type") == "strategy":
-                    tk = _pulse_strat_ticker(n.get("value"))
-                    if _keep(tk, seen):
-                        seen.add(tk); out.append(tk)
-        if out:
-            return out[:limit]
+            _absorb(_pulse_strat_ticker(n.get("value"))
+                    for n in nodes if n.get("type") == "strategy")
     except Exception:
         pass
 
-    # 2) Fallback: recently-traded tickers across all signals.
+    if out:
+        return out[:limit]
+
+    # Fallback: recently-traded tickers across all signals.
     try:
         conn = get_db(); cur = conn.cursor()
         cur.execute(f"SELECT ticker FROM trades WHERE ticker IS NOT NULL AND ticker != '' "
                     f"ORDER BY id DESC LIMIT {placeholder()}", (600,))
         rows = cur.fetchall(); conn.close()
-        seen, out = set(), []
         for r in rows:
-            t = ((r[0] if not isinstance(r, dict) else r["ticker"]) or "").upper()
-            if _keep(t, seen):
-                seen.add(t); out.append(t)
+            _absorb([r[0] if not isinstance(r, dict) else r["ticker"]])
             if len(out) >= limit:
                 break
         if out:
@@ -14600,9 +14637,9 @@ def api_rvol_pulse():
         watch = [t.strip().upper() for t in _req.split(",") if t.strip()]
         refined_count, refined_index_count = len(watch), 0
     else:
-        _refined_all = _pulse_watchlist(limit=24, include_indexes=True)
+        _refined_all = _pulse_watchlist(limit=48, include_indexes=True)
         refined_index_count = sum(1 for t in _refined_all if t in _PULSE_INDEXES)
-        watch = [t for t in _refined_all if t not in _PULSE_INDEXES][:18]
+        watch = [t for t in _refined_all if t not in _PULSE_INDEXES][:40]
         refined_count = len(_refined_all)   # distinct refined tickers, indexes included
     seen, universe = set(), []
     for t in _PULSE_INDEXES + watch:
