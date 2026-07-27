@@ -12954,9 +12954,19 @@ def _hwm_summarize(rows, green_pct=0.001):
                 "gb_peak_pct_sum": 0.0, "win_peak_pct_sum": 0.0}
     tot = _blank()
     by_band = {}
+    # Peak-profit-reached buckets: of ALL trades, how many touched >= $t in
+    # unrealized profit at any point ("made it to $t"), and of those, how many
+    # actually closed with >= $t (kept it) vs gave it back below $t.
+    _THRESH = [25, 50, 100, 150, 200]
+    reached = {t: {"reached": 0, "kept": 0} for t in _THRESH}
     for r in rows:
         peak = max(0.0, float(r.get("peak_dollars") or 0))
         real = float(r.get("realized_pnl") or 0)
+        for t in _THRESH:
+            if peak >= t:
+                reached[t]["reached"] += 1
+                if real >= t:
+                    reached[t]["kept"] += 1
         give = max(0.0, float(r.get("giveback_dollars") or 0))
         ep   = float(r.get("entry_price") or 0)
         pp   = float(r.get("peak_price") or ep)
@@ -12991,8 +13001,11 @@ def _hwm_summarize(rows, green_pct=0.001):
         return a
     _finish(tot)
     bands = {k: _finish(v) for k, v in by_band.items()}
+    peak_reached = [{"threshold": t, "reached": v["reached"], "kept": v["kept"],
+                     "gaveback": v["reached"] - v["kept"]} for t, v in reached.items()]
     return {"overall": tot,
-            "by_band": dict(sorted(bands.items(), key=lambda kv: kv[1]["giveback"], reverse=True))}
+            "by_band": dict(sorted(bands.items(), key=lambda kv: kv[1]["giveback"], reverse=True)),
+            "peak_reached": peak_reached}
 
 
 @app.route("/api/trades/hwm")

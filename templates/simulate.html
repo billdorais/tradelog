@@ -501,7 +501,7 @@
   <!-- Trade High-Water Mark: peak & giveback diagnostic -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">High-Water Mark
-      <span style="font-size:0.72rem;color:#666;font-weight:400">— of your realized trades, how much peak profit did you give back, and were losers green first?</span></div>
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— of your realized trades, how many reached each $ profit level, how much peak profit did you give back, and were losers green first?</span></div>
     <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
       <button class="run-btn" onclick="runHwm(false)" style="padding:8px 18px">&#9650; Peak / Giveback</button>
       <button class="run-btn" onclick="runHwm(true)" style="padding:8px 18px;background:#3f5170" title="Force a bar-by-bar backfill for the range first (slower)">&#8635; Rebuild from bars</button>
@@ -1603,6 +1603,30 @@
           + `</div>`;
       }
       const pct = v => (v == null ? '—' : '+' + Number(v).toFixed(2) + '%');
+      // Peak-profit reached: of all N trades, how many touched >= $t in unrealized
+      // profit ("made it to $t"), split into kept (closed >= $t) vs gave it back.
+      const reach = (d.summary && d.summary.peak_reached) || [];
+      const reachRows = reach.map(x => {
+        const p = s.n ? (x.reached / s.n * 100).toFixed(0) : '0';
+        const hi = x.threshold === 50 ? ' style="background:#141824"' : '';
+        return `<tr${hi}><td style="color:#ccc">+$${x.threshold}</td>`
+          + `<td style="text-align:right;color:#7FE098;font-weight:600">${x.reached}</td>`
+          + `<td style="text-align:right;color:#777">${p}%</td>`
+          + `<td style="text-align:right;color:#9bd6a8">${x.kept}</td>`
+          + `<td style="text-align:right;color:#e08a8a">${x.gaveback}</td></tr>`;
+      }).join('');
+      const r50 = reach.find(x => x.threshold === 50);
+      const reachBlock = reachRows
+        ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">`
+            + `Peak profit reached — of ${s.n} trades, how many <b>made it to</b> each $ level (at any point), and whether they kept it`
+            + (r50 ? ` &nbsp;·&nbsp; <b style="color:#7FE098">${r50.reached}</b> reached <b>+$50</b> (${r50.kept} kept, ${r50.gaveback} gave it back)` : '')
+            + `</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Peak ≥</th>`
+            + `<th style="text-align:right">Trades reached</th><th style="text-align:right">% of all</th>`
+            + `<th style="text-align:right" title="Reached the level AND closed at or above it">Kept</th>`
+            + `<th style="text-align:right" title="Reached the level but closed below it">Gave back</th></tr></thead>`
+            + `<tbody>${reachRows}</tbody></table></div></div>`
+        : '';
       const bands = (d.summary && d.summary.by_band) || {};
       const bandRows = Object.entries(bands).map(([b, v]) =>
         `<tr><td style="color:#ccc">${b.replace(/_/g, ' ')}</td>
@@ -1625,7 +1649,7 @@
         + card('Capture', capTxt, 'of peak favorable move kept', (s.capture_ratio >= 0.5 ? '#7FE098' : '#F2C07A'))
         + card('Giveback losers', s.gb_losers + ' · ' + money(s.gb_loss), 'peaked ' + (s.gb_peak_pct != null ? '+' + s.gb_peak_pct + '%' : '—') + ' green, closed red', '#e08a8a')
         + card('Immediate losers', s.im_losers + ' · ' + money(s.im_loss), 'never went green', '#e08a8a')
-        + `</div>` + peakLine + verdict
+        + `</div>` + peakLine + verdict + reachBlock
         + (bandRows ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">By band (most giveback first)</div>`
             + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
             + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Giveback</th><th style="text-align:right">Capture</th><th style="text-align:right">GB losers</th><th style="text-align:right" title="Avg peak favorable % of giveback losers — where a take-profit would catch them">GB peak%</th><th style="text-align:right">Imm losers</th></tr></thead>`
