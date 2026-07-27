@@ -1607,7 +1607,7 @@
       // profit ("made it to $t"), split into kept (closed >= $t) vs gave it back.
       const reach = (d.summary && d.summary.peak_reached) || [];
       const dcol = v => (v > 0 ? '#7FE098' : v < 0 ? '#e08a8a' : '#888');
-      const dtxt = v => (v > 0 ? '+' : '') + money(v);
+      const dtxt = v => money(v);   // money() already signs positives with +$
       const reachRows = reach.map(x => {
         const p = s.n ? (x.reached / s.n * 100).toFixed(0) : '0';
         const hi = x.threshold === 50 ? ' style="background:#141824"' : '';
