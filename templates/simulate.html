@@ -336,6 +336,7 @@
       <button class="apply-sr-btn" id="applyBtn" onclick="applyToSignalRouter()" style="display:none" title="Push new params trail/trigger to all matching Signal Router pipelines">&#8593; Apply to Signal Router</button>
       <button class="sweep-btn" id="sweepToggleBtn" onclick="toggleSweepPanel()">⚡ Sweep</button>
       <button class="sweep-btn" id="tpSweepToggleBtn" onclick="toggleTpSweepPanel()" title="Hold each strategy's real exits fixed and grid-search a take-profit level">💰 TP Sweep</button>
+      <button class="sweep-btn" id="tierSweepToggleBtn" onclick="toggleTierSweepPanel()" title="Keep the base trail from entry, grid-search a dynamic tighten (tighten to X% once up Y%)">🪜 Trail Tier Sweep</button>
     </div>
     <div id="tpSweepPanel" style="display:none">
       <div class="sweep-panel">
@@ -368,6 +369,31 @@
     <div id="tpSweepResults" class="sweep-results" style="display:none">
       <div class="section-title" id="tpSweepTitle" style="margin-bottom:8px"></div>
       <div id="tpSweepBody"></div>
+    </div>
+    <div id="tierSweepPanel" style="display:none">
+      <div class="sweep-panel">
+        <div class="param-group"><label>Gain min</label>
+          <div class="input-wrap"><input type="number" id="tierGainMin" value="0.25" step="0.25" min="0.05" max="10"><span class="unit">%</span></div></div>
+        <div class="param-group"><label>Gain max</label>
+          <div class="input-wrap"><input type="number" id="tierGainMax" value="1.50" step="0.25" min="0.05" max="20"><span class="unit">%</span></div></div>
+        <div class="param-group"><label>Gain step</label>
+          <div class="input-wrap"><input type="number" id="tierGainStep" value="0.25" step="0.05" min="0.05" max="5"><span class="unit">%</span></div></div>
+        <div class="param-group"><label>Trail min</label>
+          <div class="input-wrap"><input type="number" id="tierTrailMin" value="0.10" step="0.05" min="0.05" max="10"><span class="unit">%</span></div></div>
+        <div class="param-group"><label>Trail max</label>
+          <div class="input-wrap"><input type="number" id="tierTrailMax" value="0.30" step="0.05" min="0.05" max="10"><span class="unit">%</span></div></div>
+        <div class="param-group"><label>Trail step</label>
+          <div class="input-wrap"><input type="number" id="tierTrailStep" value="0.05" step="0.05" min="0.05" max="5"><span class="unit">%</span></div></div>
+        <div class="param-group" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <button class="run-btn" id="tierSweepRunBtn" onclick="runTierSweep()" style="padding:7px 18px;font-size:0.82rem">🪜 Run Trail Tier Sweep</button>
+        </div>
+      </div>
+      <div style="font-size:0.7rem;color:#666;padding:0 2px 4px">Keeps each rule's real base trail from entry (no unprotected window), then TIGHTENS to <em>trail%</em> once the trade is up <em>gain%</em>. Grid-searches the (gain, trail) pair vs the base-trail-only baseline. % = price move past entry.</div>
+    </div>
+    <div id="tierSweepResults" class="sweep-results" style="display:none">
+      <div class="section-title" id="tierSweepTitle" style="margin-bottom:8px"></div>
+      <div id="tierSweepBody"></div>
     </div>
     <div id="sweepPanel" style="display:none">
       <div class="sweep-panel">
@@ -2620,6 +2646,83 @@
     const shown = panel.style.display !== 'none';
     panel.style.display = shown ? 'none' : 'block';
     btn.classList.toggle('active', !shown);
+  }
+
+  function toggleTierSweepPanel() {
+    const panel = document.getElementById('tierSweepPanel');
+    const btn   = document.getElementById('tierSweepToggleBtn');
+    const shown = panel.style.display !== 'none';
+    panel.style.display = shown ? 'none' : 'block';
+    btn.classList.toggle('active', !shown);
+  }
+
+  async function runTierSweep() {
+    const btn      = document.getElementById('tierSweepRunBtn');
+    const fromDate = document.getElementById('fromDate').value;
+    const toDate   = document.getElementById('toDate').value;
+    const account  = document.getElementById('account').value;
+    if (!fromDate || !toDate) { alert('Please set a date range first.'); return; }
+    const body = {
+      from_date: fromDate, to_date: toDate, account,
+      gain_min:   parseFloat(document.getElementById('tierGainMin').value)  || 0.25,
+      gain_max:   parseFloat(document.getElementById('tierGainMax').value)  || 1.5,
+      gain_step:  parseFloat(document.getElementById('tierGainStep').value) || 0.25,
+      trail_min:  parseFloat(document.getElementById('tierTrailMin').value) || 0.1,
+      trail_max:  parseFloat(document.getElementById('tierTrailMax').value) || 0.3,
+      trail_step: parseFloat(document.getElementById('tierTrailStep').value) || 0.05,
+      skip_tv_exits: document.getElementById('skipTvExits').checked,
+    };
+    btn.disabled = true; btn.textContent = '⏳ Sweeping…';
+    document.getElementById('tierSweepResults').style.display = 'none';
+    try {
+      const res  = await fetch('/api/simulate/trail_tier_sweep', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(`Trail tier sweep error ${res.status}: ${data.error || ''}`); return; }
+      renderTierSweep(data);
+    } catch (e) {
+      alert('Trail tier sweep failed: ' + e);
+    } finally {
+      btn.disabled = false; btn.textContent = '🪜 Run Trail Tier Sweep';
+    }
+  }
+
+  function renderTierSweep(data) {
+    const wrap  = document.getElementById('tierSweepResults');
+    const title = document.getElementById('tierSweepTitle');
+    const body  = document.getElementById('tierSweepBody');
+    const m    = v => (v < 0 ? '-$' : '+$') + Math.abs(Number(v || 0)).toFixed(2);
+    const dcol = v => (v > 0 ? '#7FE098' : v < 0 ? '#e08a8a' : '#888');
+    const results = data.results || [];
+    wrap.style.display = 'block';
+    if (!results.length) { title.textContent = 'Trail Tier Sweep'; body.innerHTML = '<div style="color:#888">No results.</div>'; return; }
+    const best = data.best;
+    title.innerHTML = `Trail Tier Sweep — ${data.trades} trades · baseline ${m(data.base_total)}`
+      + (best ? ` · best <b style="color:${dcol(best.delta_vs_base)}">tighten to ${best.trail}% at +${best.gain}%</b> → ${m(best.total_pnl)} (${m(best.delta_vs_base)})` : '');
+    const top = results.slice(0, 12).map(r =>
+      `<tr><td style="text-align:right;color:#c4b5fd">${r.trail}%</td>`
+      + `<td style="text-align:right;color:#c4b5fd">+${r.gain}%</td>`
+      + `<td style="text-align:right;color:#aaa">${m(r.total_pnl)}</td>`
+      + `<td style="text-align:right;color:${dcol(r.delta_vs_base)};font-weight:600">${m(r.delta_vs_base)}</td>`
+      + `<td style="text-align:right;color:#9bd6a8">${r.improved}</td>`
+      + `<td style="text-align:right;color:#e08a8a">${r.worse}</td></tr>`).join('');
+    const pb = (data.per_band || []).map(b => {
+      const has = b.best_gain != null;
+      return `<tr><td style="color:#ccc">${b.band}</td>`
+        + `<td style="text-align:right;color:#aaa">${b.trades}</td>`
+        + `<td style="text-align:right;color:#aaa">${m(b.base_pnl)}</td>`
+        + `<td style="text-align:right;color:${has ? '#c4b5fd' : '#888'}">${has ? 'tighten ' + b.best_trail + '% @ +' + b.best_gain + '%' : '—'}</td>`
+        + `<td style="text-align:right;color:${dcol(b.delta)};font-weight:600">${b.delta ? m(b.delta) : '—'}</td></tr>`;
+    }).join('');
+    body.innerHTML =
+      `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+      + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:right">Tighten to</th><th style="text-align:right">At gain</th><th style="text-align:right">P&L</th><th style="text-align:right">Δ vs base</th><th style="text-align:right" title="trades where this tighten beat the base trail">Improved</th><th style="text-align:right">Worse</th></tr></thead>`
+      + `<tbody>${top}</tbody></table></div>`
+      + (pb ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">Best tighten per band (adopted only if it beats that band's base trail)</div>`
+          + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+          + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Trades</th><th style="text-align:right">Base P&L</th><th style="text-align:right">Best tighten</th><th style="text-align:right">Δ</th></tr></thead>`
+          + `<tbody>${pb}</tbody></table></div></div>` : '');
   }
 
   async function runTpSweep() {
