@@ -1606,6 +1606,8 @@
       // Peak-profit reached: of all N trades, how many touched >= $t in unrealized
       // profit ("made it to $t"), split into kept (closed >= $t) vs gave it back.
       const reach = (d.summary && d.summary.peak_reached) || [];
+      const dcol = v => (v > 0 ? '#7FE098' : v < 0 ? '#e08a8a' : '#888');
+      const dtxt = v => (v > 0 ? '+' : '') + money(v);
       const reachRows = reach.map(x => {
         const p = s.n ? (x.reached / s.n * 100).toFixed(0) : '0';
         const hi = x.threshold === 50 ? ' style="background:#141824"' : '';
@@ -1613,19 +1615,29 @@
           + `<td style="text-align:right;color:#7FE098;font-weight:600">${x.reached}</td>`
           + `<td style="text-align:right;color:#777">${p}%</td>`
           + `<td style="text-align:right;color:#9bd6a8">${x.kept}</td>`
-          + `<td style="text-align:right;color:#e08a8a">${x.gaveback}</td></tr>`;
+          + `<td style="text-align:right;color:#e08a8a">${x.gaveback}</td>`
+          + `<td style="text-align:right;color:#aaa">${money(x.sim_pnl)}</td>`
+          + `<td style="text-align:right;color:${dcol(x.delta)};font-weight:600">${dtxt(x.delta)}</td></tr>`;
       }).join('');
-      const r50 = reach.find(x => x.threshold === 50);
+      const verdictFor = t => {
+        const x = reach.find(r => r.threshold === t); if (!x) return '';
+        const good = x.delta > 0;
+        return `<b style="color:${dcol(x.delta)}">+$${t} TP: ${dtxt(x.delta)}</b> `
+          + `(${good ? 'better' : 'worse'} than your ${money(s.realized)} actual)`;
+      };
       const reachBlock = reachRows
         ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">`
-            + `Peak profit reached — of ${s.n} trades, how many <b>made it to</b> each $ level (at any point), and whether they kept it`
-            + (r50 ? ` &nbsp;·&nbsp; <b style="color:#7FE098">${r50.reached}</b> reached <b>+$50</b> (${r50.kept} kept, ${r50.gaveback} gave it back)` : '')
-            + `</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
-            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Peak ≥</th>`
+            + `Flat-$ take-profit test — of ${s.n} trades, how many <b>made it to</b> each level, and what total P&L a TP there would have produced vs your <b>${money(s.realized)}</b> actual`
+            + `</div><div style="font-size:0.82rem;color:#ccc;margin-bottom:8px">${verdictFor(25)} &nbsp;·&nbsp; ${verdictFor(50)}</div>`
+            + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
+            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">TP at</th>`
             + `<th style="text-align:right">Trades reached</th><th style="text-align:right">% of all</th>`
             + `<th style="text-align:right" title="Reached the level AND closed at or above it">Kept</th>`
-            + `<th style="text-align:right" title="Reached the level but closed below it">Gave back</th></tr></thead>`
-            + `<tbody>${reachRows}</tbody></table></div></div>`
+            + `<th style="text-align:right" title="Reached the level but closed below it">Gave back</th>`
+            + `<th style="text-align:right" title="Total P&L if a take-profit fired at this level">P&L w/ TP</th>`
+            + `<th style="text-align:right" title="P&L with TP minus your actual P&L">Δ vs actual</th></tr></thead>`
+            + `<tbody>${reachRows}</tbody></table></div>`
+            + `<div style="font-size:0.66rem;color:#666;margin-top:6px">First-order: assumes the TP fills at the target once the trade's peak crossed it. Caps winners, rescues giveback losers. Set it via <b>Take-Profit ($)</b> on the Routing page.</div></div>`
         : '';
       const bands = (d.summary && d.summary.by_band) || {};
       const bandRows = Object.entries(bands).map(([b, v]) =>

@@ -43,6 +43,23 @@ def test_reached_kept_and_gaveback_counts():
     assert _at(s, 100)["reached"] == 0
 
 
+def test_tp_sim_pnl_and_delta_vs_actual():
+    rows = [
+        _row(60, 55),   # peak 60, closed +55
+        _row(70, 30),   # peak 70, closed +30 (gave back)
+        _row(40, 40),   # peak 40, closed +40
+        _row(10, -20),  # never green, closed -20
+    ]
+    s = a._hwm_summarize(rows)
+    assert s["overall"]["realized"] == 105.0            # actual total
+    # TP at $50: A,B fire (+50 each), C,D close as-is (40, -20) -> 120, delta +15
+    t50 = _at(s, 50)
+    assert t50["sim_pnl"] == 120.0 and t50["delta"] == 15.0
+    # TP at $25: A,B,C fire (+25 each), D closes -20 -> 55, delta -50 (caps too early)
+    t25 = _at(s, 25)
+    assert t25["sim_pnl"] == 55.0 and t25["delta"] == -50.0
+
+
 def test_thresholds_present_even_with_no_rows():
     s = a._hwm_summarize([])
     assert [x["threshold"] for x in s["peak_reached"]] == [25, 50, 100, 150, 200]
