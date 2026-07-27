@@ -197,6 +197,106 @@
       </tr>
     </table>
 
+    <h2 id="crew-selection">How the Crew Picks Next Month</h2>
+    <p>
+      <strong style="color:#7FE098">Crew Paper</strong> is the only account whose roster is chosen by the
+      <strong>Crew advisor</strong> — an LLM fed the platform's live data that produces a <strong>Top&nbsp;18</strong>
+      decision card each cycle. The card is <em>wired</em> to Crew Paper with one click; every other account
+      auto-selects mechanically. How the advisor builds that card:
+    </p>
+    <ul>
+      <li><strong>Ranks primarily on the two Refined books.</strong> Candidates are scored on
+        <strong style="color:#c4b5fd">TV Refined</strong> (acct2) and <strong style="color:#F2C07A">Kairos
+        Refined</strong> (acct3) realised P&amp;L — the curated, in-production records.</li>
+      <li><strong>Farms corroborate (added 2026-07).</strong> The advisor is now also fed the two full-sample
+        <strong style="color:#9aa0b5">farm</strong> leaderboards (<strong style="color:#9aa0b5">TV Farm</strong>&nbsp;acct1,
+        <strong style="color:#5FC8D4">Kairos Farm</strong>&nbsp;acct5). A strong farm record can clear the
+        <strong>≥15-trade sample floor</strong> for a name whose Refined sample is still thin, letting a promising
+        strategy earn a slot as <em>"farm-backed"</em>. <strong>Refined stays primary</strong>: a name that is
+        <em>negative</em> on its Refined book is never promoted on farm strength alone (absent ≠ negative). This
+        fixed the earlier TV-lean caused by the young, thin Kairos Refined book.</li>
+      <li><strong>Balance knob.</strong> A selector on the Crew page targets the TV/Kairos mix — <em>Balanced
+        (~9 of 18 Kairos)</em>, <em>Refined-led (≥5 Kairos)</em>, or <em>Max Kairos</em> — so you control how hard
+        to lean on the engine books.</li>
+      <li><strong>Kairos-tag guardrail.</strong> The advisor will not tag a pick
+        <code style="font-size:0.82rem;color:#aaa">[Kairos]</code> when the Kairos side's most credible sample is a
+        loser (a net-negative Kairos-Farm record with no credible positive Kairos-Refined record) — it tags
+        <code style="font-size:0.82rem;color:#aaa">[TV]</code> or drops it instead, even if that misses the balance target.</li>
+      <li><strong>Per-pick tags are real wiring.</strong> Each pick carries an entry tag
+        (<code style="font-size:0.82rem;color:#aaa">[TV]</code> / <code style="font-size:0.82rem;color:#aaa">[Kairos]</code>)
+        and a side (long / short / both). The <strong>Wire</strong> button sets each Crew Paper rule's entry source
+        and a long/short side-gate accordingly.</li>
+      <li><strong>Scorecard closes the loop.</strong> Every report first grades the <em>previous</em> card's picks
+        against how they actually did on Crew Paper — the out-of-sample check on the selection method.</li>
+    </ul>
+
+    <p style="margin-bottom:6px">The full flow, from the two audition farms through the curated books to the wired live account:</p>
+    <div style="overflow-x:auto;background:#0d0f16;border:1px solid #2a2d3e;border-radius:10px;padding:14px 10px;margin-bottom:8px">
+      <svg viewBox="0 0 960 400" style="width:100%;height:auto;min-width:720px;max-width:960px;display:block;margin:0 auto;font-family:inherit" role="img" aria-label="System flow: two farms refine into two refined books, which the Crew advisor ranks (farms corroborate) into a Top 18 wired to Crew Paper">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#8a90a0"/>
+          </marker>
+          <marker id="arD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6d7688"/>
+          </marker>
+        </defs>
+        <!-- stage labels -->
+        <text x="97"  y="108" fill="#777" font-size="11" text-anchor="middle" letter-spacing="1">FARMS · full sample</text>
+        <text x="342" y="108" fill="#777" font-size="11" text-anchor="middle" letter-spacing="1">REFINED · daily top-N</text>
+        <text x="587" y="108" fill="#777" font-size="11" text-anchor="middle" letter-spacing="1">CREW ADVISOR</text>
+        <text x="860" y="108" fill="#777" font-size="11" text-anchor="middle" letter-spacing="1">LIVE BOOK</text>
+        <!-- containers -->
+        <rect x="12"  y="120" width="170" height="178" rx="10" fill="#13161f" stroke="#2a2d3e"/>
+        <rect x="257" y="120" width="170" height="178" rx="10" fill="#13161f" stroke="#2a2d3e"/>
+        <rect x="502" y="120" width="170" height="178" rx="10" fill="#13161f" stroke="#2a2d3e"/>
+        <rect x="772" y="120" width="176" height="178" rx="10" fill="#13161f" stroke="#2a2d3e"/>
+        <!-- FARMS chips -->
+        <rect x="22" y="140" width="150" height="66" rx="7" fill="rgba(154,160,181,0.09)" stroke="#9aa0b5"/>
+        <text x="97" y="170" fill="#9aa0b5" font-size="13" font-weight="700" text-anchor="middle">TV Farm</text>
+        <text x="97" y="190" fill="#8b90a0" font-size="10" text-anchor="middle">acct1 · TV entries</text>
+        <rect x="22" y="216" width="150" height="66" rx="7" fill="rgba(95,200,212,0.09)" stroke="#5FC8D4"/>
+        <text x="97" y="246" fill="#5FC8D4" font-size="13" font-weight="700" text-anchor="middle">Kairos Farm</text>
+        <text x="97" y="266" fill="#8b90a0" font-size="10" text-anchor="middle">acct5 · engine entries</text>
+        <!-- REFINED chips -->
+        <rect x="267" y="140" width="150" height="66" rx="7" fill="rgba(196,181,253,0.10)" stroke="#c4b5fd"/>
+        <text x="342" y="170" fill="#c4b5fd" font-size="13" font-weight="700" text-anchor="middle">TV Refined</text>
+        <text x="342" y="190" fill="#8b90a0" font-size="10" text-anchor="middle">acct2 · TV entries</text>
+        <rect x="267" y="216" width="150" height="66" rx="7" fill="rgba(242,192,122,0.10)" stroke="#F2C07A"/>
+        <text x="342" y="246" fill="#F2C07A" font-size="13" font-weight="700" text-anchor="middle">Kairos Refined</text>
+        <text x="342" y="266" fill="#8b90a0" font-size="10" text-anchor="middle">acct3 · engine entries</text>
+        <!-- CREW ADVISOR node -->
+        <text x="587" y="162" fill="#70a8f5" font-size="14" font-weight="700" text-anchor="middle">◆ Crew Advisor</text>
+        <text x="587" y="182" fill="#aab" font-size="10.5" text-anchor="middle">LLM · Top 18 card</text>
+        <text x="587" y="210" fill="#8b90a0" font-size="10" text-anchor="middle">ranks the 2 Refined books</text>
+        <text x="587" y="227" fill="#8b90a0" font-size="10" text-anchor="middle">farms corroborate</text>
+        <text x="587" y="244" fill="#8b90a0" font-size="10" text-anchor="middle">balance knob · guardrail</text>
+        <text x="587" y="261" fill="#8b90a0" font-size="10" text-anchor="middle">scorecard feedback</text>
+        <!-- CREW PAPER -->
+        <rect x="784" y="150" width="152" height="56" rx="7" fill="rgba(127,224,152,0.11)" stroke="#7FE098"/>
+        <text x="860" y="175" fill="#7FE098" font-size="13" font-weight="700" text-anchor="middle">Crew Paper</text>
+        <text x="860" y="193" fill="#8b90a0" font-size="10" text-anchor="middle">acct4 · live</text>
+        <text x="860" y="230" fill="#aab" font-size="10" text-anchor="middle">Top 18 wired picks</text>
+        <text x="860" y="247" fill="#8b90a0" font-size="9.5" text-anchor="middle">per-pick [TV]/[Kairos]</text>
+        <text x="860" y="262" fill="#8b90a0" font-size="9.5" text-anchor="middle">+ long/short gate</text>
+        <!-- solid flow arrows -->
+        <line x1="182" y1="209" x2="253" y2="209" stroke="#8a90a0" stroke-width="1.6" marker-end="url(#ar)"/>
+        <text x="217" y="201" fill="#8b90a0" font-size="9" text-anchor="middle">top-N</text>
+        <line x1="427" y1="209" x2="498" y2="209" stroke="#8a90a0" stroke-width="1.6" marker-end="url(#ar)"/>
+        <text x="462" y="201" fill="#8b90a0" font-size="9" text-anchor="middle">rank</text>
+        <line x1="672" y1="209" x2="768" y2="209" stroke="#8a90a0" stroke-width="1.6" marker-end="url(#ar)"/>
+        <text x="720" y="201" fill="#8b90a0" font-size="9" text-anchor="middle">Wire Top 18</text>
+        <!-- dashed corroboration arc: farms → crew -->
+        <path d="M 97 120 C 97 52, 587 52, 587 118" fill="none" stroke="#6d7688" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arD)"/>
+        <text x="342" y="44" fill="#8b90a0" font-size="9.5" text-anchor="middle">full-sample corroboration → clears the ≥15-trade floor · balances TV/Kairos</text>
+      </svg>
+    </div>
+    <p style="font-size:0.82rem;color:#888;margin-top:0">
+      Solid arrows = the mechanical pipeline (each farm's daily top-N leaderboard becomes its Refined book; the
+      advisor ranks the Refined books and wires the Top&nbsp;18 to Crew Paper). Dashed arc = the farms' full-sample
+      records feeding the advisor as corroboration, not as the primary ranking.
+    </p>
+
     <h2 id="gating">Per-Account Gating</h2>
     <p>
       Every gate is evaluated <strong>per target account</strong>, enforced in both the webhook (TV entries) and
