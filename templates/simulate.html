@@ -2708,32 +2708,39 @@
       + `<td style="text-align:right;color:#9bd6a8">${r.improved}</td>`
       + `<td style="text-align:right;color:#e08a8a">${r.worse}</td></tr>`).join('');
     const pb = (data.per_band || []).map(b => {
-      const has = b.best_gain != null;
       // Only bands with a parseable TYPE_LEVEL key (e.g. "BREAKOUT R3S3") can be
       // wired band-wide; odd catch-all rows (1-trade slugs) get no button.
       const wireable = /^(BREAKOUT|REVERSAL)\s+R\dS\d$/.test(b.band);
-      const bandJs = b.band.replace(/'/g, "\\'");
-      let action = '';
-      if (has && wireable)
-        action = `<button class="sweep-apply-btn" onclick="wireBandTier('${bandJs}',${b.best_gain},${b.best_trail})">Apply</button>`;
-      else if (wireable)
-        action = `<button class="sweep-apply-btn" style="background:#2a2d3e;color:#999" onclick="clearBandTier('${bandJs}')" title="Remove any dynamic tighten from this band (revert to flat trail)">Clear</button>`;
-      else
-        action = '<span style="color:#555">—</span>';
-      return `<tr><td style="color:#ccc">${b.band}</td>`
-        + `<td style="text-align:right;color:#aaa">${b.trades}</td>`
-        + `<td style="text-align:right;color:#aaa">${m(b.base_pnl)}</td>`
-        + `<td style="text-align:right;color:${has ? '#c4b5fd' : '#888'}">${has ? 'tighten ' + b.best_trail + '% @ +' + b.best_gain + '%' : '—'}</td>`
-        + `<td style="text-align:right;color:${dcol(b.delta)};font-weight:600">${b.delta ? m(b.delta) : '—'}</td>`
-        + `<td style="text-align:right">${action}</td></tr>`;
+      const bandJs   = b.band.replace(/'/g, "\\'");
+      const tops     = (b.top && b.top.length) ? b.top : [];
+      let options;
+      if (tops.length) {
+        // Best-first; the top one bold. Each option is independently wireable so
+        // you can pick a later (more robust) arm, not just the max-delta one.
+        options = tops.map((o, i) => {
+          const label = `<span style="color:#c4b5fd">tighten ${o.trail}% @ +${o.gain}%</span> `
+            + `<span style="color:${dcol(o.delta)};font-weight:600">${m(o.delta)}</span>`;
+          const btn = wireable
+            ? ` <button class="sweep-apply-btn" onclick="wireBandTier('${bandJs}',${o.gain},${o.trail})">Apply</button>`
+            : '';
+          return `<div style="padding:2px 0;${i === 0 ? 'font-weight:600' : 'opacity:0.82'}">${label}${btn}</div>`;
+        }).join('');
+      } else {
+        options = `<span style="color:#888">no tighten beats base</span>`
+          + (wireable ? ` <button class="sweep-apply-btn" style="background:#2a2d3e;color:#999" onclick="clearBandTier('${bandJs}')" title="Remove any dynamic tighten from this band (revert to flat trail)">Clear</button>` : '');
+      }
+      return `<tr><td style="color:#ccc;vertical-align:top;padding-top:6px">${b.band}</td>`
+        + `<td style="text-align:right;color:#aaa;vertical-align:top;padding-top:6px">${b.trades}</td>`
+        + `<td style="text-align:right;color:#aaa;vertical-align:top;padding-top:6px">${m(b.base_pnl)}</td>`
+        + `<td style="text-align:right">${options}</td></tr>`;
     }).join('');
     body.innerHTML =
       `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
       + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:right">Tighten to</th><th style="text-align:right">At gain</th><th style="text-align:right">P&L</th><th style="text-align:right">Δ vs base</th><th style="text-align:right" title="trades where this tighten beat the base trail">Improved</th><th style="text-align:right">Worse</th></tr></thead>`
       + `<tbody>${top}</tbody></table></div>`
-      + (pb ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">Best tighten per band (adopted only if it beats that band's base trail)</div>`
+      + (pb ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">Top tightens per band (best-first · Apply the arm you trust — a later arm is usually more robust than the max-Δ one)</div>`
           + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
-          + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Trades</th><th style="text-align:right">Base P&L</th><th style="text-align:right">Best tighten</th><th style="text-align:right">Δ</th><th style="text-align:right">Wire</th></tr></thead>`
+          + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Trades</th><th style="text-align:right">Base P&L</th><th style="text-align:right">Tighten options (Δ vs base)</th></tr></thead>`
           + `<tbody>${pb}</tbody></table></div></div>` : '');
   }
 

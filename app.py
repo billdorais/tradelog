@@ -7037,16 +7037,19 @@ def simulate_trail_tier_sweep():
         base_p  = band_base[band]
         n_band  = sum(1 for p in prepared if p["type_level"] == band)
         combo_t = band_combo[band]
-        best    = max(combo_t.items(), key=lambda kv: kv[1]) if combo_t else None
-        if best and best[1] > base_p + 0.01:
-            (bg, bt), btot = best
-            per_band.append({"band": band, "base_pnl": round(base_p, 2), "trades": n_band,
-                             "best_gain": bg, "best_trail": bt,
-                             "best_pnl": round(btot, 2), "delta": round(btot - base_p, 2)})
-        else:
-            per_band.append({"band": band, "base_pnl": round(base_p, 2), "trades": n_band,
-                             "best_gain": None, "best_trail": None,
-                             "best_pnl": round(base_p, 2), "delta": 0.0})
+        # Top 3 combos that beat this band's base trail, best-first, so the UI can
+        # offer a more robust arm than the single best (which is often the churny
+        # early-arm). Empty when no tighten helps the band.
+        ranked = sorted(combo_t.items(), key=lambda kv: kv[1], reverse=True)
+        top = [{"gain": g, "trail": t, "pnl": round(v, 2), "delta": round(v - base_p, 2)}
+               for (g, t), v in ranked if v > base_p + 0.01][:3]
+        best = top[0] if top else None
+        per_band.append({"band": band, "base_pnl": round(base_p, 2), "trades": n_band,
+                         "best_gain":  best["gain"]  if best else None,
+                         "best_trail": best["trail"] if best else None,
+                         "best_pnl":   best["pnl"]   if best else round(base_p, 2),
+                         "delta":      best["delta"] if best else 0.0,
+                         "top": top})
 
     return jsonify({"base_total": base_total, "trades": len(prepared),
                     "best": results[0] if results else None,
