@@ -3025,11 +3025,24 @@ def risk_status():
         peak_pnl     = p["peak_unrealized_pnl"]
         if trail_pct and entry_px and qty:
             peak_px = entry_px + (peak_pnl / qty if is_long else -(peak_pnl / qty))
+            # Apply the SAME dynamic trail tiers the live stop monitor enforces so
+            # the yellow stop tick TIGHTENS the moment peak gain clears a tier
+            # threshold — otherwise it would show a stale base-trail level while the
+            # monitor is actually holding a tighter stop. Manual pull-stop bypasses tiers.
+            eff_trail = trail_pct
+            p["trail_tightened"] = False
+            if not _manual_trail:
+                _tiers = _get_route_trail_tiers(strat or "")
+                if _tiers:
+                    peak_gain_pct = ((peak_px - entry_px) / entry_px * 100) if is_long \
+                                    else ((entry_px - peak_px) / entry_px * 100)
+                    eff_trail = _get_tiered_trail(peak_gain_pct, _tiers, trail_pct)
+                    p["trail_tightened"] = eff_trail != trail_pct
             if is_long:
-                p["est_stop_price"] = round(peak_px * (1 - trail_pct / 100), 4)
+                p["est_stop_price"] = round(peak_px * (1 - eff_trail / 100), 4)
             else:
-                p["est_stop_price"] = round(peak_px * (1 + trail_pct / 100), 4)
-            p["trail_pct"] = trail_pct
+                p["est_stop_price"] = round(peak_px * (1 + eff_trail / 100), 4)
+            p["trail_pct"] = eff_trail
         else:
             p["est_stop_price"] = None
             p["trail_pct"]      = None
