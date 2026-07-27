@@ -2709,11 +2709,23 @@
       + `<td style="text-align:right;color:#e08a8a">${r.worse}</td></tr>`).join('');
     const pb = (data.per_band || []).map(b => {
       const has = b.best_gain != null;
+      // Only bands with a parseable TYPE_LEVEL key (e.g. "BREAKOUT R3S3") can be
+      // wired band-wide; odd catch-all rows (1-trade slugs) get no button.
+      const wireable = /^(BREAKOUT|REVERSAL)\s+R\dS\d$/.test(b.band);
+      const bandJs = b.band.replace(/'/g, "\\'");
+      let action = '';
+      if (has && wireable)
+        action = `<button class="sweep-apply-btn" onclick="wireBandTier('${bandJs}',${b.best_gain},${b.best_trail})">Apply</button>`;
+      else if (wireable)
+        action = `<button class="sweep-apply-btn" style="background:#2a2d3e;color:#999" onclick="clearBandTier('${bandJs}')" title="Remove any dynamic tighten from this band (revert to flat trail)">Clear</button>`;
+      else
+        action = '<span style="color:#555">—</span>';
       return `<tr><td style="color:#ccc">${b.band}</td>`
         + `<td style="text-align:right;color:#aaa">${b.trades}</td>`
         + `<td style="text-align:right;color:#aaa">${m(b.base_pnl)}</td>`
         + `<td style="text-align:right;color:${has ? '#c4b5fd' : '#888'}">${has ? 'tighten ' + b.best_trail + '% @ +' + b.best_gain + '%' : '—'}</td>`
-        + `<td style="text-align:right;color:${dcol(b.delta)};font-weight:600">${b.delta ? m(b.delta) : '—'}</td></tr>`;
+        + `<td style="text-align:right;color:${dcol(b.delta)};font-weight:600">${b.delta ? m(b.delta) : '—'}</td>`
+        + `<td style="text-align:right">${action}</td></tr>`;
     }).join('');
     body.innerHTML =
       `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
@@ -2721,8 +2733,40 @@
       + `<tbody>${top}</tbody></table></div>`
       + (pb ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">Best tighten per band (adopted only if it beats that band's base trail)</div>`
           + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
-          + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Trades</th><th style="text-align:right">Base P&L</th><th style="text-align:right">Best tighten</th><th style="text-align:right">Δ</th></tr></thead>`
+          + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Trades</th><th style="text-align:right">Base P&L</th><th style="text-align:right">Best tighten</th><th style="text-align:right">Δ</th><th style="text-align:right">Wire</th></tr></thead>`
           + `<tbody>${pb}</tbody></table></div></div>` : '');
+  }
+
+  // Wire a band's dynamic-trail tighten to every matching Signal Router pipeline
+  // (all accounts) — same endpoint the Routing page's "tighten → band" uses.
+  async function wireBandTier(band, gain, trail) {
+    const key = band.trim().toLowerCase().replace(/\s+/g, '_');   // "BREAKOUT R3S3" → breakout_r3s3
+    if (!confirm(`Wire dynamic trail to every ${band} pipeline?\n\n`
+        + `Keep the base trail from entry, then TIGHTEN to ${trail}% once the trade is up ${gain}%.\n`
+        + `Applies to all matching Signal Router rules (all three curated accounts). Forces percent mode.`)) return;
+    try {
+      const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ mode: 'percent', trail_tiers: [{ gain, trail }], name_contains: key }),
+      });
+      const d = await res.json();
+      if (!res.ok) { alert(`Wire failed: ${d.error || res.status}`); return; }
+      alert(`✓ Wired tighten-to-${trail}%-at-+${gain}% on ${d.updated} ${band} pipeline${d.updated !== 1 ? 's' : ''}.`);
+    } catch (e) { alert('Wire failed: ' + e); }
+  }
+
+  async function clearBandTier(band) {
+    const key = band.trim().toLowerCase().replace(/\s+/g, '_');
+    if (!confirm(`Remove the dynamic tighten from every ${band} pipeline (revert to a flat trail)?`)) return;
+    try {
+      const res = await fetch('/api/routing/rules/bulk_update_exit_params', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ clear_trail_tiers: true, name_contains: key }),
+      });
+      const d = await res.json();
+      if (!res.ok) { alert(`Clear failed: ${d.error || res.status}`); return; }
+      alert(`✓ Cleared tighten from ${d.updated} ${band} pipeline${d.updated !== 1 ? 's' : ''}.`);
+    } catch (e) { alert('Clear failed: ' + e); }
   }
 
   async function runTpSweep() {
