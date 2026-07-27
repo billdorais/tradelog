@@ -64,3 +64,26 @@ def test_thresholds_present_even_with_no_rows():
     s = a._hwm_summarize([])
     assert [x["threshold"] for x in s["peak_reached"]] == [25, 50, 100, 150, 200]
     assert all(x["reached"] == 0 and x["kept"] == 0 for x in s["peak_reached"])
+
+
+def test_per_band_peak_reached_isolates_bands():
+    """Each band carries its own TP sim so a band-specific TP can be targeted."""
+    def _row_band(peak, real, slug):
+        return {"peak_dollars": peak, "realized_pnl": real, "entry_price": 100.0,
+                "peak_price": 101.0, "giveback_dollars": max(0.0, peak - real),
+                "strategy": slug}
+    rows = [
+        # BREAKOUT R3S3: one big giveback (peaked 150, closed -30) → a $150 TP rescues it
+        _row_band(150, -30, "NVDA_CAM_BREAKOUT_R3S3_V02_5MIN"),
+        # REVERSAL R3S3: a clean winner that kept it → a low TP only caps it
+        _row_band(40, 38, "SPY_CAM_REVERSAL_R3S3_V02_5MIN"),
+    ]
+    s = a._hwm_summarize(rows)
+    bo = s["by_band"]["BREAKOUT_R3S3"]["peak_reached"]
+    bo150 = next(x for x in bo if x["threshold"] == 150)
+    # band actual = -30; TP at 150 fires → +150; delta +180
+    assert bo150["reached"] == 1 and bo150["sim_pnl"] == 150.0 and bo150["delta"] == 180.0
+    rev = s["by_band"]["REVERSAL_R3S3"]["peak_reached"]
+    rev25 = next(x for x in rev if x["threshold"] == 25)
+    # band actual = 38; TP at 25 caps it → +25; delta -13
+    assert rev25["sim_pnl"] == 25.0 and rev25["delta"] == -13.0

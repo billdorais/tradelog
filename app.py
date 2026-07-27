@@ -12958,25 +12958,31 @@ def _hwm_summarize(rows, green_pct=0.001):
     # unrealized profit at any point ("made it to $t"), and of those, how many
     # actually closed with >= $t (kept it) vs gave it back below $t.
     _THRESH = [25, 50, 100, 150, 200]
-    reached = {t: {"reached": 0, "kept": 0, "sim": 0.0} for t in _THRESH}
+    def _reach_blank():
+        return {t: {"reached": 0, "kept": 0, "sim": 0.0} for t in _THRESH}
+    reached = _reach_blank()          # overall
+    band_reached = {}                 # band -> reach buckets (same shape)
     for r in rows:
         peak = max(0.0, float(r.get("peak_dollars") or 0))
         real = float(r.get("realized_pnl") or 0)
+        band_name = _strategy_band(r.get("strategy")) or "Other"
+        br = band_reached.setdefault(band_name, _reach_blank())
         for t in _THRESH:
             hit = peak >= t
-            if hit:
-                reached[t]["reached"] += 1
-                if real >= t:
-                    reached[t]["kept"] += 1
-            # Flat-$ take-profit sim: if the peak crossed $t the limit fills at ~+$t
-            # (caps winners, rescues giveback losers); else the trade closes as-is.
-            reached[t]["sim"] += (t if hit else real)
+            for acc in (reached[t], br[t]):
+                if hit:
+                    acc["reached"] += 1
+                    if real >= t:
+                        acc["kept"] += 1
+                # Flat-$ take-profit sim: if the peak crossed $t the limit fills at
+                # ~+$t (caps winners, rescues giveback losers); else the trade closes as-is.
+                acc["sim"] += (t if hit else real)
         give = max(0.0, float(r.get("giveback_dollars") or 0))
         ep   = float(r.get("entry_price") or 0)
         pp   = float(r.get("peak_price") or ep)
         peak_pct   = (abs(pp - ep) / ep * 100) if ep else 0.0   # how far green it got
         went_green = bool(ep) and (peak_pct / 100) >= green_pct
-        b = by_band.setdefault(_strategy_band(r.get("strategy")) or "Other", _blank())
+        b = by_band.setdefault(band_name, _blank())
         for agg in (tot, b):
             agg["n"] += 1
             agg["peak"] += peak
@@ -13003,12 +13009,20 @@ def _hwm_summarize(rows, green_pct=0.001):
         for k in ("gb_peak_pct_sum", "win_peak_pct_sum"):
             a.pop(k, None)
         return a
+    def _reach_list(reach_acc, realized_total):
+        return [{"threshold": t, "reached": v["reached"], "kept": v["kept"],
+                 "gaveback": v["reached"] - v["kept"],
+                 "sim_pnl": round(v["sim"], 2),
+                 "delta": round(v["sim"] - realized_total, 2)} for t, v in reach_acc.items()]
     _finish(tot)
-    bands = {k: _finish(v) for k, v in by_band.items()}
-    peak_reached = [{"threshold": t, "reached": v["reached"], "kept": v["kept"],
-                     "gaveback": v["reached"] - v["kept"],
-                     "sim_pnl": round(v["sim"], 2),
-                     "delta": round(v["sim"] - tot["realized"], 2)} for t, v in reached.items()]
+    bands = {}
+    for k, v in by_band.items():
+        _finish(v)
+        # Per-band take-profit sim, so a band-specific TP can be targeted (e.g. the
+        # breakout band that gives the most back) instead of an account-wide one.
+        v["peak_reached"] = _reach_list(band_reached.get(k, _reach_blank()), v["realized"])
+        bands[k] = v
+    peak_reached = _reach_list(reached, tot["realized"])
     return {"overall": tot,
             "by_band": dict(sorted(bands.items(), key=lambda kv: kv[1]["giveback"], reverse=True)),
             "peak_reached": peak_reached}

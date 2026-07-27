@@ -1640,13 +1640,25 @@
             + `<div style="font-size:0.66rem;color:#666;margin-top:6px">First-order: assumes the TP fills at the target once the trade's peak crossed it. Caps winners, rescues giveback losers. Set it via <b>Take-Profit ($)</b> on the Routing page.</div></div>`
         : '';
       const bands = (d.summary && d.summary.by_band) || {};
-      const bandRows = Object.entries(bands).map(([b, v]) =>
-        `<tr><td style="color:#ccc">${b.replace(/_/g, ' ')}</td>
+      // Best flat-$ TP for a band = the level with the largest positive Δ vs its
+      // actual P&L; "—" if no level helps that band.
+      const bestTp = pr => {
+        let best = null;
+        for (const x of (pr || [])) if (x.delta > 0 && (!best || x.delta > best.delta)) best = x;
+        return best;
+      };
+      const bandRows = Object.entries(bands).map(([b, v]) => {
+        const d50 = (v.peak_reached || []).find(x => x.threshold === 50);
+        const bt  = bestTp(v.peak_reached);
+        return `<tr><td style="color:#ccc">${b.replace(/_/g, ' ')}</td>
           <td style="text-align:right;color:#e08a8a">${money(v.giveback)}</td>
           <td style="text-align:right;color:#aaa">${v.capture_ratio == null ? '—' : (v.capture_ratio * 100).toFixed(0) + '%'}</td>
           <td style="text-align:right;color:#aaa">${v.gb_losers}</td>
           <td style="text-align:right;color:#c4b5fd">${pct(v.gb_peak_pct)}</td>
-          <td style="text-align:right;color:#aaa">${v.im_losers}</td></tr>`).join('');
+          <td style="text-align:right;color:#aaa">${v.im_losers}</td>
+          <td style="text-align:right;color:${d50 ? dcol(d50.delta) : '#888'}">${d50 ? dtxt(d50.delta) : '—'}</td>
+          <td style="text-align:right;color:${bt ? '#7FE098' : '#888'};font-weight:600">${bt ? '$' + bt.threshold + ' (' + dtxt(bt.delta) + ')' : '—'}</td></tr>`;
+      }).join('');
       // How far the giveback losers went green (where a take-profit would catch them).
       const peakLine = (s.gb_losers && s.gb_peak_pct != null)
         ? `<div style="margin-top:10px;font-size:0.82rem;color:#bbb">Giveback losers peaked at an average of `
@@ -1664,7 +1676,7 @@
         + `</div>` + peakLine + verdict + reachBlock
         + (bandRows ? `<div style="margin-top:14px"><div style="font-size:0.75rem;color:#888;margin-bottom:4px">By band (most giveback first)</div>`
             + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">`
-            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Giveback</th><th style="text-align:right">Capture</th><th style="text-align:right">GB losers</th><th style="text-align:right" title="Avg peak favorable % of giveback losers — where a take-profit would catch them">GB peak%</th><th style="text-align:right">Imm losers</th></tr></thead>`
+            + `<thead style="color:#666;font-size:0.65rem"><tr><th style="text-align:left">Band</th><th style="text-align:right">Giveback</th><th style="text-align:right">Capture</th><th style="text-align:right">GB losers</th><th style="text-align:right" title="Avg peak favorable % of giveback losers — where a take-profit would catch them">GB peak%</th><th style="text-align:right">Imm losers</th><th style="text-align:right" title="P&L change if a $50 take-profit fired on this band">$50 TP Δ</th><th style="text-align:right" title="The flat-$ TP level that most improves this band's P&L (blank if none help)">Best $ TP</th></tr></thead>`
             + `<tbody>${bandRows}</tbody></table></div></div>` : '');
     } catch (e) { out.innerHTML = '<div style="color:#c66">Error: ' + e.message + '</div>'; }
   }
