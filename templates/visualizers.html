@@ -46,6 +46,7 @@
   .vlabel b { color:#fff; } .vlabel span { opacity:0.8; margin-left:4px; }
   .vlabel.grp { font-size:0.66rem; letter-spacing:0.16em; font-weight:800; background:none; border:none; }
   .vlabel.open { color:#c9d4ff; }
+  .vlabel.startp { color:#cfd7ea; font-size:9px; opacity:0.72; }
   /* RVOL emphasis: <1.5x small/grey → >=3x large/glowing */
   .vlabel.rv1 { font-size:9px; color:#8b91a3; opacity:0.6; }
   .vlabel.rv2 { font-size:11px; }
@@ -193,6 +194,8 @@
   }
 
   const GREY = new THREE.Color(0x565c70);
+  const PGREEN = new THREE.Color(0x5fd18a);   // price above the session open
+  const PRED   = new THREE.Color(0xef5350);   // price below the session open
   function movingAvg(arr, w) {                     // centred moving average → de-noise + curve
     const h = Math.floor(w / 2), out = new Array(arr.length);
     for (let i = 0; i < arr.length; i++) {
@@ -234,14 +237,26 @@
     // group palette gradient (cool→warm within its own range). Session tints
     // stack on top: pre = 0.5× brightness, post = violet blend.
     const VIOLET = new THREE.Color(0xb388ff);
+    // Price mode: colour each segment GREEN above the ticker's opening price and
+    // RED below it (the session's first price). Other metrics keep the group
+    // cool→warm gradient with RVOL saturation.
+    const isPrice = metric === 'price';
+    const openVal = isPrice ? (valOf(pts[0]) || sm[0] || 0) : 0;
     const verts = [], cols = [];
     for (let i = 0; i < pts.length; i++) {
-      const base = isRvol
-        ? heatColor(sm[i])
-        : pal.lo.clone().lerp(pal.hi, norm(sm[i]));
-      let c = GREY.clone().lerp(base, sat);
-      if      (pts[i].s === 'pre')  c.multiplyScalar(0.5);
-      else if (pts[i].s === 'post') c.lerp(VIOLET, 0.55).multiplyScalar(0.85);
+      let c;
+      if (isPrice) {
+        c = (sm[i] >= openVal ? PGREEN : PRED).clone();
+        if      (pts[i].s === 'pre')  c.multiplyScalar(0.6);   // dim pre-market
+        else if (pts[i].s === 'post') c.multiplyScalar(0.82);  // dim after-hours (no violet — keep red/green legible)
+      } else {
+        const base = isRvol
+          ? heatColor(sm[i])
+          : pal.lo.clone().lerp(pal.hi, norm(sm[i]));
+        c = GREY.clone().lerp(base, sat);
+        if      (pts[i].s === 'pre')  c.multiplyScalar(0.5);
+        else if (pts[i].s === 'post') c.lerp(VIOLET, 0.55).multiplyScalar(0.85);
+      }
       verts.push(xFor(pts[i].t), yFor(sm[i]), z);
       cols.push(c.r, c.g, c.b);
     }
@@ -264,6 +279,11 @@
       ? '$' + (s.last_price ?? 0).toFixed(2)
       : (rvLast >= 10 ? rvLast.toFixed(0) : rvLast.toFixed(1)) + '×';
     mkLabel(rvClass, `<b>${s.ticker}</b><span>${tag}</span>`, xFor(last.t) + 3, lastY + 2.5, z);
+    // Price mode: label the opening price at the start of the line, so you can see
+    // where each ticker began (the green/red split point).
+    if (isPrice) {
+      mkLabel('startp', `$${openVal.toFixed(2)}`, xFor(pts[0].t) - 5, yFor(sm[0]) + 2.5, z);
+    }
   }
 
   // Returns [zMin, zMax] the group actually occupies so buildRefLevels can
