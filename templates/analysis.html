@@ -3434,14 +3434,42 @@
           <td style="color:#777">${(r.reason || '').replace(/</g, '&lt;')}</td></tr>`;
       }).join('');
       body.innerHTML = bars
+        + `<div id="unmatchedBox"></div>`
         + (rows ? `<div style="margin-top:12px;font-size:0.7rem;color:#888;margin-bottom:3px">Most recent blocks</div>`
             + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">`
             + `<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left">When (ET)</th><th style="text-align:left">Ticker</th><th style="text-align:left">Side</th><th style="text-align:left">Gate</th><th style="text-align:left">Reason</th></tr></thead>`
             + `<tbody>${rows}</tbody></table></div>` : '');
+      // If any signals errored with "no pipeline matched", list the unmatched
+      // strategy names + nearest existing rule so they can be fixed on Routing.
+      if ((d.by_reason || []).some(x => x.reason === 'Error')) loadUnmatched(days);
     } catch (e) {
       meta.textContent = '— error';
       console.warn('blocked breakdown failed:', e);
     }
+  }
+
+  async function loadUnmatched(days) {
+    const box = document.getElementById('unmatchedBox');
+    if (!box) return;
+    try {
+      const d = await fetch('/api/signals/unmatched_strategies?days=' + days).then(r => r.json());
+      const list = d.unmatched || [];
+      if (!list.length) { box.innerHTML = ''; return; }
+      const rows = list.map(u => {
+        const sugg = u.nearest_rule
+          ? `<span style="color:#f0a35e">likely name drift → rule exists:</span> <span style="color:#c4b5fd">${u.nearest_rule}</span>`
+          : `<span style="color:#888">no matching rule — wire it or ignore</span>`;
+        return `<tr><td style="color:#ccc">${u.strategy}</td>`
+          + `<td style="text-align:right;color:#ef5350">${u.count}</td>`
+          + `<td>${sugg}</td></tr>`;
+      }).join('');
+      box.innerHTML =
+        `<div style="margin-top:12px;font-size:0.7rem;color:#f0a35e;margin-bottom:3px">⚠ Strategies that fired but matched NO routing rule (last ${days}d) — these signals never reached any account</div>`
+        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem">`
+        + `<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left">Strategy (from the alert)</th><th style="text-align:right">Signals lost</th><th style="text-align:left">Fix</th></tr></thead>`
+        + `<tbody>${rows}</tbody></table></div>`
+        + `<div style="font-size:0.66rem;color:#666;margin-top:5px">Fix on the <a href="/routing" style="color:#70a8f5">Routing</a> page: an amber "rule exists" row means the alert name drifted from the rule (fix the TradingView alert name or the rule's strategy node to match); "no matching rule" means it's unwired (add a pipeline, or ignore if retired).</div>`;
+    } catch (e) { box.innerHTML = ''; }
   }
 
   // ── Performance vs SPY (rebased-% overlay) ──────────────────────────────────

@@ -13198,6 +13198,55 @@ def api_blocked_breakdown():
                     "executed": executed, "by_reason": by_reason, "recent": recent})
 
 
+@app.route("/api/signals/unmatched_strategies")
+def api_unmatched_strategies():
+    """Strategy names that fired but matched NO routing rule ('no pipeline matched'
+    errors), grouped with a nearest-existing-rule suggestion (fuzzy) so you can tell
+    a typo / near-match from a genuinely unwired strategy. Read-only — surfaces the
+    names to fix on the Routing page; it does not touch any rule."""
+    import datetime as _dt, difflib
+    from collections import Counter
+    try:    days = max(1, min(60, int(request.args.get("days") or 7)))
+    except Exception: days = 7
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone.utc
+    cutoff = (_dt.datetime.now(et).date() - _dt.timedelta(days=days)).isoformat()
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute(f"SELECT strategy, exec_detail FROM trades "
+                f"WHERE exec_status='error' AND received_at >= {p}", (cutoff,))
+    ecols = [c[0] for c in cur.description]
+    erows = [dict(zip(ecols, r)) for r in cur.fetchall()]
+    cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+    rrows = cur.fetchall()
+    conn.close()
+
+    rule_strats = set()
+    for row in rrows:
+        raw = row[0] if DATABASE_URL else row["nodes"]
+        try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception: nodes = []
+        for n in nodes:
+            if n.get("type") == "strategy" and (n.get("value") or "").strip():
+                rule_strats.add(n["value"].strip().upper())
+    rule_list = sorted(rule_strats)
+
+    counts = Counter()
+    for e in erows:
+        s   = (e.get("strategy") or "").strip().upper()
+        det = (e.get("exec_detail") or "").lower()
+        if s and "no routing pipeline matched" in det:
+            counts[s] += 1
+    unmatched = []
+    for strat, cnt in counts.most_common():
+        near = difflib.get_close_matches(strat, rule_list, n=1, cutoff=0.82)
+        unmatched.append({"strategy": strat, "count": cnt,
+                          "nearest_rule": near[0] if near else None,
+                          # a very close match ⇒ likely a typo / drifted name, not truly unwired
+                          "likely_typo": bool(near)})
+    return jsonify({"days": days, "from": cutoff, "n_rules": len(rule_list),
+                    "unmatched": unmatched})
+
+
 # Background HWM/RVOL backfill loop. DISABLED by default (TRADE_BACKFILL_ENABLED)
 # after it saturated the app: the per-trade Alpaca bar fetches (and especially
 # the RVOL time-of-day 20-day volume-profile builds) churned hard enough on the
