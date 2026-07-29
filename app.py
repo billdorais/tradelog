@@ -13135,6 +13135,69 @@ def _rvol_gate_block(strategy, side, ticker, account_tag, now_dt=None):
     return (False, None, rvol)
 
 
+def _categorize_block_reason(exec_status, exec_detail):
+    """Bucket a signal's outcome into a gate category from its stored exec_detail.
+    Mirrors the reason strings the webhook writes (day-type / RVOL / reversal / …)."""
+    st = (exec_status or "").lower()
+    d  = (exec_detail  or "").lower()
+    if st == "ok":     return "Executed"
+    if st == "error":  return "Error"
+    if "rvol" in d:                                   return "RVOL gate"
+    if "day-type" in d or "daytype" in d:             return "Day-type gate"
+    if "reversal" in d:                               return "Reversal gate"
+    if "side" in d and "gate" in d:                   return "Side gate"
+    if "regime" in d:                                 return "Regime gate"
+    if "profit" in d and "lock" in d:                 return "Profit-lock halt"
+    if "loss guard" in d or "daily loss" in d:        return "Daily-loss halt"
+    if "kairos" in d and ("control" in d or "source" in d): return "Entry-source (engine)"
+    if st in ("skipped", "blocked"):                  return "Other block"
+    return "Other"
+
+
+@app.route("/api/signals/blocked_breakdown")
+def api_blocked_breakdown():
+    """Why recent ENTRY signals didn't trade, bucketed by gate. Reads the stored
+    exec_status/exec_detail on the signals table. NOTE: day-type/reversal gates
+    apply to the farms too, so those fully-block a signal and show here; the RVOL
+    gate only touches the Refined books, so a signal the farm still took records
+    as Executed even if RVOL skipped it on Refined — use the Replay RVOL split for
+    RVOL-specific counts. ?days=7, ?entries_only=1 (skip exits)."""
+    import datetime as _dt
+    from collections import Counter
+    try:    days = max(1, min(60, int(request.args.get("days") or 7)))
+    except Exception: days = 7
+    entries_only = (request.args.get("entries_only", "1") != "0")
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone.utc
+    cutoff = (_dt.datetime.now(et).date() - _dt.timedelta(days=days)).isoformat()
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute(
+        f"SELECT received_at, ticker, strategy, action, sentiment, exec_status, exec_detail "
+        f"FROM trades WHERE received_at >= {p} ORDER BY received_at DESC", (cutoff,))
+    cols = [c[0] for c in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    conn.close()
+
+    counts, total, recent = Counter(), 0, []
+    for r in rows:
+        sent = (r.get("sentiment") or "").lower()
+        if entries_only and sent not in ("long", "short"):
+            continue
+        total += 1
+        cat = _categorize_block_reason(r.get("exec_status"), r.get("exec_detail"))
+        counts[cat] += 1
+        if cat not in ("Executed",) and len(recent) < 25:
+            recent.append({"received_at": r.get("received_at"), "ticker": r.get("ticker"),
+                           "strategy": r.get("strategy"), "side": sent,
+                           "status": r.get("exec_status"), "reason": r.get("exec_detail"),
+                           "category": cat})
+    executed  = counts.get("Executed", 0)
+    by_reason = [{"reason": k, "count": v, "pct": round(v / total * 100, 1) if total else 0}
+                 for k, v in counts.most_common() if k != "Executed"]
+    return jsonify({"days": days, "from": cutoff, "total_entries": total,
+                    "executed": executed, "by_reason": by_reason, "recent": recent})
+
+
 # Background HWM/RVOL backfill loop. DISABLED by default (TRADE_BACKFILL_ENABLED)
 # after it saturated the app: the per-trade Alpaca bar fetches (and especially
 # the RVOL time-of-day 20-day volume-profile builds) churned hard enough on the
