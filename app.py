@@ -13247,6 +13247,51 @@ def api_unmatched_strategies():
                     "unmatched": unmatched})
 
 
+@app.route("/api/signals/wire_to_farm", methods=["POST"])
+def api_wire_to_farm():
+    """Wire an unmatched strategy to Paper All (TV Farm, acct1) so its signals stop
+    falling on the floor. Creates ONE enabled rule (strategy → alpaca-paper-1)
+    unless an enabled rule already matches the name (same match logic as the
+    webhook). Live-routing mutation — the UI confirms first."""
+    data  = request.get_json(silent=True) or {}
+    strat = (data.get("strategy") or "").strip()
+    if not strat:
+        return jsonify({"error": "strategy required"}), 400
+    incoming = strat.upper()
+    conn = get_db(); cur = conn.cursor(); p = placeholder()
+    cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+    for row in cur.fetchall():
+        raw = row[0] if DATABASE_URL else row["nodes"]
+        try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception: nodes = []
+        for n in nodes:
+            if n.get("type") != "strategy":
+                continue
+            pat = (n.get("value") or "").strip().upper()
+            if not pat:
+                continue
+            if (pat == incoming
+                    or (pat.endswith("*") and incoming.startswith(pat[:-1]))
+                    or (pat.startswith("*") and incoming.endswith(pat[1:]))):
+                conn.close()
+                return jsonify({"already_wired": True, "strategy": strat})
+    nodes = [{"type": "strategy", "value": strat},
+             {"type": "broker",   "value": "alpaca-paper-1"}]
+    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    name = f"{strat} · auto-wired"
+    if DATABASE_URL:
+        cur.execute(f"INSERT INTO routing_rules (name,enabled,nodes,created_at) VALUES ({p},{p},{p},{p}) RETURNING id",
+                    (name, 1, json.dumps(nodes), ts))
+        new_id = cur.fetchone()[0]
+    else:
+        cur.execute(f"INSERT INTO routing_rules (name,enabled,nodes,created_at) VALUES ({p},{p},{p},{p})",
+                    (name, 1, json.dumps(nodes), ts))
+        new_id = cur.lastrowid
+    conn.commit(); conn.close()
+    log.info("wire_to_farm: created rule %s '%s' → alpaca-paper-1", new_id, strat)
+    return jsonify({"created": True, "id": new_id, "strategy": strat, "target": "alpaca-paper-1 (TV Farm)"})
+
+
 # Background HWM/RVOL backfill loop. DISABLED by default (TRADE_BACKFILL_ENABLED)
 # after it saturated the app: the per-trade Alpaca bar fetches (and especially
 # the RVOL time-of-day 20-day volume-profile builds) churned hard enough on the

@@ -74,3 +74,28 @@ def test_unmatched_strategies_groups_and_suggests(monkeypatch):
     assert by["AAPL_CAM_BREAKOUT_R3S3_V02_5MIN"]["count"] == 2
     assert by["AAPL_CAM_BREAKOUT_R3S3_V02_5MIN"]["nearest_rule"] == "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"
     assert by["ZZZZ_CAM_BREAKOUT_R3S3_V02_5MIN"]["nearest_rule"] is None
+
+
+def test_wire_to_farm_creates_rule_then_is_idempotent(monkeypatch, tmp_path):
+    import json, sqlite3
+    db = str(tmp_path / "rules.db")
+    _init = sqlite3.connect(db)
+    _init.execute("CREATE TABLE routing_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                  "name TEXT, enabled INTEGER, nodes TEXT, created_at TEXT)")
+    _init.commit(); _init.close()
+    def _open():
+        c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
+    monkeypatch.setattr(a, "get_db", _open)
+    a.app.config["TESTING"] = True
+    strat = "ZZZZ_CAM_BREAKOUT_R3S3_V02_5MIN"
+    with a.app.test_client() as c:
+        d1 = c.post("/api/signals/wire_to_farm", json={"strategy": strat}).get_json()
+        d2 = c.post("/api/signals/wire_to_farm", json={"strategy": strat}).get_json()
+    assert d1.get("created") is True and d1.get("target", "").startswith("alpaca-paper-1")
+    assert d2.get("already_wired") is True          # second call is a no-op
+    q = _open()
+    rows = q.execute("SELECT nodes FROM routing_rules").fetchall(); q.close()
+    assert len(rows) == 1
+    nodes = json.loads(rows[0]["nodes"])
+    assert {"type": "strategy", "value": strat} in nodes
+    assert {"type": "broker", "value": "alpaca-paper-1"} in nodes
