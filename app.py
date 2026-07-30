@@ -13266,7 +13266,27 @@ def api_unmatched_strategies():
                           "rule_exists": exact,
                           "nearest_rule": None if exact else nr,
                           "likely_typo": drift})
+
+    # Kairos-side cross-check: while the TV fan-out dropped these, the engine
+    # (ENGINE_PILOT_ALL) fans every enabled breakout/reversal to the Kairos Farm
+    # (acct5) — a SEPARATE path. Report the fan-out config + each name's acct5 trade
+    # count over the same window so you can confirm the Kairos side kept coverage.
+    engine_on = bool(ENGINE_PILOT_ALL)
+    k5 = {}
+    if unmatched and engine_on:
+        try:
+            with app.test_client() as _c:
+                _d = _c.get(f"/api/alpaca/analysis?account=5&from_date={cutoff}").get_json() or {}
+                k5 = {str(k).upper(): (v or {}).get("trades", 0)
+                      for k, v in (_d.get("per_strategy") or {}).items()}
+        except Exception:
+            k5 = {}
+    for u in unmatched:
+        u["kairos_farm_trades"] = k5.get(u["strategy"], 0)
+
     return jsonify({"days": days, "from": cutoff, "n_rules": len(rule_list),
+                    "engine_pilot_all": engine_on,
+                    "engine_pilot_all_value": ENGINE_PILOT_ALL or None,
                     "unmatched": unmatched})
 
 
