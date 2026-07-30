@@ -2429,21 +2429,23 @@
       // includes realized + unrealized on open positions + fees). When
       // provided, overrides today's bar so the chart matches Alpaca.
       let labels, netValues;
+      const dayCount = {};   // round-trips per day → shown in the tooltip
       if (equityCurveOrTrades.length && 'pnl' in equityCurveOrTrades[0]) {
         // Direct sum: group pnl by close date
         const dayPnl = {};
         for (const t of equityCurveOrTrades) {
           const day = (t.time || '').slice(0, 10);
-          if (day) dayPnl[day] = (dayPnl[day] || 0) + t.pnl;
+          if (day) { dayPnl[day] = (dayPnl[day] || 0) + t.pnl; dayCount[day] = (dayCount[day] || 0) + 1; }
         }
         labels    = Object.keys(dayPnl).sort();
         netValues = labels.map(d => parseFloat(dayPnl[d].toFixed(2)));
       } else {
-        // Diff of cumulative equity curve
+        // Diff of cumulative equity curve (one point per closed round-trip)
         const dayMap = {};
         for (const p of equityCurveOrTrades) {
           const day = p.time.slice(0, 10);
           dayMap[day] = p.value;
+          dayCount[day] = (dayCount[day] || 0) + 1;
         }
         labels = Object.keys(dayMap).sort();
         const cumValues = labels.map(d => dayMap[d]);
@@ -2465,6 +2467,10 @@
 
       if (netDailyChartInstance) { netDailyChartInstance.destroy(); netDailyChartInstance = null; }
       if (!netValues.length) return;
+
+      // Per-day round-trip count, aligned to the final label order (incl. any
+      // today bar added by the override above) — for the tooltip.
+      const counts = labels.map(d => dayCount[d] || 0);
 
       const canvas = document.getElementById('netDailyPnlChart');
       const ctx    = canvas.getContext('2d');
@@ -2488,6 +2494,7 @@
             tooltip: {
               callbacks: {
                 label: ctx => (ctx.parsed.y >= 0 ? '+' : '') + '$' + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
+                afterLabel: ctx => { const n = counts[ctx.dataIndex]; return n ? (n + (n === 1 ? ' trade' : ' trades')) : ''; },
               },
             },
           },
