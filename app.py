@@ -13230,6 +13230,17 @@ def api_unmatched_strategies():
                 rule_strats.add(n["value"].strip().upper())
     rule_list = sorted(rule_strats)
 
+    def _slug_key(s):
+        # (ticker, kind, level) — identical across a version/format drift, but
+        # DIFFERENT across a genuinely different strategy (R3S3 vs R4S4, breakout
+        # vs reversal). Used so a sibling rule on the same ticker isn't mistaken
+        # for a typo of a distinct, genuinely-unwired strategy.
+        su = (s or "").upper(); i = su.find("_CAM_")
+        if i < 0:
+            return (su, "", "")
+        parts = su[i + 5:].split("_")
+        return (su[:i], parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
+
     counts = Counter()
     for e in erows:
         s   = (e.get("strategy") or "").strip().upper()
@@ -13239,10 +13250,16 @@ def api_unmatched_strategies():
     unmatched = []
     for strat, cnt in counts.most_common():
         near = difflib.get_close_matches(strat, rule_list, n=1, cutoff=0.82)
+        nr   = near[0] if near else None
+        # A cross-ticker fuzzy hit (ZZZZ ~ MSFT via the shared suffix) isn't a useful
+        # suggestion — only keep a nearest rule that shares the TICKER.
+        if nr and _slug_key(nr)[0] != _slug_key(strat)[0]:
+            nr = None
+        # Only a TRUE drift (same ticker+kind+level, differs in version/format) is a
+        # typo. A different level/kind is a distinct strategy that is genuinely unwired.
+        drift = bool(nr) and _slug_key(nr) == _slug_key(strat)
         unmatched.append({"strategy": strat, "count": cnt,
-                          "nearest_rule": near[0] if near else None,
-                          # a very close match ⇒ likely a typo / drifted name, not truly unwired
-                          "likely_typo": bool(near)})
+                          "nearest_rule": nr, "likely_typo": drift})
     return jsonify({"days": days, "from": cutoff, "n_rules": len(rule_list),
                     "unmatched": unmatched})
 

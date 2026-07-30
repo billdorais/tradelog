@@ -63,17 +63,25 @@ def test_unmatched_strategies_groups_and_suggests(monkeypatch):
     # ZZZZ fired once, genuinely no rule anywhere.
     conn.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
                  (today, "ZZZZ", "ZZZZ_CAM_BREAKOUT_R3S3_V02_5MIN", "buy", "long", "error", NM))
+    # MSFT fired with a V02 alert but the rule is V01 — same ticker+kind+level → real drift.
+    conn.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
+                 (today, "MSFT", "MSFT_CAM_BREAKOUT_R3S3_V02_5MIN", "buy", "long", "error", NM))
     conn.execute("INSERT INTO routing_rules VALUES (1,1,?)",
                  (json.dumps([{"type": "strategy", "value": "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"}]),))
+    conn.execute("INSERT INTO routing_rules VALUES (2,1,?)",
+                 (json.dumps([{"type": "strategy", "value": "MSFT_CAM_BREAKOUT_R3S3_V01_5MIN"}]),))
     conn.commit()
     monkeypatch.setattr(a, "get_db", lambda: conn)
     a.app.config["TESTING"] = True
     with a.app.test_client() as c:
         d = c.get("/api/signals/unmatched_strategies?days=7").get_json()
     by = {u["strategy"]: u for u in d["unmatched"]}
-    assert by["AAPL_CAM_BREAKOUT_R3S3_V02_5MIN"]["count"] == 2
-    assert by["AAPL_CAM_BREAKOUT_R3S3_V02_5MIN"]["nearest_rule"] == "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"
+    aapl = by["AAPL_CAM_BREAKOUT_R3S3_V02_5MIN"]
+    assert aapl["count"] == 2 and aapl["nearest_rule"] == "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"
+    assert aapl["likely_typo"] is False          # different level → distinct strategy, not a typo
     assert by["ZZZZ_CAM_BREAKOUT_R3S3_V02_5MIN"]["nearest_rule"] is None
+    msft = by["MSFT_CAM_BREAKOUT_R3S3_V02_5MIN"]
+    assert msft["likely_typo"] is True           # same ticker+kind+level, only version differs
 
 
 def test_wire_to_farm_creates_rule_then_is_idempotent(monkeypatch, tmp_path):
