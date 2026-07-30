@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diagnostics — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 24px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #e0e0e0; }
+    .content { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+    .bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .btn { background: transparent; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 7px 14px; font-size: 0.82rem; font-family: inherit; cursor: pointer; }
+    .btn:hover { border-color: #4a5568; }
+    .btn-copy { border-color: #3a7a4e; color: #7FE098; }
+    select.f { background: #1a1d2e; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 8px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .meta { font-size: 0.75rem; color: #666; }
+    .rows { border: 1px solid #1e2130; border-radius: 10px; overflow: hidden; }
+    .row { display: grid; grid-template-columns: 150px 78px 150px 1fr; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #171a24; font-size: 0.8rem; align-items: start; }
+    .row:last-child { border-bottom: none; }
+    .row:nth-child(even) { background: #12141c; }
+    .c-time { color: #7c8399; font-family: monospace; white-space: nowrap; }
+    .c-logger { color: #7c8399; font-family: monospace; overflow: hidden; text-overflow: ellipsis; }
+    .c-msg { color: #cbd0da; font-family: monospace; white-space: pre-wrap; word-break: break-word; }
+    .lvl { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.06em; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; }
+    .lvl.WARNING  { color: #f0a35e; background: rgba(240,163,94,0.12); }
+    .lvl.ERROR    { color: #ef5350; background: rgba(239,83,80,0.14); }
+    .lvl.CRITICAL { color: #ff5370; background: rgba(255,83,112,0.18); }
+    .empty { padding: 28px; text-align: center; color: #7FE098; font-size: 0.9rem; }
+    .note { font-size: 0.72rem; color: #666; margin-top: 10px; line-height: 1.6; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1d2e; border: 1px solid #3a7a4e; color: #7FE098; padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+      <h1>Kairos Automata — Diagnostics</h1>
+    </div>
+    <div style="position:relative;display:inline-block">
+      <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+      <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:180px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+        <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+        <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+        <a href="/simulate" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Replay</a>
+        <a href="/crew" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#10022; Crew</a>
+        <a href="/diagnostics" style="display:block;padding:10px 16px;color:#7FE098;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128736; Diagnostics</a>
+        <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="bar">
+      <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#f0a35e;font-weight:700">Recent App Errors &amp; Warnings</span>
+      <select class="f" id="levelSel" onchange="loadErrors()">
+        <option value="warning">Warnings &amp; errors</option>
+        <option value="error">Errors only</option>
+      </select>
+      <label class="meta"><input type="checkbox" id="autoRefresh" checked> auto-refresh (15s)</label>
+      <button class="btn" onclick="loadErrors()">↻ Refresh</button>
+      <button class="btn btn-copy" onclick="copyForClaude()">📋 Copy for Claude</button>
+      <span class="meta" id="diagMeta" style="margin-left:auto">loading…</span>
+    </div>
+    <div class="rows" id="diagRows"></div>
+    <div class="note">
+      Live tail of the app's own WARNING/ERROR/exception logs (last 500, newest first) — the errors that used to live only in the platform logs.
+      Resets on restart/redeploy (it's a live tail, not durable history). If you hit something odd, click <b style="color:#7FE098">Copy for Claude</b> and paste it in — it includes the app context and the recent error lines.
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let _lastData = null;
+
+    function toggleNavMenu() {
+      const m = document.getElementById('navMenu');
+      m.style.display = m.style.display === 'none' ? 'block' : 'none';
+    }
+    document.addEventListener('click', e => {
+      const btn = document.getElementById('navMenuBtn');
+      const menu = document.getElementById('navMenu');
+      if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+    });
+
+    function _toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1800);
+    }
+
+    async function loadErrors() {
+      const level = document.getElementById('levelSel').value;
+      const meta  = document.getElementById('diagMeta');
+      const rows  = document.getElementById('diagRows');
+      try {
+        const d = await fetch('/api/diagnostics/errors?level=' + level + '&limit=300').then(r => r.json());
+        _lastData = d;
+        const c = d.counts || {};
+        meta.textContent = `${d.now} · ${c.WARNING||0} warn · ${(c.ERROR||0)+(c.CRITICAL||0)} err · buffer ${d.total||0}/${d.capacity||500}`;
+        const recs = d.records || [];
+        if (!recs.length) { rows.innerHTML = '<div class="empty">✓ No ' + (level === 'error' ? 'errors' : 'warnings or errors') + ' in the buffer.</div>'; return; }
+        rows.innerHTML = recs.map(r =>
+          `<div class="row">`
+          + `<div class="c-time">${r.time}</div>`
+          + `<div><span class="lvl ${r.level}">${r.level}</span></div>`
+          + `<div class="c-logger" title="${_esc(r.logger)}">${_esc(r.logger)}</div>`
+          + `<div class="c-msg">${_esc(r.msg)}</div></div>`).join('');
+      } catch (e) {
+        meta.textContent = '— error loading';
+      }
+    }
+
+    function _esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    function copyForClaude() {
+      const d = _lastData;
+      if (!d || !(d.records || []).length) { _toast('Nothing to copy'); return; }
+      const c = d.counts || {};
+      const lines = [
+        '=== Kairos Diagnostics — app errors/warnings ===',
+        `As of: ${d.now}   ·   buffer ${d.total}/${d.capacity}   ·   ${c.WARNING||0} warnings, ${(c.ERROR||0)+(c.CRITICAL||0)} errors`,
+        '(newest first)', '',
+      ];
+      for (const r of d.records) lines.push(`${r.time}  [${r.level}]  ${r.logger}: ${r.msg}`);
+      const text = lines.join('\n');
+      const done = () => _toast('Copied ' + d.records.length + ' lines — paste to Claude');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => _fallbackCopy(text, done));
+      } else { _fallbackCopy(text, done); }
+    }
+    function _fallbackCopy(text, done) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { _toast('Copy failed'); }
+      document.body.removeChild(ta);
+    }
+
+    loadErrors();
+    setInterval(() => { if (document.getElementById('autoRefresh').checked) loadErrors(); }, 15000);
+  </script>
+</body>
+</html>

@@ -31,6 +31,35 @@ try:
 except Exception as _e:
     log.warning("Could not attach file log handler: %s", _e)
 
+# In-memory ring buffer of recent WARNING+ log records, surfaced on /diagnostics so
+# bugs that only log a warning (e.g. the "no broker resolved" one that hid for weeks)
+# are visible in-app and copy-pasteable — not buried in the platform logs. Resets on
+# restart (Railway redeploy); it's a live tail, not durable history.
+import collections as _collections
+_LOG_RING      = _collections.deque(maxlen=500)
+_LOG_RING_LOCK = threading.Lock()
+
+class _RingLogHandler(logging.Handler):
+    def emit(self, record):
+        try:    msg = self.format(record)
+        except Exception:
+            try:    msg = record.getMessage()
+            except Exception: return
+        try:
+            with _LOG_RING_LOCK:
+                _LOG_RING.append({"ts": record.created, "level": record.levelname,
+                                  "logger": record.name, "msg": msg})
+        except Exception:
+            pass
+
+try:
+    _ring = _RingLogHandler()
+    _ring.setLevel(logging.WARNING)          # WARNING / ERROR / CRITICAL (+ exceptions)
+    _ring.setFormatter(logging.Formatter("%(message)s"))
+    logging.getLogger().addHandler(_ring)
+except Exception as _e:
+    log.warning("Could not attach ring log handler: %s", _e)
+
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "change-me")
 DATABASE_URL  = os.environ.get("DATABASE_URL")
 
@@ -9443,6 +9472,43 @@ def set_account_gates():
     log.info("Per-account entry-gate overrides set: %s = %s", tag, acct or "(cleared)")
     return jsonify({"account": tag, "label": (rec or {}).get("label", tag),
                     "overrides": acct, "all": _map})
+
+
+@app.route("/diagnostics")
+def diagnostics_page():
+    return render_template("diagnostics.html")
+
+
+@app.route("/api/diagnostics/errors")
+def api_diagnostics_errors():
+    """Recent WARNING+ log records from the in-memory ring buffer — the app's own
+    error tail, surfaced so bugs that only log a warning are visible/copyable.
+    ?level=warning|error (min level, default warning) · ?limit=N (default 200)."""
+    import datetime as _dt
+    level = (request.args.get("level") or "warning").strip().upper()
+    _rank = {"WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+    floor = _rank.get(level, 30)
+    try:    limit = max(1, min(500, int(request.args.get("limit") or 200)))
+    except Exception: limit = 200
+    with _LOG_RING_LOCK:
+        rows = list(_LOG_RING)
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone.utc
+    out, counts = [], {"WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+    for r in rows:
+        lvl = r.get("level", "")
+        counts[lvl] = counts.get(lvl, 0) + 1
+        if _rank.get(lvl, 0) < floor:
+            continue
+        try:    t_et = _dt.datetime.fromtimestamp(r["ts"], tz=et).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception: t_et = ""
+        out.append({"time": t_et, "level": lvl, "logger": r.get("logger", ""),
+                    "msg": r.get("msg", "")})
+    out = out[-limit:]
+    out.reverse()   # newest first
+    return jsonify({"records": out, "counts": counts, "total": len(rows),
+                    "now": _dt.datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    "capacity": _LOG_RING.maxlen})
 
 
 @app.route("/api/routing/rules/bulk_remove_broker", methods=["POST"])
