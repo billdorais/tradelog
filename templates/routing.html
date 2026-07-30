@@ -358,14 +358,13 @@
               <span id="refinedHoursText">All day</span>
             </span>
           </div>
+          <div id="refinedHoursRows"></div>
           <div class="risk-input-row">
-            <input class="risk-input" id="refinedHoursStart" type="time" style="width:auto" oninput="_hoursDirty.refined = true">
-            <span style="color:#666">–</span>
-            <input class="risk-input" id="refinedHoursEnd" type="time" style="width:auto" oninput="_hoursDirty.refined = true">
+            <button class="btn btn-ghost" style="padding:6px 12px;font-size:0.82rem" onclick="_addHoursRow('refinedHoursRows','refined'); _hoursDirty.refined = true">+ add window</button>
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
           </div>
-          <div class="risk-hint">New entries are blocked outside this window (ET) on all three curated books. Exits always go through. Empty = all day. (e.g. 09:30–11:00 to trade only the open.) The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper can override this window in its own section below.</b></div>
+          <div class="risk-hint">New entries are blocked outside these windows (ET) on all three curated books. Exits always go through. No windows = all day. Add multiple windows to trade the open and the afternoon but pause midday (e.g. 09:35–10:00 and 12:00–15:55). The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper can override these windows in its own section below.</b></div>
         </div>
       </div>
     </div>
@@ -663,11 +662,10 @@
           </div>
         </div>
         <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
-          <div class="risk-label">Trading hours (ET) <span style="color:#666;font-size:0.68rem">blank = inherit the refined window</span></div>
+          <div class="risk-label">Trading hours (ET) <span style="color:#666;font-size:0.68rem">no windows = inherit the refined windows</span></div>
+          <div id="crewHoursRows"></div>
           <div class="risk-input-row">
-            <input class="risk-input" id="crewHoursStart" type="text" placeholder="HH:MM" style="width:80px" oninput="_crewGatesDirty=true">
-            <span style="color:#555">–</span>
-            <input class="risk-input" id="crewHoursEnd" type="text" placeholder="HH:MM" style="width:80px" oninput="_crewGatesDirty=true">
+            <button class="btn btn-ghost" style="padding:6px 12px;font-size:0.82rem" onclick="_addHoursRow('crewHoursRows','crew'); _crewGatesDirty=true">+ add window</button>
           </div>
         </div>
         <div class="risk-input-row" style="margin-top:12px">
@@ -1040,28 +1038,61 @@
   const _hoursDirty = { paper: false, refined: false };
   let _crewGatesDirty = false;   // don't let the 5s poll clobber Crew fields mid-edit
 
-  // Sync a per-account trading-hours row (prefix = 'paper' | 'refined').
-  function _setHoursUI(prefix, h) {
-    const startEl = document.getElementById(prefix + 'HoursStart');
-    const endEl   = document.getElementById(prefix + 'HoursEnd');
-    const badge   = document.getElementById(prefix + 'HoursBadge');
-    const dot     = document.getElementById(prefix + 'HoursDot');
-    const text    = document.getElementById(prefix + 'HoursText');
-    if (!startEl) return;
-    // Don't clobber inputs the user is editing (focused or typed-but-unsaved).
-    if (_hoursDirty[prefix] || document.activeElement === startEl
-        || document.activeElement === endEl) return;
-    const on = !!(h.start && h.end);
-    startEl.value = h.start || '';
-    endEl.value   = h.end   || '';
-    if (on) {
-      badge.className = 'risk-status-badge active'; dot.className = 'risk-dot green';
-      text.textContent = h.start + '–' + h.end;
-    } else {
-      badge.className = 'risk-status-badge disabled'; dot.className = 'risk-dot grey';
-      text.textContent = 'All day';
+  // ---- Multi-window trading hours (add/remove window rows) --------------------
+  // dirtyKey: 'refined' (uses _hoursDirty.refined) or 'crew' (uses _crewGatesDirty).
+  function _hoursMarkDirty(dirtyKey) {
+    if (dirtyKey === 'refined') _hoursDirty.refined = true; else _crewGatesDirty = true;
+  }
+  function _addHoursRow(containerId, dirtyKey, start, end) {
+    const c = document.getElementById(containerId); if (!c) return;
+    const row = document.createElement('div');
+    row.className = 'hours-row';
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px';
+    row.innerHTML =
+      '<input class="risk-input hstart" type="time" style="width:auto" value="' + (start || '') + '">'
+      + '<span style="color:#666">–</span>'
+      + '<input class="risk-input hend" type="time" style="width:auto" value="' + (end || '') + '">'
+      + '<button type="button" class="btn btn-ghost hrm" title="Remove window" '
+      + 'style="padding:4px 10px;font-size:0.82rem">✕</button>';
+    c.appendChild(row);
+    const mark = () => _hoursMarkDirty(dirtyKey);
+    row.querySelector('.hstart').addEventListener('input', mark);
+    row.querySelector('.hend').addEventListener('input', mark);
+    row.querySelector('.hrm').addEventListener('click', () => { row.remove(); mark(); });
+  }
+  // Read the rows of a container into [{start,end}], dropping incomplete rows.
+  function _collectHoursRows(containerId) {
+    const c = document.getElementById(containerId); if (!c) return [];
+    return [...c.querySelectorAll('.hours-row')].map(r => ({
+      start: r.querySelector('.hstart').value,
+      end:   r.querySelector('.hend').value,
+    })).filter(w => w.start && w.end);
+  }
+  // Render a set of windows into a rows container + update the badge.
+  // prefix = 'refined' | 'crew'. windows = [{start,end}...].
+  function _setHoursUI(prefix, windows) {
+    windows = windows || [];
+    const rowsC = document.getElementById(prefix + 'HoursRows');
+    const badge = document.getElementById(prefix + 'HoursBadge');
+    const dot   = document.getElementById(prefix + 'HoursDot');
+    const text  = document.getElementById(prefix + 'HoursText');
+    const dirty = prefix === 'refined' ? _hoursDirty.refined : _crewGatesDirty;
+    const editing = rowsC && document.activeElement && rowsC.contains(document.activeElement);
+    // Don't clobber rows the user is editing (dirty flag or focus inside the rows).
+    if (rowsC && !dirty && !editing) {
+      rowsC.innerHTML = '';
+      windows.forEach(w => _addHoursRow(prefix + 'HoursRows', prefix, w.start, w.end));
     }
-    setRowState(prefix + 'HoursStart', on);
+    if (badge) {
+      const on = windows.length > 0;
+      if (on) {
+        badge.className = 'risk-status-badge active'; dot.className = 'risk-dot green';
+        text.textContent = windows.map(w => w.start + '–' + w.end).join(', ');
+      } else {
+        badge.className = 'risk-status-badge disabled'; dot.className = 'risk-dot grey';
+        text.textContent = 'All day';
+      }
+    }
   }
 
   async function loadRisk() {
@@ -1256,8 +1287,8 @@
         if (rvRow) { rvRow.classList.toggle('state-on', !!data.rvol_gate_enabled); rvRow.classList.toggle('state-off', !data.rvol_gate_enabled); }
       }
 
-      // Per-account trading hours
-      _setHoursUI('refined', data.refined_hours || {});
+      // Shared curated trading-hours windows
+      _setHoursUI('refined', data.refined_hours_windows || []);
 
       // Buying-power pause
       const bpInput = document.getElementById('bpPauseInput');
@@ -1362,8 +1393,13 @@
       _cgSet('crewRvolCap', cg.rvol && cg.rvol.short_cap != null ? cg.rvol.short_cap : '');
       _cgSet('crewStrikesBase',  cg.strikes ? cg.strikes.base : '');
       _cgSet('crewStrikesShort', cg.strikes ? (cg.strikes.short || '') : '');
-      _cgSet('crewHoursStart',   cg.hours ? (cg.hours.start || '') : '');
-      _cgSet('crewHoursEnd',     cg.hours ? (cg.hours.end || '') : '');
+      // Crew hours: multi-window override (or legacy single start/end).
+      let cwins = [];
+      if (cg.hours) {
+        if (Array.isArray(cg.hours.windows)) cwins = cg.hours.windows;
+        else if (cg.hours.start || cg.hours.end) cwins = [{start: cg.hours.start || '', end: cg.hours.end || ''}];
+      }
+      _setHoursUI('crew', cwins);
       }
 
       // Per-position stop status badge
@@ -1653,18 +1689,15 @@
   }
 
   async function saveRefinedHours() {
-    const s = document.getElementById('refinedHoursStart').value;
-    const e = document.getElementById('refinedHoursEnd').value;
-    if (!s || !e) { alert('Set both start and end times (ET).'); return; }
+    const wins = _collectHoursRows('refinedHoursRows');
     _hoursDirty.refined = false;
-    try { await _postLimit({refined_hours: {start: s, end: e}}); }
+    try { await _postLimit({refined_hours: {windows: wins}}); }
     catch(err) { console.error('saveRefinedHours failed:', err); }
   }
   async function clearRefinedHours() {
     _hoursDirty.refined = false;
-    document.getElementById('refinedHoursStart').value = '';
-    document.getElementById('refinedHoursEnd').value = '';
-    try { await _postLimit({refined_hours: {start: '', end: ''}}); }
+    const c = document.getElementById('refinedHoursRows'); if (c) c.innerHTML = '';
+    try { await _postLimit({refined_hours: {windows: []}}); }
     catch(err) { console.error('clearRefinedHours failed:', err); }
   }
   async function saveBpPause() {
@@ -1743,8 +1776,7 @@
       rvol_short_cap: document.getElementById('crewRvolCap').value,
       strikes_base:  document.getElementById('crewStrikesBase').value,
       strikes_short: document.getElementById('crewStrikesShort').value,
-      hours_start:   document.getElementById('crewHoursStart').value.trim(),
-      hours_end:     document.getElementById('crewHoursEnd').value.trim(),
+      hours_windows: _collectHoursRows('crewHoursRows'),
     };
     if (st) { st.style.color = '#888'; st.textContent = 'saving…'; }
     try {

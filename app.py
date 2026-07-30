@@ -3192,6 +3192,8 @@ def risk_status():
         "rvol_gate_method":    RVOL_GATE_METHOD,
         "paper_hours":         {"start": PAPER_HOURS_START,   "end": PAPER_HOURS_END},
         "refined_hours":       {"start": REFINED_HOURS_START, "end": REFINED_HOURS_END},
+        "paper_hours_windows":   [{"start": s, "end": e} for s, e in _shared_hours_windows("paper")],
+        "refined_hours_windows": [{"start": s, "end": e} for s, e in _shared_hours_windows("refined")],
         "bp_pause_pct":        BP_PAUSE_PCT if BP_PAUSE_PCT > 0 else None,
         "max_hold_mins":       MAX_HOLD_MINS if MAX_HOLD_MINS > 0 else None,
         "max_hold_enforcement": MAX_HOLD_ENFORCEMENT,
@@ -3249,16 +3251,26 @@ def risk_set_limit():
     data = request.get_json(silent=True) or {}
     changed = []
 
-    def _set_hours(payload_key, start_var, end_var):
-        """Persist a {start,end} hours payload to the two named globals + store."""
+    def _set_hours(payload_key, start_var, end_var, windows_setting):
+        """Persist an hours payload. Supports {windows:[{start,end},…]} (multi-window,
+        saved as JSON to windows_setting) or the legacy {start,end}. The first window
+        is mirrored into START/END for back-compat display/env."""
         h = data.get(payload_key) or {}
-        s = (h.get("start") or "").strip()
-        e = (h.get("end")   or "").strip()
+        wins = h.get("windows")
+        if isinstance(wins, list):
+            parsed = _parse_hours_windows(wins)
+            _save_setting(windows_setting, json.dumps([{"start": s, "end": e} for s, e in parsed]))
+            s, e = (parsed[0] if parsed else ("", ""))
+            log.info("%s set to %d window(s): %s", payload_key, len(parsed), parsed or "all day")
+        else:
+            s = (h.get("start") or "").strip()
+            e = (h.get("end")   or "").strip()
+            _save_setting(windows_setting, "")     # clear multi-window → single/legacy
+            log.info("%s set to %s–%s", payload_key, s or "·", e or "·")
         globals()[start_var] = s
         globals()[end_var]   = e
         _update_env_file(start_var, s); _save_setting(start_var, s)
         _update_env_file(end_var,   e); _save_setting(end_var,   e)
-        log.info("%s set to %s–%s", payload_key, s or "·", e or "·")
         changed.append(payload_key)
     if "max_daily_loss" in data:
         try:
@@ -3410,9 +3422,9 @@ def risk_set_limit():
         log.info("RVOL_GATE_METHOD set to %s", RVOL_GATE_METHOD)
         changed.append("rvol_gate_method")
     if "paper_hours" in data:
-        _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END")
+        _set_hours("paper_hours", "PAPER_HOURS_START", "PAPER_HOURS_END", "PAPER_HOURS_WINDOWS")
     if "refined_hours" in data:
-        _set_hours("refined_hours", "REFINED_HOURS_START", "REFINED_HOURS_END")
+        _set_hours("refined_hours", "REFINED_HOURS_START", "REFINED_HOURS_END", "REFINED_HOURS_WINDOWS")
     if "bp_pause_pct" in data:
         try:
             BP_PAUSE_PCT = max(0.0, min(100.0, float(data["bp_pause_pct"] or 0)))
@@ -9454,13 +9466,21 @@ def set_account_gates():
     else:
         return jsonify({"error": "rvol must be inherit / on / off"}), 400
 
-    # Hours: both blank clears; else store the window.
-    hs = (data.get("hours_start") or "").strip()
-    he = (data.get("hours_end")   or "").strip()
-    if not hs and not he:
-        acct.pop("hours", None)
+    # Hours: multi-window list wins; else legacy single start/end; empty ⇒ inherit.
+    hw = data.get("hours_windows")
+    if isinstance(hw, list):
+        parsed = _parse_hours_windows(hw)
+        if parsed:
+            acct["hours"] = {"windows": [{"start": s, "end": e} for s, e in parsed]}
+        else:
+            acct.pop("hours", None)
     else:
-        acct["hours"] = {"start": hs, "end": he}
+        hs = (data.get("hours_start") or "").strip()
+        he = (data.get("hours_end")   or "").strip()
+        if not hs and not he:
+            acct.pop("hours", None)
+        else:
+            acct["hours"] = {"start": hs, "end": he}
 
     if acct:
         _map[tag] = acct
@@ -12067,52 +12087,96 @@ def _get_strike_counts(force: bool = False):
     return _strike_cache["data"]
 
 
-def _account_hours(account: str):
-    """(start, end) ET window for this account as "HH:MM" strings; ("","") means
-    always allowed. Resolution order:
+def _parse_hours_windows(spec):
+    """Normalise a trading-hours spec into a list of (start, end) 'HH:MM' tuples.
+    Accepts: a "HH:MM-HH:MM, HH:MM-HH:MM" string; a list of {start,end} dicts or
+    (start,end) pairs; or a single (start,end) tuple. Blank/incomplete windows are
+    dropped. [] = always allowed (all day)."""
+    items = []
+    if not spec:
+        return items
+    if isinstance(spec, str):
+        for part in spec.split(","):
+            part = part.strip()
+            if "-" in part:
+                a, b = part.split("-", 1)
+                items.append((a, b))
+    elif isinstance(spec, (list, tuple)) and len(spec) == 2 \
+            and all(isinstance(x, str) for x in spec):
+        items.append((spec[0], spec[1]))          # a single (start, end) pair
+    elif isinstance(spec, (list, tuple)):
+        for w in spec:
+            if isinstance(w, dict):
+                items.append((w.get("start", ""), w.get("end", "")))
+            elif isinstance(w, (list, tuple)) and len(w) >= 2:
+                items.append((w[0], w[1]))
+    out = []
+    for a, b in items:
+        a = (a or "").strip(); b = (b or "").strip()
+        if a and b:
+            out.append((a, b))
+    return out
 
-      1. env HOURS_<TAG>_START / HOURS_<TAG>_END — a window for this book alone
-         (mirrors REVERSAL_SIDE_<TAG>). Set either to take this branch.
-      2. the account's ACCOUNT_META hours_key — "refined" or "paper" — naming
-         which of the two Settings-page windows it follows.
 
-    Registry-driven so a book's window is declared next to its other gates rather
-    than inferred from its tag. The two windows are runtime-editable (Settings),
-    so they're read on every call and must not be cached.
-    """
+def _shared_hours_windows(key):
+    """Windows for a shared window key ('refined'|'paper'). Prefers the multi-window
+    setting (<KEY>_HOURS_WINDOWS, JSON); falls back to the legacy single START/END."""
+    setting = "REFINED_HOURS_WINDOWS" if key == "refined" else "PAPER_HOURS_WINDOWS"
+    raw = _load_setting(setting)
+    if raw:
+        try:    return _parse_hours_windows(json.loads(raw))
+        except Exception: return _parse_hours_windows(raw)
+    if key == "refined":
+        return _parse_hours_windows((REFINED_HOURS_START, REFINED_HOURS_END))
+    return _parse_hours_windows((PAPER_HOURS_START, PAPER_HOURS_END))
+
+
+def _account_hours_windows(account: str):
+    """List of (start, end) ET windows for this account; [] = always allowed.
+    Resolution: env HOURS_<TAG>_START/END → per-account override
+    (GATES_BY_ACCOUNT[tag].hours: windows list, or legacy start/end) → the shared
+    hours_key window(s). Read live (never cached) so Settings edits take effect."""
     t = (account or "").upper()
     s = os.environ.get("HOURS_" + t + "_START")
     e = os.environ.get("HOURS_" + t + "_END")
     if s is not None or e is not None:
-        return (s or ""), (e or "")
-    # Per-account override (GATES_BY_ACCOUNT[tag].hours) — wins over the hours_key
-    # window; blank start/end ⇒ inherit that window. Below the env override above.
+        return _parse_hours_windows(((s or ""), (e or "")))
     _hov = _account_gate_overrides(account).get("hours") or {}
+    if _hov.get("windows"):
+        return _parse_hours_windows(_hov["windows"])
     if _hov.get("start") or _hov.get("end"):
-        return (_hov.get("start") or ""), (_hov.get("end") or "")
-    if _HOURS_KEY_BY_TAG.get(account, "paper") == "refined":
-        return REFINED_HOURS_START, REFINED_HOURS_END
-    return PAPER_HOURS_START, PAPER_HOURS_END
+        return _parse_hours_windows(((_hov.get("start") or ""), (_hov.get("end") or "")))
+    return _shared_hours_windows("refined" if _HOURS_KEY_BY_TAG.get(account, "paper") == "refined" else "paper")
+
+
+def _account_hours(account: str):
+    """First (start, end) window for this account, or ("","") — kept for back-compat
+    (display / single-window callers). Full set: _account_hours_windows."""
+    ws = _account_hours_windows(account)
+    return ws[0] if ws else ("", "")
 
 
 def _account_hours_ok(account: str, now_et=None) -> bool:
-    """True if `account` (a broker tag, e.g. 'alpaca2') is inside its configured
-    trading-hours window (ET). Empty config = always allowed.
-
-    Callers must pass the TARGET account's tag. Passing a fixed tag applies that
-    book's window to every account — which is what the engine used to do.
-    """
+    """True if `account` (a broker tag) is inside ANY of its configured trading
+    windows (ET). No windows configured = always allowed. Callers must pass the
+    TARGET account's tag."""
     import datetime as _dt
-    start, end = _account_hours(account)
-    if not start or not end:
+    windows = _account_hours_windows(account)
+    if not windows:
         return True
     try:
         if now_et is None:
             now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
         now_s = now_et.strftime("%H:%M")
-        if start <= end:
-            return start <= now_s < end
-        return now_s >= start or now_s < end   # window wraps past midnight
+        for start, end in windows:
+            if not start or not end:
+                continue
+            if start <= end:
+                if start <= now_s < end:
+                    return True
+            elif now_s >= start or now_s < end:    # window wraps past midnight
+                return True
+        return False
     except Exception:
         return True
 

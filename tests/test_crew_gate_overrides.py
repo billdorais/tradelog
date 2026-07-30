@@ -112,3 +112,25 @@ def test_endpoint_round_trip_and_clear(gates, monkeypatch):
             "account": "4", "daytype": "inherit", "rvol": "inherit", "strikes_base": "",
             "hours_start": "", "hours_end": ""}).get_json()
     assert r2["overrides"] == {}
+
+
+def test_endpoint_hours_windows(gates, monkeypatch):
+    _a, store = gates
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {"4": {"tag": "alpaca4", "label": "Crew Paper"}})
+    monkeypatch.setattr(a, "ACCOUNTS_BY_TAG", {"alpaca4": {"tag": "alpaca4", "label": "Crew Paper"}})
+    a.app.config["TESTING"] = True
+    # Two-window override (trade the open, pause midday, trade the afternoon).
+    with a.app.test_client() as c:
+        r = c.post("/api/routing/account_gates", json={
+            "account": "4",
+            "hours_windows": [{"start": "09:35", "end": "10:00"},
+                              {"start": "12:00", "end": "15:55"}]}).get_json()
+    assert r["overrides"]["hours"] == {"windows": [{"start": "09:35", "end": "10:00"},
+                                                   {"start": "12:00", "end": "15:55"}]}
+    a._gates_acct_ts = 0.0
+    assert a._account_hours_windows("alpaca4") == [("09:35", "10:00"), ("12:00", "15:55")]
+    # An empty windows list re-inherits (clears the override).
+    with a.app.test_client() as c:
+        r2 = c.post("/api/routing/account_gates", json={
+            "account": "4", "hours_windows": []}).get_json()
+    assert r2["overrides"] == {}
