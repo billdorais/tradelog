@@ -364,7 +364,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
           </div>
-          <div class="risk-hint">New entries are blocked outside this window (ET) on all three curated books. Exits always go through. Empty = all day. (e.g. 09:30–11:00 to trade only the open.) The farms stay all-day — they're the audition pools.</div>
+          <div class="risk-hint">New entries are blocked outside this window (ET) on all three curated books. Exits always go through. Empty = all day. (e.g. 09:30–11:00 to trade only the open.) The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper can override this window in its own section below.</b></div>
         </div>
       </div>
     </div>
@@ -453,7 +453,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveStrikes()">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearStrikes()">Off</button>
         </div>
-        <div class="risk-hint">After this many losing round-trips on the same ticker+level in a day, new entries on that level are blocked until the next session. Applies to both accounts. Exits are never blocked.</div>
+        <div class="risk-hint">After this many losing round-trips on the same ticker+level in a day, new entries on that level are blocked until the next session. Applies to both accounts. Exits are never blocked. <b style="color:#7FE098">Crew Paper can override this in its own section below.</b></div>
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d3e">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
             Short re-fade cap
@@ -542,7 +542,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(true)">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(false)">Off</button>
         </div>
-        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all gated books. Reversals are gated separately below. Reversals are gated separately below. Fails open if a ticker can't be classified.</div>
+        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all gated books. Reversals are gated separately below. Fails open if a ticker can't be classified. <b style="color:#7FE098">Crew Paper can override this in its own section below.</b></div>
 
         <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -625,6 +625,43 @@
         </div>
         <div id="tpByAccountList" style="margin-top:6px;font-size:0.8rem;color:#aaa"></div>
         <div class="risk-hint">Set these from the <strong>Replay → TP Sweep</strong> per-band <em>apply</em> buttons (scoped to the account you sweep). Precedence: per-account → per-band rule → global.</div>
+      </div>
+    </div>
+
+    <!-- Crew Paper — independent entry-gate overrides (day-type / strikes / hours) -->
+    <div class="rg-card" style="margin-top:10px;border-color:#3a7a4e">
+      <div class="rg-card-title" style="color:#7FE098">&#9670; Crew Paper — Entry Gates
+        <span style="color:#666;font-size:0.68rem;font-weight:400">acct4 only · overrides the shared settings above · blank = inherit</span></div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">Day-type gate (breakouts)
+          <span style="color:#666;font-size:0.68rem">inherit the shared gate, or force on/off for Crew only</span></div>
+        <div class="risk-input-row">
+          <select class="risk-input" id="crewDaytypeSel" style="width:170px">
+            <option value="inherit">Inherit (shared)</option>
+            <option value="on">On — Outside days only</option>
+            <option value="off">Off — allow all days</option>
+          </select>
+        </div>
+        <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
+          <div class="risk-label">Strikes per level <span style="color:#666;font-size:0.68rem">base + short (S3/S4) cap · blank = inherit</span></div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="crewStrikesBase" type="number" step="1" min="1" max="9" placeholder="inherit" style="width:90px" title="Base strikes per level (blank = inherit shared)">
+            <input class="risk-input" id="crewStrikesShort" type="number" step="1" min="0" max="9" placeholder="short cap" style="width:90px" title="Short (S3/S4) cap; 0 = same as base">
+          </div>
+        </div>
+        <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
+          <div class="risk-label">Trading hours (ET) <span style="color:#666;font-size:0.68rem">blank = inherit the refined window</span></div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="crewHoursStart" type="text" placeholder="HH:MM" style="width:80px">
+            <span style="color:#555">–</span>
+            <input class="risk-input" id="crewHoursEnd" type="text" placeholder="HH:MM" style="width:80px">
+          </div>
+        </div>
+        <div class="risk-input-row" style="margin-top:12px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveCrewGates()">Save Crew gates</button>
+          <span id="crewGatesStatus" style="color:#7FE098;font-size:0.76rem"></span>
+        </div>
+        <div class="risk-hint">Crew Paper (acct4) controls just these three entry gates on its own. Any field left blank / "inherit" uses the shared curated setting above — so this is non-destructive (Crew behaves exactly as today until you change something). RVOL already excludes Crew; exit/risk gates stay shared.</div>
       </div>
     </div>
 
@@ -1300,6 +1337,15 @@
           : '<span style="color:#666;font-size:0.76rem">none set</span>';
       }
 
+      // Crew Paper (acct4) entry-gate overrides — populate the section's fields.
+      const cg = (data.gates_by_account || {}).alpaca4 || {};
+      const _cgSet = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+      _cgSet('crewDaytypeSel', cg.daytype ? (cg.daytype.enabled ? 'on' : 'off') : 'inherit');
+      _cgSet('crewStrikesBase',  cg.strikes ? cg.strikes.base : '');
+      _cgSet('crewStrikesShort', cg.strikes ? (cg.strikes.short || '') : '');
+      _cgSet('crewHoursStart',   cg.hours ? (cg.hours.start || '') : '');
+      _cgSet('crewHoursEnd',     cg.hours ? (cg.hours.end || '') : '');
+
       // Per-position stop status badge
       const posBadge = document.getElementById('posStatusBadge');
       const posDot   = document.getElementById('posStatusDot');
@@ -1664,6 +1710,32 @@
       if (!res.ok) { const d = await res.json().catch(()=>({})); alert('Clear failed: ' + (d.error || res.status)); return; }
       await loadRisk();
     } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // Crew Paper (acct4) entry-gate overrides — day-type / strikes / hours.
+  async function saveCrewGates() {
+    const st = document.getElementById('crewGatesStatus');
+    const body = {
+      account:       '4',
+      daytype:       document.getElementById('crewDaytypeSel').value,
+      strikes_base:  document.getElementById('crewStrikesBase').value,
+      strikes_short: document.getElementById('crewStrikesShort').value,
+      hours_start:   document.getElementById('crewHoursStart').value.trim(),
+      hours_end:     document.getElementById('crewHoursEnd').value.trim(),
+    };
+    if (st) { st.style.color = '#888'; st.textContent = 'saving…'; }
+    try {
+      const res = await fetch('/api/routing/account_gates', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+      });
+      const d = await res.json();
+      if (!res.ok) { if (st) { st.style.color = '#e08a8a'; st.textContent = '✕ ' + (d.error || res.status); } return; }
+      if (st) {
+        st.style.color = '#7FE098';
+        st.textContent = Object.keys(d.overrides || {}).length ? '✓ saved' : '✓ cleared — inheriting shared';
+      }
+      await loadRisk();
+    } catch(e) { if (st) { st.style.color = '#e08a8a'; st.textContent = '✕ ' + e.message; } }
   }
 
   async function saveMorningTrail() {

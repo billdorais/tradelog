@@ -276,10 +276,20 @@ def _strike_limit(level, account_tag):
     """Strikes-per-level for this (level, account): SHORT levels (S3/S4) on a
     curated book use the tighter STRIKES_PER_LEVEL_SHORT (the re-fade cap) when set;
     everything else (longs, farms) uses STRIKES_PER_LEVEL. Read live so a settings
-    change takes effect without a restart."""
-    base = max(1, STRIKES_PER_LEVEL)
-    if (STRIKES_PER_LEVEL_SHORT >= 1 and (level or "").upper().startswith("S")
-            and account_tag in _CURATED_TAGS):
+    change takes effect without a restart. A per-account override
+    (GATES_BY_ACCOUNT[tag].strikes) wins over the shared globals when present."""
+    _ov = _account_gate_overrides(account_tag).get("strikes") or {}
+    _ov_base  = _ov.get("base")
+    _ov_short = _ov.get("short")
+    base = max(1, int(_ov_base)) if _ov_base else max(1, STRIKES_PER_LEVEL)
+    is_short = (level or "").upper().startswith("S")
+    if _ov:
+        # Overridden account: short cap applies to its OWN S-levels (no _CURATED_TAGS
+        # gate — this account opted in explicitly); 0/blank short ⇒ use its base.
+        if is_short and _ov_short and int(_ov_short) >= 1:
+            return max(1, int(_ov_short))
+        return base
+    if (STRIKES_PER_LEVEL_SHORT >= 1 and is_short and account_tag in _CURATED_TAGS):
         return max(1, STRIKES_PER_LEVEL_SHORT)
     return base
 
@@ -477,6 +487,32 @@ def _account_tp_map():
             _route_tp_acct_cache = {}
         _route_tp_acct_ts = now
     return _route_tp_acct_cache
+
+
+# Per-ACCOUNT ENTRY-GATE overrides — {account_tag: {daytype:{enabled,breakout_ok_days?},
+# strikes:{base,short}, hours:{start,end}}}. Lets one book (e.g. Crew Paper) tune its
+# day-type / strikes / trading-hours entry gates independently of the shared curated
+# settings. A missing account or sub-key ⇒ fall through to the shared behavior, so it's
+# non-destructive. Persisted as GATES_BY_ACCOUNT, refreshed every 60s like the TP map.
+_gates_acct_cache = {}
+_gates_acct_ts    = 0.0
+
+def _account_gate_overrides(account_tag=None):
+    """The GATES_BY_ACCOUNT override map, or one account's dict when `account_tag`
+    is given (empty dict if none). Sub-keys absent ⇒ inherit the shared gate."""
+    global _gates_acct_cache, _gates_acct_ts
+    import time as _rt
+    now = _rt.time()
+    if now - _gates_acct_ts > 60:
+        try:
+            _raw = _load_setting("GATES_BY_ACCOUNT")
+            _gates_acct_cache = json.loads(_raw) if _raw else {}
+        except Exception:
+            _gates_acct_cache = {}
+        _gates_acct_ts = now
+    if account_tag is not None:
+        return _gates_acct_cache.get(account_tag) or {}
+    return _gates_acct_cache
 
 def _strategy_band(strategy: str):
     """TYPE_LEVEL band key from a full strategy name (BREAKOUT_R4S4), else None."""
@@ -3133,6 +3169,7 @@ def risk_status():
         "take_profit_dollars": TAKE_PROFIT_DOLLARS if TAKE_PROFIT_DOLLARS > 0 else None,
         "take_profit_pct":     TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else None,
         "take_profit_by_account": _account_tp_map(),
+        "gates_by_account":       _account_gate_overrides(),
     })
 
 
@@ -9316,6 +9353,77 @@ def set_take_profit_band():
                     "account_tps": _map.get(tag, {}), "all": _map})
 
 
+@app.route("/api/routing/account_gates", methods=["POST"])
+def set_account_gates():
+    """Set ONE account's ENTRY-GATE overrides (day-type / strikes / trading-hours),
+    independent of the shared curated settings. A blank/omitted field CLEARS that
+    sub-key so the gate re-inherits the shared value (non-destructive).
+
+    Body: {account, daytype: "inherit"|"on"|"off", breakout_ok_days: ["Outside",..],
+           strikes_base: int|"", strikes_short: int|"",
+           hours_start: "HH:MM"|"", hours_end: "HH:MM"|""}
+    """
+    global _gates_acct_cache, _gates_acct_ts
+    data    = request.get_json(silent=True) or {}
+    account = str(data.get("account") or "").strip()
+    rec = ACCOUNTS_BY_NUM.get(account) or ACCOUNTS_BY_TAG.get(account.lower())
+    tag = rec["tag"] if rec else (account.lower() if account.lower().startswith("alpaca") else None)
+    if not tag:
+        return jsonify({"error": "valid account required"}), 400
+
+    _raw = _load_setting("GATES_BY_ACCOUNT")
+    try:    _map = json.loads(_raw) if _raw else {}
+    except Exception: _map = {}
+    acct = dict(_map.get(tag) or {})
+
+    # Day-type: "inherit" removes the override; "on"/"off" set enabled.
+    dt = (data.get("daytype") or "inherit").strip().lower()
+    if dt == "inherit":
+        acct.pop("daytype", None)
+    elif dt in ("on", "off"):
+        _d = {"enabled": dt == "on"}
+        _ok = data.get("breakout_ok_days")
+        if isinstance(_ok, list) and _ok:
+            _d["breakout_ok_days"] = [str(x) for x in _ok]
+        acct["daytype"] = _d
+    else:
+        return jsonify({"error": "daytype must be inherit / on / off"}), 400
+
+    # Strikes: blank base clears the whole strikes override.
+    def _int_or_none(v):
+        if v is None or str(v).strip() == "":
+            return None
+        try:    return int(v)
+        except (TypeError, ValueError): return "err"
+    sb = _int_or_none(data.get("strikes_base"))
+    ss = _int_or_none(data.get("strikes_short"))
+    if sb == "err" or ss == "err":
+        return jsonify({"error": "strikes must be integers"}), 400
+    if sb is None:
+        acct.pop("strikes", None)
+    else:
+        acct["strikes"] = {"base": max(1, sb), "short": max(0, ss or 0)}
+
+    # Hours: both blank clears; else store the window.
+    hs = (data.get("hours_start") or "").strip()
+    he = (data.get("hours_end")   or "").strip()
+    if not hs and not he:
+        acct.pop("hours", None)
+    else:
+        acct["hours"] = {"start": hs, "end": he}
+
+    if acct:
+        _map[tag] = acct
+    else:
+        _map.pop(tag, None)
+    _save_setting("GATES_BY_ACCOUNT", json.dumps(_map))
+    _gates_acct_cache = _map            # write-through for this worker
+    _gates_acct_ts    = time.time()
+    log.info("Per-account entry-gate overrides set: %s = %s", tag, acct or "(cleared)")
+    return jsonify({"account": tag, "label": (rec or {}).get("label", tag),
+                    "overrides": acct, "all": _map})
+
+
 @app.route("/api/routing/rules/bulk_remove_broker", methods=["POST"])
 def bulk_remove_broker():
     """Remove broker nodes whose value maps to a given account tag from every rule
@@ -11890,6 +11998,11 @@ def _account_hours(account: str):
     e = os.environ.get("HOURS_" + t + "_END")
     if s is not None or e is not None:
         return (s or ""), (e or "")
+    # Per-account override (GATES_BY_ACCOUNT[tag].hours) — wins over the hours_key
+    # window; blank start/end ⇒ inherit that window. Below the env override above.
+    _hov = _account_gate_overrides(account).get("hours") or {}
+    if _hov.get("start") or _hov.get("end"):
+        return (_hov.get("start") or ""), (_hov.get("end") or "")
     if _HOURS_KEY_BY_TAG.get(account, "paper") == "refined":
         return REFINED_HOURS_START, REFINED_HOURS_END
     return PAPER_HOURS_START, PAPER_HOURS_END
@@ -17457,10 +17570,19 @@ def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str)
         (Paper All + Kairos), when DAYTYPE_REVERSAL_GATE_ENABLED.
     Fails OPEN: an unclassifiable ticker (no daily bars) is allowed through."""
     su = (strategy or "").upper()
+    _dov = _account_gate_overrides(account_tag).get("daytype")
     if "BREAKOUT" in su:
-        if not DAYTYPE_GATE_ENABLED or account_tag not in DAYTYPE_GATE_ACCOUNTS:
+        if _dov is not None:
+            # Per-account override: this account controls the breakout day-type gate
+            # itself, independent of the shared DAYTYPE_GATE_ENABLED + membership.
+            if not _dov.get("enabled"):
+                return False, ""
+            ok_days = set(_dov.get("breakout_ok_days") or DAYTYPE_GATE_BREAKOUT_OK_DAYS)
+            kind_lbl = "breakout"
+        elif not DAYTYPE_GATE_ENABLED or account_tag not in DAYTYPE_GATE_ACCOUNTS:
             return False, ""
-        ok_days, kind_lbl = DAYTYPE_GATE_BREAKOUT_OK_DAYS, "breakout"
+        else:
+            ok_days, kind_lbl = DAYTYPE_GATE_BREAKOUT_OK_DAYS, "breakout"
     elif "REVERSAL" in su:
         if not DAYTYPE_REVERSAL_GATE_ENABLED or account_tag not in DAYTYPE_REVERSAL_GATE_ACCOUNTS:
             return False, ""
