@@ -9404,6 +9404,27 @@ def set_account_gates():
     else:
         acct["strikes"] = {"base": max(1, sb), "short": max(0, ss or 0)}
 
+    # RVOL: "inherit" removes; "on"/"off" set enabled (+ optional min / short_cap).
+    rv = (data.get("rvol") or "inherit").strip().lower()
+    if rv == "inherit":
+        acct.pop("rvol", None)
+    elif rv in ("on", "off"):
+        _r = {"enabled": rv == "on"}
+        def _float_or_none(v):
+            if v is None or str(v).strip() == "":
+                return None
+            try:    return float(v)
+            except (TypeError, ValueError): return "err"
+        _mn = _float_or_none(data.get("rvol_min"))
+        _sc = _float_or_none(data.get("rvol_short_cap"))
+        if _mn == "err" or _sc == "err":
+            return jsonify({"error": "rvol min / short_cap must be numbers"}), 400
+        if _mn is not None: _r["min"] = max(0.0, _mn)
+        if _sc is not None: _r["short_cap"] = max(0.0, _sc)
+        acct["rvol"] = _r
+    else:
+        return jsonify({"error": "rvol must be inherit / on / off"}), 400
+
     # Hours: both blank clears; else store the window.
     hs = (data.get("hours_start") or "").strip()
     he = (data.get("hours_end")   or "").strip()
@@ -13226,9 +13247,19 @@ def _rvol_gate_block(strategy, side, ticker, account_tag, now_dt=None):
     at/above RVOL_GATE_SHORT_CAP ('rvol_blowoff', the run-over zone). FAILS OPEN when
     RVOL can't be computed (data glitch / too near the open): a gate must never mute
     the book on a fetch error. Non-breakouts, ungated accounts, and the disabled
-    state all pass through."""
-    if not RVOL_GATE_ENABLED or account_tag not in RVOL_GATE_ACCOUNTS:
-        return (False, None, None)
+    state all pass through. A per-account override (GATES_BY_ACCOUNT[tag].rvol) lets a
+    normally-ungated book (e.g. Crew) opt IN with its own min / short-cap, independent
+    of the shared RVOL_GATE_ENABLED + membership."""
+    _rov = _account_gate_overrides(account_tag).get("rvol")
+    if _rov is not None:
+        if not _rov.get("enabled"):
+            return (False, None, None)
+        _min = float(_rov["min"]) if _rov.get("min") is not None else RVOL_GATE_MIN
+        _cap = float(_rov["short_cap"]) if _rov.get("short_cap") is not None else RVOL_GATE_SHORT_CAP
+    else:
+        if not RVOL_GATE_ENABLED or account_tag not in RVOL_GATE_ACCOUNTS:
+            return (False, None, None)
+        _min, _cap = RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP
     if not ticker or "BREAKOUT" not in (strategy or "").upper():
         return (False, None, None)
     try:
@@ -13241,9 +13272,9 @@ def _rvol_gate_block(strategy, side, ticker, account_tag, now_dt=None):
         return (False, None, None)
     if rvol is None:
         return (False, None, None)          # fail open
-    if rvol < RVOL_GATE_MIN:
+    if rvol < _min:
         return (True, "rvol_low", rvol)
-    if (side or "").lower() == "short" and RVOL_GATE_SHORT_CAP > 0 and rvol >= RVOL_GATE_SHORT_CAP:
+    if (side or "").lower() == "short" and _cap > 0 and rvol >= _cap:
         return (True, "rvol_blowoff", rvol)
     return (False, None, rvol)
 

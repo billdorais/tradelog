@@ -71,6 +71,23 @@ def test_daytype_override(gates, monkeypatch):
     assert a._daytype_gate_block(strat, tk, date, "alpaca2")[0] is False or True  # shared-dependent; must not raise
 
 
+def test_rvol_opt_in_override(gates, monkeypatch):
+    _a, store = gates
+    monkeypatch.setattr(a, "RVOL_GATE_ENABLED", False)      # shared gate globally off
+    monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", {"alpaca2", "alpaca3"})  # Crew excluded
+    monkeypatch.setattr(a, "RVOL_GATE_METHOD", "trailing")
+    monkeypatch.setattr(a, "_live_rvol", lambda t, lookback=20, now_dt=None: 1.0)  # thin
+    strat, tk = "GOOG_CAM_BREAKOUT_R3S3_V02_5MIN", "GOOG"
+    # No override → Crew stays ungated even though RVOL is thin.
+    assert a._rvol_gate_block(strat, "long", tk, "alpaca4")[0] is False
+    # Crew opts in with min 1.5 → a 1.0x breakout is now blocked on Crew only.
+    _set(store, {"alpaca4": {"rvol": {"enabled": True, "min": 1.5}}})
+    blk, reason, rv = a._rvol_gate_block(strat, "long", tk, "alpaca4")
+    assert blk is True and reason == "rvol_low"
+    # Another ungated account is unaffected.
+    assert a._rvol_gate_block(strat, "long", tk, "alpaca5")[0] is False
+
+
 def test_endpoint_round_trip_and_clear(gates, monkeypatch):
     _a, store = gates
     monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {"4": {"tag": "alpaca4", "label": "Crew Paper"}})
@@ -78,9 +95,11 @@ def test_endpoint_round_trip_and_clear(gates, monkeypatch):
     a.app.config["TESTING"] = True
     with a.app.test_client() as c:
         r = c.post("/api/routing/account_gates", json={
-            "account": "4", "daytype": "off", "strikes_base": "3", "strikes_short": "1",
+            "account": "4", "daytype": "off", "rvol": "on", "rvol_min": "1.5",
+            "strikes_base": "3", "strikes_short": "1",
             "hours_start": "10:00", "hours_end": "11:00"}).get_json()
     assert r["overrides"]["daytype"] == {"enabled": False}
+    assert r["overrides"]["rvol"] == {"enabled": True, "min": 1.5}
     assert r["overrides"]["strikes"] == {"base": 3, "short": 1}
     assert r["overrides"]["hours"] == {"start": "10:00", "end": "11:00"}
     # persisted + enforced through the helpers
@@ -90,6 +109,6 @@ def test_endpoint_round_trip_and_clear(gates, monkeypatch):
     # blank fields → the override is cleared (re-inherits)
     with a.app.test_client() as c:
         r2 = c.post("/api/routing/account_gates", json={
-            "account": "4", "daytype": "inherit", "strikes_base": "",
+            "account": "4", "daytype": "inherit", "rvol": "inherit", "strikes_base": "",
             "hours_start": "", "hours_end": ""}).get_json()
     assert r2["overrides"] == {}
