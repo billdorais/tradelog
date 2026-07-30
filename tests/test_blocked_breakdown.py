@@ -66,10 +66,15 @@ def test_unmatched_strategies_groups_and_suggests(monkeypatch):
     # MSFT fired with a V02 alert but the rule is V01 — same ticker+kind+level → real drift.
     conn.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
                  (today, "MSFT", "MSFT_CAM_BREAKOUT_R3S3_V02_5MIN", "buy", "long", "error", NM))
+    # GOOG fired and the EXACT rule exists (but has no broker) → rule_exists, not drift.
+    conn.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
+                 (today, "GOOG", "GOOG_CAM_BREAKOUT_R3S3_V02_5MIN", "buy", "long", "error", NM))
     conn.execute("INSERT INTO routing_rules VALUES (1,1,?)",
                  (json.dumps([{"type": "strategy", "value": "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"}]),))
     conn.execute("INSERT INTO routing_rules VALUES (2,1,?)",
                  (json.dumps([{"type": "strategy", "value": "MSFT_CAM_BREAKOUT_R3S3_V01_5MIN"}]),))
+    conn.execute("INSERT INTO routing_rules VALUES (3,1,?)",
+                 (json.dumps([{"type": "strategy", "value": "GOOG_CAM_BREAKOUT_R3S3_V02_5MIN"}]),))
     conn.commit()
     monkeypatch.setattr(a, "get_db", lambda: conn)
     a.app.config["TESTING"] = True
@@ -82,6 +87,9 @@ def test_unmatched_strategies_groups_and_suggests(monkeypatch):
     assert by["ZZZZ_CAM_BREAKOUT_R3S3_V02_5MIN"]["nearest_rule"] is None
     msft = by["MSFT_CAM_BREAKOUT_R3S3_V02_5MIN"]
     assert msft["likely_typo"] is True           # same ticker+kind+level, only version differs
+    goog = by["GOOG_CAM_BREAKOUT_R3S3_V02_5MIN"]
+    assert goog["rule_exists"] is True           # exact rule present — a routing (no-broker) issue
+    assert goog["likely_typo"] is False and goog["nearest_rule"] is None
 
 
 def test_wire_to_farm_creates_rule_then_is_idempotent(monkeypatch, tmp_path):

@@ -13241,6 +13241,7 @@ def api_unmatched_strategies():
         parts = su[i + 5:].split("_")
         return (su[:i], parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
 
+    rule_set = set(rule_list)
     counts = Counter()
     for e in erows:
         s   = (e.get("strategy") or "").strip().upper()
@@ -13249,17 +13250,22 @@ def api_unmatched_strategies():
             counts[s] += 1
     unmatched = []
     for strat, cnt in counts.most_common():
-        near = difflib.get_close_matches(strat, rule_list, n=1, cutoff=0.82)
-        nr   = near[0] if near else None
+        exact = strat in rule_set   # a rule with this EXACT name already exists
+        near  = difflib.get_close_matches(strat, rule_list, n=1, cutoff=0.82)
+        nr    = near[0] if near else None
         # A cross-ticker fuzzy hit (ZZZZ ~ MSFT via the shared suffix) isn't a useful
         # suggestion — only keep a nearest rule that shares the TICKER.
         if nr and _slug_key(nr)[0] != _slug_key(strat)[0]:
             nr = None
-        # Only a TRUE drift (same ticker+kind+level, differs in version/format) is a
-        # typo. A different level/kind is a distinct strategy that is genuinely unwired.
-        drift = bool(nr) and _slug_key(nr) == _slug_key(strat)
+        # If the EXACT rule exists, this isn't a naming problem — the rule matched
+        # but produced no broker (e.g. non-top-N: Refined broker stripped, no farm
+        # fan-out). Only a same-ticker+kind+level near-match with a DIFFERENT name is
+        # a true typo/version drift.
+        drift = (not exact) and bool(nr) and _slug_key(nr) == _slug_key(strat)
         unmatched.append({"strategy": strat, "count": cnt,
-                          "nearest_rule": nr, "likely_typo": drift})
+                          "rule_exists": exact,
+                          "nearest_rule": None if exact else nr,
+                          "likely_typo": drift})
     return jsonify({"days": days, "from": cutoff, "n_rules": len(rule_list),
                     "unmatched": unmatched})
 

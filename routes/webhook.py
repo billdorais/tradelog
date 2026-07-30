@@ -77,7 +77,11 @@ def _add_tv_pilot_targets(alpaca_targets, broker_targets, matched_no_broker_bund
     broker_target on an entry means this IS a real TV entry. Mutates alpaca_targets;
     returns [(tag, shares, "added"|"resized")]."""
     import app as _app
-    if is_exit or not broker_targets:
+    # Fire on a real ENTRY. A matched rule with NO broker node (e.g. a non-top-N
+    # strategy whose Refined broker was stripped by the daily refresh) still counts
+    # as a real entry the farm must trade — without this it produced zero broker
+    # targets and fell through entirely ("no pipeline matched"), losing the signal.
+    if is_exit or (not broker_targets and not matched_no_broker_bundles):
         return []
     pilots = _app._tv_pilot_accounts()          # [(tag, amount, unit)]
     if not pilots:
@@ -801,6 +805,11 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                                _matched_no_broker_bundles, _is_exit,
                                                price=data.get("price")):
         app.log.info("TV farm: %s %s (%s sh) to %s %s", _act, _t, _sh, order_action, ticker)
+    # If the farm fan-out rescued a matched-but-broker-less entry, it's no longer a
+    # "no pipeline matched" error — the async Alpaca loop below will place the farm
+    # order and set the real status on fill. Clear the transient error stamp.
+    if exec_status == "error" and alpaca_targets:
+        exec_status = exec_detail = None
 
     # Per-account trading-hours gate (entries only) — drop the Alpaca targets whose
     # account is outside its configured window, while letting in-window accounts

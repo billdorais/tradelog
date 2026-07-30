@@ -104,6 +104,19 @@ def test_disabled_is_noop(farm_app):
     assert _tags(alpaca_targets) == ["alpaca-paper-2"]
 
 
+def test_no_broker_match_is_rescued_to_farm(farm_app):
+    a, wh = farm_app
+    # A matched rule with NO broker node → broker_targets empty, but the matched
+    # no-broker bundle proves it's a real entry the farm must still trade (was
+    # falling through as "no pipeline matched").
+    base = {"quantity": 10, "entry_source_kairos": False}
+    alpaca_targets = []
+    out = wh._add_tv_pilot_targets(alpaca_targets, [], [dict(base)], is_exit=False)
+    assert out == [("alpaca", 10, "added")]
+    assert _tags(alpaca_targets) == ["alpaca-paper"]
+    assert alpaca_targets[0][1] == 10
+
+
 def test_fully_suppressed_signal_adds_nothing(farm_app):
     a, wh = farm_app
     added = wh._add_tv_pilot_targets([], [], [], is_exit=False)

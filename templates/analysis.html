@@ -3457,12 +3457,14 @@
       if (!list.length) { box.innerHTML = ''; return; }
       const rows = list.map(u => {
         const sJs = u.strategy.replace(/'/g, "\\'");
-        // Every unmatched strategy is unwired by definition, so it always gets a
-        // Wire button. The nearest-rule hint just adds context.
         const wireBtn = `<button class="sweep-apply-btn" onclick="wireToFarm('${sJs}', this)" title="Create a routing rule sending this strategy to Paper All (TV Farm) so it starts trading">Wire → Paper All</button>`;
         let sugg;
-        if (u.likely_typo) {
-          sugg = `<span style="color:#f0a35e">⚠ name drift — rule exists:</span> <span style="color:#c4b5fd">${u.nearest_rule}</span> — fix the name on Routing, or ${wireBtn}`;
+        if (u.rule_exists) {
+          // The rule exists by exact name but produced no broker (non-top-N: Refined
+          // broker stripped). The farm fan-out fix now routes these to Paper All.
+          sugg = `<span style="color:#7FE098">rule exists — matched but had no broker</span> <span style="color:#888">(non-top-N; the farm fan-out now routes it to Paper All — no action needed)</span>`;
+        } else if (u.likely_typo) {
+          sugg = `<span style="color:#f0a35e">⚠ name drift — rule exists:</span> <span style="color:#c4b5fd">${u.nearest_rule}</span> <span style="color:#888">— fix the name on Routing (don't wire a duplicate)</span>`;
         } else if (u.nearest_rule) {
           sugg = `<span style="color:#888">unwired · closest: ${u.nearest_rule}</span> ${wireBtn}`;
         } else {
