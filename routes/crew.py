@@ -2004,13 +2004,37 @@ def api_crew_wire_preview():
     (no report needed) so the Crew book can be a clean mirror of the leaderboards."""
     if (request.args.get("source") or "").lower() == "snapshot":
         from flask import current_app as _ca
+        import app as _kairos
         picks, warnings = _snapshot_top_picks(_ca._get_current_object(), n=9)
         kc = sum(1 for p in picks if p.get("entry") == "kairos")
+        # Diff vs the latest crew report's judgment picks so the user can see what the
+        # deterministic mirror keeps, skips, and what the crew added that the top-9 miss.
+        comparison = None
+        try:
+            _c = _kairos.get_db(); _cu = _c.cursor()
+            _cu.execute("SELECT report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+            _row = _cu.fetchone(); _c.close()
+            if _row:
+                _report = _row[0] if _kairos.DATABASE_URL else _row["report"]
+                crew_picks = _parse_next_month_card(_report)["picks"]
+                snap_map = {p["strategy"]: (p.get("entry") or "tv") for p in picks}
+                crew_map = {p["strategy"]: (p.get("entry") or "tv") for p in crew_picks}
+                both = sorted(set(snap_map) & set(crew_map))
+                comparison = {
+                    "crew_count":    len(crew_map),
+                    "shared":        both,
+                    "snapshot_only": sorted(set(snap_map) - set(crew_map)),   # crew skipped these
+                    "crew_only":     sorted(set(crew_map) - set(snap_map)),   # crew added, not in top-9
+                    "tag_diff":      sorted(s for s in both if snap_map[s] != crew_map[s]),
+                }
+        except Exception:
+            comparison = None
         return jsonify({
             "picks": picks, "count": len(picks), "has_block": True,
             "source": "snapshot", "entry_source": "per-pick", "sizing": "equal",
             "size_dollars": None, "daytype": None,
             "tv_count": len(picks) - kc, "kairos_count": kc, "warnings": warnings,
+            "comparison": comparison,
         })
     import app as _kairos
     conn = _kairos.get_db(); cur = conn.cursor()

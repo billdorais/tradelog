@@ -744,6 +744,25 @@
       const countColor = picks.length === 18 ? '#7FE098' : '#F2C76B';
       const srcLabel = source === 'snapshot'
         ? 'Snapshot top 9+9 (deterministic mirror)' : 'Latest crew report';
+      // Diff vs the crew's judgment picks (snapshot source only).
+      let cmpHtml = '';
+      if (d.comparison) {
+        const c = d.comparison;
+        const fmtList = arr => arr.length
+          ? arr.map(s => `<span style="color:#aaa">${s}</span>`).join(', ')
+          : '<span style="color:#555">none</span>';
+        cmpHtml =
+          `<div style="margin:8px 0 4px;font-size:0.72rem;color:#888;border-top:1px solid #222;padding-top:6px">`
+          + `vs latest crew report (${c.crew_count} picks): `
+          + `<span style="color:#7FE098">${c.shared.length} shared</span> · `
+          + `<span style="color:#F2C76B">${c.snapshot_only.length} snapshot-only</span> · `
+          + `<span style="color:#c98b8b">${c.crew_only.length} crew-only</span></div>`
+          + `<div style="font-size:0.72rem;color:#777;line-height:1.6">`
+          + `<div><b style="color:#F2C76B">In your top-9, the crew skipped:</b> ${fmtList(c.snapshot_only)}</div>`
+          + `<div><b style="color:#c98b8b">Crew picked, outside your top-9:</b> ${fmtList(c.crew_only)}</div>`
+          + (c.tag_diff.length ? `<div><b style="color:#70a8f5">Same name, different entry tag:</b> ${fmtList(c.tag_diff)}</div>` : '')
+          + `</div>`;
+      }
       out.style.color = '#ccc';
       out.innerHTML =
         `<div style="font-weight:600;color:#e0e0e0;margin-bottom:4px">Pre-wire preview · ${srcLabel} — `
@@ -752,8 +771,9 @@
         + `· ${sizeTxt} · exits cloned per strategy</div>`
         + warnHtml
         + `<div style="overflow-x:auto;margin:6px 0"><table style="border-collapse:collapse;font-size:0.75rem">${rows}</table></div>`
-        + `<button onclick="confirmWire(this, '${source}')" style="background:rgba(127,224,152,0.12);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✓ Confirm &amp; wire ${picks.length}</button>`
-        + ` <button onclick="cancelWire()" style="background:transparent;border:1px solid #333;color:#888;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit">Cancel</button>`;
+        + cmpHtml
+        + `<div style="margin-top:8px"><button onclick="confirmWire(this, '${source}')" style="background:rgba(127,224,152,0.12);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✓ Confirm &amp; wire ${picks.length}</button>`
+        + ` <button onclick="cancelWire()" style="background:transparent;border:1px solid #333;color:#888;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit">Cancel</button></div>`;
     } catch (e) {
       out.style.color = '#ef5350'; out.textContent = '⚠ ' + e;
     } finally {
