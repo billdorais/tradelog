@@ -2188,6 +2188,121 @@ def crew_page():
     return render_template("crew.html")
 
 
+def _prep_and_run_kairos(q, app_obj, from_date, to_date, range_label, kairos_target):
+    """Pre-fetch all Kairos crew inputs, then run the crew. Runs in a BACKGROUND
+    thread so the SSE Response returns immediately: the pre-fetch makes ~9 internal
+    Alpaca calls and on a wide window (e.g. 'Last Month') can exceed the gunicorn
+    worker timeout — when it ran synchronously before the Response, the proxy saw no
+    bytes and returned 502 before the stream even started. Uses the passed app object
+    for test_client (there's no request context off-thread). Any prep failure is
+    pushed to the queue as an error event so the stream surfaces it instead of hanging."""
+    import app as _kairos
+    strat_data        = {}
+    engine_strat_data = {}
+    journal_data = []
+    prev_reports = []
+    rules_data   = []
+    engine_data  = {}
+    card_data    = {}
+    _pa          = {}   # TV Farm (acct1) full-sample leaderboard
+    _pa5         = {}   # Kairos Farm (acct5) full-sample leaderboard
+    try:
+        _dr  = (f"&from_date={from_date}" if from_date else "") + (f"&to_date={to_date}" if to_date else "")
+        # Farms are the FULL-SAMPLE audition pools — always a fixed 45d trailing window
+        # regardless of the report's analysis range (a narrow window would starve them).
+        _FARM_WINDOW_DAYS = 45
+        try:    _farm_anchor = datetime.fromisoformat(to_date).date() if to_date else datetime.now(timezone.utc).date()
+        except Exception: _farm_anchor = datetime.now(timezone.utc).date()
+        _farm_dr = (f"&from_date={(_farm_anchor - timedelta(days=_FARM_WINDOW_DAYS)).isoformat()}"
+                    f"&to_date={_farm_anchor.isoformat()}")
+        _qs  = "account=2" + _dr
+        _qs3 = "account=3" + _dr
+        with app_obj.test_client() as _c:
+            strat_data        = _c.get(f"/api/alpaca/analysis?{_qs}").get_json()  or {}
+            engine_strat_data = _c.get(f"/api/alpaca/analysis?{_qs3}").get_json() or {}
+            journal_data = _c.get("/api/journal/entries?account=2").get_json() or []
+            rules_data   = _c.get("/api/routing/rules").get_json()           or []
+            engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
+            _pa  = _c.get(f"/api/alpaca/analysis?account=1{_farm_dr}").get_json() or {}
+            _pa5 = _c.get(f"/api/alpaca/analysis?account=5{_farm_dr}").get_json() or {}
+            _s2  = _c.get(f"/api/alpaca/ls_breakdown?account=2{_dr}").get_json() or {}
+            _s3  = _c.get(f"/api/alpaca/ls_breakdown?account=3{_dr}").get_json() or {}
+            _s4  = _c.get(f"/api/alpaca/ls_breakdown?account=4{_dr}").get_json() or {}
+        _IDX = ("SPY", "QQQ", "IWM", "SMH")
+        def _idx_sum(ps):
+            out = {}
+            for nm, s in (ps or {}).items():
+                tk = nm.upper().split("_")[0]
+                if tk in _IDX:
+                    out[tk] = round(out.get(tk, 0) + (s.get("total_pnl", 0) or 0), 2)
+            return out
+        card_data = {
+            "indices_paper_all": _idx_sum(_pa.get("per_strategy")),
+            "side_refined": (_s2 or {}).get("overall_side"),
+            "side_kairos":  (_s3 or {}).get("overall_side"),
+            "side_crew":    (_s4 or {}).get("overall_side"),
+            "side_gated_refined": (_s2 or {}).get("side_gated_candidates"),
+            "side_gated_kairos":  (_s3 or {}).get("side_gated_candidates"),
+            "side_gated_crew":    (_s4 or {}).get("side_gated_candidates"),
+            "band_side_refined": (_s2 or {}).get("by_band_side"),
+            "band_side_kairos":  (_s3 or {}).get("by_band_side"),
+            "band_side_crew":    (_s4 or {}).get("by_band_side"),
+            "side_daytype_refined": (_s2 or {}).get("by_side_daytype"),
+            "side_daytype_kairos":  (_s3 or {}).get("by_side_daytype"),
+            "side_daytype_crew":    (_s4 or {}).get("by_side_daytype"),
+        }
+    except Exception:
+        pass
+    try:
+        _conn = _kairos.get_db(); _cur = _conn.cursor()
+        _cur.execute(
+            "SELECT week, created_at, report FROM crew_reports "
+            "ORDER BY created_at DESC LIMIT 3"
+        )
+        for _row in _cur.fetchall():
+            prev_reports.append({
+                "week":       _row[0] if _kairos.DATABASE_URL else _row["week"],
+                "created_at": _row[1] if _kairos.DATABASE_URL else _row["created_at"],
+                "report":     _row[2] if _kairos.DATABASE_URL else _row["report"],
+            })
+        _conn.close()
+    except Exception:
+        pass
+    scorecard_data = {}
+    try:
+        if prev_reports:
+            scorecard_data = _pick_scorecard(prev_reports[0])
+    except Exception:
+        pass
+    book_data = {}
+    try:
+        book_data = _crew_book_scorecard()
+    except Exception:
+        pass
+    # Snapshot leaderboard rankings (composite SCORE order) — the SAME ranking the
+    # user watches on the Analysis page and that acct2/acct3 trade. In-memory first,
+    # else the persisted copy.
+    def _load_snap(mem_attr, setting_key):
+        snap = getattr(_kairos, mem_attr, None) or {}
+        if not snap.get("top_scored"):
+            try:
+                _st = _kairos._load_setting(setting_key)
+                if _st:
+                    import json as _sj
+                    snap = _sj.loads(_st)
+            except Exception:
+                pass
+        return snap
+    tv_snap_rank     = _load_snap("_refined_last_result",        "REFINED_LAST_RESULT")
+    kairos_snap_rank = _load_snap("_kairos_refined_last_result", "KAIROS_REFINED_LAST_RESULT")
+    try:
+        _run_kairos_crew(q, strat_data, journal_data, prev_reports, range_label or "custom range",
+                         rules_data, engine_data, engine_strat_data, card_data, scorecard_data,
+                         book_data, _pa, _pa5, kairos_target, tv_snap_rank, kairos_snap_rank)
+    except Exception as _e:
+        q.put({"type": "error", "error": f"crew prep/run failed: {_e}", "ts": _ts()})
+
+
 @crew_bp.route("/api/crew/run", methods=["POST"])
 def api_crew_run():
     data       = request.get_json(silent=True) or {}
@@ -2197,141 +2312,18 @@ def api_crew_run():
     q = queue.Queue()
 
     if crew_type == "kairos":
-        # Pre-fetch all data while we have Flask request context.
+        # Extract request-bound values here (request context), then hand off ALL the
+        # heavy pre-fetch to a background thread so the streaming Response returns
+        # immediately (see _prep_and_run_kairos for why — avoids the 502-before-stream).
         from flask import current_app as _ca
-        import app as _kairos
+        _app = _ca._get_current_object()
         from_date    = (data.get("from") or "").strip()
         to_date      = (data.get("to")   or "").strip()
         range_label  = (data.get("label") or "").strip()
         kairos_target = (str(data.get("kairos_target") or "9")).strip().lower()
-        strat_data        = {}
-        engine_strat_data = {}
-        journal_data = []
-        prev_reports = []
-        rules_data   = []
-        engine_data  = {}
-        card_data    = {}
-        _pa          = {}   # TV Farm (acct1) full-sample leaderboard
-        _pa5         = {}   # Kairos Farm (acct5) full-sample leaderboard
-        try:
-            _dr  = (f"&from_date={from_date}" if from_date else "") + (f"&to_date={to_date}" if to_date else "")
-            # Farm leaderboards (acct1 TV Farm, acct5 Kairos Farm) are the FULL-SAMPLE
-            # audition pools — their whole value is DEEP history, so they always query a
-            # fixed trailing window regardless of the report's analysis range. Slicing
-            # them to a narrow "Today"/"This Month" selection starves them and wipes out
-            # the farm-backed [Kairos]/[TV] picks the guardrail depends on.
-            _FARM_WINDOW_DAYS = 45
-            try:    _farm_anchor = datetime.fromisoformat(to_date).date() if to_date else datetime.now(timezone.utc).date()
-            except Exception: _farm_anchor = datetime.now(timezone.utc).date()
-            _farm_dr = (f"&from_date={(_farm_anchor - timedelta(days=_FARM_WINDOW_DAYS)).isoformat()}"
-                        f"&to_date={_farm_anchor.isoformat()}")
-            _qs  = "account=2" + _dr
-            _qs3 = "account=3" + _dr
-            with _ca.test_client() as _c:
-                strat_data        = _c.get(f"/api/alpaca/analysis?{_qs}").get_json()  or {}
-                engine_strat_data = _c.get(f"/api/alpaca/analysis?{_qs3}").get_json() or {}
-                # Scope to TV Refined — the book this comparison is about. Journals
-                # are per-account now, so an unfiltered pull would blend Kairos/Crew
-                # sweeps into it.
-                journal_data = _c.get("/api/journal/entries?account=2").get_json() or []
-                rules_data   = _c.get("/api/routing/rules").get_json()           or []
-                engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
-                # Inputs for the "Next Month" card baked into the report. Farms use the
-                # fixed deep trailing window (_farm_dr), not the report's _dr.
-                _pa  = _c.get(f"/api/alpaca/analysis?account=1{_farm_dr}").get_json() or {}
-                # Kairos Farm (acct5) full-sample leaderboard — the engine-entry
-                # audition pool that backs [Kairos] picks (acct1 above backs [TV]).
-                _pa5 = _c.get(f"/api/alpaca/analysis?account=5{_farm_dr}").get_json() or {}
-                _s2  = _c.get(f"/api/alpaca/ls_breakdown?account=2{_dr}").get_json() or {}
-                _s3  = _c.get(f"/api/alpaca/ls_breakdown?account=3{_dr}").get_json() or {}
-                # Crew Paper's own book — the crew grades its picks via the scorecard
-                # but was blind to how its own bands/sides actually traded.
-                _s4  = _c.get(f"/api/alpaca/ls_breakdown?account=4{_dr}").get_json() or {}
-            _IDX = ("SPY", "QQQ", "IWM", "SMH")
-            def _idx_sum(ps):
-                out = {}
-                for nm, s in (ps or {}).items():
-                    tk = nm.upper().split("_")[0]
-                    if tk in _IDX:
-                        out[tk] = round(out.get(tk, 0) + (s.get("total_pnl", 0) or 0), 2)
-                return out
-            card_data = {
-                "indices_paper_all": _idx_sum(_pa.get("per_strategy")),
-                "side_refined": (_s2 or {}).get("overall_side"),
-                "side_kairos":  (_s3 or {}).get("overall_side"),
-                "side_crew":    (_s4 or {}).get("overall_side"),
-                # Strategies that would rank better gated to one side (acct2 / 3 / 4).
-                "side_gated_refined": (_s2 or {}).get("side_gated_candidates"),
-                "side_gated_kairos":  (_s3 or {}).get("side_gated_candidates"),
-                "side_gated_crew":    (_s4 or {}).get("side_gated_candidates"),
-                # Per-band x side P&L (BREAKOUT/REVERSAL x R3S3/R4S4 x long/short) — a
-                # more robust, band-level side signal than the per-strategy candidates.
-                # Bands carry the strategy kind, so a bleeding level can be traced to
-                # breakouts or reversals rather than blaming the level as a whole.
-                "band_side_refined": (_s2 or {}).get("by_band_side"),
-                "band_side_kairos":  (_s3 or {}).get("by_band_side"),
-                "band_side_crew":    (_s4 or {}).get("by_band_side"),
-                # Side x day-type — the regime-vs-structural test for a one-sided
-                # bleed: a side that loses on EVERY day type is regime (the tape),
-                # a side that loses only on specific day types is structural and the
-                # day-type gate can address it.
-                "side_daytype_refined": (_s2 or {}).get("by_side_daytype"),
-                "side_daytype_kairos":  (_s3 or {}).get("by_side_daytype"),
-                "side_daytype_crew":    (_s4 or {}).get("by_side_daytype"),
-            }
-        except Exception:
-            pass
-        try:
-            _conn = _kairos.get_db(); _cur = _conn.cursor()
-            _cur.execute(
-                "SELECT week, created_at, report FROM crew_reports "
-                "ORDER BY created_at DESC LIMIT 3"
-            )
-            for _row in _cur.fetchall():
-                prev_reports.append({
-                    "week":       _row[0] if _kairos.DATABASE_URL else _row["week"],
-                    "created_at": _row[1] if _kairos.DATABASE_URL else _row["created_at"],
-                    "report":     _row[2] if _kairos.DATABASE_URL else _row["report"],
-                })
-            _conn.close()
-        except Exception:
-            pass
-        # Grade the LAST report's picks against actual Crew Paper results — the
-        # advisor's out-of-sample feedback loop, embedded at the top of the report.
-        scorecard_data = {}
-        try:
-            if prev_reports:
-                scorecard_data = _pick_scorecard(prev_reports[0])
-        except Exception:
-            pass
-        # How the strategies wired to Crew Paper RIGHT NOW are actually doing — the
-        # live book, sourced from the routing rules so it covers every wired strategy
-        # (the pick scorecard only sees the last report's card).
-        book_data = {}
-        try:
-            book_data = _crew_book_scorecard()
-        except Exception:
-            pass
-        # Snapshot leaderboard rankings (composite SCORE order) — the SAME ranking the
-        # user watches on the Analysis page and that acct2/acct3 trade. Feed both so
-        # the crew's [TV]/[Kairos] picks track the leaderboards instead of re-deriving
-        # a different order from raw farm P&L. In-memory first, else the persisted copy.
-        def _load_snap(mem_attr, setting_key):
-            snap = getattr(_kairos, mem_attr, None) or {}
-            if not snap.get("top_scored"):
-                try:
-                    _st = _kairos._load_setting(setting_key)
-                    if _st:
-                        import json as _sj
-                        snap = _sj.loads(_st)
-                except Exception:
-                    pass
-            return snap
-        tv_snap_rank     = _load_snap("_refined_last_result",        "REFINED_LAST_RESULT")
-        kairos_snap_rank = _load_snap("_kairos_refined_last_result", "KAIROS_REFINED_LAST_RESULT")
         threading.Thread(
-            target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data, _pa, _pa5, kairos_target, tv_snap_rank, kairos_snap_rank),
+            target=_prep_and_run_kairos,
+            args=(q, _app, from_date, to_date, range_label, kairos_target),
             daemon=True,
         ).start()
     else:
@@ -2340,7 +2332,11 @@ def api_crew_run():
         threading.Thread(target=_run_crew, args=(topic, q), daemon=True).start()
 
     def generate():
-        # Heartbeat every 15s during silence. Agent 2 (the systematic trader) is a
+        # Flush a heartbeat IMMEDIATELY so the proxy gets bytes before the (possibly
+        # slow) background pre-fetch finishes — otherwise a wide-window prep could
+        # exceed the gateway's time-to-first-byte and 502 before the stream starts.
+        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        # Then heartbeat every 15s during silence. Agent 2 (the systematic trader) is a
         # single long LLM call that emits no queue events while it thinks; without a
         # frequent keep-alive, an idle proxy/load-balancer drops the stream mid-run
         # and the browser reports a bare "network error". 15s stays well under any
