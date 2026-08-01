@@ -256,8 +256,11 @@
       <button onclick="openCrewChat()" style="background:rgba(196,181,253,0.1);border:1px solid #6d5fa8;color:#c4b5fd;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✦ Chat with Advisor</button>
       <button onclick="previewWire('report')" id="wireBtn" title="Preview the latest crew report's 'Next Month — Crew Paper' picks, then wire them to the Signal Router (Crew Paper / alpaca-paper-4)." style="background:rgba(127,224,152,0.1);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">⚡ Wire report → Crew Paper</button>
       <button onclick="previewWire('snapshot')" id="wireSnapBtn" title="Wire the deterministic top 9 from each Refined snapshot (TV + Kairos) straight to Crew Paper, with per-pick side gates — a clean mirror of your leaderboards, no LLM. Wire once and leave for the month." style="background:rgba(242,192,122,0.1);border:1px solid #5a4a2a;color:#F2C07A;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">🏆 Wire snapshot top 9+9</button>
+      <button onclick="previewWire('hybrid')" id="wireHybridBtn" title="Keep the current Crew Paper strategies that are net-positive live, and fill the rest (losers + untraded) from the Refined snapshot top picks. Best of both — don't cut proven earners." style="background:rgba(112,168,245,0.1);border:1px solid #2a3a5a;color:#70a8f5;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">♻️ Wire hybrid (keep winners)</button>
+      <button onclick="showCompare(this)" id="compareBtn" title="Compare every strategy across the live Crew book, the latest crew report, and both Refined snapshots — see why they diverge." style="background:transparent;border:1px solid #333;color:#aaa;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit">🔍 Compare sources</button>
     </div>
     <div id="wireResult" style="margin-top:8px;font-size:0.78rem;color:#888;display:none"></div>
+    <div id="compareResult" style="margin-top:10px;font-size:0.78rem;color:#888;display:none"></div>
 
     <!-- Chat panel -->
     <div class="crew-chat" id="crewChat" style="display:none">
@@ -714,15 +717,17 @@
   // Step 1: preview. Parse the latest report (no writes) and show the exact picks
   // that would wire + a warning if the block isn't a clean 18, so you can eyeball
   // before committing. Step 2 (confirmWire) does the actual sync.
+  const _WIRE_BTN = { report: 'wireBtn', snapshot: 'wireSnapBtn', hybrid: 'wireHybridBtn' };
   async function previewWire(source) {
     source = source || 'report';
-    const btn = document.getElementById(source === 'snapshot' ? 'wireSnapBtn' : 'wireBtn');
+    const btn = document.getElementById(_WIRE_BTN[source] || 'wireBtn');
     const out = document.getElementById('wireResult');
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Loading preview…';
     out.style.display = 'block'; out.style.color = '#888';
-    out.textContent = source === 'snapshot' ? 'Reading snapshot leaderboards…' : 'Parsing the latest report…';
+    out.textContent = source === 'report' ? 'Parsing the latest report…'
+      : source === 'hybrid' ? 'Reading live book + snapshots…' : 'Reading snapshot leaderboards…';
     try {
-      const url = source === 'snapshot' ? '/api/crew/wire_preview?source=snapshot' : '/api/crew/wire_preview';
+      const url = source === 'report' ? '/api/crew/wire_preview' : '/api/crew/wire_preview?source=' + source;
       const d = await fetch(url).then(r => r.json());
       if (d.error) { out.style.color = '#ef5350'; out.textContent = '⚠ ' + d.error; return; }
       const picks = d.picks || [];
@@ -742,8 +747,17 @@
       const tc = picks.length - kc;
       const sizeTxt = d.size_dollars ? `~$${Math.round(d.size_dollars).toLocaleString()}/trade` : 'top-band sizing';
       const countColor = picks.length === 18 ? '#7FE098' : '#F2C76B';
-      const srcLabel = source === 'snapshot'
-        ? 'Snapshot top 9+9 (deterministic mirror)' : 'Latest crew report';
+      const srcLabel = source === 'snapshot' ? 'Snapshot top 9+9 (deterministic mirror)'
+        : source === 'hybrid' ? 'Hybrid — kept live winners + snapshot fill'
+        : 'Latest crew report';
+      let metaHtml = '';
+      if (d.hybrid_meta) {
+        const m = d.hybrid_meta;
+        metaHtml = `<div style="font-size:0.72rem;color:#888;margin:2px 0 4px">`
+          + `Kept <span style="color:#7FE098">${m.kept_n}</span> live winner(s) · `
+          + `replaced <span style="color:#c98b8b">${m.replaced_n}</span> loser/untraded · `
+          + `filled <span style="color:#F2C07A">${m.filled_n}</span> from snapshot</div>`;
+      }
       // Diff vs the crew's judgment picks (snapshot source only).
       let cmpHtml = '';
       if (d.comparison) {
@@ -769,6 +783,7 @@
         + `<span style="color:${countColor}">${picks.length} picks</span> `
         + `(<span style="color:#c4b5fd">${tc} TV</span> · <span style="color:#F2C07A">${kc} Kairos</span>) `
         + `· ${sizeTxt} · exits cloned per strategy</div>`
+        + metaHtml
         + warnHtml
         + `<div style="overflow-x:auto;margin:6px 0"><table style="border-collapse:collapse;font-size:0.75rem">${rows}</table></div>`
         + cmpHtml
@@ -786,9 +801,55 @@
     out.style.display = 'none'; out.innerHTML = '';
   }
 
+  // ── Compare sources: live Crew book vs crew report vs both snapshots ─────────
+  async function showCompare(btn) {
+    const out = document.getElementById('compareResult');
+    if (out.style.display === 'block') { out.style.display = 'none'; out.innerHTML = ''; return; }
+    if (btn) { btn.disabled = true; }
+    out.style.display = 'block'; out.style.color = '#888'; out.textContent = 'Loading comparison…';
+    try {
+      const d = await fetch('/api/crew/compare').then(r => r.json());
+      if (d.error) { out.style.color = '#ef5350'; out.textContent = '⚠ ' + d.error; return; }
+      const money = v => v == null ? '<span style="color:#555">—</span>'
+        : `<span style="color:${v > 0 ? '#7FE098' : v < 0 ? '#ef5350' : '#888'}">${v >= 0 ? '+' : ''}$${v.toFixed(2)}</span>`;
+      const snap = s => s == null ? '<span style="color:#555">—</span>'
+        : `#${s.rank} · PF ${s.pf == null ? '—' : s.pf} · ${s.trades ?? '—'}t`;
+      const rows = (d.rows || []).map(r => {
+        const crew = r.in_crew
+          ? `<span style="color:${r.crew_tag === 'kairos' ? '#F2C07A' : '#c4b5fd'}">✓ [${r.crew_tag === 'kairos' ? 'Kairos' : 'TV'}]</span>`
+          : '<span style="color:#555">—</span>';
+        const live = r.live_pnl == null
+          ? (r.live_trades ? '<span style="color:#888">0 P&L</span>' : '<span style="color:#555">not wired</span>')
+          : `${money(r.live_pnl)} <span style="color:#666">/${r.live_trades}t</span>`;
+        return `<tr>`
+          + `<td style="color:#ccc;padding:2px 12px 2px 0;white-space:nowrap">${r.strategy}</td>`
+          + `<td style="padding:2px 12px 2px 0;white-space:nowrap">${live}</td>`
+          + `<td style="padding:2px 12px 2px 0;text-align:center">${crew}</td>`
+          + `<td style="color:#9fb0d0;padding:2px 12px 2px 0;white-space:nowrap">${snap(r.tv)}</td>`
+          + `<td style="color:#d0b48a;padding:2px 0;white-space:nowrap">${snap(r.kairos)}</td></tr>`;
+      }).join('');
+      out.style.color = '#ccc';
+      out.innerHTML =
+        `<div style="font-weight:600;color:#e0e0e0;margin-bottom:4px">Cross-source comparison — ${d.n} strategies</div>`
+        + `<div style="font-size:0.68rem;color:#777;margin-bottom:6px">Live Crew P&L (since wire) · in the latest crew report? · TV snapshot rank · Kairos snapshot rank. Sorted by live earners first, then best snapshot rank.</div>`
+        + `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:0.74rem">`
+        + `<thead style="color:#666;font-size:0.62rem"><tr>`
+        + `<th style="text-align:left;padding-right:12px">Strategy</th>`
+        + `<th style="text-align:left;padding-right:12px">Live Crew</th>`
+        + `<th style="text-align:center;padding-right:12px">Crew report</th>`
+        + `<th style="text-align:left;padding-right:12px">TV snapshot</th>`
+        + `<th style="text-align:left">Kairos snapshot</th></tr></thead>`
+        + `<tbody>${rows}</tbody></table></div>`;
+    } catch (e) {
+      out.style.color = '#ef5350'; out.textContent = '⚠ ' + e;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function confirmWire(confirmBtn, source) {
     source = source || 'report';
-    const btn = document.getElementById(source === 'snapshot' ? 'wireSnapBtn' : 'wireBtn');
+    const btn = document.getElementById(_WIRE_BTN[source] || 'wireBtn');
     const out = document.getElementById('wireResult');
     if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Wiring…'; }
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Wiring…';
@@ -796,7 +857,7 @@
     try {
       const r = await fetch('/api/crew/wire_to_router', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(source === 'snapshot' ? { source: 'snapshot' } : {})
+        body: JSON.stringify(source === 'report' ? {} : { source })
       });
       const d = await r.json();
       if (!r.ok || d.error) {

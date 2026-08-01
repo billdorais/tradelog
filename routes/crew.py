@@ -1993,6 +1993,132 @@ def _snapshot_top_picks(app_obj, n=9):
     return picks, warnings
 
 
+def _hybrid_top_picks(app_obj, n=18):
+    """Keep current Crew Paper strategies that are net-positive LIVE, then fill the
+    freed slots (losers + zero-trade/unproven) from the refined snapshot top picks.
+    Keepers retain their existing entry source + side gate. Returns (picks, warnings,
+    meta) where meta = {kept, replaced, filled} for the preview summary."""
+    import app as _kairos
+    book = _crew_book_scorecard() or {}
+    book_picks = book.get("picks") or []
+
+    # Current acct4 entry/side per strategy so keepers retain their wiring.
+    cur_entry, cur_side = {}, {}
+    try:
+        conn = _kairos.get_db(); cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules")
+        for r in cur.fetchall():
+            raw = r[0] if _kairos.DATABASE_URL else r["nodes"]
+            try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except Exception: continue
+            if not any(nd.get("type") == "broker"
+                       and (nd.get("value") or "").lower() in ("alpaca-paper-4", "alpaca-live-4")
+                       for nd in nodes):
+                continue
+            _e = next((nd.get("value") for nd in nodes if nd.get("type") == "entry_source"), None)
+            _s = next((nd.get("value") for nd in nodes if nd.get("type") == "side_gate"), None)
+            for nd in nodes:
+                if nd.get("type") == "strategy" and nd.get("value"):
+                    s = nd["value"].strip().upper()
+                    cur_entry[s] = (_e or "").lower()
+                    cur_side[s]  = (_s or "both").lower()
+        conn.close()
+    except Exception:
+        pass
+
+    # Keepers = net-positive live P&L (>=1 trade). Sorted best-first, capped at n.
+    keepers = sorted(
+        ({"strategy": bp["strategy"].upper(),
+          "side":  cur_side.get(bp["strategy"].upper(), "both") or "both",
+          "entry": cur_entry.get(bp["strategy"].upper()) or "tv",
+          "_pnl":  bp["pnl"]}
+         for bp in book_picks if bp.get("pnl") is not None and bp["pnl"] > 0),
+        key=lambda k: k["_pnl"], reverse=True,
+    )[:n]
+    kept_set = {k["strategy"] for k in keepers}
+    replaced = [bp["strategy"].upper() for bp in book_picks if bp["strategy"].upper() not in kept_set]
+
+    # Fill remaining slots from the snapshot top picks, skipping kept names.
+    snap_picks, warns = _snapshot_top_picks(app_obj, n=9)
+    fill = [p for p in snap_picks if p["strategy"] not in kept_set]
+    remaining = max(0, n - len(keepers))
+    filled = fill[:remaining]
+    picks = [{"strategy": k["strategy"], "side": k["side"], "entry": k["entry"]} for k in keepers] + filled
+
+    meta = {"kept": [k["strategy"] for k in keepers], "kept_n": len(keepers),
+            "replaced": replaced, "replaced_n": len(replaced),
+            "filled": [p["strategy"] for p in filled], "filled_n": len(filled)}
+    return picks, warns, meta
+
+
+@crew_bp.route("/api/crew/compare")
+def api_crew_compare():
+    """Cross-source comparison table: one row per strategy across the LIVE Crew Paper
+    book, the latest crew report's picks, and both Refined snapshots (TV + Kairos).
+    Read-only — lets the user see WHY the crew's judgment picks diverge from the
+    leaderboard rankings and judge trust with data instead of a model's say-so."""
+    import app as _kairos
+
+    def _load_snap(mem_attr, key):
+        snap = getattr(_kairos, mem_attr, None) or {}
+        if not snap.get("top_scored"):
+            try:
+                _st = _kairos._load_setting(key)
+                if _st: snap = json.loads(_st)
+            except Exception: pass
+        return snap
+    tv = _load_snap("_refined_last_result",        "REFINED_LAST_RESULT")
+    kr = _load_snap("_kairos_refined_last_result", "KAIROS_REFINED_LAST_RESULT")
+
+    def _snap_index(snap):
+        idx = {}
+        for i, r in enumerate(snap.get("top_scored") or []):
+            nm = str(r.get("name") or "").upper()
+            if nm:
+                idx[nm] = {"rank": i + 1, "score": r.get("score"),
+                           "pf": r.get("profit_factor"), "trades": r.get("trades"),
+                           "pnl": r.get("total_pnl")}
+        return idx
+    tv_idx, kr_idx = _snap_index(tv), _snap_index(kr)
+
+    # Live Crew book P&L per strategy.
+    book = _crew_book_scorecard() or {}
+    live = {p["strategy"].upper(): p for p in (book.get("picks") or [])}
+
+    # Latest crew report's picks (tag per strategy).
+    crew_map = {}
+    try:
+        conn = _kairos.get_db(); cur = conn.cursor()
+        cur.execute("SELECT report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone(); conn.close()
+        if row:
+            _rep = row[0] if _kairos.DATABASE_URL else row["report"]
+            crew_map = {p["strategy"].upper(): (p.get("entry") or "tv")
+                        for p in _parse_next_month_card(_rep)["picks"]}
+    except Exception:
+        crew_map = {}
+
+    names = set(live) | set(crew_map) | set(tv_idx) | set(kr_idx)
+    rows = []
+    for nm in names:
+        lv = live.get(nm) or {}
+        rows.append({
+            "strategy": nm,
+            "live_pnl": lv.get("pnl"), "live_trades": lv.get("trades"),
+            "in_crew": nm in crew_map, "crew_tag": crew_map.get(nm),
+            "tv": tv_idx.get(nm), "kairos": kr_idx.get(nm),
+        })
+    # Sort: live earners first (by P&L desc), then best snapshot rank.
+    def _key(r):
+        has_pnl = r["live_pnl"] is not None
+        best_rank = min([x["rank"] for x in (r["tv"], r["kairos"]) if x] or [999])
+        return (not has_pnl, -(r["live_pnl"] or 0) if has_pnl else 0, best_rank)
+    rows.sort(key=_key)
+    return jsonify({"rows": rows, "n": len(rows),
+                    "crew_count": len(crew_map),
+                    "tv_run_at": tv.get("run_at"), "kairos_run_at": kr.get("run_at")})
+
+
 @crew_bp.route("/api/crew/wire_preview")
 def api_crew_wire_preview():
     """Dry-run: parse the latest report's 'Next Month — Crew Paper' picks and return
@@ -2002,6 +2128,17 @@ def api_crew_wire_preview():
 
     ?source=snapshot instead returns the deterministic top-9-from-each-snapshot picks
     (no report needed) so the Crew book can be a clean mirror of the leaderboards."""
+    if (request.args.get("source") or "").lower() == "hybrid":
+        from flask import current_app as _ca
+        picks, warnings, meta = _hybrid_top_picks(_ca._get_current_object(), n=18)
+        kc = sum(1 for p in picks if p.get("entry") == "kairos")
+        return jsonify({
+            "picks": picks, "count": len(picks), "has_block": True,
+            "source": "hybrid", "entry_source": "per-pick", "sizing": "equal",
+            "size_dollars": None, "daytype": None,
+            "tv_count": len(picks) - kc, "kairos_count": kc,
+            "hybrid_meta": meta, "warnings": warnings,
+        })
     if (request.args.get("source") or "").lower() == "snapshot":
         from flask import current_app as _ca
         import app as _kairos
@@ -2104,18 +2241,22 @@ def api_crew_wire_to_router():
     conn = _kairos.get_db()
     cur  = conn.cursor()
 
-    if source == "snapshot":
-        # 1) Deterministic top-9-from-each-snapshot picks (no report needed) — a clean
-        #    mirror of the leaderboards with per-pick side gates. Same reconcile below.
+    if source in ("snapshot", "hybrid"):
+        # 1) Deterministic picks (no report needed) — same reconcile below.
+        #    snapshot = pure top-9-from-each mirror; hybrid = keep live winners + fill
+        #    the rest from the snapshot top picks.
         from flask import current_app as _ca
-        picks, _snap_warn = _snapshot_top_picks(_ca._get_current_object(), n=9)
+        if source == "hybrid":
+            picks, _snap_warn, _hy_meta = _hybrid_top_picks(_ca._get_current_object(), n=18)
+        else:
+            picks, _snap_warn = _snapshot_top_picks(_ca._get_current_object(), n=9)
         if not picks:
             conn.close()
             return jsonify({"error": "Snapshots are empty — refresh the TV and Kairos "
                             "Refined snapshots on the Analysis page first."}), 400
         parsed = {"picks": picks, "entry_source": "tv", "sizing": "equal",
                   "size_dollars": None, "daytype": None}
-        week, created_at = "snapshot", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        week, created_at = source, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     else:
         # 1) Latest report
         cur.execute("SELECT week, created_at, report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
