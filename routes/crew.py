@@ -23,6 +23,14 @@ def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+# CrewAI's verbose output carries ANSI color codes (e.g. ESC[00m). They render as
+# stray "[00m" litter once the text lands in the browser feed — strip them.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
 # ── Crew runner (executes in a daemon thread) ─────────────────────────────────
 
 def _run_crew(topic: str, q: queue.Queue) -> None:
@@ -52,7 +60,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
             self._buf += text
             while "\n" in self._buf:
                 line, self._buf = self._buf.split("\n", 1)
-                line = line.strip()
+                line = _strip_ansi(line).strip()
                 if not line or self._SKIP.match(line):
                     continue
                 for pat, name in self._AGENTS:
@@ -219,7 +227,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             self._buf += text
             while "\n" in self._buf:
                 line, self._buf = self._buf.split("\n", 1)
-                line = line.strip()
+                line = _strip_ansi(line).strip()
                 if not line or self._SKIP.match(line):
                     continue
                 for pat, name in self._AGENTS:
@@ -2171,9 +2179,14 @@ def api_crew_run():
         threading.Thread(target=_run_crew, args=(topic, q), daemon=True).start()
 
     def generate():
+        # Heartbeat every 15s during silence. Agent 2 (the systematic trader) is a
+        # single long LLM call that emits no queue events while it thinks; without a
+        # frequent keep-alive, an idle proxy/load-balancer drops the stream mid-run
+        # and the browser reports a bare "network error". 15s stays well under any
+        # common idle timeout (Railway edge, nginx, CDNs).
         while True:
             try:
-                event = q.get(timeout=180)
+                event = q.get(timeout=15)
                 yield f"data: {json.dumps(event)}\n\n"
                 if event.get("type") in ("done", "error"):
                     return
