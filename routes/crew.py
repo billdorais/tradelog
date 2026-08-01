@@ -11,7 +11,7 @@ import queue
 import re
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 
@@ -475,17 +475,19 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         # the sample floor) by its farm record on the SAME entry mechanism.
         farm_strat_block = _fmt_strategies(
             farm_strat_data,
-            header=("TV FARM (account 1) — FULL-SAMPLE STRATEGY LEADERBOARD "
-                    "(audition pool for TV Refined; TV entries; deeper history than acct2)"),
+            header=("TV FARM (account 1) — FULL-SAMPLE STRATEGY LEADERBOARD, last ~45d "
+                    "(audition pool for TV Refined; TV entries; deeper history than acct2 — "
+                    "spans a fixed trailing window, NOT the report's analysis range)"),
             empty_msg=("=== TV FARM (account 1) — FULL-SAMPLE LEADERBOARD ===\n"
-                       "No TV Farm data in this window."),
+                       "No TV Farm data in the trailing 45d window."),
         )
         kairos_farm_strat_block = _fmt_strategies(
             kairos_farm_strat_data,
-            header=("KAIROS FARM (account 5) — FULL-SAMPLE STRATEGY LEADERBOARD "
-                    "(audition pool for Kairos Refined; server-side engine entries; deeper history than acct3)"),
+            header=("KAIROS FARM (account 5) — FULL-SAMPLE STRATEGY LEADERBOARD, last ~45d "
+                    "(audition pool for Kairos Refined; server-side engine entries; deeper history than acct3 — "
+                    "spans a fixed trailing window, NOT the report's analysis range)"),
             empty_msg=("=== KAIROS FARM (account 5) — FULL-SAMPLE LEADERBOARD ===\n"
-                       "No Kairos Farm data in this window."),
+                       "No Kairos Farm data in the trailing 45d window."),
         )
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
@@ -2082,6 +2084,16 @@ def api_crew_run():
         _pa5         = {}   # Kairos Farm (acct5) full-sample leaderboard
         try:
             _dr  = (f"&from_date={from_date}" if from_date else "") + (f"&to_date={to_date}" if to_date else "")
+            # Farm leaderboards (acct1 TV Farm, acct5 Kairos Farm) are the FULL-SAMPLE
+            # audition pools — their whole value is DEEP history, so they always query a
+            # fixed trailing window regardless of the report's analysis range. Slicing
+            # them to a narrow "Today"/"This Month" selection starves them and wipes out
+            # the farm-backed [Kairos]/[TV] picks the guardrail depends on.
+            _FARM_WINDOW_DAYS = 45
+            try:    _farm_anchor = datetime.fromisoformat(to_date).date() if to_date else datetime.now(timezone.utc).date()
+            except Exception: _farm_anchor = datetime.now(timezone.utc).date()
+            _farm_dr = (f"&from_date={(_farm_anchor - timedelta(days=_FARM_WINDOW_DAYS)).isoformat()}"
+                        f"&to_date={_farm_anchor.isoformat()}")
             _qs  = "account=2" + _dr
             _qs3 = "account=3" + _dr
             with _ca.test_client() as _c:
@@ -2093,11 +2105,12 @@ def api_crew_run():
                 journal_data = _c.get("/api/journal/entries?account=2").get_json() or []
                 rules_data   = _c.get("/api/routing/rules").get_json()           or []
                 engine_data  = _c.get("/api/engine_pilot/compare?days=30").get_json() or {}
-                # Inputs for the "Next Month" card baked into the report.
-                _pa  = _c.get(f"/api/alpaca/analysis?account=1{_dr}").get_json() or {}
+                # Inputs for the "Next Month" card baked into the report. Farms use the
+                # fixed deep trailing window (_farm_dr), not the report's _dr.
+                _pa  = _c.get(f"/api/alpaca/analysis?account=1{_farm_dr}").get_json() or {}
                 # Kairos Farm (acct5) full-sample leaderboard — the engine-entry
                 # audition pool that backs [Kairos] picks (acct1 above backs [TV]).
-                _pa5 = _c.get(f"/api/alpaca/analysis?account=5{_dr}").get_json() or {}
+                _pa5 = _c.get(f"/api/alpaca/analysis?account=5{_farm_dr}").get_json() or {}
                 _s2  = _c.get(f"/api/alpaca/ls_breakdown?account=2{_dr}").get_json() or {}
                 _s3  = _c.get(f"/api/alpaca/ls_breakdown?account=3{_dr}").get_json() or {}
                 # Crew Paper's own book — the crew grades its picks via the scorecard
