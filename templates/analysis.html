@@ -3435,79 +3435,13 @@
           <td style="color:#777">${(r.reason || '').replace(/</g, '&lt;')}</td></tr>`;
       }).join('');
       body.innerHTML = bars
-        + `<div id="unmatchedBox"></div>`
         + (rows ? `<div style="margin-top:12px;font-size:0.7rem;color:#888;margin-bottom:3px">Most recent blocks</div>`
             + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">`
             + `<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left">When (ET)</th><th style="text-align:left">Ticker</th><th style="text-align:left">Side</th><th style="text-align:left">Gate</th><th style="text-align:left">Reason</th></tr></thead>`
             + `<tbody>${rows}</tbody></table></div>` : '');
-      // If any signals errored with "no pipeline matched", list the unmatched
-      // strategy names + nearest existing rule so they can be fixed on Routing.
-      if ((d.by_reason || []).some(x => x.reason === 'Error')) loadUnmatched(days);
     } catch (e) {
       meta.textContent = '— error';
       console.warn('blocked breakdown failed:', e);
-    }
-  }
-
-  async function loadUnmatched(days) {
-    const box = document.getElementById('unmatchedBox');
-    if (!box) return;
-    try {
-      const d = await fetch('/api/signals/unmatched_strategies?days=' + days).then(r => r.json());
-      const list = d.unmatched || [];
-      if (!list.length) { box.innerHTML = ''; return; }
-      const engineOn = d.engine_pilot_all;
-      const rows = list.map(u => {
-        const sJs = u.strategy.replace(/'/g, "\\'");
-        const wireBtn = `<button class="sweep-apply-btn" onclick="wireToFarm('${sJs}', this)" title="Create a routing rule sending this strategy to Paper All (TV Farm) so it starts trading">Wire → Paper All</button>`;
-        let sugg;
-        if (u.rule_exists) {
-          sugg = `<span style="color:#7FE098">rule exists — matched but had no broker</span> <span style="color:#888">(non-top-N; the farm fan-out now routes it to Paper All)</span>`;
-        } else if (u.likely_typo) {
-          sugg = `<span style="color:#f0a35e">⚠ name drift — rule exists:</span> <span style="color:#c4b5fd">${u.nearest_rule}</span> <span style="color:#888">— fix the name on Routing (don't wire a duplicate)</span>`;
-        } else if (u.nearest_rule) {
-          sugg = `<span style="color:#888">unwired · closest: ${u.nearest_rule}</span> ${wireBtn}`;
-        } else {
-          sugg = `<span style="color:#888">no matching rule</span> ${wireBtn}`;
-        }
-        // Kairos-side coverage: did the engine keep trading this name on acct5?
-        const kt = u.kairos_farm_trades || 0;
-        const kair = !engineOn ? `<span style="color:#666">—</span>`
-          : kt > 0 ? `<span style="color:#5FC8D4">✓ ${kt}</span>`
-          : `<span style="color:#888">0</span>`;
-        return `<tr><td style="color:#ccc">${u.strategy}</td>`
-          + `<td style="text-align:right;color:#ef5350">${u.count}</td>`
-          + `<td style="text-align:right">${kair}</td>`
-          + `<td>${sugg}</td></tr>`;
-      }).join('');
-      const kairLine = engineOn
-        ? `<span style="color:#5FC8D4">Kairos Farm fan-out ON</span> <span style="color:#666">(ENGINE_PILOT_ALL=${d.engine_pilot_all_value || 'set'}) — engine coverage shown per row</span>`
-        : `<span style="color:#e08a8a">⚠ ENGINE_PILOT_ALL not set</span> <span style="color:#666">— the Kairos Farm is NOT auto-trading these; set it to alpaca5:$1000</span>`;
-      box.innerHTML =
-        `<div style="margin-top:12px;font-size:0.7rem;color:#f0a35e;margin-bottom:2px">⚠ Strategies that fired but matched NO routing rule / had no broker (last ${days}d)</div>`
-        + `<div style="font-size:0.68rem;margin-bottom:4px">${kairLine}</div>`
-        + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem">`
-        + `<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left">Strategy (from the alert)</th><th style="text-align:right">TV signals lost</th><th style="text-align:right" title="Trades on the Kairos Farm (acct5) over the same window — the engine path is independent of this TV bug">Kairos Farm</th><th style="text-align:left">Fix</th></tr></thead>`
-        + `<tbody>${rows}</tbody></table></div>`
-        + `<div style="font-size:0.66rem;color:#666;margin-top:5px">Amber "rule exists" = the alert name drifted from a real rule — fix the TradingView alert name or the rule's strategy node on the <a href="/routing" style="color:#70a8f5">Routing</a> page (don't wire a duplicate). "No matching rule" = unwired; <b>Wire → Paper All</b> adds a rule sending it to the TV Farm audition pool (remove/edit it anytime on Routing).</div>`;
-    } catch (e) { box.innerHTML = ''; }
-  }
-
-  async function wireToFarm(strategy, btn) {
-    if (!confirm(`Wire "${strategy}" to Paper All (TV Farm)?\n\nCreates a routing rule so this strategy's signals start trading on the full-sample audition farm (acct1). You can edit or remove it anytime on the Routing page.`)) return;
-    if (btn) { btn.disabled = true; btn.textContent = '…'; }
-    try {
-      const d = await fetch('/api/signals/wire_to_farm', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy }),
-      }).then(r => r.json());
-      if (d.error) { alert('Wire failed: ' + d.error); if (btn) { btn.disabled = false; btn.textContent = 'Wire → Paper All'; } return; }
-      if (d.already_wired) { alert(`"${strategy}" is already matched by an existing rule — nothing created.`); }
-      else                 { alert(`✓ Wired "${strategy}" → Paper All (TV Farm). New rule #${d.id}.`); }
-      loadBlockedBreakdown();   // refresh the panel (row drops off once wired)
-    } catch (e) {
-      alert('Wire failed: ' + e);
-      if (btn) { btn.disabled = false; btn.textContent = 'Wire → Paper All'; }
     }
   }
 
