@@ -2038,16 +2038,52 @@ def _hybrid_top_picks(app_obj, n=18):
     kept_set = {k["strategy"] for k in keepers}
     replaced = [bp["strategy"].upper() for bp in book_picks if bp["strategy"].upper() not in kept_set]
 
-    # Fill remaining slots from the snapshot top picks, skipping kept names.
+    # Fill the freed slots in priority order so new crew ideas can still earn a lane:
+    #   1) CONSENSUS — names in BOTH the snapshot top-N and the latest crew report
+    #      (leaderboard rank + crew judgment agree = highest conviction),
+    #   2) remaining SNAPSHOT top picks,
+    #   3) remaining CREW-only suggestions.
     snap_picks, warns = _snapshot_top_picks(app_obj, n=9)
-    fill = [p for p in snap_picks if p["strategy"] not in kept_set]
+    crew_picks = []
+    try:
+        conn = _kairos.get_db(); cur = conn.cursor()
+        cur.execute("SELECT report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone(); conn.close()
+        if row:
+            _rep = row[0] if _kairos.DATABASE_URL else row["report"]
+            crew_picks = _parse_next_month_card(_rep)["picks"]
+    except Exception:
+        crew_picks = []
+    crew_slugs = {p["strategy"] for p in crew_picks}
+    snap_slugs = {p["strategy"] for p in snap_picks}
+
+    def _norm(p):
+        return {"strategy": p["strategy"], "side": p.get("side") or "both",
+                "entry": p.get("entry") or "tv"}
+    tiers = (
+        ("consensus", [_norm(p) for p in snap_picks if p["strategy"] in crew_slugs]),
+        ("snapshot",  [_norm(p) for p in snap_picks if p["strategy"] not in crew_slugs]),
+        ("crew",      [_norm(p) for p in crew_picks if p["strategy"] not in snap_slugs]),
+    )
     remaining = max(0, n - len(keepers))
-    filled = fill[:remaining]
+    filled, seen, src_of = [], set(kept_set), {}
+    for tier_name, tier in tiers:
+        for p in tier:
+            if len(filled) >= remaining:
+                break
+            if p["strategy"] in seen:
+                continue
+            seen.add(p["strategy"]); filled.append(p); src_of[p["strategy"]] = tier_name
+        if len(filled) >= remaining:
+            break
     picks = [{"strategy": k["strategy"], "side": k["side"], "entry": k["entry"]} for k in keepers] + filled
 
     meta = {"kept": [k["strategy"] for k in keepers], "kept_n": len(keepers),
             "replaced": replaced, "replaced_n": len(replaced),
-            "filled": [p["strategy"] for p in filled], "filled_n": len(filled)}
+            "filled": [p["strategy"] for p in filled], "filled_n": len(filled),
+            "filled_consensus": sum(1 for v in src_of.values() if v == "consensus"),
+            "filled_snapshot":  sum(1 for v in src_of.values() if v == "snapshot"),
+            "filled_crew":      sum(1 for v in src_of.values() if v == "crew")}
     return picks, warns, meta
 
 

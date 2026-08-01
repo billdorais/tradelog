@@ -85,3 +85,35 @@ def test_empty_snapshot_warns():
     picks, warns = crew._snapshot_top_picks(_FakeApp(), n=9)
     assert picks == []
     assert any("empty" in w.lower() for w in warns)
+
+
+def test_hybrid_fill_priority_consensus_then_snapshot_then_crew():
+    """With an empty live book, the hybrid fill order is consensus (in both snapshot
+    + crew report) → remaining snapshot → crew-only."""
+    _set_snaps(["T1_CAM_BREAKOUT_R3S3_V02_5MIN", "T2_CAM_BREAKOUT_R3S3_V02_5MIN",
+                "T3_CAM_BREAKOUT_R3S3_V02_5MIN"],
+               ["K1_CAM_REVERSAL_R3S3_V02_5MIN", "K2_CAM_REVERSAL_R3S3_V02_5MIN",
+                "K3_CAM_REVERSAL_R3S3_V02_5MIN"])
+    block = ("```picks\n"
+             "T1_CAM_BREAKOUT_R3S3_V02_5MIN | both | TV\n"          # consensus (also snapshot)
+             "K1_CAM_REVERSAL_R3S3_V02_5MIN | both | Kairos\n"      # consensus (also snapshot)
+             "CREW1_CAM_BREAKOUT_R4S4_V02_5MIN | both | TV\n"       # crew-only
+             "CREW2_CAM_REVERSAL_R4S4_V02_5MIN | both | Kairos\n"   # crew-only
+             "```\n")
+    conn = A.get_db(); cur = conn.cursor(); p = A.placeholder()
+    cur.execute(f"INSERT INTO crew_reports (week, created_at, report) VALUES ({p},{p},{p})",
+                ("_test_hybrid", "2099-01-01 00:00:00", block))
+    conn.commit(); conn.close()
+    try:
+        picks, warns, meta = crew._hybrid_top_picks(_FakeApp(), n=8)
+        slugs = [x["strategy"] for x in picks]
+        assert slugs[:2] == ["T1_CAM_BREAKOUT_R3S3_V02_5MIN", "K1_CAM_REVERSAL_R3S3_V02_5MIN"]
+        assert set(slugs[2:6]) == {"T2_CAM_BREAKOUT_R3S3_V02_5MIN", "T3_CAM_BREAKOUT_R3S3_V02_5MIN",
+                                   "K2_CAM_REVERSAL_R3S3_V02_5MIN", "K3_CAM_REVERSAL_R3S3_V02_5MIN"}
+        assert set(slugs[6:8]) == {"CREW1_CAM_BREAKOUT_R4S4_V02_5MIN", "CREW2_CAM_REVERSAL_R4S4_V02_5MIN"}
+        assert meta["kept_n"] == 0
+        assert meta["filled_consensus"] == 2 and meta["filled_crew"] == 2
+    finally:
+        conn = A.get_db(); cur = conn.cursor(); p = A.placeholder()
+        cur.execute(f"DELETE FROM crew_reports WHERE week={p}", ("_test_hybrid",))
+        conn.commit(); conn.close()

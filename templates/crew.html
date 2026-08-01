@@ -753,10 +753,16 @@
       let metaHtml = '';
       if (d.hybrid_meta) {
         const m = d.hybrid_meta;
+        const breakdown = [
+          m.filled_consensus ? `<span style="color:#7FE098">${m.filled_consensus} consensus</span>` : '',
+          m.filled_snapshot  ? `<span style="color:#F2C07A">${m.filled_snapshot} snapshot</span>` : '',
+          m.filled_crew      ? `<span style="color:#70a8f5">${m.filled_crew} crew-only</span>` : '',
+        ].filter(Boolean).join(' · ');
         metaHtml = `<div style="font-size:0.72rem;color:#888;margin:2px 0 4px">`
           + `Kept <span style="color:#7FE098">${m.kept_n}</span> live winner(s) · `
           + `replaced <span style="color:#c98b8b">${m.replaced_n}</span> loser/untraded · `
-          + `filled <span style="color:#F2C07A">${m.filled_n}</span> from snapshot</div>`;
+          + `filled <span style="color:#F2C07A">${m.filled_n}</span>`
+          + (breakdown ? ` (${breakdown})` : '') + `</div>`;
       }
       // Diff vs the crew's judgment picks (snapshot source only).
       let cmpHtml = '';
