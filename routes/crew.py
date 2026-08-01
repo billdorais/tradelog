@@ -899,6 +899,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "HARD FORMAT RULES for this row (the wire button reads THIS row literally — obey exactly):\n"
                 "  • EXACTLY 18 lines, numbered 1 through 18, each number used ONCE. No 15b, no two '10.'s, no gaps.\n"
                 "  • Each line = ONE final strategy: `N. SLUG — <side> [<book>] (brief why)`. One slug per line.\n"
+                "  • Each strategy SLUG appears AT MOST ONCE across all 18 — a slug is ONE Crew Paper rule with ONE "
+                "entry source, so it CANNOT be listed as both [TV] and [Kairos]. If a name is strong on BOTH books, "
+                "pick the SINGLE book with the stronger/more-credible record (bigger positive sample) and use that one "
+                "slot; do NOT spend two of the 18 slots on the same slug.\n"
                 "  • Do your DROP/REPLACE and guardrail reasoning SILENTLY; this row shows only the WINNERS. "
                 "NEVER write a rejected strategy here, and NEVER write the words DROP / REPLACE / 'flip to' / a "
                 "second [tag] in a line. If a candidate loses to a replacement, only the REPLACEMENT appears — at "
@@ -933,7 +937,8 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "where side is one of long|short|both and book is one of TV|Kairos — e.g. "
                 "`NVDA_CAM_BREAKOUT_R3S3_V02_5MIN | both | TV`. RULES: EXACTLY 18 data lines; each is a FINAL "
                 "post-guardrail pick; one full strategy slug per line; NO numbering, NO reasoning/notes, NO DROP/REPLACE, "
-                "NO duplicate slugs. This block MUST match the Top-18 card row's final picks — if they ever disagree, "
+                "NO duplicate slugs (a slug appears AT MOST ONCE — never the same name as both | TV and | Kairos; one "
+                "slug = one Crew Paper rule = one entry source). This block MUST match the Top-18 card row's final picks — if they ever disagree, "
                 "THIS block is what wires. Emit it every run.\n\n"
                 "Then continue with the detailed sections:\n\n"
                 "0. **Last Picks — Grade Yourself** — If a PREVIOUS PICKS SCORECARD block is "
@@ -1940,6 +1945,17 @@ def api_crew_wire_preview():
     if not has_block:
         warnings.append("No machine-readable picks block found — parsed from the prose card. "
                         "Re-run the crew for a clean block before trusting this.")
+    # Duplicate slugs in the raw block (same strategy twice — e.g. once | TV and once
+    # | Kairos). Only the FIRST tag wires, so the second slot is silently lost.
+    if has_block:
+        import re as _re2
+        from collections import Counter as _Counter
+        _bm  = _re2.search(r"```picks\s*\n(.*?)```", report, _re2.DOTALL | _re2.IGNORECASE)
+        _raw = [m.group(0).upper() for m in _STRAT_SLUG_RE.finditer(_bm.group(1))] if _bm else []
+        _dups = sorted(s for s, c in _Counter(_raw).items() if c > 1)
+        if _dups:
+            warnings.append("Duplicate strategy in the block (only the first tag wires; the other slot is "
+                            "lost): " + ", ".join(_dups) + ". Re-run so each name takes one slot.")
     if len(picks) != 18:
         warnings.append(f"Parsed {len(picks)} picks, expected 18 — the report may be truncated, "
                         f"have duplicate slugs, or a malformed block. Review carefully before wiring.")
