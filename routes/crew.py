@@ -2073,10 +2073,12 @@ def _hybrid_top_picks(app_obj, n=18):
                 break
             if p["strategy"] in seen:
                 continue
-            seen.add(p["strategy"]); filled.append(p); src_of[p["strategy"]] = tier_name
+            p2 = dict(p); p2["origin"] = tier_name        # consensus / snapshot / crew
+            seen.add(p["strategy"]); filled.append(p2); src_of[p["strategy"]] = tier_name
         if len(filled) >= remaining:
             break
-    picks = [{"strategy": k["strategy"], "side": k["side"], "entry": k["entry"]} for k in keepers] + filled
+    picks = ([{"strategy": k["strategy"], "side": k["side"], "entry": k["entry"], "origin": "kept"}
+              for k in keepers] + filled)
 
     meta = {"kept": [k["strategy"] for k in keepers], "kept_n": len(keepers),
             "replaced": replaced, "replaced_n": len(replaced),
@@ -2138,9 +2140,25 @@ def api_crew_compare():
     rows = []
     for nm in names:
         lv = live.get(nm) or {}
+        wired  = nm in live                        # currently a Crew Paper rule
+        pnl    = lv.get("pnl")
+        in_snap = (nm in tv_idx) or (nm in kr_idx)
+        # Status buckets: stayed (in book) vs new from refined snapshot vs new from
+        # the crew's suggestion. For wired names, split winner/loser/untraded so it's
+        # clear which "stayed" names are actually earning.
+        if wired:
+            status = ("kept"  if (pnl is not None and pnl > 0) else
+                      "cut"   if (pnl is not None) else
+                      "watch")                     # wired but no closed trades yet
+        elif in_snap:
+            status = "new_refined"
+        elif nm in crew_map:
+            status = "new_crew"
+        else:
+            status = "other"
         rows.append({
-            "strategy": nm,
-            "live_pnl": lv.get("pnl"), "live_trades": lv.get("trades"),
+            "strategy": nm, "wired": wired, "status": status,
+            "live_pnl": pnl, "live_trades": lv.get("trades"),
             "in_crew": nm in crew_map, "crew_tag": crew_map.get(nm),
             "tv": tv_idx.get(nm), "kairos": kr_idx.get(nm),
         })

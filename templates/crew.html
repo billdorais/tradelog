@@ -733,15 +733,25 @@
       const picks = d.picks || [];
       const warnHtml = (d.warnings || []).map(w =>
         `<div style="color:#F2C76B;margin:2px 0">⚠ ${w}</div>`).join('');
+      const ORIGIN = {
+        kept:      ['stayed',    '#7FE098'],
+        consensus: ['consensus', '#5FC8D4'],
+        snapshot:  ['refined',   '#F2C07A'],
+        crew:      ['crew',      '#70a8f5'],
+      };
       const rows = picks.map((p, i) => {
         const kairos = p.entry === 'kairos';
         const bookColor = kairos ? '#F2C07A' : '#c4b5fd';
         const bookLabel = kairos ? 'Kairos' : 'TV';
         const sideColor = p.side === 'both' ? '#888' : '#F2C76B';
+        const og = p.origin ? (ORIGIN[p.origin] || null) : null;
+        const ogCell = og
+          ? `<td style="color:${og[1]};padding:1px 12px 1px 0;font-size:0.7rem">${og[0]}</td>` : '';
         return `<tr><td style="color:#666;padding:1px 8px 1px 0;text-align:right">${i + 1}</td>`
           + `<td style="color:#ccc;padding:1px 12px 1px 0">${p.strategy}</td>`
           + `<td style="color:${sideColor};padding:1px 12px 1px 0">${p.side}</td>`
-          + `<td style="color:${bookColor};padding:1px 0">[${bookLabel}]</td></tr>`;
+          + `<td style="color:${bookColor};padding:1px 12px 1px 0">[${bookLabel}]</td>`
+          + ogCell + `</tr>`;
       }).join('');
       const kc = picks.filter(p => p.entry === 'kairos').length;
       const tc = picks.length - kc;
@@ -820,27 +830,45 @@
         : `<span style="color:${v > 0 ? '#7FE098' : v < 0 ? '#ef5350' : '#888'}">${v >= 0 ? '+' : ''}$${v.toFixed(2)}</span>`;
       const snap = s => s == null ? '<span style="color:#555">—</span>'
         : `#${s.rank} · PF ${s.pf == null ? '—' : s.pf} · ${s.trades ?? '—'}t`;
+      const STATUS = {
+        kept:        ['In book · earning', '#7FE098'],
+        cut:         ['In book · losing',  '#ef5350'],
+        watch:       ['In book · untraded', '#9aa0b5'],
+        new_refined: ['New · Refined',     '#F2C07A'],
+        new_crew:    ['New · Crew',        '#70a8f5'],
+        other:       ['—',                 '#555'],
+      };
       const rows = (d.rows || []).map(r => {
+        const [stLabel, stColor] = STATUS[r.status] || STATUS.other;
         const crew = r.in_crew
           ? `<span style="color:${r.crew_tag === 'kairos' ? '#F2C07A' : '#c4b5fd'}">✓ [${r.crew_tag === 'kairos' ? 'Kairos' : 'TV'}]</span>`
           : '<span style="color:#555">—</span>';
-        const live = r.live_pnl == null
-          ? (r.live_trades ? '<span style="color:#888">0 P&L</span>' : '<span style="color:#555">not wired</span>')
+        const live = !r.wired ? '<span style="color:#555">not wired</span>'
+          : r.live_pnl == null ? '<span style="color:#9aa0b5">wired · 0t</span>'
           : `${money(r.live_pnl)} <span style="color:#666">/${r.live_trades}t</span>`;
         return `<tr>`
           + `<td style="color:#ccc;padding:2px 12px 2px 0;white-space:nowrap">${r.strategy}</td>`
+          + `<td style="padding:2px 12px 2px 0;white-space:nowrap"><span style="color:${stColor};font-weight:600">${stLabel}</span></td>`
           + `<td style="padding:2px 12px 2px 0;white-space:nowrap">${live}</td>`
           + `<td style="padding:2px 12px 2px 0;text-align:center">${crew}</td>`
           + `<td style="color:#9fb0d0;padding:2px 12px 2px 0;white-space:nowrap">${snap(r.tv)}</td>`
           + `<td style="color:#d0b48a;padding:2px 0;white-space:nowrap">${snap(r.kairos)}</td></tr>`;
       }).join('');
+      const nKept = (d.rows||[]).filter(r=>r.status==='kept').length;
+      const nRef  = (d.rows||[]).filter(r=>r.status==='new_refined').length;
+      const nCrew = (d.rows||[]).filter(r=>r.status==='new_crew').length;
       out.style.color = '#ccc';
       out.innerHTML =
         `<div style="font-weight:600;color:#e0e0e0;margin-bottom:4px">Cross-source comparison — ${d.n} strategies</div>`
-        + `<div style="font-size:0.68rem;color:#777;margin-bottom:6px">Live Crew P&L (since wire) · in the latest crew report? · TV snapshot rank · Kairos snapshot rank. Sorted by live earners first, then best snapshot rank.</div>`
+        + `<div style="font-size:0.68rem;color:#777;margin-bottom:6px">Status: `
+        + `<span style="color:#7FE098">${nKept} in book · earning</span> · `
+        + `<span style="color:#F2C07A">${nRef} new from Refined</span> · `
+        + `<span style="color:#70a8f5">${nCrew} new from Crew</span>. `
+        + `Live Crew P&L (since wire) · in the latest crew report? · TV/Kairos snapshot rank. Sorted by live earners first, then best snapshot rank.</div>`
         + `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:0.74rem">`
         + `<thead style="color:#666;font-size:0.62rem"><tr>`
         + `<th style="text-align:left;padding-right:12px">Strategy</th>`
+        + `<th style="text-align:left;padding-right:12px">Status</th>`
         + `<th style="text-align:left;padding-right:12px">Live Crew</th>`
         + `<th style="text-align:center;padding-right:12px">Crew report</th>`
         + `<th style="text-align:left;padding-right:12px">TV snapshot</th>`
