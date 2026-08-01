@@ -71,6 +71,28 @@
       Live tail of the app's own WARNING/ERROR/exception logs (last 500, newest first) — the errors that used to live only in the platform logs.
       Resets on restart/redeploy (it's a live tail, not durable history). If you hit something odd, click <b style="color:#7FE098">Copy for Claude</b> and paste it in — it includes the app context and the recent error lines.
     </div>
+
+    <!-- Why entries were blocked — gate breakdown from stored signal exec reasons -->
+    <div id="blockedPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-top:24px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#f0a35e">Why entries were blocked</span>
+        <span id="blockedMeta" style="font-size:0.75rem;color:#666">loading…</span>
+        <label style="font-size:0.7rem;color:#777;margin-left:auto">Range
+          <select id="blockedDays" onchange="loadBlockedBreakdown()"
+                  style="background:#1a1d2e;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:3px 6px;font-size:0.72rem;cursor:pointer">
+            <option value="2">2d</option>
+            <option value="7" selected>7d</option>
+            <option value="14">14d</option>
+            <option value="30">30d</option>
+          </select>
+        </label>
+      </div>
+      <div id="blockedBody"></div>
+      <div style="font-size:0.66rem;color:#555;margin-top:8px">
+        Signal-level outcomes. Day-type &amp; reversal gates apply to the farms too, so they fully block a signal and show here.
+        The <strong>RVOL gate</strong> only touches TV/Kairos Refined — a breakout the farm still took records as <em>Executed</em> even if RVOL skipped it on the Refined books, so RVOL is under-counted here; use the Replay RVOL split for exact RVOL counts.
+      </div>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -142,7 +164,50 @@
       document.body.removeChild(ta);
     }
 
+    // ── Why entries were blocked — gate breakdown ──────────────────────────────
+    async function loadBlockedBreakdown() {
+      const meta = document.getElementById('blockedMeta');
+      const body = document.getElementById('blockedBody');
+      const days = document.getElementById('blockedDays')?.value || '7';
+      try {
+        meta.textContent = 'loading…';
+        const d = await fetch('/api/signals/blocked_breakdown?days=' + days).then(r => r.json());
+        if (d.error) { meta.textContent = '— ' + d.error; body.innerHTML = ''; return; }
+        const total = d.total_entries || 0;
+        const blocked = (d.by_reason || []).reduce((s, x) => s + x.count, 0);
+        meta.textContent = `${d.from} → today · ${total} entry signals · ${d.executed} executed · ${blocked} blocked`;
+        if (!total) { body.innerHTML = '<div style="color:#888;font-size:0.85rem">No entry signals in this window.</div>'; return; }
+        const COL = { 'Day-type gate':'#f0a35e', 'RVOL gate':'#c4b5fd', 'Reversal gate':'#7FE098',
+                      'Side gate':'#5FC8D4', 'Regime gate':'#e08a8a', 'Error':'#ef5350' };
+        const maxc = Math.max(1, ...(d.by_reason || []).map(x => x.count));
+        const bars = (d.by_reason || []).map(x => {
+          const c = COL[x.reason] || '#8a90a0';
+          return `<div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:0.82rem">
+            <div style="width:130px;color:#ccc;flex:none">${x.reason}</div>
+            <div style="flex:1;background:#0d0f18;border-radius:4px;overflow:hidden"><div style="width:${x.count / maxc * 100}%;background:${c};height:14px;border-radius:4px"></div></div>
+            <div style="width:74px;text-align:right;color:#aaa;flex:none">${x.count} · ${x.pct}%</div></div>`;
+        }).join('') || '<div style="color:#7FE098;font-size:0.85rem">Nothing blocked — every entry signal executed.</div>';
+        const rows = (d.recent || []).slice(0, 12).map(r => {
+          const c = COL[r.category] || '#8a90a0';
+          return `<tr><td style="color:#888">${(r.received_at || '').slice(5, 16).replace('T', ' ')}</td>
+            <td style="color:#ccc">${r.ticker || ''}</td>
+            <td style="color:#888">${r.side || ''}</td>
+            <td style="color:${c}">${r.category}</td>
+            <td style="color:#777">${(r.reason || '').replace(/</g, '&lt;')}</td></tr>`;
+        }).join('');
+        body.innerHTML = bars
+          + (rows ? `<div style="margin-top:12px;font-size:0.7rem;color:#888;margin-bottom:3px">Most recent blocks</div>`
+              + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">`
+              + `<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left">When (ET)</th><th style="text-align:left">Ticker</th><th style="text-align:left">Side</th><th style="text-align:left">Gate</th><th style="text-align:left">Reason</th></tr></thead>`
+              + `<tbody>${rows}</tbody></table></div>` : '');
+      } catch (e) {
+        meta.textContent = '— error';
+        console.warn('blocked breakdown failed:', e);
+      }
+    }
+
     loadErrors();
+    loadBlockedBreakdown();
     setInterval(() => { if (document.getElementById('autoRefresh').checked) loadErrors(); }, 15000);
   </script>
 </body>
