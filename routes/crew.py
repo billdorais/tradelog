@@ -1925,12 +1925,93 @@ def _parse_next_month_card(report):
             "size_dollars": size_dollars, "daytype": daytype}
 
 
+def _snapshot_top_picks(app_obj, n=9):
+    """Deterministic top-N-from-each-snapshot picks for Crew Paper — the TV Refined
+    snapshot's top N ([TV] entries) + the Kairos Refined snapshot's top N ([Kairos]),
+    with a per-pick side gate. No LLM: a straight mirror of the leaderboards the user
+    curates, so the Crew book is a clean out-of-sample test of the top performers.
+
+    Side gate: if a strategy is in its matching FARM's side_gated_candidates (one side
+    beats trading both on the composite score), gate it long/short-only; else both.
+    Overlap (a name in BOTH top-N sets, e.g. NVDA_R3S3 = TV #1 & Kairos #3) is assigned
+    to its higher-ranked book; the other book backfills from its next rank, so the
+    result stays 2*N unique picks. Returns (picks, warnings)."""
+    import app as _kairos
+    def _load_snap(mem_attr, key):
+        snap = getattr(_kairos, mem_attr, None) or {}
+        if not snap.get("top_strategies"):
+            try:
+                _st = _kairos._load_setting(key)
+                if _st:
+                    snap = json.loads(_st)
+            except Exception:
+                pass
+        return snap
+    tv = _load_snap("_refined_last_result",        "REFINED_LAST_RESULT")
+    kr = _load_snap("_kairos_refined_last_result", "KAIROS_REFINED_LAST_RESULT")
+    tv_top = [str(s).upper() for s in (tv.get("top_strategies") or [])]
+    kr_top = [str(s).upper() for s in (kr.get("top_strategies") or [])]
+    warnings = []
+    if not tv_top:
+        warnings.append("TV Refined snapshot is empty — refresh it on the Analysis page first.")
+    if not kr_top:
+        warnings.append("Kairos Refined snapshot is empty — refresh it on the Analysis page first.")
+
+    # Per-farm side-gate map: strategy -> 'long'/'short' when one side clearly wins.
+    def _side_map(acct):
+        try:
+            with app_obj.test_client() as _c:
+                d = _c.get(f"/api/alpaca/ls_breakdown?account={acct}").get_json() or {}
+            return {str(x["strategy"]).upper(): (x.get("best_side") or "").lower()
+                    for x in (d.get("side_gated_candidates") or [])
+                    if (x.get("best_side") or "").lower() in ("long", "short")}
+        except Exception:
+            return {}
+    tv_sides = _side_map(1)   # TV Farm backs [TV] picks
+    kr_sides = _side_map(5)   # Kairos Farm backs [Kairos] picks
+
+    # Overlap → higher-ranked book. home[name] = the book where it ranks better.
+    tv_rank = {nm: i for i, nm in enumerate(tv_top)}
+    kr_rank = {nm: i for i, nm in enumerate(kr_top)}
+    def _home(nm):
+        in_tv, in_kr = nm in tv_rank, nm in kr_rank
+        if in_tv and in_kr:
+            return "tv" if tv_rank[nm] <= kr_rank[nm] else "kr"
+        return "tv" if in_tv else "kr"
+    tv_final = [nm for nm in tv_top if _home(nm) == "tv"][:n]
+    kr_final = [nm for nm in kr_top if _home(nm) == "kr"][:n]
+
+    picks = []
+    for nm in tv_final:
+        picks.append({"strategy": nm, "side": tv_sides.get(nm, "both"), "entry": "tv"})
+    for nm in kr_final:
+        picks.append({"strategy": nm, "side": kr_sides.get(nm, "both"), "entry": "kairos"})
+    if tv_top and len(tv_final) < n:
+        warnings.append(f"Only {len(tv_final)} TV picks available (snapshot has fewer than {n} after overlap).")
+    if kr_top and len(kr_final) < n:
+        warnings.append(f"Only {len(kr_final)} Kairos picks available (snapshot has fewer than {n} after overlap).")
+    return picks, warnings
+
+
 @crew_bp.route("/api/crew/wire_preview")
 def api_crew_wire_preview():
     """Dry-run: parse the latest report's 'Next Month — Crew Paper' picks and return
     them for a pre-wire eyeball. Makes NO DB writes. Flags a parsed count != 18 (the
     report may be truncated, have duplicate slugs, or a malformed block) and a
-    missing machine-readable picks block (older report parsed from prose)."""
+    missing machine-readable picks block (older report parsed from prose).
+
+    ?source=snapshot instead returns the deterministic top-9-from-each-snapshot picks
+    (no report needed) so the Crew book can be a clean mirror of the leaderboards."""
+    if (request.args.get("source") or "").lower() == "snapshot":
+        from flask import current_app as _ca
+        picks, warnings = _snapshot_top_picks(_ca._get_current_object(), n=9)
+        kc = sum(1 for p in picks if p.get("entry") == "kairos")
+        return jsonify({
+            "picks": picks, "count": len(picks), "has_block": True,
+            "source": "snapshot", "entry_source": "per-pick", "sizing": "equal",
+            "size_dollars": None, "daytype": None,
+            "tv_count": len(picks) - kc, "kairos_count": kc, "warnings": warnings,
+        })
     import app as _kairos
     conn = _kairos.get_db(); cur = conn.cursor()
     cur.execute("SELECT report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
@@ -1995,28 +2076,42 @@ def api_crew_wire_to_router():
                         "ALPACA_KEY4/SECRET4/PAPER4 (separate Alpaca login; see "
                         "docs/adding_a_paper_account.md). No rules created."}), 400
 
+    source = (data.get("source") or "report").lower()
     conn = _kairos.get_db()
     cur  = conn.cursor()
 
-    # 1) Latest report
-    cur.execute("SELECT week, created_at, report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "No crew report found — generate a report first."}), 400
-    if _kairos.DATABASE_URL:
-        week, created_at, report = row[0], row[1], row[2]
+    if source == "snapshot":
+        # 1) Deterministic top-9-from-each-snapshot picks (no report needed) — a clean
+        #    mirror of the leaderboards with per-pick side gates. Same reconcile below.
+        from flask import current_app as _ca
+        picks, _snap_warn = _snapshot_top_picks(_ca._get_current_object(), n=9)
+        if not picks:
+            conn.close()
+            return jsonify({"error": "Snapshots are empty — refresh the TV and Kairos "
+                            "Refined snapshots on the Analysis page first."}), 400
+        parsed = {"picks": picks, "entry_source": "tv", "sizing": "equal",
+                  "size_dollars": None, "daytype": None}
+        week, created_at = "snapshot", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     else:
-        week, created_at, report = row["week"], row["created_at"], row["report"]
+        # 1) Latest report
+        cur.execute("SELECT week, created_at, report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "No crew report found — generate a report first."}), 400
+        if _kairos.DATABASE_URL:
+            week, created_at, report = row[0], row[1], row[2]
+        else:
+            week, created_at, report = row["week"], row["created_at"], row["report"]
 
-    parsed = _parse_next_month_card(report)
-    picks  = parsed["picks"]
-    if not picks:
-        conn.close()
-        return jsonify({"error": "Could not find any strategy names in the "
-                        "'Next Month — Crew Paper' card. Make sure the latest report "
-                        "leads with the decision card and names full strategy slugs "
-                        "(e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN)."}), 400
+        parsed = _parse_next_month_card(report)
+        picks  = parsed["picks"]
+        if not picks:
+            conn.close()
+            return jsonify({"error": "Could not find any strategy names in the "
+                            "'Next Month — Crew Paper' card. Make sure the latest report "
+                            "leads with the decision card and names full strategy slugs "
+                            "(e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN)."}), 400
 
     # 2) Inventory existing rules: source pipelines (to clone each pick's tuned
     #    exit_params / hours / instrument) and existing Crew rules (to update in

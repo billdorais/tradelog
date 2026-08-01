@@ -254,7 +254,8 @@
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
       <button onclick="downloadResult()" style="background:transparent;border:1px solid #2a4a35;color:#5a9e6a;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit">⬇ Download</button>
       <button onclick="openCrewChat()" style="background:rgba(196,181,253,0.1);border:1px solid #6d5fa8;color:#c4b5fd;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✦ Chat with Advisor</button>
-      <button onclick="previewWire()" id="wireBtn" title="Preview the latest report's 'Next Month — Crew Paper' picks, then wire them to the Signal Router (Crew Paper / alpaca-paper-4)." style="background:rgba(127,224,152,0.1);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">⚡ Wire to Crew Paper router</button>
+      <button onclick="previewWire('report')" id="wireBtn" title="Preview the latest crew report's 'Next Month — Crew Paper' picks, then wire them to the Signal Router (Crew Paper / alpaca-paper-4)." style="background:rgba(127,224,152,0.1);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">⚡ Wire report → Crew Paper</button>
+      <button onclick="previewWire('snapshot')" id="wireSnapBtn" title="Wire the deterministic top 9 from each Refined snapshot (TV + Kairos) straight to Crew Paper, with per-pick side gates — a clean mirror of your leaderboards, no LLM. Wire once and leave for the month." style="background:rgba(242,192,122,0.1);border:1px solid #5a4a2a;color:#F2C07A;border-radius:6px;padding:6px 16px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">🏆 Wire snapshot top 9+9</button>
     </div>
     <div id="wireResult" style="margin-top:8px;font-size:0.78rem;color:#888;display:none"></div>
 
@@ -713,13 +714,16 @@
   // Step 1: preview. Parse the latest report (no writes) and show the exact picks
   // that would wire + a warning if the block isn't a clean 18, so you can eyeball
   // before committing. Step 2 (confirmWire) does the actual sync.
-  async function previewWire() {
-    const btn = document.getElementById('wireBtn');
+  async function previewWire(source) {
+    source = source || 'report';
+    const btn = document.getElementById(source === 'snapshot' ? 'wireSnapBtn' : 'wireBtn');
     const out = document.getElementById('wireResult');
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Loading preview…';
-    out.style.display = 'block'; out.style.color = '#888'; out.textContent = 'Parsing the latest report…';
+    out.style.display = 'block'; out.style.color = '#888';
+    out.textContent = source === 'snapshot' ? 'Reading snapshot leaderboards…' : 'Parsing the latest report…';
     try {
-      const d = await fetch('/api/crew/wire_preview').then(r => r.json());
+      const url = source === 'snapshot' ? '/api/crew/wire_preview?source=snapshot' : '/api/crew/wire_preview';
+      const d = await fetch(url).then(r => r.json());
       if (d.error) { out.style.color = '#ef5350'; out.textContent = '⚠ ' + d.error; return; }
       const picks = d.picks || [];
       const warnHtml = (d.warnings || []).map(w =>
@@ -728,24 +732,27 @@
         const kairos = p.entry === 'kairos';
         const bookColor = kairos ? '#F2C07A' : '#c4b5fd';
         const bookLabel = kairos ? 'Kairos' : 'TV';
+        const sideColor = p.side === 'both' ? '#888' : '#F2C76B';
         return `<tr><td style="color:#666;padding:1px 8px 1px 0;text-align:right">${i + 1}</td>`
           + `<td style="color:#ccc;padding:1px 12px 1px 0">${p.strategy}</td>`
-          + `<td style="color:#888;padding:1px 12px 1px 0">${p.side}</td>`
+          + `<td style="color:${sideColor};padding:1px 12px 1px 0">${p.side}</td>`
           + `<td style="color:${bookColor};padding:1px 0">[${bookLabel}]</td></tr>`;
       }).join('');
       const kc = picks.filter(p => p.entry === 'kairos').length;
       const tc = picks.length - kc;
-      const sizeTxt = d.size_dollars ? `~$${Math.round(d.size_dollars).toLocaleString()}/trade` : 'default qty';
+      const sizeTxt = d.size_dollars ? `~$${Math.round(d.size_dollars).toLocaleString()}/trade` : 'top-band sizing';
       const countColor = picks.length === 18 ? '#7FE098' : '#F2C76B';
+      const srcLabel = source === 'snapshot'
+        ? 'Snapshot top 9+9 (deterministic mirror)' : 'Latest crew report';
       out.style.color = '#ccc';
       out.innerHTML =
-        `<div style="font-weight:600;color:#e0e0e0;margin-bottom:4px">Pre-wire preview — `
+        `<div style="font-weight:600;color:#e0e0e0;margin-bottom:4px">Pre-wire preview · ${srcLabel} — `
         + `<span style="color:${countColor}">${picks.length} picks</span> `
         + `(<span style="color:#c4b5fd">${tc} TV</span> · <span style="color:#F2C07A">${kc} Kairos</span>) `
         + `· ${sizeTxt} · exits cloned per strategy</div>`
         + warnHtml
         + `<div style="overflow-x:auto;margin:6px 0"><table style="border-collapse:collapse;font-size:0.75rem">${rows}</table></div>`
-        + `<button onclick="confirmWire(this)" style="background:rgba(127,224,152,0.12);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✓ Confirm &amp; wire ${picks.length}</button>`
+        + `<button onclick="confirmWire(this, '${source}')" style="background:rgba(127,224,152,0.12);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✓ Confirm &amp; wire ${picks.length}</button>`
         + ` <button onclick="cancelWire()" style="background:transparent;border:1px solid #333;color:#888;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit">Cancel</button>`;
     } catch (e) {
       out.style.color = '#ef5350'; out.textContent = '⚠ ' + e;
@@ -759,15 +766,17 @@
     out.style.display = 'none'; out.innerHTML = '';
   }
 
-  async function confirmWire(confirmBtn) {
-    const btn = document.getElementById('wireBtn');
+  async function confirmWire(confirmBtn, source) {
+    source = source || 'report';
+    const btn = document.getElementById(source === 'snapshot' ? 'wireSnapBtn' : 'wireBtn');
     const out = document.getElementById('wireResult');
     if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Wiring…'; }
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Wiring…';
     out.style.color = '#888'; out.textContent = 'Wiring crew picks to the router…';
     try {
       const r = await fetch('/api/crew/wire_to_router', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(source === 'snapshot' ? { source: 'snapshot' } : {})
       });
       const d = await r.json();
       if (!r.ok || d.error) {
