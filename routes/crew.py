@@ -203,7 +203,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "9") -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "9", tv_snap_rank: dict = None, kairos_snap_rank: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -489,6 +489,36 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             empty_msg=("=== KAIROS FARM (account 5) — FULL-SAMPLE LEADERBOARD ===\n"
                        "No Kairos Farm data in the trailing 45d window."),
         )
+        def _fmt_snapshot_rank(snap, header, tag):
+            """The Analysis-page snapshot leaderboard in composite-SCORE rank order —
+            the ranking the user actually watches and that the Refined book trades.
+            The crew should draw its picks for this book in THIS order (top-down),
+            not re-rank from raw farm P&L."""
+            rows = (snap or {}).get("top_scored") or []
+            if not rows:
+                return (f"=== {header} ===\nNo snapshot data yet — rank this book's picks by "
+                        f"the farm/Refined records above.")
+            lines = [f"=== {header} ===",
+                     f"Ranked by composite SCORE (the leaderboard order). Prefer {tag} picks in "
+                     f"THIS order, top-down, subject to the guardrail + sample floor:"]
+            for i, r in enumerate(rows):
+                pf = f"{r['profit_factor']:.2f}" if r.get("profit_factor") else "—"
+                sc = f"{r['score']:.0f}" if r.get("score") is not None else "—"
+                lines.append(
+                    f"  #{i+1} {r.get('name')}: score {sc} | "
+                    f"{r.get('trades',0)} tr | {r.get('win_rate',0):.0f}% WR | PF {pf} | "
+                    f"P&L ${r.get('total_pnl',0):.2f}"
+                )
+            return "\n".join(lines)
+
+        tv_snap_block = _fmt_snapshot_rank(
+            tv_snap_rank,
+            "TV REFINED SNAPSHOT — LEADERBOARD RANK (the Analysis-page snapshot; acct2 trades this)",
+            "[TV]")
+        kairos_snap_block = _fmt_snapshot_rank(
+            kairos_snap_rank,
+            "KAIROS REFINED SNAPSHOT — LEADERBOARD RANK (the Analysis-page snapshot; acct3 trades this)",
+            "[Kairos]")
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
         engine_block   = _fmt_engine(engine_data)
@@ -802,6 +832,13 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "performance. TV Farm (acct1) backs [TV] picks; Kairos Farm (acct5) backs [Kairos] picks.\n\n"
                 + f"{farm_strat_block}\n\n"
                 f"{kairos_farm_strat_block}\n\n"
+                + "SNAPSHOT LEADERBOARD RANKINGS BELOW are the composite-SCORE order the user watches on "
+                "the Analysis page — the SAME ranking the Refined books trade. Draw your [TV] picks in the "
+                "TV Refined snapshot's rank order and your [Kairos] picks in the Kairos Refined snapshot's "
+                "rank order (top-down), THEN apply the guardrail, sample floor, incumbency and balance on "
+                "top. Do NOT invent a different order from raw farm P&L when a snapshot rank exists.\n\n"
+                + f"{tv_snap_block}\n\n"
+                f"{kairos_snap_block}\n\n"
                 f"{card_block}\n\n"
                 f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
@@ -813,7 +850,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "from the data above, never invent; write 'insufficient data' if a cell lacks it:\n\n"
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
-                "| Top 18 to run | eighteen strategy names, RANKED PRIMARILY on the refined books, by each strategy's BEST side. "
+                "| Top 18 to run | eighteen strategy names, RANKED PRIMARILY by the SNAPSHOT LEADERBOARD RANKINGS "
+                "(the composite-SCORE order the user watches): take [TV] picks in the TV Refined snapshot's rank "
+                "order and [Kairos] picks in the Kairos Refined snapshot's rank order, top-down, then apply the "
+                "rules below. Tag each by its BEST side. "
                 "SOURCING RULES: (a) names positive on BOTH TV Refined (acct2) and Kairos Refined (acct3) are first-class picks; "
                 "(b) a name positive on only ONE book is an ENTRY-SPECIFIC bet — the entry mechanism is part of the "
                 "strategy (the two books have shown OPPOSITE edges on the same names) — and MUST carry that book's entry tag. "
@@ -2272,9 +2312,26 @@ def api_crew_run():
             book_data = _crew_book_scorecard()
         except Exception:
             pass
+        # Snapshot leaderboard rankings (composite SCORE order) — the SAME ranking the
+        # user watches on the Analysis page and that acct2/acct3 trade. Feed both so
+        # the crew's [TV]/[Kairos] picks track the leaderboards instead of re-deriving
+        # a different order from raw farm P&L. In-memory first, else the persisted copy.
+        def _load_snap(mem_attr, setting_key):
+            snap = getattr(_kairos, mem_attr, None) or {}
+            if not snap.get("top_scored"):
+                try:
+                    _st = _kairos._load_setting(setting_key)
+                    if _st:
+                        import json as _sj
+                        snap = _sj.loads(_st)
+                except Exception:
+                    pass
+            return snap
+        tv_snap_rank     = _load_snap("_refined_last_result",        "REFINED_LAST_RESULT")
+        kairos_snap_rank = _load_snap("_kairos_refined_last_result", "KAIROS_REFINED_LAST_RESULT")
         threading.Thread(
             target=_run_kairos_crew,
-            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data, _pa, _pa5, kairos_target),
+            args=(q, strat_data, journal_data, prev_reports, range_label or "custom range", rules_data, engine_data, engine_strat_data, card_data, scorecard_data, book_data, _pa, _pa5, kairos_target, tv_snap_rank, kairos_snap_rank),
             daemon=True,
         ).start()
     else:
