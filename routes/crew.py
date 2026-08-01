@@ -1880,6 +1880,37 @@ def _parse_next_month_card(report):
             "size_dollars": size_dollars, "daytype": daytype}
 
 
+@crew_bp.route("/api/crew/wire_preview")
+def api_crew_wire_preview():
+    """Dry-run: parse the latest report's 'Next Month — Crew Paper' picks and return
+    them for a pre-wire eyeball. Makes NO DB writes. Flags a parsed count != 18 (the
+    report may be truncated, have duplicate slugs, or a malformed block) and a
+    missing machine-readable picks block (older report parsed from prose)."""
+    import app as _kairos
+    conn = _kairos.get_db(); cur = conn.cursor()
+    cur.execute("SELECT report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+    row = cur.fetchone(); conn.close()
+    if not row:
+        return jsonify({"error": "No crew report found — generate a report first."}), 400
+    report = row[0] if _kairos.DATABASE_URL else row["report"]
+    parsed    = _parse_next_month_card(report)
+    picks     = parsed["picks"]
+    has_block = bool(_parse_picks_block(report))
+    warnings  = []
+    if not has_block:
+        warnings.append("No machine-readable picks block found — parsed from the prose card. "
+                        "Re-run the crew for a clean block before trusting this.")
+    if len(picks) != 18:
+        warnings.append(f"Parsed {len(picks)} picks, expected 18 — the report may be truncated, "
+                        f"have duplicate slugs, or a malformed block. Review carefully before wiring.")
+    return jsonify({
+        "picks": picks, "count": len(picks), "has_block": has_block,
+        "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
+        "size_dollars": parsed["size_dollars"], "daytype": parsed["daytype"],
+        "warnings": warnings,
+    })
+
+
 @crew_bp.route("/api/crew/wire_to_router", methods=["POST"])
 def api_crew_wire_to_router():
     """Sync the latest crew report's "Next Month — Crew Paper" picks to the Signal
