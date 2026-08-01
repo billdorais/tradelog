@@ -742,6 +742,13 @@
       <div id="pairsTodContent"></div>
     </div>
 
+    <div id="pairsSideBreakdown" style="display:none;padding:10px 16px;border-bottom:1px solid #1e2130;background:#0d0f1a">
+      <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#444;margin-bottom:8px">
+        Long vs Short
+      </div>
+      <div id="pairsSideContent"></div>
+    </div>
+
     <div class="pair-tabs">
       <div class="pair-tab active" data-tab="clean" onclick="switchPairTab('clean')">Round-trips<span class="count" id="pairsCleanCount">0</span></div>
       <div class="pair-tab"        data-tab="orphans" onclick="switchPairTab('orphans')">Orphans<span class="count" id="pairsOrphanCount">0</span></div>
@@ -2401,8 +2408,9 @@
 
   function _renderTimeOfDayBreakdown(pairs) {
     const el = document.getElementById('pairsTodBreakdown');
+    const sideEl = document.getElementById('pairsSideBreakdown');
     const closed = pairs.filter(p => p.entry_time && p.exit_time);
-    if (!closed.length) { el.style.display = 'none'; return; }
+    if (!closed.length) { el.style.display = 'none'; sideEl.style.display = 'none'; return; }
 
     const morning = closed.filter(p => !_isAfternoon(p.entry_time));
     const afternoon = closed.filter(p =>  _isAfternoon(p.entry_time));
@@ -2453,6 +2461,33 @@
       </table>
       ${verdict}`;
     el.style.display = '';
+
+    // Long vs Short split — same stats, so a one-sided edge (or bleed) is visible
+    // and a long/short-only gate decision is data-backed.
+    const longs  = closed.filter(p => (p.side || '').toUpperCase() === 'LONG');
+    const shorts = closed.filter(p => (p.side || '').toUpperCase() === 'SHORT');
+    const ls = _stats(longs), ss = _stats(shorts);
+    if (!ls && !ss) {
+      sideEl.style.display = 'none';
+    } else {
+      let sideVerdict = '';
+      if (ls && ss) {
+        const avgDiff = (ls.pnl / ls.count) - (ss.pnl / ss.count);
+        if (Math.abs(avgDiff) > 0.01) {
+          const better = avgDiff > 0 ? 'Longs' : 'Shorts';
+          const worse  = avgDiff > 0 ? 'shorts' : 'longs';
+          const gate   = avgDiff > 0 ? 'long' : 'short';
+          sideVerdict = `<div style="margin-top:8px;font-size:0.75rem;color:#F2E7AC">↗ ${better} outperform ${worse} here — consider a ${gate}-only gate</div>`;
+        }
+      }
+      document.getElementById('pairsSideContent').innerHTML = `
+        <table style="border-collapse:collapse">
+          ${row('Long',  '▲', '#7FE098', ls)}
+          ${row('Short', '▼', '#ef5350', ss)}
+        </table>
+        ${sideVerdict}`;
+      sideEl.style.display = '';
+    }
   }
 
   // ── Strategy stop sweep ─────────────────────────────────────────────────
@@ -2590,6 +2625,7 @@
       document.getElementById('pairsStopStrip').style.display = 'none';
       document.getElementById('strategySweepPanel').style.display = 'none';
       document.getElementById('pairsTodBreakdown').style.display = 'none';
+      document.getElementById('pairsSideBreakdown').style.display = 'none';
       document.getElementById('pairs20dStrip').style.display = 'none';
     }
   }
