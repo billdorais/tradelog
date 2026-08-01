@@ -881,6 +881,20 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "changes. End with a one-line tally: 'KEEP N · ADD N · DROP N'. If the current book is healthy (most wired "
                 "strategies net-positive), bias toward KEEP, keep the change count LOW, and say so in one line — a winning "
                 "book should not be churned. If a re-wire isn't worth it this month, say that explicitly.\n\n"
+                "AFTER the Changes table, output the AUTHORITATIVE machine-readable wire list — a fenced code block the "
+                "wire button parses LITERALLY. The prose card above is for the human; THIS block is what actually gets "
+                "wired, so it must be clean. Format EXACTLY (open with a line that is only ```picks and close with a line "
+                "that is only ```):\n"
+                "```picks\n"
+                "SLUG | side | book\n"
+                "SLUG | side | book\n"
+                "... (exactly 18 lines) ...\n"
+                "```\n"
+                "where side is one of long|short|both and book is one of TV|Kairos — e.g. "
+                "`NVDA_CAM_BREAKOUT_R3S3_V02_5MIN | both | TV`. RULES: EXACTLY 18 data lines; each is a FINAL "
+                "post-guardrail pick; one full strategy slug per line; NO numbering, NO reasoning/notes, NO DROP/REPLACE, "
+                "NO duplicate slugs. This block MUST match the Top-18 card row's final picks — if they ever disagree, "
+                "THIS block is what wires. Emit it every run.\n\n"
                 "Then continue with the detailed sections:\n\n"
                 "0. **Last Picks — Grade Yourself** — If a PREVIOUS PICKS SCORECARD block is "
                 "present above, review it FIRST and let it shape this month's Top 10: state "
@@ -1719,13 +1733,56 @@ _STRAT_SLUG_RE = re.compile(
     r'[A-Z][A-Z0-9]*_CAM_(?:BREAKOUT|REVERSAL)_(?:R3S3|R4S4)_V\d+_5MIN', re.I)
 
 
+def _parse_picks_block(report):
+    """Parse the AUTHORITATIVE machine-readable ```picks fenced block, if present.
+    Each data line is `SLUG | side | book` (side: long|short|both, book: TV|Kairos).
+    Returns [{strategy, side, entry}] (entry: 'tv'|'kairos'|None), or [] if absent.
+
+    The wire button prefers this over the prose Top-18 row: the prose leaks the
+    model's DROP/REPLACE reasoning and duplicate slot numbers, which the prose
+    parser then has to guess through (and can wire a name mentioned only in a
+    'REPLACE with X' aside). The block is clean by construction — one final slug
+    per line, no reasoning."""
+    m = re.search(r"```picks\s*\n(.*?)```", report or "", re.DOTALL | re.IGNORECASE)
+    if not m:
+        return []
+    out, seen = [], set()
+    for raw in m.group(1).splitlines():
+        parts = [c.strip() for c in raw.strip().strip("|").split("|")]
+        sm = _STRAT_SLUG_RE.search(parts[0]) if parts and parts[0] else None
+        if not sm:
+            continue                          # header row / blank / stray line
+        slug = sm.group(0).upper()
+        if slug in seen:
+            continue
+        seen.add(slug)
+        side = "both"
+        if len(parts) >= 2:
+            s = parts[1].lower()
+            side = "long" if "long" in s else "short" if "short" in s else "both"
+        entry = None
+        if len(parts) >= 3:
+            b = parts[2].lower()
+            entry = "kairos" if ("kairos" in b or "engine" in b) else "tv" if "tv" in b else None
+        out.append({"strategy": slug, "side": side, "entry": entry})
+    return out
+
+
 def _parse_next_month_card(report):
     """Extract the wire-able picks from a crew report's "Next Month — Crew Paper"
     decision card. Returns {picks:[{strategy, side}], entry_source, sizing,
-    size_dollars, daytype}. Strategy names are pulled ONLY from the 'Top N to run'
-    row so the Detail section's pause/demote mentions never get wired by mistake."""
+    size_dollars, daytype}. Picks come from the authoritative ```picks fenced block
+    when present (clean, one final slug per line); otherwise they fall back to the
+    'Top N to run' prose row (older reports). Sizing/entries/day-type are always read
+    from the prose table rows."""
     picks, seen = [], set()
     entry_source, sizing, size_dollars, daytype = "tv", "equal", None, None
+    # Authoritative machine-readable block wins over the prose Top-18 row.
+    block_picks = _parse_picks_block(report)
+    used_block  = bool(block_picks)
+    if used_block:
+        picks = block_picks
+        seen  = {p["strategy"] for p in picks}
     for raw in (report or "").splitlines():
         line = raw.strip()
         # Only parse the decision-card TABLE ROWS (| Label | Recommendation |).
@@ -1739,7 +1796,7 @@ def _parse_next_month_card(report):
         label = cells[0].replace("*", "").strip().lower()
         value = cells[1]
         low_v = value.lower()
-        if label.startswith("top") and "run" in label:
+        if label.startswith("top") and "run" in label and not used_block:
             matches = list(_STRAT_SLUG_RE.finditer(value))
             for i, m in enumerate(matches):
                 slug = m.group(0).upper()
