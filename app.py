@@ -923,7 +923,11 @@ ALPACA_ANALYSIS_TTL =  60  # seconds — analysis computation (LIFO pairing) is 
 _broker_status_cache = {"data": None, "ts": 0.0}
 BROKER_STATUS_TTL = 30  # seconds — broker connectivity rarely flips that fast
 
-_alpaca_positions_cache = {"data": None, "ts": 0.0}
+# One positions cache PER account. The dashboard asks for all 5 accounts on every
+# refresh (and re-polls every 10-30s), so caching only account 1 left 4 live Alpaca
+# round-trips on the critical path of every load.
+_alpaca_positions_caches = {n: {"data": None, "ts": 0.0} for n in _ALPACA_NUMS}
+_alpaca_positions_cache  = _alpaca_positions_caches["1"]   # back-compat alias (same dict)
 ALPACA_POSITIONS_TTL = 15  # seconds — live P&L dashboard polls every 10s; cache prevents thundering herd
 
 
@@ -948,6 +952,52 @@ def _get_cached_fills_n(num):
         cache["data"] = fills
         cache["ts"]   = time.time()
     return cache["data"]
+
+_sig_lookup_cache = {"data": None, "ts": 0.0}
+_sig_lookup_lock  = threading.Lock()
+SIG_LOOKUP_TTL    = 60  # seconds — the fills it annotates are themselves cached 120s
+
+
+def _signal_lookup():
+    """(ticker, side) → [(unix_ts, strategy)] built from the signals table, cached.
+
+    /api/alpaca/trades used to rebuild this from a full `trades` scan on every call,
+    and the dashboard calls that endpoint once PER ACCOUNT (5x) on every refresh —
+    the same query and the same dict, five times over. Built once here instead."""
+    now = time.time()
+    if _sig_lookup_cache["data"] is not None and now - _sig_lookup_cache["ts"] < SIG_LOOKUP_TTL:
+        return _sig_lookup_cache["data"]
+    with _sig_lookup_lock:
+        if _sig_lookup_cache["data"] is not None and time.time() - _sig_lookup_cache["ts"] < SIG_LOOKUP_TTL:
+            return _sig_lookup_cache["data"]
+        from datetime import datetime as _dt
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT ticker, action, received_at, strategy FROM trades ORDER BY id ASC")
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if DATABASE_URL else None
+        conn.close()
+        sig_rows = [dict(zip(cols, r)) if DATABASE_URL else dict(r) for r in rows]
+        lookup = {}
+        for t in sig_rows:
+            ticker   = (t.get("ticker") or "").strip().upper()
+            action   = _canonical_action(t.get("action"))
+            received = t.get("received_at") or ""
+            strategy = (t.get("strategy") or "").strip()
+            if not ticker or not received or not strategy:
+                continue
+            side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
+            if not side:
+                continue
+            try:
+                ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            lookup.setdefault((ticker, side), []).append((ts, strategy))
+        _sig_lookup_cache["data"] = lookup
+        _sig_lookup_cache["ts"]   = time.time()
+    return _sig_lookup_cache["data"]
+
 
 # Named wrappers — kept for the many existing call sites.
 def _get_cached_fills():   return _get_cached_fills_n("1")
@@ -1035,13 +1085,18 @@ alpaca_broker4 = ACCOUNTS_BY_NUM.get("4", {}).get("broker")
 
 if alpaca_broker is not None:
     def _prewarm_fills():
-        """Populate the fills cache in background so the first page load is instant."""
+        """Populate the fills caches in background so the first page load is instant.
+
+        Warms EVERY configured account, not just account 1 — the dashboard asks for
+        all of them on load, so warming one still left 4 paginated 90-day fetches on
+        the critical path."""
         time.sleep(3)   # let gunicorn finish binding before making API calls
-        try:
-            _get_cached_fills()
-            log.info("Fills cache pre-warmed (%d fills)", len(_alpaca_fills_cache["data"]))
-        except Exception as _e:
-            log.warning("Fills cache pre-warm failed: %s", _e)
+        for _n in ACCOUNTS_BY_NUM:
+            try:
+                _fills = _get_cached_fills_n(_n)
+                log.info("Fills cache pre-warmed for account %s (%d fills)", _n, len(_fills))
+            except Exception as _e:
+                log.warning("Fills cache pre-warm failed for account %s: %s", _n, _e)
 
     threading.Thread(target=_prewarm_fills, daemon=True).start()
 
@@ -2965,14 +3020,13 @@ def alpaca_positions():
     Pass ?account=2 to query the Refined (account 2) broker."""
     account = request.args.get("account", "1")
     broker, broker_tag, _, _ = _alpaca_account_ctx(account)
-    is_primary = str(account) == "1"
     if broker is None:
         return jsonify({"positions": [], "_debug": {"error": "broker not configured"}})
-    if is_primary:
-        global _alpaca_positions_cache
+    _pcache = _alpaca_positions_caches.get(str(account))
+    if _pcache is not None:
         now = time.time()
-        if _alpaca_positions_cache["data"] is not None and (now - _alpaca_positions_cache["ts"]) < ALPACA_POSITIONS_TTL:
-            return jsonify(_alpaca_positions_cache["data"])
+        if _pcache["data"] is not None and (now - _pcache["ts"]) < ALPACA_POSITIONS_TTL:
+            return jsonify(_pcache["data"])
     try:
         positions = broker.get_positions()
         # Enrich each position with entry_time from the max-hold timer dict so the
@@ -2987,8 +3041,10 @@ def alpaca_positions():
             "positions": positions,
             "_debug": {"paper": broker._paper, "raw_count": len(positions)},
         }
-        if is_primary:
-            _alpaca_positions_cache = {"data": result, "ts": time.time()}
+        if _pcache is not None:
+            # Mutate in place so the back-compat alias stays valid.
+            _pcache["data"] = result
+            _pcache["ts"]   = time.time()
         return jsonify(result)
     except Exception as e:
         log.error("alpaca_positions failed: %s", e, exc_info=True)
@@ -11691,29 +11747,7 @@ def alpaca_trades():
         # Resolve strategy for each fill by matching time+ticker against signals DB
         try:
             from datetime import datetime as _dt
-            conn = get_db()
-            cur  = conn.cursor()
-            cur.execute("SELECT ticker, action, received_at, strategy FROM trades ORDER BY id ASC")
-            rows = cur.fetchall()
-            conn.close()
-            sig_rows = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
-            # Build lookup: (ticker, side) → sorted list of (unix_ts, strategy)
-            sig_lookup = {}
-            for t in sig_rows:
-                ticker   = (t.get("ticker") or "").strip().upper()
-                action   = _canonical_action(t.get("action"))
-                received = t.get("received_at") or ""
-                strategy = (t.get("strategy") or "").strip()
-                if not ticker or not received or not strategy:
-                    continue
-                side = "BOT" if action == "BUY" else "SLD" if action == "SELL" else None
-                if not side:
-                    continue
-                try:
-                    ts = _dt.fromisoformat(received.replace("Z", "+00:00")).timestamp()
-                except Exception:
-                    continue
-                sig_lookup.setdefault((ticker, side), []).append((ts, strategy))
+            sig_lookup = _signal_lookup()
             # Annotate each fill with the closest matching strategy
             for f in fills:
                 sym  = (f.get("symbol") or "").upper().replace("/", "").replace("USD", "")
