@@ -12198,6 +12198,22 @@ def _account_hours(account: str):
     return ws[0] if ws else ("", "")
 
 
+def _hhmm_in_windows(hhmm: str, windows) -> bool:
+    """True if an "HH:MM" ET time-of-day falls in ANY (start, end) window.
+    Empty window list = always true (all day). Half-open [start, end)."""
+    if not windows:
+        return True
+    for start, end in windows:
+        if not start or not end:
+            continue
+        if start <= end:
+            if start <= hhmm < end:
+                return True
+        elif hhmm >= start or hhmm < end:          # window wraps past midnight
+            return True
+    return False
+
+
 def _account_hours_ok(account: str, now_et=None) -> bool:
     """True if `account` (a broker tag) is inside ANY of its configured trading
     windows (ET). No windows configured = always allowed. Callers must pass the
@@ -12209,16 +12225,7 @@ def _account_hours_ok(account: str, now_et=None) -> bool:
     try:
         if now_et is None:
             now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
-        now_s = now_et.strftime("%H:%M")
-        for start, end in windows:
-            if not start or not end:
-                continue
-            if start <= end:
-                if start <= now_s < end:
-                    return True
-            elif now_s >= start or now_s < end:    # window wraps past midnight
-                return True
-        return False
+        return _hhmm_in_windows(now_et.strftime("%H:%M"), windows)
     except Exception:
         return True
 
@@ -18640,6 +18647,48 @@ def api_alpaca_analysis():
             strat_map.setdefault(c["strategy"], []).append(c)
         per_strategy = {s: _stats(tl) for s, tl in strat_map.items() if _stats(tl)}
 
+        # ── Curated-hours reachability ────────────────────────────────────────
+        # The farms trade all day; the curated books (TV/Kairos Refined, Crew) only
+        # trade inside the shared "refined" windows. So a farm strategy can rank
+        # into a promotion slot on P&L earned at times the curated books can never
+        # take. Split each strategy's round-trips by whether the ENTRY time-of-day
+        # was reachable, so promotion can be judged on the takeable part.
+        _reach_windows = _shared_hours_windows("refined")
+        _reach_active  = bool(_reach_windows)
+        if _reach_active:
+            from zoneinfo import ZoneInfo as _ZI2
+            _et2 = _ZI2("America/New_York")
+
+            def _entry_reachable(c):
+                iso = c.get("entry_time") or ""
+                if not iso:
+                    return True          # unknown entry time — don't penalise it
+                try:
+                    dt = _dt.fromisoformat(iso.replace("Z", "+00:00")).astimezone(_et2)
+                except Exception:
+                    return True
+                return _hhmm_in_windows(dt.strftime("%H:%M"), _reach_windows)
+
+            for _s, _tl in strat_map.items():
+                _row = per_strategy.get(_s)
+                if not _row:
+                    continue
+                _in  = [c for c in _tl if _entry_reachable(c)]
+                _out = [c for c in _tl if not _entry_reachable(c)]
+                _row["in_hours_trades"]  = len(_in)
+                _row["in_hours_pnl"]     = round(sum(float(c.get("pnl") or 0) for c in _in), 2)
+                _row["out_hours_trades"] = len(_out)
+                _row["out_hours_pnl"]    = round(sum(float(c.get("pnl") or 0) for c in _out), 2)
+
+        hours_reach = {
+            "active":  _reach_active,
+            "windows": [{"start": s, "end": e} for s, e in _reach_windows],
+            "in_trades":  sum(r.get("in_hours_trades", 0)  for r in per_strategy.values()),
+            "out_trades": sum(r.get("out_hours_trades", 0) for r in per_strategy.values()),
+            "in_pnl":  round(sum(r.get("in_hours_pnl", 0)  for r in per_strategy.values()), 2),
+            "out_pnl": round(sum(r.get("out_hours_pnl", 0) for r in per_strategy.values()), 2),
+        }
+
         ticker_map = {}
         for c in closed:
             ticker_map.setdefault(c["ticker"], []).append(c)
@@ -18842,6 +18891,7 @@ def api_alpaca_analysis():
             "overall":      overall,
             "per_strategy": per_strategy,
             "per_ticker":   per_ticker,
+            "hours_reach":  hours_reach,
             "daily":        daily,
             "weekly":       weekly,
             "equity_curve": equity_curve,

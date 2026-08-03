@@ -203,6 +203,59 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # ── Kairos Trading Crew ────────────────────────────────────────────────────────
 
+# Module-level so it is unit-testable: the farm blocks rank on the curated-hours
+# reachability split, which is easy to regress silently inside a closure.
+def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATEGY LEADERBOARD (last ~20 days)",
+                    empty_msg: str = "No strategy data available (Alpaca may not be configured).",
+                    show_reach: bool = False) -> str:
+    overall   = (data or {}).get("overall", {})
+    per_strat = (data or {}).get("per_strategy", {})
+    if not per_strat:
+        return empty_msg
+    reach     = (data or {}).get("hours_reach") or {}
+    use_reach = bool(show_reach and reach.get("active"))
+    lines = [
+        f"=== {header} ===",
+        f"Overall: {overall.get('trades',0)} trades | "
+        f"Win Rate {overall.get('win_rate',0):.1f}% | "
+        f"PF {overall.get('profit_factor') or '—'} | "
+        f"Total P&L ${overall.get('total_pnl',0):.2f} | "
+        f"Sharpe {overall.get('sharpe') or '—'}",
+    ]
+    if use_reach:
+        wins = ", ".join(f"{w['start']}-{w['end']}" for w in reach.get("windows", []))
+        lines += [
+            "",
+            f"!! CURATED-HOURS REACHABILITY — the curated books only trade {wins} ET, "
+            f"but this farm trades ALL DAY.",
+            f"   Takeable (inside those windows): ${reach.get('in_pnl',0):+.2f} "
+            f"over {reach.get('in_trades',0)} trades",
+            f"   NOT takeable (outside):          ${reach.get('out_pnl',0):+.2f} "
+            f"over {reach.get('out_trades',0)} trades",
+            "   Promote on the TAKEABLE column. A name whose edge sits in the "
+            "not-takeable column will NOT reproduce in the Refined book.",
+        ]
+    lines += ["", ("Per Strategy (sorted by TAKEABLE P&L — not headline P&L):"
+                   if use_reach else "Per Strategy (sorted by P&L):")]
+    # With reach data, rank by the takeable P&L — that is what a promoted
+    # name can actually earn in a curated book.
+    _key = ((lambda x: x[1].get("in_hours_pnl", 0)) if use_reach
+            else (lambda x: x[1].get("total_pnl", 0)))
+    for name, s in sorted(per_strat.items(), key=_key, reverse=True):
+        pf = f"{s['profit_factor']:.2f}" if s.get("profit_factor") else "—"
+        sh = f"{s['sharpe']:.2f}"        if s.get("sharpe")         else "—"
+        row = (f"  {name}: {s.get('trades',0)} trades | "
+               f"{s.get('win_rate',0):.1f}% WR | PF {pf} | "
+               f"Sharpe {sh} | P&L ${s.get('total_pnl',0):.2f}")
+        if use_reach:
+            row += (f" || TAKEABLE ${s.get('in_hours_pnl',0):+.2f} "
+                    f"({s.get('in_hours_trades',0)} tr) | "
+                    f"outside ${s.get('out_hours_pnl',0):+.2f} "
+                    f"({s.get('out_hours_trades',0)} tr)")
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "9", tv_snap_rank: dict = None, kairos_snap_rank: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
@@ -275,31 +328,6 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
 
         # ── Format pre-fetched data ───────────────────────────────────────────
         # Data was fetched in the Flask route handler and passed in directly.
-
-        def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATEGY LEADERBOARD (last ~20 days)",
-                            empty_msg: str = "No strategy data available (Alpaca may not be configured).") -> str:
-            overall   = (data or {}).get("overall", {})
-            per_strat = (data or {}).get("per_strategy", {})
-            if not per_strat:
-                return empty_msg
-            lines = [
-                f"=== {header} ===",
-                f"Overall: {overall.get('trades',0)} trades | "
-                f"Win Rate {overall.get('win_rate',0):.1f}% | "
-                f"PF {overall.get('profit_factor') or '—'} | "
-                f"Total P&L ${overall.get('total_pnl',0):.2f} | "
-                f"Sharpe {overall.get('sharpe') or '—'}",
-                "", "Per Strategy (sorted by P&L):",
-            ]
-            for name, s in sorted(per_strat.items(), key=lambda x: x[1].get("total_pnl", 0), reverse=True):
-                pf = f"{s['profit_factor']:.2f}" if s.get("profit_factor") else "—"
-                sh = f"{s['sharpe']:.2f}"        if s.get("sharpe")         else "—"
-                lines.append(
-                    f"  {name}: {s.get('trades',0)} trades | "
-                    f"{s.get('win_rate',0):.1f}% WR | PF {pf} | "
-                    f"Sharpe {sh} | P&L ${s.get('total_pnl',0):.2f}"
-                )
-            return "\n".join(lines)
 
         def _fmt_journal(entries: list) -> str:
             entries = (entries or [])[:4]
@@ -480,6 +508,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                     "spans a fixed trailing window, NOT the report's analysis range)"),
             empty_msg=("=== TV FARM (account 1) — FULL-SAMPLE LEADERBOARD ===\n"
                        "No TV Farm data in the trailing 45d window."),
+            show_reach=True,
         )
         kairos_farm_strat_block = _fmt_strategies(
             kairos_farm_strat_data,
@@ -488,6 +517,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                     "spans a fixed trailing window, NOT the report's analysis range)"),
             empty_msg=("=== KAIROS FARM (account 5) — FULL-SAMPLE LEADERBOARD ===\n"
                        "No Kairos Farm data in the trailing 45d window."),
+            show_reach=True,
         )
         def _fmt_snapshot_rank(snap, header, tag):
             """The Analysis-page snapshot leaderboard in composite-SCORE rank order —
