@@ -6530,6 +6530,88 @@ def api_regime_backtest():
     })
 
 
+@app.route("/api/backtest/gap_fill", methods=["POST"])
+def api_backtest_gap_fill():
+    """Backtest the gap-fill → prior-day-VWAP reversion strategy across a ticker set
+    and date range (read-only; places no orders). Runs server-side so it uses the
+    Alpaca intraday feed. Body: {tickers:[...], from, to, timeframe, gap_min_pct,
+    warmup_min, min_rr, stop_buf_pct, sweep:[gap thresholds]}.
+
+    Because we have no earnings calendar, "gap" = any opening gap >= gap_min_pct
+    (proxy for the earnings-gap population). Returns per-ticker stats + an aggregate,
+    and if `sweep` is given, the aggregate expectancy at each gap threshold."""
+    import pandas as _pd
+    from strategies.data import fetch_bars_alpaca, fetch_bars
+    from strategies.bt_gap_fill import backtest_gap_fill
+
+    data      = request.get_json(silent=True) or {}
+    tickers   = [t.strip().upper() for t in (data.get("tickers") or []) if t.strip()][:40]
+    from_date = (data.get("from") or "").strip()
+    to_date   = (data.get("to")   or "").strip()
+    timeframe = (data.get("timeframe") or "5m").strip()
+    if not tickers or not from_date or not to_date:
+        return jsonify({"error": "tickers, from, and to are required"}), 400
+    _pkeys = ("gap_min_pct", "warmup_min", "min_rr", "stop_buf_pct", "eod_close_min")
+    base_params = {k: data[k] for k in _pkeys if k in data and data[k] is not None}
+    sweep = data.get("sweep") or []
+
+    # Fetch + RTH-filter each ticker once; reuse the df across sweep thresholds.
+    frames = {}
+    errors = {}
+    for tk in tickers:
+        try:
+            raw = fetch_bars_alpaca(tk, from_date, to_date, timeframe)
+        except Exception:
+            try:    raw = fetch_bars(tk, from_date, to_date, timeframe)
+            except Exception as _fe:
+                errors[tk] = f"fetch failed: {_fe}"[:160]; continue
+        if not raw or len(raw) < 50:
+            errors[tk] = "insufficient data"; continue
+        df = _pd.DataFrame(raw).set_index("time")
+        df.index = _pd.to_datetime(df.index)
+        df.columns = [c.title() for c in df.columns]
+        keep = [c for c in ("Open", "High", "Low", "Close", "Volume") if c in df.columns]
+        df = df[keep].dropna()
+        if "Volume" not in df.columns:
+            df["Volume"] = 0
+        frames[tk] = _filter_rth(df)
+
+    def _run(params):
+        per_ticker, tot_tr, wins = [], 0, 0
+        for tk, df in frames.items():
+            try:
+                r = backtest_gap_fill(df, **params)
+            except Exception as _be:
+                per_ticker.append({"ticker": tk, "error": str(_be)[:160]}); continue
+            r["ticker"] = tk
+            per_ticker.append(r)
+            n = r.get("trades", 0)
+            if n:
+                tot_tr += n
+                wins   += round(n * r.get("win_rate", 0) / 100.0)
+        agg = {"tickers": len(frames), "total_trades": tot_tr,
+               "avg_win_rate": round(wins / tot_tr * 100, 1) if tot_tr else 0.0,
+               "avg_expectancy_pct": round(
+                   sum(r.get("expectancy_pct", 0) * r.get("trades", 0)
+                       for r in per_ticker if not r.get("error")) / tot_tr, 3)
+                   if tot_tr else 0.0}
+        return per_ticker, agg
+
+    out = {"from": from_date, "to": to_date, "timeframe": timeframe, "errors": errors}
+    if sweep:
+        out["sweep"] = []
+        for thr in sweep:
+            _p = dict(base_params); _p["gap_min_pct"] = thr
+            _, agg = _run(_p)
+            out["sweep"].append({"gap_min_pct": thr, **agg})
+        # Also return per-ticker detail at the first sweep threshold for reference.
+        _p0 = dict(base_params); _p0["gap_min_pct"] = sweep[0]
+        out["per_ticker"], out["aggregate"] = _run(_p0)
+    else:
+        out["per_ticker"], out["aggregate"] = _run(base_params)
+    return jsonify(out)
+
+
 @app.route("/api/alpaca/reversal_breakdown")
 def api_reversal_breakdown():
     """Drill into ONE strategy family's real round-trips (read-only). The regime
