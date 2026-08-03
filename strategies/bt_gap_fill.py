@@ -34,6 +34,7 @@ class GapFillVWAP(Strategy):
     min_rr            = 2.0   # only enter if (target−entry)/(entry−stop) >= this
     target_offset_pct = 0.0   # take profit this % BELOW prior-day VWAP (0 = exactly at it)
     eod_close_min     = 385   # minutes after 09:30 to force-flat (385 = 15:55 ET)
+    earnings_days     = None  # if set (a set of datetime.date), only trade earnings-gap days
 
     def init(self):
         o = self.data.Open; h = self.data.High
@@ -79,6 +80,9 @@ class GapFillVWAP(Strategy):
         if self._entered_today or self.position:
             return
 
+        # Earnings filter: when a calendar is supplied, only trade the reaction days.
+        if self.earnings_days is not None and self._cur_day not in self.earnings_days:
+            return
         # Qualify: gapped up enough AND price is below the prior-day VWAP (room up).
         if gap != gap or gap < self.gap_min_pct:      # NaN or too small
             return

@@ -679,6 +679,7 @@
       <div class="param-group"><label>Min R:R</label><div class="input-wrap"><input type="number" step="0.5" id="gfMinRr" value="2" style="width:64px"></div></div>
       <div class="param-group"><label>Gap sweep (%)</label><div class="input-wrap"><input type="text" id="gfSweep" value="0.5,1,2,3" style="width:110px"></div></div>
       <div class="param-group"><label>Target offset sweep (% below VWAP)</label><div class="input-wrap"><input type="text" id="gfTargetSweep" value="0,0.1,0.25,0.5" style="width:140px"></div></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:#ccc;cursor:pointer;align-self:center"><input type="checkbox" id="gfEarningsOnly"> Earnings gaps only</label>
       <button class="run-btn" onclick="runGapFillBacktest()" style="padding:8px 18px">&#9654; Run Backtest</button>
     </div>
     <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the <b>From/To</b> dates above. Read-only &mdash; places no orders. &ldquo;Gap&rdquo; = any opening gap &ge; threshold (no earnings calendar, so this is a proxy for the earnings-gap population). Long-only first pass: after the warmup chop, buy when price is below the prior-day VWAP with enough room, stop under the early-session low, target the prior-day VWAP. Fetching intraday bars for several tickers can take 10&ndash;30s.</div>
@@ -1462,6 +1463,7 @@
     };
     if (sweep.length) body.sweep = sweep;
     if (targetSweep.length) body.target_sweep = targetSweep;
+    if (document.getElementById('gfEarningsOnly').checked) body.earnings_only = true;
     out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running… (fetching intraday bars can take a bit)</div>';
     try {
       const r = await fetch('/api/backtest/gap_fill', {
@@ -1470,7 +1472,9 @@
       const d = await r.json();
       if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
       const eColor = v => (v >= 0 ? '#7FE098' : '#e08a8a');
-      let html = '';
+      let html = d.earnings_only
+        ? '<div style="font-size:0.72rem;color:#F2C07A;margin-bottom:6px">&#9888; Earnings gaps only — trades restricted to sessions reacting to an earnings release.</div>'
+        : '';
       if (d.grid && d.grid.length) {
         // 2D heatmap: rows = gap thresholds, cols = target offsets, cell = expectancy.
         const gaps = [...new Set(d.grid.map(g => g.gap_min_pct))];

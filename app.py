@@ -6543,6 +6543,7 @@ def api_backtest_gap_fill():
     import pandas as _pd
     from strategies.data import fetch_bars_alpaca, fetch_bars
     from strategies.bt_gap_fill import backtest_gap_fill
+    from strategies.earnings import earnings_gap_days
 
     data      = request.get_json(silent=True) or {}
     tickers   = [t.strip().upper() for t in (data.get("tickers") or []) if t.strip()][:40]
@@ -6556,6 +6557,7 @@ def api_backtest_gap_fill():
     base_params  = {k: data[k] for k in _pkeys if k in data and data[k] is not None}
     sweep        = data.get("sweep") or []          # gap-threshold sweep
     target_sweep = data.get("target_sweep") or []   # target-offset-below-VWAP sweep
+    earnings_only = bool(data.get("earnings_only"))  # only trade earnings-gap days
 
     # Fetch + RTH-filter each ticker once; reuse the df across sweep thresholds.
     frames = {}
@@ -6578,11 +6580,24 @@ def api_backtest_gap_fill():
             df["Volume"] = 0
         frames[tk] = _filter_rth(df)
 
+    # Per-ticker earnings-gap day sets (computed once; announcement dates are cached).
+    earn_days = {}
+    if earnings_only:
+        for tk, df in frames.items():
+            try:
+                _sess = sorted({(d.date() if hasattr(d, "date") else d) for d in df.index})
+                earn_days[tk] = frozenset(earnings_gap_days(tk, _sess))
+            except Exception:
+                earn_days[tk] = frozenset()
+
     def _run(params):
         per_ticker, tot_tr, wins = [], 0, 0
         for tk, df in frames.items():
+            p = dict(params)
+            if earnings_only:
+                p["earnings_days"] = earn_days.get(tk, frozenset())
             try:
-                r = backtest_gap_fill(df, **params)
+                r = backtest_gap_fill(df, **p)
             except Exception as _be:
                 per_ticker.append({"ticker": tk, "error": str(_be)[:160]}); continue
             r["ticker"] = tk
@@ -6599,7 +6614,8 @@ def api_backtest_gap_fill():
                    if tot_tr else 0.0}
         return per_ticker, agg
 
-    out = {"from": from_date, "to": to_date, "timeframe": timeframe, "errors": errors}
+    out = {"from": from_date, "to": to_date, "timeframe": timeframe,
+           "errors": errors, "earnings_only": earnings_only}
     if sweep and target_sweep:
         # 2D grid: gap threshold × target offset (% below prior-day VWAP) → expectancy.
         out["grid"] = []
@@ -6622,6 +6638,18 @@ def api_backtest_gap_fill():
     else:
         out["per_ticker"], out["aggregate"] = _run(base_params)
     return jsonify(out)
+
+
+@app.route("/api/earnings/<ticker>")
+def api_earnings(ticker):
+    """Inspect the earnings calendar for a ticker — historical + upcoming
+    announcement dates (yfinance-sourced, cached). Read-only."""
+    from strategies.earnings import announcement_dates
+    try:    limit = max(1, min(60, int(request.args.get("limit", 24))))
+    except (TypeError, ValueError): limit = 24
+    dates = announcement_dates(ticker.upper(), limit=limit)
+    return jsonify({"ticker": ticker.upper(),
+                    "dates": [d.isoformat() for d in dates], "count": len(dates)})
 
 
 @app.route("/api/alpaca/reversal_breakdown")
