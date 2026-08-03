@@ -6647,6 +6647,37 @@ def api_backtest_gap_fill():
     return jsonify(out)
 
 
+@app.route("/api/backtest/earnings_study", methods=["POST"])
+def api_earnings_study():
+    """Earnings REACTION study — enumerate each ticker's announcement dates and
+    measure the next session directly (gap %, whether it filled back to the prior
+    close, fade vs follow-through), rather than running entry rules over a window
+    and hoping earnings days land inside it.
+
+    DAILY bars on purpose: Yahoo keeps only 59 days of 5m history, so multi-year
+    earnings work cannot be intraday. Read-only; places no orders.
+
+    Body: {tickers: "AAPL,MSFT", limit: 24, min_gap_pct: 0}
+    """
+    from strategies.earnings_study import run_study
+
+    data    = request.get_json(silent=True) or {}
+    tickers = [t.strip().upper() for t in (data.get("tickers") or "").split(",") if t.strip()]
+    if not tickers:
+        return jsonify({"error": "no tickers"}), 400
+    if len(tickers) > 40:
+        return jsonify({"error": "max 40 tickers per run"}), 400
+    try:    limit = max(4, min(60, int(data.get("limit") or 24)))
+    except (TypeError, ValueError): limit = 24
+    try:    min_gap = max(0.0, float(data.get("min_gap_pct") or 0))
+    except (TypeError, ValueError): min_gap = 0.0
+    try:
+        return jsonify(run_study(tickers, limit=limit, min_gap_pct=min_gap))
+    except Exception as e:
+        log.error("earnings study failed: %s", e, exc_info=True)
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @app.route("/api/earnings/<ticker>")
 def api_earnings(ticker):
     """Inspect the earnings calendar for a ticker — historical + upcoming

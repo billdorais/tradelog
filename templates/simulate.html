@@ -686,6 +686,20 @@
     <div id="gapFillResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Earnings reaction study -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Earnings Reaction Study
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— what each stock actually did the morning after earnings, ~6 years back</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Tickers (comma sep)</label><div class="input-wrap"><input type="text" id="esTickers" value="AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,IBM,JPM,BA,MU,PLTR,COIN" style="width:520px;text-transform:uppercase"></div></div>
+      <div class="param-group"><label>Quarters back</label><div class="input-wrap"><input type="number" id="esLimit" value="24" style="width:74px"></div></div>
+      <div class="param-group"><label>Min gap %</label><div class="input-wrap"><input type="number" step="0.5" id="esMinGap" value="0" style="width:74px"></div></div>
+      <button class="run-btn" onclick="runEarningsStudy()" style="padding:8px 18px">&#9654; Run Study</button>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Ignores the From/To dates &mdash; it enumerates each ticker&rsquo;s <b>actual earnings dates</b> and measures the next session directly, so the sample is ~24 events per ticker instead of whatever falls inside a date window. <b>Daily bars</b>: Yahoo keeps only 59 days of intraday history, so multi-year earnings work cannot be 5m. &ldquo;Filled&rdquo; = price traded back through the prior close that session. &ldquo;Faded&rdquo; = closed against the gap direction (measured from the open, where you could actually enter). Fetching several tickers can take 10&ndash;30s.</div>
+    <div id="earningsStudyResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Reversal / strategy-book breakdown -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Book Breakdown
@@ -1444,6 +1458,89 @@
   }
 
   // Gap-fill → prior-day-VWAP backtest (read-only; new bespoke strategy).
+  // Earnings reaction study — enumerate real earnings dates, measure the next
+  // session. Deliberately ignores the From/To range (see the panel note).
+  async function runEarningsStudy() {
+    const out = document.getElementById('earningsStudyResult');
+    const body = {
+      tickers:     document.getElementById('esTickers').value.trim(),
+      limit:       parseInt(document.getElementById('esLimit').value, 10) || 24,
+      min_gap_pct: parseFloat(document.getElementById('esMinGap').value) || 0,
+    };
+    if (!body.tickers) { out.innerHTML = '<div style="color:#c66">Enter at least one ticker.</div>'; return; }
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running… (fetching daily bars + earnings dates)</div>';
+    try {
+      const r = await fetch('/api/backtest/earnings_study', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+      const col = v => (v >= 0 ? '#7FE098' : '#e08a8a');
+      const pct = v => (v >= 0 ? '+' : '') + Number(v || 0).toFixed(2) + '%';
+      const p = (d.pooled || {}).overall || {};
+      let html = '';
+      if (d.errors && d.errors.length) {
+        html += '<div style="font-size:0.72rem;color:#F2C07A;margin-bottom:8px">&#9888; '
+             + d.errors.map(e => e.replace(/</g, '&lt;')).join('<br>&#9888; ') + '</div>';
+      }
+      if (!d.total_events) {
+        out.innerHTML = html + '<div style="color:#888">No earnings events could be measured.</div>';
+        return;
+      }
+      html += '<div style="font-size:0.85rem;margin-bottom:10px">'
+           + '<b>' + d.total_events + '</b> earnings events · fill rate <b>' + p.fill_rate.toFixed(1)
+           + '%</b> · faded <b>' + p.faded_rate.toFixed(1) + '%</b> · avg gap <b>'
+           + p.avg_gap_pct.toFixed(2) + '%</b> · avg follow-through <b style="color:' + col(p.avg_follow_pct)
+           + '">' + pct(p.avg_follow_pct) + '</b></div>';
+
+      const th = 'style="text-align:right;padding:4px 10px;color:#888;font-weight:500"';
+      const td = 'style="text-align:right;padding:4px 10px"';
+      // Gap-size buckets — the headline: does fill rate decay as gaps get bigger?
+      html += '<div style="font-size:0.75rem;color:#aaa;margin:10px 0 4px">By gap size '
+           + '(fill = traded back through the prior close; follow-through &gt; 0 = continued in the gap direction)</div>'
+           + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
+           + '<tr><th style="text-align:left;padding:4px 10px;color:#888;font-weight:500">GAP</th>'
+           + '<th ' + th + '>EVENTS</th><th ' + th + '>FILL %</th><th ' + th + '>FADED %</th>'
+           + '<th ' + th + '>FOLLOW %</th><th ' + th + '>UP (n / fill)</th><th ' + th + '>DOWN (n / fill)</th></tr>';
+      for (const b of (d.pooled.by_gap_bucket || [])) {
+        html += '<tr style="border-top:1px solid #22242f">'
+             + '<td style="padding:4px 10px">' + b.bucket + '</td>'
+             + '<td ' + td + '>' + b.events + '</td>'
+             + '<td ' + td + '>' + (b.events ? b.fill_rate.toFixed(1) + '%' : '—') + '</td>'
+             + '<td ' + td + '>' + (b.events ? b.faded_rate.toFixed(1) + '%' : '—') + '</td>'
+             + '<td ' + td + ' ><span style="color:' + col(b.avg_follow_pct) + '">'
+             + (b.events ? pct(b.avg_follow_pct) : '—') + '</span></td>'
+             + '<td ' + td + '>' + b.up.events + ' / ' + (b.up.events ? b.up.fill_rate.toFixed(0) + '%' : '—') + '</td>'
+             + '<td ' + td + '>' + b.down.events + ' / ' + (b.down.events ? b.down.fill_rate.toFixed(0) + '%' : '—') + '</td>'
+             + '</tr>';
+      }
+      html += '</table>';
+
+      // Per ticker
+      html += '<div style="font-size:0.75rem;color:#aaa;margin:14px 0 4px">Per ticker</div>'
+           + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
+           + '<tr><th style="text-align:left;padding:4px 10px;color:#888;font-weight:500">TICKER</th>'
+           + '<th ' + th + '>EVENTS</th><th ' + th + '>FILL %</th><th ' + th + '>FADED %</th>'
+           + '<th ' + th + '>AVG GAP</th><th ' + th + '>FOLLOW %</th><th ' + th + '>AVG RANGE</th></tr>';
+      for (const t of (d.tickers || [])) {
+        const o = t.overall;
+        html += '<tr style="border-top:1px solid #22242f">'
+             + '<td style="padding:4px 10px">' + t.ticker + '</td>'
+             + '<td ' + td + '>' + o.events + '</td>'
+             + '<td ' + td + '>' + o.fill_rate.toFixed(1) + '%</td>'
+             + '<td ' + td + '>' + o.faded_rate.toFixed(1) + '%</td>'
+             + '<td ' + td + '>' + o.avg_gap_pct.toFixed(2) + '%</td>'
+             + '<td ' + td + '><span style="color:' + col(o.avg_follow_pct) + '">' + pct(o.avg_follow_pct) + '</span></td>'
+             + '<td ' + td + '>' + o.avg_range_pct.toFixed(2) + '%</td>'
+             + '</tr>';
+      }
+      html += '</table>';
+      out.innerHTML = html;
+    } catch (err) {
+      out.innerHTML = '<div style="color:#c66">' + err + '</div>';
+    }
+  }
+
   async function runGapFillBacktest() {
     const out = document.getElementById('gapFillResult');
     const tickers = (document.getElementById('gfTickers').value || '')
