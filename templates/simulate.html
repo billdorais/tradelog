@@ -668,6 +668,22 @@
     <div id="regimeResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Gap-fill → prior-day-VWAP backtest -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Gap-Fill &#8594; Prior-Day VWAP Backtest
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— buy the morning fade after a gap, target the prior-day VWAP</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Tickers (comma sep)</label><div class="input-wrap"><input type="text" id="gfTickers" value="IBM,AAPL,NVDA,TSLA,MSFT,AMD" style="width:280px;text-transform:uppercase"></div></div>
+      <div class="param-group"><label>Timeframe</label><select id="gfTimeframe" style="padding:6px 8px"><option value="5m">5m</option><option value="1m">1m</option></select></div>
+      <div class="param-group"><label>Warmup (min)</label><div class="input-wrap"><input type="number" id="gfWarmup" value="15" style="width:64px"></div></div>
+      <div class="param-group"><label>Min R:R</label><div class="input-wrap"><input type="number" step="0.5" id="gfMinRr" value="2" style="width:64px"></div></div>
+      <div class="param-group"><label>Gap sweep (%)</label><div class="input-wrap"><input type="text" id="gfSweep" value="0.5,1,2,3" style="width:110px"></div></div>
+      <button class="run-btn" onclick="runGapFillBacktest()" style="padding:8px 18px">&#9654; Run Backtest</button>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the <b>From/To</b> dates above. Read-only &mdash; places no orders. &ldquo;Gap&rdquo; = any opening gap &ge; threshold (no earnings calendar, so this is a proxy for the earnings-gap population). Long-only first pass: after the warmup chop, buy when price is below the prior-day VWAP with enough room, stop under the early-session low, target the prior-day VWAP. Fetching intraday bars for several tickers can take 10&ndash;30s.</div>
+    <div id="gapFillResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Reversal / strategy-book breakdown -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Book Breakdown
@@ -1423,6 +1439,82 @@
         + sweepTable('Both families combined', '#7bb3d6', d.sweep_overall || [])
         + `<div style="font-size:0.85rem;margin-top:12px">${verdict}</div>`;
     } catch (e) { out.innerHTML = `<span style="color:#e74c3c">Error: ${e.message}</span>`; }
+  }
+
+  // Gap-fill → prior-day-VWAP backtest (read-only; new bespoke strategy).
+  async function runGapFillBacktest() {
+    const out = document.getElementById('gapFillResult');
+    const tickers = (document.getElementById('gfTickers').value || '')
+      .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const sweep = (document.getElementById('gfSweep').value || '')
+      .split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+    if (!tickers.length) { out.innerHTML = '<div style="color:#c66">Enter at least one ticker.</div>'; return; }
+    const body = {
+      tickers,
+      from:       document.getElementById('fromDate').value,
+      to:         document.getElementById('toDate').value,
+      timeframe:  document.getElementById('gfTimeframe').value,
+      warmup_min: parseInt(document.getElementById('gfWarmup').value, 10) || 15,
+      min_rr:     parseFloat(document.getElementById('gfMinRr').value) || 2,
+    };
+    if (sweep.length) body.sweep = sweep;
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running… (fetching intraday bars can take a bit)</div>';
+    try {
+      const r = await fetch('/api/backtest/gap_fill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+      const eColor = v => (v >= 0 ? '#7FE098' : '#e08a8a');
+      let html = '';
+      if (d.sweep && d.sweep.length) {
+        html += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px">Aggregate by gap threshold</div>'
+          + '<table style="border-collapse:collapse;font-size:0.78rem;margin-bottom:14px">'
+          + '<thead style="color:#666;font-size:0.62rem"><tr>'
+          + '<th style="text-align:left;padding-right:16px">Gap &ge;</th>'
+          + '<th style="text-align:right;padding-right:16px">Trades</th>'
+          + '<th style="text-align:right;padding-right:16px">Win %</th>'
+          + '<th style="text-align:right">Expectancy %/trade</th></tr></thead><tbody>'
+          + d.sweep.map(s =>
+              `<tr><td style="color:#ccc;padding-right:16px">${s.gap_min_pct}%</td>`
+              + `<td style="text-align:right;color:#aaa;padding-right:16px">${s.total_trades}</td>`
+              + `<td style="text-align:right;color:#aaa;padding-right:16px">${s.avg_win_rate}%</td>`
+              + `<td style="text-align:right;color:${eColor(s.avg_expectancy_pct)}">${s.avg_expectancy_pct}%</td></tr>`
+            ).join('')
+          + '</tbody></table>';
+      }
+      const pt = d.per_ticker || [];
+      if (pt.length) {
+        html += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px">Per ticker'
+          + (d.sweep && d.sweep.length ? ` (at gap &ge; ${d.sweep[0]}%)` : '') + '</div>'
+          + '<table style="border-collapse:collapse;font-size:0.78rem"><thead style="color:#666;font-size:0.62rem"><tr>'
+          + '<th style="text-align:left;padding-right:16px">Ticker</th>'
+          + '<th style="text-align:right;padding-right:16px">Trades</th>'
+          + '<th style="text-align:right;padding-right:16px">Win %</th>'
+          + '<th style="text-align:right;padding-right:16px">PF</th>'
+          + '<th style="text-align:right;padding-right:16px">Return %</th>'
+          + '<th style="text-align:right">Exp %/t</th></tr></thead><tbody>'
+          + pt.map(r => r.error
+              ? `<tr><td style="color:#ccc;padding-right:16px">${r.ticker}</td><td colspan="5" style="color:#a66">${r.error}</td></tr>`
+              : `<tr><td style="color:#ccc;padding-right:16px">${r.ticker}</td>`
+                + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.trades}</td>`
+                + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.win_rate}%</td>`
+                + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.profit_factor}</td>`
+                + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.return_pct}%</td>`
+                + `<td style="text-align:right;color:${eColor(r.expectancy_pct)}">${r.expectancy_pct}%</td></tr>`
+            ).join('')
+          + '</tbody></table>';
+      }
+      const agg = d.aggregate
+        ? `<div style="font-size:0.72rem;color:#888;margin-top:8px">Aggregate: ${d.aggregate.total_trades} trades · ${d.aggregate.avg_win_rate}% win · ${d.aggregate.avg_expectancy_pct}% expectancy/trade across ${d.aggregate.tickers} tickers</div>`
+        : '';
+      const errs = d.errors && Object.keys(d.errors).length
+        ? `<div style="font-size:0.7rem;color:#a66;margin-top:8px">Skipped: ${Object.entries(d.errors).map(([k, v]) => `${k} (${v})`).join(', ')}</div>`
+        : '';
+      out.innerHTML = (html || '<div style="color:#888">No results.</div>') + agg + errs;
+    } catch (e) {
+      out.innerHTML = '<div style="color:#c66">' + e + '</div>';
+    }
   }
 
   // Regime backtest: split real round-trip P&L by the index's day-type per date.
