@@ -113,10 +113,14 @@ def backtest_gap_fill(df, cash=100_000, commission=0.0, **params):
     bt = Backtest(df, GapFillVWAP, cash=cash, commission=commission,
                   trade_on_close=False, exclusive_orders=True)
     stats = bt.run(**params)
+    _pf = stats.get("Profit Factor")
+    # backtesting.py returns NaN for PF when there are no losing trades — keep that
+    # as None (→ JSON null) so the UI can show ∞ instead of a misleading 0.
+    pf = None if (_pf is None or _pf != _pf) else round(float(_pf), 2)
     return {
         "trades":      int(_num(stats.get("# Trades"))),
         "win_rate":    round(_num(stats.get("Win Rate [%]")), 1),
-        "profit_factor": round(_num(stats.get("Profit Factor")), 2),
+        "profit_factor": pf,
         "return_pct":  round(_num(stats.get("Return [%]")), 2),
         "expectancy_pct": round(_num(stats.get("Expectancy [%]")), 3),
         "avg_trade_pct":  round(_num(stats.get("Avg. Trade [%]")), 3),

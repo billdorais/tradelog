@@ -1486,7 +1486,7 @@
       const pt = d.per_ticker || [];
       if (pt.length) {
         html += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px">Per ticker'
-          + (d.sweep && d.sweep.length ? ` (at gap &ge; ${d.sweep[0]}%)` : '') + '</div>'
+          + (d.sweep && d.sweep.length ? ` (at gap &ge; ${d.sweep[0].gap_min_pct}%)` : '') + '</div>'
           + '<table style="border-collapse:collapse;font-size:0.78rem"><thead style="color:#666;font-size:0.62rem"><tr>'
           + '<th style="text-align:left;padding-right:16px">Ticker</th>'
           + '<th style="text-align:right;padding-right:16px">Trades</th>'
@@ -1499,7 +1499,7 @@
               : `<tr><td style="color:#ccc;padding-right:16px">${r.ticker}</td>`
                 + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.trades}</td>`
                 + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.win_rate}%</td>`
-                + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.profit_factor}</td>`
+                + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.profit_factor == null ? (r.win_rate >= 100 ? '∞' : '—') : r.profit_factor}</td>`
                 + `<td style="text-align:right;color:#aaa;padding-right:16px">${r.return_pct}%</td>`
                 + `<td style="text-align:right;color:${eColor(r.expectancy_pct)}">${r.expectancy_pct}%</td></tr>`
             ).join('')
