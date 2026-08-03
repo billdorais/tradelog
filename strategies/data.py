@@ -131,12 +131,22 @@ def fetch_bars_alpaca(ticker, start, end, interval="1d"):
     secret = os.environ.get("ALPACA_SECRET", "")
     client = StockHistoricalDataClient(api_key=key or None, secret_key=secret or None)
 
+    # Honour ALPACA_DATA_FEED. Omitting it silently served IEX (~a few % of volume)
+    # even on an Algo Trader Plus subscription, which skews volume and can miss
+    # prints entirely on thin names. Mirrors app._alpaca_data_feed(); duplicated
+    # rather than imported because app imports this module.
+    from alpaca.data.enums import DataFeed
+    _feed = (DataFeed.SIP
+             if (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower() == "sip"
+             else DataFeed.IEX)
+
     req = StockBarsRequest(
         symbol_or_symbols=ticker,
         timeframe=tf,
         start=_dt.fromisoformat(start),
         end=_dt.fromisoformat(end),
         adjustment="all",
+        feed=_feed,
     )
     df = client.get_stock_bars(req).df
 

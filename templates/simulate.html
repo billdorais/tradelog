@@ -694,6 +694,8 @@
       <div class="param-group"><label>Tickers (comma sep)</label><div class="input-wrap"><input type="text" id="esTickers" value="AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,IBM,JPM,BA,MU,PLTR,COIN" style="width:520px;text-transform:uppercase"></div></div>
       <div class="param-group"><label>Quarters back</label><div class="input-wrap"><input type="number" id="esLimit" value="24" style="width:74px"></div></div>
       <div class="param-group"><label>Min gap %</label><div class="input-wrap"><input type="number" step="0.5" id="esMinGap" value="0" style="width:74px"></div></div>
+      <div class="param-group"><label>Bars</label><select id="esSource" style="padding:6px 8px" onchange="document.getElementById('esIntervalWrap').style.display=this.value==='intraday'?'':'none'"><option value="daily">yfinance daily</option><option value="intraday">Alpaca intraday</option></select></div>
+      <div class="param-group" id="esIntervalWrap" style="display:none"><label>Interval</label><select id="esInterval" style="padding:6px 8px"><option value="5m">5m</option><option value="1m">1m</option><option value="15m">15m</option></select></div>
       <button class="run-btn" onclick="runEarningsStudy()" style="padding:8px 18px">&#9654; Run Study</button>
     </div>
     <div style="font-size:0.7rem;color:#555;margin-top:6px">Ignores the From/To dates &mdash; it enumerates each ticker&rsquo;s <b>actual earnings dates</b> and measures the next session directly, so the sample is ~24 events per ticker instead of whatever falls inside a date window. <b>Daily bars</b>: Yahoo keeps only 59 days of intraday history, so multi-year earnings work cannot be 5m. &ldquo;Filled&rdquo; = price traded back through the prior close that session. &ldquo;Faded&rdquo; = closed against the gap direction (measured from the open, where you could actually enter). Fetching several tickers can take 10&ndash;30s.</div>
@@ -1466,6 +1468,8 @@
       tickers:     document.getElementById('esTickers').value.trim(),
       limit:       parseInt(document.getElementById('esLimit').value, 10) || 24,
       min_gap_pct: parseFloat(document.getElementById('esMinGap').value) || 0,
+      source:      document.getElementById('esSource').value,
+      interval:    document.getElementById('esInterval').value,
     };
     if (!body.tickers) { out.innerHTML = '<div style="color:#c66">Enter at least one ticker.</div>'; return; }
     out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running… (fetching daily bars + earnings dates)</div>';
@@ -1491,7 +1495,12 @@
            + '<b>' + d.total_events + '</b> earnings events · fill rate <b>' + p.fill_rate.toFixed(1)
            + '%</b> · faded <b>' + p.faded_rate.toFixed(1) + '%</b> · avg gap <b>'
            + p.avg_gap_pct.toFixed(2) + '%</b> · avg follow-through <b style="color:' + col(p.avg_follow_pct)
-           + '">' + pct(p.avg_follow_pct) + '</b></div>';
+           + '">' + pct(p.avg_follow_pct) + '</b>'
+           + (p.median_mins_to_fill != null
+               ? ' · median fill <b>' + p.median_mins_to_fill + ' min</b> · filled &le;30min <b>'
+                 + p.fill_within_30m_pct.toFixed(1) + '%</b>' : '')
+           + ' <span style="color:#666">(' + (d.source === 'intraday'
+               ? 'Alpaca ' + d.interval : 'yfinance daily') + ')</span></div>';
 
       const th = 'style="text-align:right;padding:4px 10px;color:#888;font-weight:500"';
       const td = 'style="text-align:right;padding:4px 10px"';

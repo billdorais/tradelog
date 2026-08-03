@@ -6671,8 +6671,13 @@ def api_earnings_study():
     except (TypeError, ValueError): limit = 24
     try:    min_gap = max(0.0, float(data.get("min_gap_pct") or 0))
     except (TypeError, ValueError): min_gap = 0.0
+    source   = "intraday" if str(data.get("source") or "daily").lower() == "intraday" else "daily"
+    interval = str(data.get("interval") or "5m")
+    if interval not in ("1m", "5m", "15m", "30m", "1h"):
+        interval = "5m"
     try:
-        return jsonify(run_study(tickers, limit=limit, min_gap_pct=min_gap))
+        return jsonify(run_study(tickers, limit=limit, min_gap_pct=min_gap,
+                                 source=source, interval=interval))
     except Exception as e:
         log.error("earnings study failed: %s", e, exc_info=True)
         return jsonify({"error": str(e)[:300]}), 500

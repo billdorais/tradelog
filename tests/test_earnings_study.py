@@ -116,3 +116,53 @@ def test_gap_buckets_partition_by_absolute_gap(monkeypatch):
     buckets = {b["bucket"]: b for b in out["pooled"]["by_gap_bucket"]}
     assert buckets["5%+"]["events"] == 1        # the 5.0% gap lands in the top bucket
     assert buckets["0-1%"]["events"] == 0
+
+
+# ── Intraday (Alpaca) path ────────────────────────────────────────────────────
+# Alpaca returns naive UTC; the study converts to ET and keeps RTH only. 14:30
+# UTC = 09:30 ET (EDT), so these are the first bars of the session.
+
+def _ubar(iso, o, h, l, c):
+    """A naive-UTC intraday bar, as fetch_bars_alpaca returns them."""
+    return {"time": dt.datetime.fromisoformat(iso), "open": o, "high": h,
+            "low": l, "close": c, "volume": 1e5}
+
+
+def test_utc_bars_convert_to_et_and_drop_extended_hours():
+    bars = [
+        _ubar("2026-01-06T13:00", 1, 1, 1, 1),   # 08:00 ET — premarket, dropped
+        _ubar("2026-01-06T14:30", 2, 2, 2, 2),   # 09:30 ET — first RTH bar
+        _ubar("2026-01-06T20:55", 3, 3, 3, 3),   # 15:55 ET — last RTH bar
+        _ubar("2026-01-06T21:30", 4, 4, 4, 4),   # 16:30 ET — after hours, dropped
+    ]
+    et = es._to_et_rth(bars)
+    assert [b["time"].strftime("%H:%M") for b in et] == ["09:30", "15:55"]
+
+
+def test_intraday_reports_minutes_to_fill(monkeypatch):
+    """The thing daily bars cannot answer: WHEN the gap filled."""
+    prior = [_ubar("2026-01-05T14:30", 99, 101, 98, 100),      # prior session, close 100
+             _ubar("2026-01-05T20:55", 100, 100, 100, 100)]
+    # Reaction day gaps to 105; the 10:00 ET bar (30 min in) dips to 99 -> fills.
+    react = [_ubar("2026-01-06T14:30", 105, 106, 104, 105),    # 09:30 ET
+             _ubar("2026-01-06T15:00", 105, 105, 99, 100),     # 10:00 ET -> fill
+             _ubar("2026-01-06T20:55", 100, 104, 100, 103)]    # 15:55 ET close 103
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 6)])
+    out = es.run_study(["AAPL"], fetch=lambda *a: prior + react, source="intraday")
+    assert out["source"] == "intraday" and out["total_events"] == 1
+    r = out["tickers"][0]["rows"][0]
+    assert r["gap_pct"] == pytest.approx(5.0)
+    assert r["filled"] is True
+    assert r["mins_to_fill"] == 30            # 09:30 -> 10:00
+    o = out["pooled"]["overall"]
+    assert o["median_mins_to_fill"] == 30
+    assert o["fill_within_30m_pct"] == 100.0
+
+
+def test_daily_source_has_no_fill_timing(monkeypatch):
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 6)])
+    out = es.run_study(["AAPL"], fetch=lambda *a: GAP_UP_FILLED)
+    assert out["source"] == "daily"
+    assert "median_mins_to_fill" not in out["pooled"]["overall"]
