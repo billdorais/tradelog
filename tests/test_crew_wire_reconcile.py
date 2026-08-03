@@ -50,7 +50,7 @@ class _FakeBroker:
         self._open = list(open_symbols)
     def _invalidate_pos_cache(self):
         pass
-    def get_positions(self):
+    def get_positions(self, raise_on_error=False):
         return [{"symbol": s} for s in self._open]
 
 
@@ -147,7 +147,7 @@ def test_positions_fetch_failure_still_prunes(wired):
 
     class _Boom:
         def _invalidate_pos_cache(self): pass
-        def get_positions(self): raise RuntimeError("alpaca down")
+        def get_positions(self, raise_on_error=False): raise RuntimeError("alpaca down")
     a.ACCOUNTS_BY_TAG["alpaca4"]["broker"] = _Boom()
 
     seed_report([_slug("AAA")])

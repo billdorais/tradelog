@@ -2462,7 +2462,10 @@ def api_crew_wire_to_router():
             _br4 = (_kairos.ACCOUNTS_BY_TAG.get("alpaca4") or {}).get("broker")
             if _br4 is not None:
                 _br4._invalidate_pos_cache()
-                open_tickers = {(pp.get("symbol") or "").upper() for pp in _br4.get_positions()}
+                # raise_on_error so a failed fetch actually trips the warning below
+                # instead of silently reading as "nothing open" and dropping the guard.
+                open_tickers = {(pp.get("symbol") or "").upper()
+                                for pp in _br4.get_positions(raise_on_error=True)}
         except Exception as _pe:
             _kairos.log.warning("crew wire: acct4 positions fetch failed; pruning "
                                 "without the open-position guard: %s", _pe)

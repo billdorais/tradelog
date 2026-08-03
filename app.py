@@ -1521,7 +1521,9 @@ def _check_position_stops():
         try:
             # Bypass the position cache here — risk checks need fresh data.
             _br._invalidate_pos_cache()
-            for p in _br.get_positions():
+            # raise_on_error keeps a failed broker OUT of polled_brokers below,
+            # so stale cleanup never runs on positions we failed to read.
+            for p in _br.get_positions(raise_on_error=True):
                 p["broker"] = _tag
                 all_positions.append(p)
             polled_brokers.add(_tag)
@@ -1751,7 +1753,7 @@ def _check_exit_params_recovery():
     for broker_tag, broker_inst in accounts:
         try:
             broker_inst._invalidate_pos_cache()
-            positions = [p for p in broker_inst.get_positions()
+            positions = [p for p in broker_inst.get_positions(raise_on_error=True)
                          if abs(float(p.get("qty") or 0)) > 0]
         except Exception as _e:
             log.debug("Exit recovery: get_positions failed on %s: %s", broker_tag, _e)
@@ -1835,7 +1837,9 @@ def _check_max_hold_exits():
 
         try:
             broker_inst._invalidate_pos_cache()
-            positions = broker_inst.get_positions()
+            # raise_on_error: a failed fetch must NOT read as "position closed" —
+            # that would drop the max-hold timer on a still-open position.
+            positions = broker_inst.get_positions(raise_on_error=True)
             still_open = any(
                 p["symbol"].upper() == symbol and abs(float(p.get("qty") or 0)) > 0
                 for p in positions
@@ -2499,7 +2503,9 @@ def _recover_max_hold_positions():
     for _acct in ALPACA_ACCOUNTS:
         _tag, _inst = _acct["tag"], _acct["broker"]
         try:
-            for _pos in _inst.get_positions():
+            # raise_on_error so a failed fetch lands in failed_brokers below
+            # instead of looking like a flat account (which drops timers).
+            for _pos in _inst.get_positions(raise_on_error=True):
                 if abs(float(_pos.get("qty") or 0)) > 0:
                     open_positions[(_tag, _pos["symbol"].upper())] = _pos
         except Exception as _e:
@@ -3028,7 +3034,9 @@ def alpaca_positions():
         if _pcache["data"] is not None and (now - _pcache["ts"]) < ALPACA_POSITIONS_TTL:
             return jsonify(_pcache["data"])
     try:
-        positions = broker.get_positions()
+        # raise_on_error so a network blip returns an error payload instead of an
+        # empty list that the per-account cache would then serve for 15s.
+        positions = broker.get_positions(raise_on_error=True)
         # Enrich each position with entry_time from the max-hold timer dict so the
         # dashboard can display how long the trade has been live.
         with _risk_lock:

@@ -26,7 +26,7 @@ class _FakeBroker:
     def __init__(self):
         self.calls = 0
 
-    def get_positions(self):
+    def get_positions(self, raise_on_error=False):
         self.calls += 1
         return [{"symbol": "GOOG", "qty": 10, "market_value": 1000.0}]
 
@@ -65,7 +65,7 @@ def test_positions_cached_for_every_account_not_just_account_1(fake_accounts):
 def test_positions_caches_are_per_account(fake_accounts):
     """Account 2's cached payload must not be served for account 3."""
     brokers = fake_accounts
-    brokers["3"].get_positions = lambda: [{"symbol": "TSLA", "qty": 5}]
+    brokers["3"].get_positions = lambda raise_on_error=False: [{"symbol": "TSLA", "qty": 5}]
     with a.app.test_client() as c:
         d2 = c.get("/api/alpaca/positions?account=2").get_json()
         d3 = c.get("/api/alpaca/positions?account=3").get_json()

@@ -26,7 +26,7 @@ def test_manual_trail_roundtrip():
 class _FakeBroker:
     def __init__(self, positions): self._p = positions
     def _invalidate_pos_cache(self): pass
-    def get_positions(self): return [dict(p) for p in self._p]
+    def get_positions(self, raise_on_error=False): return [dict(p) for p in self._p]
     def close_position(self, sym): return {"success": True}
 
 

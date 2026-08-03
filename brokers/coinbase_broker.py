@@ -107,8 +107,11 @@ class CoinbaseBroker:
             log.error("Coinbase order failed for %s %s %s: %s", side, quantity, product_id, e)
             return {"success": False, "error": str(e)}
 
-    def get_positions(self):
-        """Return non-zero account balances as positions."""
+    def get_positions(self, raise_on_error=False):
+        """Return non-zero account balances as positions.
+
+        raise_on_error=True re-raises instead of returning [] — for callers that
+        act on emptiness and must not mistake a failed fetch for a flat account."""
         self._ensure_client()
         try:
             resp   = self._client.get_accounts()
@@ -134,6 +137,8 @@ class CoinbaseBroker:
             return result
         except Exception as e:
             log.error("Coinbase get_positions failed: %s", e)
+            if raise_on_error:
+                raise
             return []
 
     def close_all_positions(self):

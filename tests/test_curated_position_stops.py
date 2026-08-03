@@ -55,7 +55,7 @@ def _stops(monkeypatch):
     class _FakeBroker:
         def __init__(self, tag, poss): self._tag, self._poss = tag, poss
         def _invalidate_pos_cache(self): pass
-        def get_positions(self):
+        def get_positions(self, raise_on_error=False):
             return [dict(p) for p in self._poss if p["broker"] == self._tag]
 
     monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [

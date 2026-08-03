@@ -1086,7 +1086,14 @@ class AlpacaBroker:
             log.error("Alpaca option order failed for %s: %s", best_symbol, e)
             return {"success": False, "error": str(e)}
 
-    def get_positions(self):
+    def get_positions(self, raise_on_error=False):
+        """Open positions as plain dicts.
+
+        Returns [] on failure by default, which is fine for display callers but
+        NOT for anything that acts on "no positions" — a transient network blip
+        (stale keep-alive socket → RemoteDisconnected) is indistinguishable from
+        a genuinely flat account. Callers that destroy state or close positions
+        on an empty result MUST pass raise_on_error=True and handle the raise."""
         self._ensure_client()
         try:
             positions = self._get_positions_cached()
@@ -1107,6 +1114,8 @@ class AlpacaBroker:
             return result
         except Exception as e:
             log.error("Alpaca get_positions failed: %s", e, exc_info=True)
+            if raise_on_error:
+                raise
             return []
 
     def close_position(self, symbol):

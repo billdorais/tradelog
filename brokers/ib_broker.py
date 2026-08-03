@@ -174,8 +174,11 @@ class IBBroker:
     # EOD — close all open positions
     # ------------------------------------------------------------------
 
-    def get_positions(self):
-        """Return open positions with live unrealized P&L via portfolio()."""
+    def get_positions(self, raise_on_error=False):
+        """Return open positions with live unrealized P&L via portfolio().
+
+        Accepts raise_on_error for interface parity with the other brokers; this
+        implementation already lets failures propagate, so it needs no handling."""
         with self._lock:
             self._ensure_connected()
             result = []
