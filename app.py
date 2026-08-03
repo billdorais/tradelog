@@ -6586,9 +6586,16 @@ def api_backtest_gap_fill():
         for tk, df in frames.items():
             try:
                 _sess = sorted({(d.date() if hasattr(d, "date") else d) for d in df.index})
-                earn_days[tk] = frozenset(earnings_gap_days(tk, _sess))
-            except Exception:
+                earn_days[tk] = frozenset(
+                    earnings_gap_days(tk, _sess, raise_on_error=True))
+                if not earn_days[tk]:
+                    errors.append(f"{tk}: no earnings sessions inside the selected date "
+                                  f"range (calendar reached, but nothing matched)")
+            except Exception as _ee:
+                # Do NOT let a broken calendar look like "no earnings gaps" — that
+                # reads as 0 trades on every ticker with no explanation.
                 earn_days[tk] = frozenset()
+                errors.append(f"{tk}: earnings calendar unavailable — {str(_ee)[:120]}")
 
     def _run(params):
         per_ticker, tot_tr, wins = [], 0, 0
