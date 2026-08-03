@@ -673,11 +673,12 @@
     <div class="section-title" style="margin-bottom:10px">Gap-Fill &#8594; Prior-Day VWAP Backtest
       <span style="font-size:0.72rem;color:#666;font-weight:400">— buy the morning fade after a gap, target the prior-day VWAP</span></div>
     <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
-      <div class="param-group"><label>Tickers (comma sep)</label><div class="input-wrap"><input type="text" id="gfTickers" value="IBM,AAPL,NVDA,TSLA,MSFT,AMD" style="width:280px;text-transform:uppercase"></div></div>
+      <div class="param-group"><label>Tickers (comma sep)</label><div class="input-wrap"><input type="text" id="gfTickers" value="AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,IBM,JPM,BA,MU,PLTR,COIN,CRM,UBER,AVGO,INTC,SMH" style="width:520px;text-transform:uppercase"></div></div>
       <div class="param-group"><label>Timeframe</label><select id="gfTimeframe" style="padding:6px 8px"><option value="5m">5m</option><option value="1m">1m</option></select></div>
       <div class="param-group"><label>Warmup (min)</label><div class="input-wrap"><input type="number" id="gfWarmup" value="15" style="width:64px"></div></div>
       <div class="param-group"><label>Min R:R</label><div class="input-wrap"><input type="number" step="0.5" id="gfMinRr" value="2" style="width:64px"></div></div>
       <div class="param-group"><label>Gap sweep (%)</label><div class="input-wrap"><input type="text" id="gfSweep" value="0.5,1,2,3" style="width:110px"></div></div>
+      <div class="param-group"><label>Target offset sweep (% below VWAP)</label><div class="input-wrap"><input type="text" id="gfTargetSweep" value="0,0.1,0.25,0.5" style="width:140px"></div></div>
       <button class="run-btn" onclick="runGapFillBacktest()" style="padding:8px 18px">&#9654; Run Backtest</button>
     </div>
     <div style="font-size:0.7rem;color:#555;margin-top:6px">Uses the <b>From/To</b> dates above. Read-only &mdash; places no orders. &ldquo;Gap&rdquo; = any opening gap &ge; threshold (no earnings calendar, so this is a proxy for the earnings-gap population). Long-only first pass: after the warmup chop, buy when price is below the prior-day VWAP with enough room, stop under the early-session low, target the prior-day VWAP. Fetching intraday bars for several tickers can take 10&ndash;30s.</div>
@@ -1448,6 +1449,8 @@
       .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
     const sweep = (document.getElementById('gfSweep').value || '')
       .split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+    const targetSweep = (document.getElementById('gfTargetSweep').value || '')
+      .split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
     if (!tickers.length) { out.innerHTML = '<div style="color:#c66">Enter at least one ticker.</div>'; return; }
     const body = {
       tickers,
@@ -1458,6 +1461,7 @@
       min_rr:     parseFloat(document.getElementById('gfMinRr').value) || 2,
     };
     if (sweep.length) body.sweep = sweep;
+    if (targetSweep.length) body.target_sweep = targetSweep;
     out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running… (fetching intraday bars can take a bit)</div>';
     try {
       const r = await fetch('/api/backtest/gap_fill', {
@@ -1467,6 +1471,36 @@
       if (!r.ok) { out.innerHTML = '<div style="color:#c66">' + (d.error || ('HTTP ' + r.status)) + '</div>'; return; }
       const eColor = v => (v >= 0 ? '#7FE098' : '#e08a8a');
       let html = '';
+      if (d.grid && d.grid.length) {
+        // 2D heatmap: rows = gap thresholds, cols = target offsets, cell = expectancy.
+        const gaps = [...new Set(d.grid.map(g => g.gap_min_pct))];
+        const offs = [...new Set(d.grid.map(g => g.target_offset_pct))];
+        const cellOf = (g, o) => d.grid.find(x => x.gap_min_pct === g && x.target_offset_pct === o);
+        const maxAbs = Math.max(0.001, ...d.grid.map(g => Math.abs(g.avg_expectancy_pct || 0)));
+        const bg = v => {
+          const a = Math.min(0.85, Math.abs(v) / maxAbs * 0.85 + 0.08);
+          return v >= 0 ? `rgba(127,224,152,${a})` : `rgba(224,138,138,${a})`;
+        };
+        html += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px">'
+          + 'Expectancy %/trade — rows: gap &ge; · cols: target % below prior-day VWAP '
+          + '<span style="color:#666">(cell shows expectancy; small = trade count)</span></div>'
+          + '<table style="border-collapse:collapse;font-size:0.74rem;margin-bottom:14px">'
+          + '<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left;padding:3px 10px">gap&#8595; / off&#8594;</th>'
+          + offs.map(o => `<th style="text-align:center;padding:3px 10px">${o}%</th>`).join('')
+          + '</tr></thead><tbody>'
+          + gaps.map(g =>
+              `<tr><td style="color:#ccc;padding:3px 10px;white-space:nowrap">&ge; ${g}%</td>`
+              + offs.map(o => {
+                  const c = cellOf(g, o);
+                  if (!c || !c.total_trades) return '<td style="text-align:center;color:#444;padding:3px 10px">—</td>';
+                  const e = c.avg_expectancy_pct;
+                  return `<td style="text-align:center;padding:3px 10px;background:${bg(e)};color:#0c0f16;font-weight:600" title="${c.total_trades} trades · ${c.avg_win_rate}% win">`
+                    + `${e >= 0 ? '+' : ''}${e}%<br><span style="font-weight:400;color:#12303a;font-size:0.6rem">${c.total_trades}t</span></td>`;
+                }).join('')
+              + '</tr>'
+            ).join('')
+          + '</tbody></table>';
+      }
       if (d.sweep && d.sweep.length) {
         html += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px">Aggregate by gap threshold</div>'
           + '<table style="border-collapse:collapse;font-size:0.78rem;margin-bottom:14px">'
@@ -1486,7 +1520,7 @@
       const pt = d.per_ticker || [];
       if (pt.length) {
         html += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px">Per ticker'
-          + (d.sweep && d.sweep.length ? ` (at gap &ge; ${d.sweep[0].gap_min_pct}%)` : '') + '</div>'
+          + (sweep.length ? ` (at gap &ge; ${sweep[0]}%${targetSweep.length ? `, target ${targetSweep[0]}% below VWAP` : ''})` : '') + '</div>'
           + '<table style="border-collapse:collapse;font-size:0.78rem"><thead style="color:#666;font-size:0.62rem"><tr>'
           + '<th style="text-align:left;padding-right:16px">Ticker</th>'
           + '<th style="text-align:right;padding-right:16px">Trades</th>'

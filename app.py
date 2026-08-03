@@ -6551,9 +6551,11 @@ def api_backtest_gap_fill():
     timeframe = (data.get("timeframe") or "5m").strip()
     if not tickers or not from_date or not to_date:
         return jsonify({"error": "tickers, from, and to are required"}), 400
-    _pkeys = ("gap_min_pct", "warmup_min", "min_rr", "stop_buf_pct", "eod_close_min")
-    base_params = {k: data[k] for k in _pkeys if k in data and data[k] is not None}
-    sweep = data.get("sweep") or []
+    _pkeys = ("gap_min_pct", "warmup_min", "min_rr", "stop_buf_pct",
+              "target_offset_pct", "eod_close_min")
+    base_params  = {k: data[k] for k in _pkeys if k in data and data[k] is not None}
+    sweep        = data.get("sweep") or []          # gap-threshold sweep
+    target_sweep = data.get("target_sweep") or []   # target-offset-below-VWAP sweep
 
     # Fetch + RTH-filter each ticker once; reuse the df across sweep thresholds.
     frames = {}
@@ -6598,7 +6600,17 @@ def api_backtest_gap_fill():
         return per_ticker, agg
 
     out = {"from": from_date, "to": to_date, "timeframe": timeframe, "errors": errors}
-    if sweep:
+    if sweep and target_sweep:
+        # 2D grid: gap threshold × target offset (% below prior-day VWAP) → expectancy.
+        out["grid"] = []
+        for thr in sweep:
+            for off in target_sweep:
+                _p = dict(base_params); _p["gap_min_pct"] = thr; _p["target_offset_pct"] = off
+                _, agg = _run(_p)
+                out["grid"].append({"gap_min_pct": thr, "target_offset_pct": off, **agg})
+        _p0 = dict(base_params); _p0["gap_min_pct"] = sweep[0]; _p0["target_offset_pct"] = target_sweep[0]
+        out["per_ticker"], out["aggregate"] = _run(_p0)
+    elif sweep:
         out["sweep"] = []
         for thr in sweep:
             _p = dict(base_params); _p["gap_min_pct"] = thr

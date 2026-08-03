@@ -28,11 +28,12 @@ from .vwap import prior_day_vwap, gap_pct
 
 class GapFillVWAP(Strategy):
     # ── Tuneable parameters ──────────────────────────────────────────────────
-    gap_min_pct   = 1.0     # minimum opening gap up (%) to qualify the day
-    warmup_min    = 15      # minutes after 09:30 to let the chop print lows
-    stop_buf_pct  = 0.05    # stop sits this % below the warmup low
-    min_rr        = 2.0     # only enter if (target−entry)/(entry−stop) >= this
-    eod_close_min = 385     # minutes after 09:30 to force-flat (385 = 15:55 ET)
+    gap_min_pct       = 1.0   # minimum opening gap up (%) to qualify the day
+    warmup_min        = 15    # minutes after 09:30 to let the chop print lows
+    stop_buf_pct      = 0.05  # stop sits this % below the warmup low
+    min_rr            = 2.0   # only enter if (target−entry)/(entry−stop) >= this
+    target_offset_pct = 0.0   # take profit this % BELOW prior-day VWAP (0 = exactly at it)
+    eod_close_min     = 385   # minutes after 09:30 to force-flat (385 = 15:55 ET)
 
     def init(self):
         o = self.data.Open; h = self.data.High
@@ -85,7 +86,9 @@ class GapFillVWAP(Strategy):
             return
 
         stop   = self._session_low * (1 - self.stop_buf_pct / 100.0)
-        target = pdv
+        # Target = prior-day VWAP, optionally pulled `target_offset_pct` % below it
+        # (take profit before the full reversion → higher hit rate, smaller winners).
+        target = pdv * (1 - self.target_offset_pct / 100.0)
         if not (stop < price < target):
             return
         rr = (target - price) / (price - stop)
