@@ -166,3 +166,74 @@ def test_daily_source_has_no_fill_timing(monkeypatch):
     out = es.run_study(["AAPL"], fetch=lambda *a: GAP_UP_FILLED)
     assert out["source"] == "daily"
     assert "median_mins_to_fill" not in out["pooled"]["overall"]
+
+
+# ── ATR-normalised bucketing ──────────────────────────────────────────────────
+# A 3% gap is a major event for a 3%-range name and noise for a 9%-range name, so
+# raw-% buckets pool incomparable events across a mixed basket. Buckets by
+# gap/ATR instead; the first three tiers match the published NQ gap study.
+
+def _flat_series(start_day, n, price=100.0, rng=1.0):
+    """n daily bars with a constant `rng` true range, so ATR == rng exactly."""
+    out = []
+    for i in range(n):
+        d = dt.date(2026, 1, 1) + dt.timedelta(days=start_day + i)
+        out.append(_bar(d.isoformat(), price, price + rng / 2, price - rng / 2, price))
+    return out
+
+
+def test_atr_is_the_average_true_range():
+    bars = _flat_series(0, 20, price=100.0, rng=2.0)
+    atr = es._atr_by_date(bars)
+    assert list(atr.values())[-1] == pytest.approx(2.0)
+    # Undefined until `period` bars exist.
+    assert len(atr) == 20 - es.ATR_PERIOD + 1
+
+
+def test_gap_atr_normalises_across_different_volatility_names(monkeypatch):
+    """The same 4% gap is ~4 ATR on a calm name and ~0.5 ATR on a wild one."""
+    def _series(rng):
+        bars = _flat_series(0, 20, price=100.0, rng=rng)
+        # Reaction day: opens at 104 (+4% gap), never fills back to 100.
+        bars.append(_bar("2026-01-21", 104, 106, 103.5, 105.5))
+        return bars
+
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 21)])
+    calm = es.run_study(["CALM"], fetch=lambda *a: _series(1.0))   # ATR 1.0
+    wild = es.run_study(["WILD"], fetch=lambda *a: _series(8.0))   # ATR 8.0
+    r_calm = calm["tickers"][0]["rows"][0]
+    r_wild = wild["tickers"][0]["rows"][0]
+    # Identical raw gap...
+    assert r_calm["abs_gap_pct"] == pytest.approx(r_wild["abs_gap_pct"])
+    # ...but very different in volatility terms.
+    assert r_calm["gap_atr"] == pytest.approx(4.0, abs=0.05)
+    assert r_wild["gap_atr"] == pytest.approx(0.5, abs=0.05)
+    # ...and they land in different ATR buckets.
+    def _filled_bucket(out):
+        return next(b["bucket"] for b in out["pooled"]["by_atr_bucket"] if b["events"])
+    assert _filled_bucket(calm) == "3x+"
+    assert _filled_bucket(wild) == "0.3-0.7x"
+
+
+def test_atr_excludes_the_reaction_day_itself(monkeypatch):
+    """No look-ahead: a huge reaction-day range must not inflate its own ATR and
+    demote the event into a smaller bucket."""
+    bars = _flat_series(0, 20, price=100.0, rng=1.0)          # ATR 1.0 going in
+    bars.append(_bar("2026-01-21", 104, 130, 70, 105))        # violent 60-wide day
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 21)])
+    r = es.run_study(["X"], fetch=lambda *a: bars)["tickers"][0]["rows"][0]
+    assert r["atr"] == pytest.approx(1.0, abs=0.01), "reaction day leaked into its own ATR"
+    assert r["gap_atr"] == pytest.approx(4.0, abs=0.05)
+
+
+def test_atr_coverage_is_reported(monkeypatch):
+    """Events without enough history for an ATR are excluded from the ATR view,
+    and the shortfall is stated rather than hidden."""
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 6)])
+    out = es.run_study(["AAPL"], fetch=lambda *a: GAP_UP_FILLED)   # only 2 bars
+    cov = out["pooled"]["atr_coverage"]
+    assert cov["events"] == 1 and cov["events_with_atr"] == 0
+    assert all(b["events"] == 0 for b in out["pooled"]["by_atr_bucket"])

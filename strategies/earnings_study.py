@@ -30,9 +30,76 @@ log = logging.getLogger(__name__)
 # Gap-size buckets (absolute overnight gap %). Upper bound exclusive.
 GAP_BUCKETS = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 5.0), (5.0, 100.0)]
 
+# Gap measured in ATR units — the better normaliser. A 3% gap is a major event for
+# JPM (avg range ~3%) and a rounding error for PLTR (~9%), so raw-% buckets pool
+# incomparable events across a mixed basket. The first three tiers match the NQ
+# futures gap study's tiers so results are directly comparable; earnings gaps run
+# much larger than index gaps, hence the extra tiers on top.
+ATR_BUCKETS = [(0.0, 0.3), (0.3, 0.7), (0.7, 1.2), (1.2, 2.0), (2.0, 3.0), (3.0, 1e9)]
+ATR_PERIOD = 14
+
 
 def _bucket_label(lo, hi):
     return f"{lo:g}-{hi:g}%" if hi < 100 else f"{lo:g}%+"
+
+
+def _atr_label(lo, hi):
+    return f"{lo:g}-{hi:g}x" if hi < 1e9 else f"{lo:g}x+"
+
+
+def _atr_by_date(daily_bars, period=ATR_PERIOD):
+    """date -> ATR *as of the close of that session*, from daily bars.
+
+    Wilder true range: max(h-l, |h-prev_close|, |l-prev_close|). Callers must look
+    up the session BEFORE the one being measured — using the reaction day's own ATR
+    would leak that day's range into the bucket that classifies it.
+    """
+    bars = sorted(daily_bars, key=lambda b: b["time"])
+    out, trs = {}, []
+    for i, b in enumerate(bars):
+        if i == 0:
+            tr = b["high"] - b["low"]
+        else:
+            pc = bars[i - 1]["close"]
+            tr = max(b["high"] - b["low"], abs(b["high"] - pc), abs(b["low"] - pc))
+        trs.append(tr)
+        if len(trs) >= period:
+            out[b["time"].date()] = sum(trs[-period:]) / period
+    return out
+
+
+def _attach_atr(rows, atr_map, sess_dates):
+    """Add atr / gap_atr to each event row, using the ATR as of the PRIOR session."""
+    if not atr_map or not sess_dates:
+        return rows
+    ordered = sorted(sess_dates)
+    for r in rows:
+        try:
+            d = _date(r["date"])
+        except Exception:
+            continue
+        i = bisect.bisect_left(ordered, d)
+        # Walk back to the most recent session with a defined ATR before this one.
+        atr = None
+        for j in range(i - 1, max(-1, i - 6), -1):
+            if j < 0:
+                break
+            atr = atr_map.get(ordered[j])
+            if atr:
+                break
+        if not atr:
+            continue
+        r["atr"] = round(atr, 4)
+        r["atr_pct"] = round(atr / r["prev_close"] * 100.0, 3) if r["prev_close"] else None
+        gap_abs = abs(r["open"] - r["prev_close"])
+        r["gap_atr"] = round(gap_abs / atr, 3)
+    return rows
+
+
+def _date(iso):
+    from datetime import date as _d
+    y, m, d = (int(x) for x in iso.split("-"))
+    return _d(y, m, d)
 
 
 def _reaction_rows(ticker, bars, limit=24, raise_on_error=False):
@@ -243,6 +310,7 @@ def _split(rows):
             "down": _agg([r for r in rows if r["direction"] == "down"]),
         },
         "by_gap_bucket": [],
+        "by_atr_bucket": [],
     }
     for lo, hi in GAP_BUCKETS:
         sel = [r for r in rows if lo <= r["abs_gap_pct"] < hi]
@@ -252,11 +320,23 @@ def _split(rows):
             "up":   _agg([r for r in sel if r["direction"] == "up"]),
             "down": _agg([r for r in sel if r["direction"] == "down"]),
         })
+    # Volatility-normalised view. Only events with a computable ATR take part, so
+    # report the coverage rather than letting a partial sample look complete.
+    with_atr = [r for r in rows if r.get("gap_atr") is not None]
+    out["atr_coverage"] = {"events_with_atr": len(with_atr), "events": len(rows)}
+    for lo, hi in ATR_BUCKETS:
+        sel = [r for r in with_atr if lo <= r["gap_atr"] < hi]
+        out["by_atr_bucket"].append({
+            "bucket": _atr_label(lo, hi), "min_atr": lo,
+            **_agg(sel),
+            "up":   _agg([r for r in sel if r["direction"] == "up"]),
+            "down": _agg([r for r in sel if r["direction"] == "down"]),
+        })
     return out
 
 
 def run_study(tickers, limit=24, fetch=None, min_gap_pct=0.0,
-              source="daily", interval="5m"):
+              source="daily", interval="5m", daily_fetch=None):
     """Earnings-reaction study across `tickers`.
 
     source="daily"    — yfinance daily bars. Free, ~6y, but no intraday path.
@@ -273,6 +353,8 @@ def run_study(tickers, limit=24, fetch=None, min_gap_pct=0.0,
             from strategies.data import fetch_bars_alpaca as fetch
         else:
             from strategies.data import fetch_bars as fetch
+    # Same source for the ATR denominator; both fetchers accept interval="1d".
+    daily_fetch = daily_fetch or fetch
     per_ticker, all_rows, errors = [], [], []
     for tk in tickers:
         tk = (tk or "").strip().upper()
@@ -286,21 +368,31 @@ def run_study(tickers, limit=24, fetch=None, min_gap_pct=0.0,
         if not anns:
             errors.append(f"{tk}: calendar reached but returned no announcement dates")
             continue
+        # Daily bars serve two purposes: the daily measurement path, and the ATR
+        # denominator for BOTH paths. Intraday windows are only a few sessions
+        # wide — far too short for a 14-period ATR — so intraday mode fetches one
+        # daily series per ticker purely to normalise gap size.
+        daily_bars = None
+        start = (min(anns) - timedelta(days=90)).isoformat()
+        end   = (max(anns) + timedelta(days=10)).isoformat()
+        try:
+            daily_bars = daily_fetch(tk, start, end, "1d")
+        except Exception as e:
+            errors.append(f"{tk}: daily bars for ATR unavailable — {str(e)[:100]}")
+
         if intraday:
             rows = _intraday_rows(tk, anns, fetch, interval=interval)
             if not rows:
                 errors.append(f"{tk}: no intraday bars returned for any earnings window "
                               f"(check ALPACA_KEY / entitlement for {interval})")
         else:
-            # Pad so the first event has a prior session to gap from.
-            start = (min(anns) - timedelta(days=10)).isoformat()
-            end   = (max(anns) + timedelta(days=10)).isoformat()
-            try:
-                bars = fetch(tk, start, end, "1d")
-            except Exception as e:
-                errors.append(f"{tk}: daily bars unavailable — {str(e)[:120]}")
+            if daily_bars is None:
                 continue
-            rows = _reaction_rows(tk, bars, limit=limit)
+            rows = _reaction_rows(tk, daily_bars, limit=limit)
+
+        if daily_bars and rows:
+            _attach_atr(rows, _atr_by_date(daily_bars),
+                        [b["time"].date() for b in daily_bars])
         if min_gap_pct:
             rows = [r for r in rows if r["abs_gap_pct"] >= min_gap_pct]
         if not rows:

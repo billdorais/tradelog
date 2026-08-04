@@ -1525,6 +1525,36 @@
       }
       html += '</table>';
 
+      // ATR-normalised buckets — the better comparison across a mixed-volatility
+      // basket (a 3% gap is huge for a 3%-range name, noise for a 9%-range one).
+      const cov = (d.pooled || {}).atr_coverage || {};
+      const atrRows = (d.pooled.by_atr_bucket || []).filter(b => b.events);
+      if (atrRows.length) {
+        html += '<div style="font-size:0.75rem;color:#aaa;margin:14px 0 4px">By gap size in ATR '
+             + '(gap &divide; 14-day ATR as of the prior session &mdash; normalises across tickers)'
+             + (cov.events_with_atr < cov.events
+                 ? ' <span style="color:#F2C07A">' + cov.events_with_atr + ' of ' + cov.events
+                   + ' events have enough history for an ATR</span>' : '')
+             + '</div>'
+             + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
+             + '<tr><th style="text-align:left;padding:4px 10px;color:#888;font-weight:500">GAP / ATR</th>'
+             + '<th ' + th + '>EVENTS</th><th ' + th + '>FILL %</th><th ' + th + '>FADED %</th>'
+             + '<th ' + th + '>FOLLOW %</th><th ' + th + '>UP (n / fill)</th><th ' + th + '>DOWN (n / fill)</th></tr>';
+        for (const b of d.pooled.by_atr_bucket) {
+          html += '<tr style="border-top:1px solid #22242f">'
+               + '<td style="padding:4px 10px">' + b.bucket + '</td>'
+               + '<td ' + td + '>' + b.events + '</td>'
+               + '<td ' + td + '>' + (b.events ? b.fill_rate.toFixed(1) + '%' : '—') + '</td>'
+               + '<td ' + td + '>' + (b.events ? b.faded_rate.toFixed(1) + '%' : '—') + '</td>'
+               + '<td ' + td + '><span style="color:' + col(b.avg_follow_pct) + '">'
+               + (b.events ? pct(b.avg_follow_pct) : '—') + '</span></td>'
+               + '<td ' + td + '>' + b.up.events + ' / ' + (b.up.events ? b.up.fill_rate.toFixed(0) + '%' : '—') + '</td>'
+               + '<td ' + td + '>' + b.down.events + ' / ' + (b.down.events ? b.down.fill_rate.toFixed(0) + '%' : '—') + '</td>'
+               + '</tr>';
+        }
+        html += '</table>';
+      }
+
       // Per ticker
       html += '<div style="font-size:0.75rem;color:#aaa;margin:14px 0 4px">Per ticker</div>'
            + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
