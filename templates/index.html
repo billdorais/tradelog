@@ -3437,6 +3437,26 @@
     // the last definition, so a shared name made the ✕ call the wrong function
     // (which prompted for a token and sent a bad IB order). No token prompt
     // (uses the injected token); brief button flash instead of dialogs.
+    // Release / re-arm one position's max-hold timer. Releasing lets a runner
+    // keep going and exit on its trailing stop instead of being flattened at the
+    // time limit. Survives the 2-min timer re-scan; ends when the position closes.
+    async function toggleMaxHold(broker, symbol, release, btn) {
+      const prev = btn.textContent;
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const res = await fetch('/api/risk/max_hold/release', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ broker, symbol, released: release }),
+        });
+        const d = await res.json();
+        if (!res.ok) { alert(d.error || ('HTTP ' + res.status)); btn.textContent = prev; btn.disabled = false; return; }
+        await loadOpenPositionsTable();     // repaint from server truth
+      } catch (e) {
+        alert('Failed to update the max-hold timer: ' + e);
+        btn.textContent = prev; btn.disabled = false;
+      }
+    }
+
     async function closeRowPosition(symbol, account, btn) {
       const token = _getWebhookToken();
       if (!token) return;
@@ -4212,9 +4232,15 @@
               let timerNote = '';
               if (timer) {
                 const overLimit = timer.elapsed_mins >= timer.max_hold_mins;
-                heldColor = overLimit ? '#ef5350' : (timer.elapsed_mins >= timer.max_hold_mins * 0.8 ? '#f59e0b' : '#888');
                 const elapsedFmt = timer.elapsed_mins < 1 ? `${Math.round(timer.elapsed_mins * 60)}s` : `${timer.elapsed_mins.toFixed(1)}m`;
+                if (timer.released) {
+                  // Timer released — the trailing stop is the only exit now.
+                  heldColor = '#7FE098';
+                  timerNote = `<br><span style="font-size:0.65rem;color:#7FE098" title="Max-hold timer released — this position runs until the trailing stop takes it out. Re-arm with the ⏱ button.">∞ released · trailing out</span>`;
+                } else {
+                heldColor = overLimit ? '#ef5350' : (timer.elapsed_mins >= timer.max_hold_mins * 0.8 ? '#f59e0b' : '#888');
                 timerNote = `<br><span style="font-size:0.65rem;color:${overLimit ? '#ef5350' : '#555'}">⏱ ${elapsedFmt} / ${timer.max_hold_mins}m</span>`;
+                }
                 if (timer.close_attempts > 0 && !timer.auto_closed) {
                   timerNote += `<br><span style="font-size:0.65rem;color:#ef5350" title="Engine has tried to close this ${timer.close_attempts} time(s) without success — check Alpaca order rejections">⚠ ${timer.close_attempts} close attempt${timer.close_attempts === 1 ? '' : 's'}</span>`;
                 }
@@ -4246,6 +4272,13 @@
               <button onclick="pullStop('${_sym}', ${_acct}, 'halfway', this)"
                 title="Move stop halfway between current stop and current price"
                 style="background:transparent;border:1px solid #4a4020;color:#F2C07A;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">½</button>
+              ${timer ? (timer.released
+                ? `<button onclick="toggleMaxHold('${escHtml(p.broker)}', '${_sym}', false, this)"
+                     title="Re-arm the max-hold timer (${timer.max_hold_mins}m from entry)"
+                     style="background:transparent;border:1px solid #2a4a30;color:#7FE098;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">⏱</button>`
+                : `<button onclick="toggleMaxHold('${escHtml(p.broker)}', '${_sym}', true, this)"
+                     title="Release the ${timer.max_hold_mins}m max-hold timer — let this position run and exit on the trailing stop instead"
+                     style="background:transparent;border:1px solid #2a3a4a;color:#70a8f5;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">∞</button>`) : ''}
               <button onclick="closeRowPosition('${_sym}', ${_acct}, this)"
                 title="Close position (broker close_position + market-order fallback)"
                 style="background:transparent;border:1px solid #4a2020;color:#ef5350;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:0.68rem">✕</button>

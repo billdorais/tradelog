@@ -399,7 +399,8 @@ def _get_manual_trail(broker_tag, symbol):
 
 # Phase-2 engine pilot runtime state. `entered` = setup keys already armed today
 # (one entry per setup/day); `prev_px` = last seen price per ticker for fresh-cross
-# detection; `fills` mirrors the persisted slippage log for the status panel.
+# detection; `fills` mirrors the persiste
+# d slippage log for the status panel.
 _engine_pilot_state = {"date": None, "last_entry": {}, "eval_bar": {}, "prev_px": {},
                        "pending_retest": {}, "fills": []}
 _engine_pilot_lock  = threading.Lock()
@@ -1822,6 +1823,13 @@ def _check_max_hold_exits():
 
     now_utc = datetime.now(timezone.utc)
     for (broker_tag, symbol), info in snapshot.items():
+        # A NEGATIVE limit means the timer was released for this position — let it
+        # run and exit on the trailing stop instead. The magnitude is kept so the
+        # original limit can be restored if it's re-armed. The entry stays in the
+        # map (rather than being deleted) precisely so the 2-minute recovery
+        # re-scan sees it as tracked and does not re-arm it.
+        if info["max_hold_mins"] <= 0:
+            continue
         elapsed_mins = (now_utc - info["entry_time"]).total_seconds() / 60
         if elapsed_mins < info["max_hold_mins"]:
             continue
@@ -3238,7 +3246,10 @@ def risk_status():
             {
                 "broker": k[0], "symbol": k[1],
                 "entry_time": v["entry_time"].isoformat(),
-                "max_hold_mins": v["max_hold_mins"],
+                # Negated limit = released; report it positive plus a flag so the
+                # UI shows the limit it would return to if re-armed.
+                "max_hold_mins": abs(v["max_hold_mins"]),
+                "released":      v["max_hold_mins"] <= 0,
                 "elapsed_mins": round((datetime.now(timezone.utc) - v["entry_time"]).total_seconds() / 60, 1),
                 "close_attempts": _max_hold_fail_ticks.get(k, 0),
                 "auto_closed":    k in auto_closed_snap,
@@ -3307,6 +3318,46 @@ def _update_env_file(key, value):
         log.info("Updated .env: %s=%s", key, value)
     except Exception as _e:
         log.warning("Failed to update .env: %s", _e)
+
+
+@app.route("/api/risk/max_hold/release", methods=["POST"])
+def api_max_hold_release():
+    """Release (or re-arm) ONE position's max-hold timer.
+
+    Releasing lets a running position keep going and exit on its trailing stop
+    instead of being flattened at the time limit. Implemented by NEGATING the
+    stored limit rather than deleting the entry, for two reasons: the original
+    limit survives so it can be re-armed, and the key stays in
+    _max_hold_positions so the 2-minute recovery re-scan treats the position as
+    tracked and does not silently re-arm it.
+
+    The release ends by itself when the position closes — the stale-timer sweep
+    drops keys whose position is gone.
+
+    Body: {broker: "alpaca4", symbol: "AAPL", released: true}
+    """
+    data   = request.get_json(silent=True) or {}
+    broker = (data.get("broker") or "").strip()
+    symbol = (data.get("symbol") or "").strip().upper()
+    want   = data.get("released", True)
+    want   = want if isinstance(want, bool) else str(want).lower() in ("1", "true", "yes")
+    if not broker or not symbol:
+        return jsonify({"error": "broker and symbol are required"}), 400
+
+    key = (broker, symbol)
+    with _risk_lock:
+        info = _max_hold_positions.get(key)
+        if not info:
+            return jsonify({"error": f"no max-hold timer tracked for {symbol} [{broker}]"}), 404
+        limit = abs(float(info["max_hold_mins"])) or float(MAX_HOLD_MINS or 0)
+        new_limit = -limit if want else limit
+        info["max_hold_mins"] = new_limit
+        entry_time = info["entry_time"]
+    _persist_max_hold(broker, symbol, entry_time, new_limit)
+    log.info("MAX HOLD %s: %s [%s] (limit %.0f min)",
+             "RELEASED — will trail out" if want else "re-armed", symbol, broker, limit)
+    return jsonify({"ok": True, "broker": broker, "symbol": symbol,
+                    "released": want, "max_hold_mins": limit})
 
 
 @app.route("/api/risk/limit", methods=["POST"])
