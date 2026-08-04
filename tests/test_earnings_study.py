@@ -237,3 +237,73 @@ def test_atr_coverage_is_reported(monkeypatch):
     cov = out["pooled"]["atr_coverage"]
     assert cov["events"] == 1 and cov["events_with_atr"] == 0
     assert all(b["events"] == 0 for b in out["pooled"]["by_atr_bucket"])
+
+
+# ── Conditioners: open location + first 15 minutes ────────────────────────────
+# The futures study found fill rates jump to 90%+ when a small gap is combined
+# with "opened inside the prior range" and "first 15-min candle toward the fill".
+
+def test_opened_inside_prior_range(monkeypatch):
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 6)])
+    # Prior session range 98-101. Open of 100.5 sits INSIDE it.
+    inside = [_bar("2026-01-05", 99, 101, 98, 100),
+              _bar("2026-01-06", 100.5, 102, 99, 101)]
+    # Open of 105 clears the prior high entirely.
+    outside = [_bar("2026-01-05", 99, 101, 98, 100),
+               _bar("2026-01-06", 105, 106, 104, 105.5)]
+    assert es._reaction_rows("X", inside)[0]["opened_inside"] is True
+    assert es._reaction_rows("X", outside)[0]["opened_inside"] is False
+
+
+def test_first15_direction_is_relative_to_the_fill(monkeypatch):
+    """Up gap: down move in the first 15 min is TOWARD the fill.
+    Down gap: up move is toward the fill. The sign flips with direction."""
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 6)])
+    prior = [_ubar("2026-01-05T14:30", 99, 101, 98, 100),
+             _ubar("2026-01-05T20:55", 100, 100, 100, 100)]
+
+    # UP gap to 105; first 15 min drifts DOWN to 103 -> toward the fill at 100.
+    up_toward = prior + [
+        _ubar("2026-01-06T14:30", 105, 105, 104, 104),   # 09:30
+        _ubar("2026-01-06T14:40", 104, 104, 103, 103),   # 09:40 (still <15min)
+        _ubar("2026-01-06T20:55", 103, 104, 102, 104)]
+    r = es.run_study(["X"], fetch=lambda *a: up_toward, source="intraday")["tickers"][0]["rows"][0]
+    assert r["direction"] == "up" and r["first15_toward"] is True
+
+    # DOWN gap to 95; first 15 min drifts DOWN too -> AWAY from the fill at 100.
+    down_away = prior + [
+        _ubar("2026-01-06T14:30", 95, 95, 94, 94),
+        _ubar("2026-01-06T14:40", 94, 94, 93, 93),
+        _ubar("2026-01-06T20:55", 93, 94, 92, 93)]
+    r2 = es.run_study(["X"], fetch=lambda *a: down_away, source="intraday")["tickers"][0]["rows"][0]
+    assert r2["direction"] == "down" and r2["first15_toward"] is False
+
+
+def test_first15_only_uses_the_first_15_minutes(monkeypatch):
+    """A reversal after the 15-minute mark must not change the classification."""
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 6)])
+    bars = [_ubar("2026-01-05T14:30", 99, 101, 98, 100),
+            _ubar("2026-01-05T20:55", 100, 100, 100, 100),
+            _ubar("2026-01-06T14:30", 105, 106, 105, 106),   # 09:30 UP, away from fill
+            _ubar("2026-01-06T14:45", 106, 106, 99, 99),     # 09:45 — outside the window
+            _ubar("2026-01-06T20:55", 99, 100, 98, 99)]
+    r = es.run_study(["X"], fetch=lambda *a: bars, source="intraday")["tickers"][0]["rows"][0]
+    assert r["first15_toward"] is False, "let a post-15min move set the classification"
+
+
+def test_conditioner_splits_are_reported_within_atr_buckets(monkeypatch):
+    """Both conditioners correlate with gap size, so the controlled cells inside
+    each ATR bucket are the ones that carry information."""
+    monkeypatch.setattr(es, "announcement_dates",
+                        lambda t, limit=24, raise_on_error=False: [dt.date(2026, 1, 21)])
+    bars = _flat_series(0, 20, price=100.0, rng=1.0)
+    bars.append(_bar("2026-01-21", 104, 106, 103.5, 105.5))    # 4 ATR, opens outside
+    out = es.run_study(["X"], fetch=lambda *a: bars)
+    top = next(b for b in out["pooled"]["by_atr_bucket"] if b["events"])
+    assert top["outside"]["events"] == 1 and top["inside"]["events"] == 0
+    assert out["pooled"]["by_open_location"]["outside"]["events"] == 1
+    # Daily bars cannot supply a first-15-min read.
+    assert out["pooled"]["by_first15"]["available"] == 0

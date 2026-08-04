@@ -1555,6 +1555,50 @@
         html += '</table>';
       }
 
+      // Conditioners. Marginal splits first, then the controlled cells inside each
+      // ATR bucket — both conditioners correlate with gap size, so the marginals
+      // flatter them.
+      const loc = (d.pooled || {}).by_open_location || {};
+      const f15 = (d.pooled || {}).by_first15 || {};
+      const condRow = (label, a) => (!a || !a.events) ? '' :
+        ('<tr style="border-top:1px solid #22242f"><td style="padding:4px 10px">' + label + '</td>'
+         + '<td ' + td + '>' + a.events + '</td>'
+         + '<td ' + td + '>' + a.fill_rate.toFixed(1) + '%</td>'
+         + '<td ' + td + '><span style="color:' + col(a.avg_follow_pct) + '">' + pct(a.avg_follow_pct) + '</span></td></tr>');
+      let condBody = condRow('Opened INSIDE prior-day range', loc.inside)
+                   + condRow('Opened OUTSIDE prior-day range', loc.outside)
+                   + condRow('First 15min TOWARD fill', f15.toward)
+                   + condRow('First 15min AWAY from fill', f15.away);
+      if (condBody) {
+        html += '<div style="font-size:0.75rem;color:#aaa;margin:14px 0 4px">Conditioners '
+             + '<span style="color:#666">(marginal — both correlate with gap size, so read the per-bucket cells below)</span></div>'
+             + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
+             + '<tr><th style="text-align:left;padding:4px 10px;color:#888;font-weight:500">CONDITION</th>'
+             + '<th ' + th + '>EVENTS</th><th ' + th + '>FILL %</th><th ' + th + '>FOLLOW %</th></tr>'
+             + condBody + '</table>';
+        // Controlled: conditioner fill-rate within each ATR bucket.
+        const cRows = (d.pooled.by_atr_bucket || []).filter(b => b.events);
+        if (cRows.length) {
+          html += '<div style="font-size:0.75rem;color:#aaa;margin:12px 0 4px">Fill % by ATR bucket &times; conditioner '
+               + '<span style="color:#666">(n in parentheses; blank = no events)</span></div>'
+               + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
+               + '<tr><th style="text-align:left;padding:4px 10px;color:#888;font-weight:500">GAP / ATR</th>'
+               + '<th ' + th + '>ALL</th><th ' + th + '>INSIDE</th><th ' + th + '>OUTSIDE</th>'
+               + '<th ' + th + '>F15 TOWARD</th><th ' + th + '>F15 AWAY</th></tr>';
+          const cell = a => (a && a.events) ? (a.fill_rate.toFixed(0) + '% <span style="color:#666">(' + a.events + ')</span>') : '—';
+          for (const b of cRows) {
+            html += '<tr style="border-top:1px solid #22242f">'
+                 + '<td style="padding:4px 10px">' + b.bucket + '</td>'
+                 + '<td ' + td + '>' + cell(b) + '</td>'
+                 + '<td ' + td + '>' + cell(b.inside) + '</td>'
+                 + '<td ' + td + '>' + cell(b.outside) + '</td>'
+                 + '<td ' + td + '>' + cell(b.f15_toward) + '</td>'
+                 + '<td ' + td + '>' + cell(b.f15_away) + '</td></tr>';
+          }
+          html += '</table>';
+        }
+      }
+
       // Per ticker
       html += '<div style="font-size:0.75rem;color:#aaa;margin:14px 0 4px">Per ticker</div>'
            + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">'

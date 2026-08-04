@@ -139,6 +139,10 @@ def _reaction_rows(ticker, bars, limit=24, raise_on_error=False):
             # Positive = continued in the gap's direction, negative = faded.
             "follow_pct":  round(c2o if up else -c2o, 3),
             "range_pct":   round((b["high"] - b["low"]) / b["open"] * 100.0, 3),
+            # Did the session open back inside the PRIOR day's range, or clear of
+            # it entirely? Opening inside means the fill target sits within
+            # yesterday's already-traded territory.
+            "opened_inside": bool(by_i[i - 1]["low"] <= b["open"] <= by_i[i - 1]["high"]),
         }
 
     rows, used = [], set()
@@ -217,6 +221,16 @@ def _measure_session(prev, cur):
             mins_to_fill = int((b["time"] - session_open).total_seconds() // 60)
             break
     c2o = (cur["close"] - o) / o * 100.0
+    # Direction of the first 15 minutes, relative to the FILL. For an up gap the
+    # fill lies below the open, so a lower price at +15min is "toward fill". The
+    # futures study found this the strongest single conditioner.
+    first15 = [b for b in cur["bars"]
+               if (b["time"] - session_open).total_seconds() < 15 * 60]
+    toward = None
+    if first15:
+        p15 = first15[-1]["close"]
+        if p15 != o:
+            toward = (p15 < o) if up else (p15 > o)
     return {
         "date":       cur["date"].isoformat(),
         "prev_close": round(prev_close, 4),
@@ -232,6 +246,8 @@ def _measure_session(prev, cur):
         "close_open_pct": round(c2o, 3),
         "follow_pct":  round(c2o if up else -c2o, 3),
         "range_pct":   round((cur["high"] - cur["low"]) / o * 100.0, 3),
+        "opened_inside":  bool(prev["low"] <= o <= prev["high"]),
+        "first15_toward": toward,
     }
 
 
@@ -331,7 +347,27 @@ def _split(rows):
             **_agg(sel),
             "up":   _agg([r for r in sel if r["direction"] == "up"]),
             "down": _agg([r for r in sel if r["direction"] == "down"]),
+            # Conditioners WITHIN a size bucket. Both correlate with gap size
+            # (a big gap usually clears the prior range by construction), so the
+            # marginal splits below overstate them; these controlled cells are
+            # what actually says whether a conditioner adds information.
+            "inside":  _agg([r for r in sel if r.get("opened_inside") is True]),
+            "outside": _agg([r for r in sel if r.get("opened_inside") is False]),
+            "f15_toward": _agg([r for r in sel if r.get("first15_toward") is True]),
+            "f15_away":   _agg([r for r in sel if r.get("first15_toward") is False]),
         })
+
+    # Marginal (uncontrolled) conditioner splits.
+    out["by_open_location"] = {
+        "inside":  _agg([r for r in rows if r.get("opened_inside") is True]),
+        "outside": _agg([r for r in rows if r.get("opened_inside") is False]),
+    }
+    f15 = [r for r in rows if r.get("first15_toward") is not None]
+    out["by_first15"] = {
+        "available": len(f15),
+        "toward": _agg([r for r in f15 if r["first15_toward"]]),
+        "away":   _agg([r for r in f15 if not r["first15_toward"]]),
+    }
     return out
 
 
