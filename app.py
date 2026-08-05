@@ -1481,13 +1481,13 @@ def _manual_halted_for(tag):
 
 
 def _realized_daily_pnl(fills_fn):
-    """Realized P&L from round-trips CLOSED today (ET), using the same LIFO pairing
-    as the analysis endpoints. Counts by EXIT date, not entry date, so a position
-    carried overnight and closed today IS included (matches Alpaca's calendar-day
-    view). Pairs the full supplied fills window first — filtering fills to today
-    before pairing would orphan a prior-day entry and silently drop its P&L.
-    Returns None on failure so the profit-lock loop can skip this account instead of
-    misreading it as $0 (which would look below-floor and trigger a false halt)."""
+    """Realized P&L for today (ET) — computed IDENTICALLY to the analysis endpoint /
+    equity chart so the NET P&L card always agrees with the chart: filter fills to
+    today, LIFO-pair, sum closed_clean. Using the full window + all `closed` instead
+    was wrong — LIFO then pairs today's exit against an unrelated old entry, inventing
+    a huge bogus round-trip (Kairos Farm showed -$243 vs a real -$50). closed_clean
+    drops those (and cross-day carries) the same way the chart does, so card == chart.
+    Returns None on failure so the profit-lock loop skips rather than misreading $0."""
     try:
         _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     except Exception:
@@ -1495,14 +1495,8 @@ def _realized_daily_pnl(fills_fn):
         _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
     try:
         fills  = fills_fn()
-        paired = _pair_alpaca_fills_lifo(fills)      # pair everything; entry may be prior day
-        # Use ALL paired round-trips (closed), not just closed_clean: the orphan flag
-        # exists for STRATEGY attribution (e.g. an intraday slug held cross-day), but
-        # the LIFO cash P&L is still real account money. For an account daily-P&L card
-        # we want that cash — a carried position closed today at a loss must show.
-        return round(sum(float(t.get("pnl") or 0)
-                         for t in paired.get("closed", [])
-                         if (t.get("exit_time") or "")[:10] == _today), 2)
+        paired = _pair_alpaca_fills_lifo(fills, from_date=_today, to_date=_today)
+        return round(sum(float(t.get("pnl") or 0) for t in paired.get("closed_clean", [])), 2)
     except Exception as _e:
         log.debug("Realized daily P&L calc failed: %s", _e)
         return None
