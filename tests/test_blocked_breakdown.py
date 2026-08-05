@@ -115,3 +115,33 @@ def test_wire_to_farm_creates_rule_then_is_idempotent(monkeypatch, tmp_path):
     nodes = json.loads(rows[0]["nodes"])
     assert {"type": "strategy", "value": strat} in nodes
     assert {"type": "broker", "value": "alpaca-paper-1"} in nodes
+
+
+def test_recent_timestamps_are_converted_to_et(monkeypatch, tmp_path):
+    """received_at is stored UTC by the webhook, but the panel column says
+    "When (ET)". Shipping UTC under an ET heading makes a 15:45 in-session signal
+    look like a 19:45 after-hours one — which derails any hours-gate diagnosis."""
+    import sqlite3
+
+    import app as a
+
+    db = tmp_path / "bb_tz.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE trades (received_at TEXT, ticker TEXT, strategy TEXT, "
+                 "action TEXT, sentiment TEXT, exec_status TEXT, exec_detail TEXT)")
+    conn.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
+                 ("2026-08-04 19:45:00", "UBER", "UBER_CAM_BREAKOUT_R3S3_V02_5MIN",
+                  "BUY", "long", "skipped",
+                  "day-type gate: breakout blocked on Neutral day (Outside only)"))
+    conn.commit(); conn.close()
+
+    def _fake_db():
+        c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
+
+    monkeypatch.setattr(a, "get_db", _fake_db)
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/signals/blocked_breakdown?days=60").get_json()
+    row = d["recent"][0]
+    assert row["received_at"].endswith("15:45:00"), \
+        f"UTC leaked into an ET-labelled column: {row['received_at']}"

@@ -13726,7 +13726,19 @@ def api_blocked_breakdown():
         cat = _categorize_block_reason(r.get("exec_status"), r.get("exec_detail"))
         counts[cat] += 1
         if cat not in ("Executed",) and len(recent) < 25:
-            recent.append({"received_at": r.get("received_at"), "ticker": r.get("ticker"),
+            # received_at is stored UTC (webhook.py writes datetime.now(timezone.utc));
+            # the panel labels this column "When (ET)", so convert rather than
+            # shipping UTC under an ET heading — a 4-5 hour lie that makes
+            # in-session signals look like after-hours ones.
+            _ra = r.get("received_at") or ""
+            try:
+                _dtu = _dt.datetime.fromisoformat(_ra.replace("Z", "+00:00"))
+                if _dtu.tzinfo is None:
+                    _dtu = _dtu.replace(tzinfo=_dt.timezone.utc)
+                _ra = _dtu.astimezone(et).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+            recent.append({"received_at": _ra, "ticker": r.get("ticker"),
                            "strategy": r.get("strategy"), "side": sent,
                            "status": r.get("exec_status"), "reason": r.get("exec_detail"),
                            "category": cat})
