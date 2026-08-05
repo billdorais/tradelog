@@ -1926,6 +1926,11 @@ def _position_monitor_loop():
             _check_position_stops()
         except Exception as _e:
             log.warning("Position monitor error: %s", _e)
+        # Drain queued per-account entry blocks (buffered off the order path).
+        try:
+            _flush_blocked_targets()
+        except Exception as _e:
+            log.debug("blocked-target flush error: %s", _e)
         if _max_hold_positions:
             try:
                 _check_max_hold_exits()
@@ -2372,6 +2377,33 @@ def init_db():
     """)
     conn.commit()
 
+    # blocked_targets: PER-ACCOUNT entry blocks. The signals table only carries one
+    # signal-level exec_status, written only when EVERY target was dropped — so a
+    # gate that stops Kairos Refined while the farm still trades left no trace
+    # anywhere but the app log. That made "why has this book not traded?"
+    # unanswerable, and biased the blocked-reason chart toward whole-signal gates
+    # (day-type) over account-specific ones (hours, RVOL, side, reversal).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_targets (
+            ts        TEXT NOT NULL,
+            account   TEXT NOT NULL,
+            ticker    TEXT,
+            strategy  TEXT,
+            side      TEXT,
+            gate      TEXT NOT NULL,
+            reason    TEXT,
+            source    TEXT
+        )
+    """)
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_blocked_targets_ts "
+                    "ON blocked_targets (ts)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_blocked_targets_acct_ts "
+                    "ON blocked_targets (account, ts)")
+    except Exception as _bi:
+        log.warning("blocked_targets index creation skipped: %s", _bi)
+    conn.commit()
+
     # trade_hwm: bar-derived high-water mark per closed round-trip. Populated by
     # the background backfill job after a trade closes. Uniqueness on
     # (broker_tag, symbol, entry_time, exit_time) so re-running the backfill is
@@ -2481,6 +2513,83 @@ def _clear_max_hold_db(broker_tag: str, symbol: str):
         conn.close()
     except Exception as _e:
         log.warning("_clear_max_hold_db failed for %s [%s]: %s", symbol, broker_tag, _e)
+
+
+BLOCKED_TARGETS_RETENTION_DAYS = 45
+_blocked_prune_day = None
+_blocked_seen      = set()     # (day, account, ticker, strategy, gate) for once_per_day
+_blocked_seen_day  = None
+# Buffered, NOT written inline. These recorders fire from the webhook while it
+# still holds an open transaction, and from the engine tick loop just before an
+# order — opening a second connection there deadlocks SQLite ("database is
+# locked") and adds latency to the order path on Postgres. Rows queue in memory
+# and a background flush drains them.
+_blocked_queue     = _collections.deque(maxlen=5000)
+_blocked_q_lock    = threading.Lock()
+
+
+def _record_block(account, ticker, strategy, side, gate, reason, source="webhook",
+                  once_per_day=False):
+    """Queue ONE account's entry block. Best-effort — never raises, never blocks.
+
+    Callers pass the account whose target was dropped, so a gate that stops one
+    book while another still trades is attributable after the fact.
+
+    once_per_day is for the ENGINE, which re-evaluates the same setups every tick
+    — without it a single all-day block would write thousands of identical rows.
+    The webhook path fires once per signal and needs no dedupe.
+    """
+    global _blocked_seen_day
+    try:
+        now = datetime.now(timezone.utc)
+        if once_per_day:
+            _day = now.date().isoformat()
+            if _blocked_seen_day != _day:
+                _blocked_seen_day = _day
+                _blocked_seen.clear()
+            _k = (_day, str(account), (ticker or "").upper(), strategy or "", gate)
+            if _k in _blocked_seen:
+                return
+            _blocked_seen.add(_k)
+        with _blocked_q_lock:
+            _blocked_queue.append((
+                now.strftime("%Y-%m-%d %H:%M:%S"), str(account or ""),
+                (ticker or "").upper(), strategy or "", (side or "").lower(),
+                gate, (reason or "")[:300], source))
+    except Exception as _e:
+        log.debug("_record_block failed (%s %s %s): %s", account, ticker, gate, _e)
+
+
+def _flush_blocked_targets():
+    """Drain the queued per-account blocks into the DB. Called from the position
+    monitor loop, off the order path. Best-effort — never raises."""
+    global _blocked_prune_day
+    from datetime import timedelta as _td        # module imports datetime/timezone only
+    with _blocked_q_lock:
+        if not _blocked_queue:
+            return
+        batch = list(_blocked_queue)
+        _blocked_queue.clear()
+    try:
+        conn = get_db(); cur = conn.cursor(); p = placeholder()
+        cur.executemany(
+            f"INSERT INTO blocked_targets (ts, account, ticker, strategy, side, gate, reason, source) "
+            f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p})", batch)
+        today = datetime.now(timezone.utc).date().isoformat()
+        if _blocked_prune_day != today:
+            _blocked_prune_day = today
+            cutoff = (datetime.now(timezone.utc)
+                      - _td(days=BLOCKED_TARGETS_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute(f"DELETE FROM blocked_targets WHERE ts < {p}", (cutoff,))
+        conn.commit(); conn.close()
+    except Exception as _e:
+        log.debug("_flush_blocked_targets failed (%d rows dropped): %s", len(batch), _e)
+
+
+def _record_blocks(accounts, ticker, strategy, side, gate, reason, source="webhook"):
+    """_record_block for several accounts sharing one gate/reason."""
+    for acct in accounts or []:
+        _record_block(acct, ticker, strategy, side, gate, reason, source)
 
 
 def _recover_max_hold_positions():
@@ -13749,6 +13858,80 @@ def api_blocked_breakdown():
                     "executed": executed, "by_reason": by_reason, "recent": recent})
 
 
+@app.route("/api/signals/blocked_by_account")
+def api_blocked_by_account():
+    """PER-ACCOUNT entry blocks, from the blocked_targets table.
+
+    Complements /api/signals/blocked_breakdown, which is signal-level: that one
+    only sees a block when EVERY target was dropped, so it systematically
+    under-counts account-specific gates (hours, RVOL, side, reversal, halts) and
+    over-weights whole-signal ones (day-type). This endpoint answers "why did
+    THIS book not trade", which is the question you actually have when one
+    account is quiet while the farms are busy.
+
+    ?days=7&account=alpaca3 (omit account for every book, grouped).
+    """
+    import datetime as _dt
+    from collections import Counter, defaultdict
+    try:    days = max(1, min(BLOCKED_TARGETS_RETENTION_DAYS, int(request.args.get("days") or 7)))
+    except Exception: days = 7
+    account = (request.args.get("account") or "").strip()
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone.utc
+    cutoff = (_dt.datetime.now(_dt.timezone.utc)
+              - _dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    _flush_blocked_targets()          # include anything still queued
+    p = placeholder()
+    sql = ("SELECT ts, account, ticker, strategy, side, gate, reason, source "
+           f"FROM blocked_targets WHERE ts >= {p}")
+    args = [cutoff]
+    if account:
+        sql += f" AND account = {p}"
+        args.append(account)
+    sql += " ORDER BY ts DESC"
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(sql, tuple(args))
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        conn.close()
+    except Exception as e:
+        log.warning("blocked_by_account query failed: %s", e)
+        return jsonify({"days": days, "account": account, "total": 0,
+                        "by_account": [], "by_gate": [], "recent": [],
+                        "error": str(e)[:200]})
+
+    by_acct_gate = defaultdict(Counter)
+    gates = Counter()
+    for r in rows:
+        by_acct_gate[r["account"]][r["gate"]] += 1
+        gates[r["gate"]] += 1
+
+    def _et(ts):
+        try:
+            d = _dt.datetime.fromisoformat(ts).replace(tzinfo=_dt.timezone.utc)
+            return d.astimezone(et).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return ts
+
+    label = {a["tag"]: a["label"] for a in ALPACA_ACCOUNTS} if ALPACA_ACCOUNTS else {}
+    by_account = [{
+        "account": acct,
+        "label":   label.get(acct, acct),
+        "total":   sum(c.values()),
+        "gates":   [{"gate": g, "count": n} for g, n in c.most_common()],
+    } for acct, c in by_acct_gate.items()]
+    by_account.sort(key=lambda x: x["total"], reverse=True)
+
+    return jsonify({
+        "days": days, "account": account, "total": len(rows),
+        "by_account": by_account,
+        "by_gate": [{"gate": g, "count": n} for g, n in gates.most_common()],
+        "recent": [{**r, "ts": _et(r["ts"])} for r in rows[:40]],
+    })
+
+
 @app.route("/api/signals/unmatched_strategies")
 def api_unmatched_strategies():
     """Strategy names that fired but matched NO routing rule ('no pipeline matched'
@@ -16779,19 +16962,29 @@ def _engine_pilot_tick(now_et, today):
             # _account_hours_ok("alpaca2") once per tick, so setting a TV Refined
             # window would have silently muted every other book the engine feeds.
             if not _account_hours_ok(broker_tag, now_et=now_et):
+                _record_block(broker_tag, tk, strat, side, "hours",
+                          "outside the account's trading window", source="engine", once_per_day=True)
                 continue
             # Profit lock — skip this account's entries if it gave back below its floor.
             if _profit_lock_halted_for(broker_tag):
+                _record_block(broker_tag, tk, strat, side, "profit-lock",
+                          "halted for the day (profit lock)", source="engine", once_per_day=True)
                 continue
             # Daily-loss guard — skip this account's entries if it hit its daily limit.
             if _daily_loss_halted_for(broker_tag):
+                _record_block(broker_tag, tk, strat, side, "daily-loss",
+                          "halted — hit the daily loss limit", source="engine", once_per_day=True)
                 continue
             # Manual halt — user chose to lock in the day's win on this account.
             if _manual_halted_for(broker_tag):
+                _record_block(broker_tag, tk, strat, side, "manual-halt",
+                          "account manually halted for the day", source="engine", once_per_day=True)
                 continue
             # Per-rule long/short gate: a side-gated kairos rule only arms its side.
             _tgt_gate = tgt.get("side_gate")
             if _tgt_gate in ("long", "short") and _tgt_gate != side.lower():
+                _record_block(broker_tag, tk, strat, side, "side",
+                          f"rule is {_tgt_gate}-only", source="engine", once_per_day=True)
                 continue
             # Per-account reversal policy: one-side only, or "off" (no reversal
             # entries at all — TV Refined). Accounts with no policy pass; only
@@ -16800,6 +16993,9 @@ def _engine_pilot_tick(now_et, today):
                 _pol = _REVERSAL_SIDE_BY_TAG.get(broker_tag)
                 log.info("Reversal gate: skip %s %s [%s] — %s", side, tk, broker_tag,
                          "reversals off" if _pol == "off" else f"reversals {_pol}-only")
+                _record_block(broker_tag, tk, strat, side, "reversal",
+                              "reversals off" if _pol == "off" else f"reversals {_pol}-only",
+                              source="engine", once_per_day=True)
                 continue
             qty_override = tgt.get("qty_override")
             broker_inst  = broker_inst_by_tag.get(broker_tag)
@@ -16810,6 +17006,8 @@ def _engine_pilot_tick(now_et, today):
             _dt_block, _dt_reason = _daytype_gate_block(strat, tk, today, broker_tag)
             if _dt_block:
                 log.info("ENGINE PILOT skip %s %s [%s]: %s", act, tk, broker_tag, _dt_reason)
+                _record_block(broker_tag, tk, strat, side, "day-type", _dt_reason,
+                              source="engine", once_per_day=True)
                 continue
             # RVOL gate (gated books only): skip breakout entries below the RVOL
             # floor, or short blow-offs >= the cap. Reversals pass; fails open.
@@ -16818,6 +17016,9 @@ def _engine_pilot_tick(now_et, today):
             if _rv_block:
                 log.info("ENGINE PILOT skip %s %s [%s]: RVOL gate %s (%.2fx)",
                          act, tk, broker_tag, _rv_reason, _rv_val or 0.0)
+                _record_block(broker_tag, tk, strat, side, "rvol",
+                              f"{_rv_reason} (RVOL {_rv_val or 0.0:.2f}x)",
+                              source="engine", once_per_day=True)
                 continue
             # Cooldown is per (broker_tag, strategy, side, level) so the same
             # setup on alpaca + alpaca3 doesn't share a single cooldown clock.

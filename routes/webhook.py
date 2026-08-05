@@ -822,6 +822,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                        - {_alpaca_broker_name(bt[0]) for bt in _in_hours}
             app.log.info("Account-hours gate: %s %s — skipped %s (outside trading window)",
                          order_action, ticker, ",".join(sorted(_dropped)))
+            app._record_blocks(sorted(_dropped), ticker, strategy_name, _gate_entry_side,
+                               "hours", "outside the account's trading window")
             if not _in_hours and conn:
                 app._update_exec(cur, trade_id, "skipped",
                                  f"Outside trading hours for {', '.join(sorted(_dropped))}")
@@ -849,6 +851,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             _reason = _gate_dropped[0][1]
             app.log.info("Day-type gate: %s %s — skipped %s (%s)", order_action, ticker,
                          ",".join(_alpaca_broker_name(t) for (t, _w) in _gate_dropped), _reason)
+            for _t, _w in _gate_dropped:
+                app._record_block(_alpaca_broker_name(_t), ticker, strategy_name,
+                                  _gate_entry_side, "day-type", _w)
             if not _kept and conn:
                 app._update_exec(cur, trade_id, "skipped", _reason)
                 conn.commit()
@@ -875,6 +880,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                else f"trades {_pols[t]}-side reversals only")
             app.log.info("Reversal gate: %s %s — skipped %s", order_action, ticker,
                          "; ".join(f"{t} ({_pols[t]})" for t in sorted(set(_rev_dropped))))
+            for _t in sorted(set(_rev_dropped)):
+                app._record_block(_t, ticker, strategy_name, _gate_entry_side, "reversal",
+                                  f"reversal policy '{_pols.get(_t)}' for this account")
             if not _rev_kept and conn:
                 app._update_exec(cur, trade_id, "skipped",
                     "Reversal gate: " + "; ".join(f"{t} {_why(t)}"
@@ -906,6 +914,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                          order_action, ticker,
                          ",".join(t for t, _w, _v in _rv_dropped),
                          (_r0[2] or 0.0), _rv_txt)
+            for _t, _w, _v in _rv_dropped:
+                app._record_block(_t, ticker, strategy_name, _gate_entry_side, "rvol",
+                                  f"{_rv_txt} (RVOL {(_v or 0.0):.2f}x)")
             if not _rv_kept and conn:
                 app._update_exec(cur, trade_id, "skipped",
                     f"RVOL gate: entry {_rv_txt} (RVOL {_r0[2]:.2f}x)")
@@ -923,6 +934,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                           - {_alpaca_broker_name(bt[0]) for bt in _pl_kept}
             app.log.info("Profit lock gate: %s %s — skipped %s (gave back below $%g)",
                          order_action, ticker, ",".join(sorted(_pl_dropped)), app.PROFIT_LOCK_DOLLARS)
+            app._record_blocks(sorted(_pl_dropped), ticker, strategy_name, _gate_entry_side,
+                               "profit-lock",
+                               f"halted for the day (gave back below ${app.PROFIT_LOCK_DOLLARS:g})")
             if not _pl_kept and conn:
                 app._update_exec(cur, trade_id, "blocked",
                                  f"Profit lock: {', '.join(sorted(_pl_dropped))} gave back below "
@@ -941,6 +955,9 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                           - {_alpaca_broker_name(bt[0]) for bt in _dl_kept}
             app.log.warning("Daily-loss gate: %s %s — skipped %s (hit $%g daily loss)",
                             order_action, ticker, ",".join(sorted(_dl_dropped)), app.MAX_DAILY_LOSS)
+            app._record_blocks(sorted(_dl_dropped), ticker, strategy_name, _gate_entry_side,
+                               "daily-loss",
+                               f"halted — hit the ${app.MAX_DAILY_LOSS:g} daily loss limit")
             if not _dl_kept and conn:
                 app._update_exec(cur, trade_id, "blocked",
                                  f"Daily loss limit: {', '.join(sorted(_dl_dropped))} hit "
@@ -957,6 +974,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
         if len(_mh_kept) != len(alpaca_targets):
             _mh_dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
                           - {_alpaca_broker_name(bt[0]) for bt in _mh_kept}
+            app._record_blocks(sorted(_mh_dropped), ticker, strategy_name, _gate_entry_side,
+                               "manual-halt", "account manually halted for the day")
             app.log.info("Manual halt gate: %s %s — skipped %s (locked in for the day)",
                          order_action, ticker, ",".join(sorted(_mh_dropped)))
             if not _mh_kept and conn:

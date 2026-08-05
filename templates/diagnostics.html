@@ -89,8 +89,42 @@
       </div>
       <div id="blockedBody"></div>
       <div style="font-size:0.66rem;color:#555;margin-top:8px">
-        Signal-level outcomes. Day-type &amp; reversal gates apply to the farms too, so they fully block a signal and show here.
-        The <strong>RVOL gate</strong> only touches TV/Kairos Refined — a breakout the farm still took records as <em>Executed</em> even if RVOL skipped it on the Refined books, so RVOL is under-counted here; use the Replay RVOL split for exact RVOL counts.
+        <strong>Signal-level.</strong> A signal records as blocked only when EVERY target account was dropped, so gates that
+        stop one book while another still trades are invisible here. That under-counts account-specific gates (hours, RVOL,
+        side, reversal, halts) and over-weights whole-signal ones (day-type, which blocks the farms too).
+        <span style="color:#7FE098">For &ldquo;why didn&rsquo;t THIS book trade?&rdquo; use the per-account panel below.</span>
+      </div>
+    </div>
+
+    <!-- Per-account entry blocks — from blocked_targets (recorded per dropped target) -->
+    <div id="acctBlockPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-top:24px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#7FE098">Blocked by account</span>
+        <span id="acctBlockMeta" style="font-size:0.75rem;color:#666">loading…</span>
+        <label style="margin-left:auto;font-size:0.72rem;color:#888">Account
+          <select id="acctBlockAcct" onchange="loadBlockedByAccount()"
+                  style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
+            <option value="">All books</option>
+            <option value="alpaca2">TV Refined</option>
+            <option value="alpaca3">Kairos Refined</option>
+            <option value="alpaca4">Crew Paper</option>
+            <option value="alpaca">TV Farm</option>
+            <option value="alpaca5">Kairos Farm</option>
+          </select>
+        </label>
+        <label style="font-size:0.72rem;color:#888">Range
+          <select id="acctBlockDays" onchange="loadBlockedByAccount()"
+                  style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
+            <option value="2">2d</option><option value="7" selected>7d</option>
+            <option value="14">14d</option><option value="30">30d</option>
+          </select>
+        </label>
+      </div>
+      <div id="acctBlockBody"></div>
+      <div style="font-size:0.66rem;color:#555;margin-top:8px">
+        Recorded per <em>dropped target</em> at each gate, for both the TV webhook and the Kairos engine — so a gate that stops
+        Kairos Refined while the farms keep trading still shows up. Engine blocks are de-duplicated to one row per
+        account/ticker/gate per day (the engine re-evaluates every tick). Retained 45 days.
       </div>
     </div>
   </div>
@@ -206,8 +240,63 @@
       }
     }
 
+    // ── Per-account entry blocks ──────────────────────────────────────────────
+    async function loadBlockedByAccount() {
+      const meta = document.getElementById('acctBlockMeta');
+      const body = document.getElementById('acctBlockBody');
+      const days = document.getElementById('acctBlockDays')?.value || '7';
+      const acct = document.getElementById('acctBlockAcct')?.value || '';
+      try {
+        const d = await fetch(`/api/signals/blocked_by_account?days=${days}`
+                              + (acct ? `&account=${encodeURIComponent(acct)}` : '')).then(r => r.json());
+        if (d.error) { meta.textContent = 'unavailable'; body.innerHTML =
+          `<div style="color:#c66;font-size:0.8rem">${d.error}</div>`; return; }
+        meta.textContent = `last ${d.days}d · ${d.total} per-account block${d.total === 1 ? '' : 's'}`;
+        if (!d.total) {
+          body.innerHTML = '<div style="color:#7FE098;font-size:0.85rem">No per-account blocks recorded in this window.</div>';
+          return;
+        }
+        const maxN = Math.max(...d.by_account.map(x => x.total), 1);
+        let html = (d.by_account || []).map(row => {
+          const gates = row.gates.map(g =>
+            `<span style="color:#888;font-size:0.7rem;margin-right:10px">${g.gate} <b style="color:#f0a35e">${g.count}</b></span>`).join('');
+          return `<div style="margin-bottom:10px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="min-width:120px;font-size:0.8rem;color:#ccc">${row.label}</span>
+              <div style="flex:1;background:#0f1219;border-radius:4px;height:14px;overflow:hidden">
+                <div style="width:${(row.total / maxN * 100).toFixed(1)}%;height:100%;background:#f0a35e"></div>
+              </div>
+              <span style="font-size:0.78rem;color:#ccc;min-width:44px;text-align:right">${row.total}</span>
+            </div>
+            <div style="margin:3px 0 0 130px">${gates}</div>
+          </div>`;
+        }).join('');
+        html += `<div style="font-size:0.7rem;color:#666;margin:12px 0 4px">Most recent</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.72rem">
+          <thead style="color:#666;font-size:0.62rem"><tr>
+            <th style="text-align:left">When (ET)</th><th style="text-align:left">Account</th>
+            <th style="text-align:left">Ticker</th><th style="text-align:left">Side</th>
+            <th style="text-align:left">Gate</th><th style="text-align:left">Reason</th>
+            <th style="text-align:left">Via</th></tr></thead><tbody>`;
+        html += (d.recent || []).map(r => `<tr>
+            <td style="color:#888">${(r.ts || '').slice(5, 16)}</td>
+            <td style="color:#aaa">${r.account || ''}</td>
+            <td style="color:#ccc">${r.ticker || ''}</td>
+            <td style="color:#888">${r.side || ''}</td>
+            <td style="color:#f0a35e">${r.gate || ''}</td>
+            <td style="color:#777">${(r.reason || '').replace(/</g, '&lt;')}</td>
+            <td style="color:#555">${r.source || ''}</td></tr>`).join('');
+        html += '</tbody></table>';
+        body.innerHTML = html;
+      } catch (e) {
+        meta.textContent = 'unavailable';
+        console.warn('blocked by account failed:', e);
+      }
+    }
+
     loadErrors();
     loadBlockedBreakdown();
+    loadBlockedByAccount();
     setInterval(() => { if (document.getElementById('autoRefresh').checked) loadErrors(); }, 15000);
   </script>
 </body>
