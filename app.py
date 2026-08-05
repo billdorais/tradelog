@@ -8362,10 +8362,15 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             intent = "enter_short"
         else:
             intent = "legacy"
+        # POSITION-STATE-FIRST pairing: a fill's open-vs-close is decided by the
+        # actual position, NOT the signal's resolved sentiment. Sentiment/strategy are
+        # kept for attribution only. This can never drop or mis-handle a real fill —
+        # the old sentiment-aware version silently vanished a fill whose resolved
+        # intent didn't match reality (e.g. an engine BUY on acct3 resolved to a
+        # nearby TV signal's "exit"/"short" sentiment), so a clean same-day round-trip
+        # never formed and showed as $0 on the card and chart.
         if side == "BOT":
-            if intent == "enter_long":
-                open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
-                continue
+            # Close open shorts (LIFO), then open a long with the remainder.
             q = open_shorts.setdefault(sym, [])
             while qty > 0 and q:
                 ep, eq, et, es = q.pop(-1)
@@ -8383,12 +8388,10 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                 qty -= m
                 if eq > m:
                     q.append((ep, eq - m, et, es))
-            if qty > 0 and intent == "legacy":
+            if qty > 0:
                 open_longs.setdefault(sym, []).append((price, qty, fill_ts, strat))
         elif side == "SLD":
-            if intent == "enter_short":
-                open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
-                continue
+            # Close open longs (LIFO), then open a short with the remainder.
             q = open_longs.setdefault(sym, [])
             while qty > 0 and q:
                 ep, eq, et, es = q.pop(-1)
@@ -8403,7 +8406,7 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                 qty -= m
                 if eq > m:
                     q.append((ep, eq - m, et, es))
-            if qty > 0 and intent == "legacy":
+            if qty > 0:
                 open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
 
     orphans, closed_clean = [], []
