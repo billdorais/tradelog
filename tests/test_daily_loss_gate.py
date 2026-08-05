@@ -20,12 +20,14 @@ import pytest
 
 
 @pytest.fixture()
-def webhook_client(tmp_path):
+def webhook_client(tmp_path, monkeypatch):
     import app as a
-    a.ALPACA_ACCOUNTS = [
-        {"tag": "alpaca2", "target_paper": "alpaca-paper-2", "target_live": "alpaca-live-2"},
-        {"tag": "alpaca3", "target_paper": "alpaca-paper-3", "target_live": "alpaca-live-3"},
-    ]
+    # monkeypatch, not direct assignment: a leaked ALPACA_ACCOUNTS breaks any later
+    # test that hits /api/risk/status (these entries carry no "num" key).
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"tag": "alpaca2", "num": "2", "target_paper": "alpaca-paper-2", "target_live": "alpaca-live-2"},
+        {"tag": "alpaca3", "num": "3", "target_paper": "alpaca-paper-3", "target_live": "alpaca-live-3"},
+    ])
     db = tmp_path / "dl.db"
     shutil.copy("trades.db", db)
     conn = sqlite3.connect(db)
@@ -41,20 +43,17 @@ def webhook_client(tmp_path):
     conn.commit()
     conn.close()
 
-    saved_db, saved_hours, saved_limit = a.get_db, a._account_hours_ok, a.MAX_DAILY_LOSS
-
     def _fake_db():
         c = sqlite3.connect(db)
         c.row_factory = sqlite3.Row
         return c
 
-    a.get_db = _fake_db
-    a._account_hours_ok = lambda tag: True
-    a.MAX_DAILY_LOSS = -125.0
+    monkeypatch.setattr(a, "get_db", _fake_db)
+    monkeypatch.setattr(a, "_account_hours_ok", lambda tag: True)
+    monkeypatch.setattr(a, "MAX_DAILY_LOSS", -125.0)
     a._daily_loss_halted.clear()
     a._daily_loss_halted["alpaca2"] = True   # Refined hit its limit; Kairos did not
     yield a.app.test_client(), db
-    a.get_db, a._account_hours_ok, a.MAX_DAILY_LOSS = saved_db, saved_hours, saved_limit
     a._daily_loss_halted.clear()
 
 

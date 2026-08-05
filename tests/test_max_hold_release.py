@@ -30,11 +30,6 @@ def tracked(monkeypatch):
     entry = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=99)
     monkeypatch.setattr(a, "_persist_max_hold", lambda *args, **kw: None)
     monkeypatch.setattr(a, "_clear_max_hold_db", lambda *args, **kw: None)
-    # Several other test modules assign a.ALPACA_ACCOUNTS directly (no monkeypatch)
-    # with entries lacking "num", which leaks and breaks /api/risk/status. Pin a
-    # well-formed registry so this module is order-independent.
-    monkeypatch.setattr(a, "ALPACA_ACCOUNTS",
-                        [{"tag": tag, "num": "4", "label": "Crew Paper", "broker": None}])
     with a._risk_lock:
         a._max_hold_positions.clear()
         a._max_hold_positions[(tag, sym)] = {"entry_time": entry, "max_hold_mins": 15.0}

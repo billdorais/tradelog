@@ -61,8 +61,9 @@ def test_webhook_short_cap(monkeypatch, tmp_path, short_cap, cur_losses, expect_
     monkeypatch.setattr(a, "_get_strike_counts",
                         lambda: {("alpaca2", "RFCAP", "S4"): cur_losses})
     # Route RFCAP shorts to TV Refined (alpaca-paper-2).
-    a.ALPACA_ACCOUNTS = [{"tag": "alpaca2", "target_paper": "alpaca-paper-2",
-                          "target_live": "alpaca-live-2"}]
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS",
+                        [{"tag": "alpaca2", "num": "2", "target_paper": "alpaca-paper-2",
+                          "target_live": "alpaca-live-2"}])
     db = tmp_path / "rf.db"; shutil.copy("trades.db", db)
     conn = sqlite3.connect(db); conn.execute("DELETE FROM routing_rules")
     conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
@@ -71,19 +72,15 @@ def test_webhook_short_cap(monkeypatch, tmp_path, short_cap, cur_losses, expect_
                      {"type": "broker",   "value": "alpaca-paper-2"}])))
     conn.commit(); conn.close()
 
-    saved_db, saved_hours = a.get_db, a._account_hours_ok
     def _fake_db():
         c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
     monkeypatch.setattr(a, "get_db", _fake_db)
     monkeypatch.setattr(a, "_account_hours_ok", lambda *ar, **kw: True)
-    try:
-        with a.app.test_client() as cl:
-            r = cl.post("/webhook?token=test-token",
-                        json={"strategy": "RFCAP_CAM_BREAKOUT_R4S4_V02_5MIN",
-                              "ticker": "RFCAP", "action": "SELL"})   # SELL = short entry
-            body = r.get_json()
-    finally:
-        a.get_db, a._account_hours_ok = saved_db, saved_hours
+    with a.app.test_client() as cl:
+        r = cl.post("/webhook?token=test-token",
+                    json={"strategy": "RFCAP_CAM_BREAKOUT_R4S4_V02_5MIN",
+                          "ticker": "RFCAP", "action": "SELL"})       # SELL = short entry
+        body = r.get_json()
 
     if expect_blocked:
         assert body.get("reason") == "strikes_limit"
@@ -98,8 +95,9 @@ def test_webhook_long_unaffected_by_short_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(a, "STRIKES_PER_LEVEL_SHORT", 1)
     # One losing LONG at R4 → under the normal 3-strike limit, so a long entry passes.
     monkeypatch.setattr(a, "_get_strike_counts", lambda: {("alpaca2", "RFCAP", "R4"): 1})
-    a.ALPACA_ACCOUNTS = [{"tag": "alpaca2", "target_paper": "alpaca-paper-2",
-                          "target_live": "alpaca-live-2"}]
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS",
+                        [{"tag": "alpaca2", "num": "2", "target_paper": "alpaca-paper-2",
+                          "target_live": "alpaca-live-2"}])
     db = tmp_path / "rf2.db"; shutil.copy("trades.db", db)
     conn = sqlite3.connect(db); conn.execute("DELETE FROM routing_rules")
     conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
@@ -108,17 +106,13 @@ def test_webhook_long_unaffected_by_short_cap(monkeypatch, tmp_path):
                      {"type": "broker",   "value": "alpaca-paper-2"}])))
     conn.commit(); conn.close()
 
-    saved_db, saved_hours = a.get_db, a._account_hours_ok
     def _fake_db():
         c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
     monkeypatch.setattr(a, "get_db", _fake_db)
     monkeypatch.setattr(a, "_account_hours_ok", lambda *ar, **kw: True)
-    try:
-        with a.app.test_client() as cl:
-            r = cl.post("/webhook?token=test-token",
-                        json={"strategy": "RFCAP_CAM_BREAKOUT_R4S4_V02_5MIN",
-                              "ticker": "RFCAP", "action": "BUY"})    # BUY = long entry
-            body = r.get_json()
-    finally:
-        a.get_db, a._account_hours_ok = saved_db, saved_hours
+    with a.app.test_client() as cl:
+        r = cl.post("/webhook?token=test-token",
+                    json={"strategy": "RFCAP_CAM_BREAKOUT_R4S4_V02_5MIN",
+                          "ticker": "RFCAP", "action": "BUY"})        # BUY = long entry
+        body = r.get_json()
     assert body.get("reason") != "strikes_limit"    # long at R4, 1 loss < 3

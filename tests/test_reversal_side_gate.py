@@ -109,13 +109,14 @@ def test_env_override_accepts_off(engine_app, monkeypatch):
 
 
 @pytest.fixture()
-def webhook_client(tmp_path):
+def webhook_client(tmp_path, monkeypatch):
     import app as a
-    # Registry so alpaca-paper-2 -> alpaca2, alpaca-paper-3 -> alpaca3.
-    a.ALPACA_ACCOUNTS = [
-        {"tag": "alpaca2", "target_paper": "alpaca-paper-2", "target_live": "alpaca-live-2"},
-        {"tag": "alpaca3", "target_paper": "alpaca-paper-3", "target_live": "alpaca-live-3"},
-    ]
+    # Registry so alpaca-paper-2 -> alpaca2, alpaca-paper-3 -> alpaca3. monkeypatch,
+    # not direct assignment — a leaked registry breaks later /api/risk/status tests.
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"tag": "alpaca2", "num": "2", "target_paper": "alpaca-paper-2", "target_live": "alpaca-live-2"},
+        {"tag": "alpaca3", "num": "3", "target_paper": "alpaca-paper-3", "target_live": "alpaca-live-3"},
+    ])
     db = tmp_path / "rev.db"
     shutil.copy("trades.db", db)
     conn = sqlite3.connect(db)

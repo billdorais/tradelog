@@ -83,8 +83,9 @@ def test_webhook_drops_gated_target(gate, monkeypatch, tmp_path):
     """A thin breakout routed to Kairos Refined is skipped by the webhook gate."""
     import routes.webhook as w  # noqa: F401
     monkeypatch.setattr(a, "_live_rvol", _fake_rvol(1.0))     # thin → block
-    a.ALPACA_ACCOUNTS = [{"tag": "alpaca3", "target_paper": "alpaca-paper-3",
-                          "target_live": "alpaca-live-3"}]
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS",
+                        [{"tag": "alpaca3", "num": "3", "target_paper": "alpaca-paper-3",
+                          "target_live": "alpaca-live-3"}])
     db = tmp_path / "rvg.db"; shutil.copy("trades.db", db)
     conn = sqlite3.connect(db); conn.execute("DELETE FROM routing_rules")
     conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
@@ -120,8 +121,9 @@ def test_webhook_allows_in_band_breakout(gate, monkeypatch, tmp_path):
     """An in-band breakout is NOT skipped by the RVOL gate."""
     import routes.webhook as w  # noqa: F401
     monkeypatch.setattr(a, "_live_rvol", _fake_rvol(1.8))     # in band → allow
-    a.ALPACA_ACCOUNTS = [{"tag": "alpaca3", "target_paper": "alpaca-paper-3",
-                          "target_live": "alpaca-live-3"}]
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS",
+                        [{"tag": "alpaca3", "num": "3", "target_paper": "alpaca-paper-3",
+                          "target_live": "alpaca-live-3"}])
     db = tmp_path / "rvg2.db"; shutil.copy("trades.db", db)
     conn = sqlite3.connect(db); conn.execute("DELETE FROM routing_rules")
     conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
