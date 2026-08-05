@@ -961,13 +961,16 @@ def _get_cached_fills_n(num):
 # every request re-fetches and the dashboard stalls for minutes. Daily P&L only
 # needs today, so fetch ~2 days (covers the ET/UTC boundary) and cache it briefly.
 ALPACA_TODAY_FILLS_TTL = 45
+_TODAY_FILLS_DAYS      = 7   # wide enough to include the ENTRY leg of a position that
+                            # carried a few days and closes today (max-hold can be off)
 _alpaca_today_caches = {}   # num -> {"data": [...], "ts": float}
 _alpaca_today_locks  = {}   # num -> Lock
 
 def _get_today_fills_n(num):
-    """Today-scoped Alpaca fills for account `num` (get_fills(days=2)), cached 45s and
-    decoupled from the heavy 90-day history so the daily-P&L cards stay fast. Returns
-    stale-but-safe data on a fetch error rather than blocking."""
+    """Recent Alpaca fills for account `num` for daily-P&L pairing — get_fills(days=7),
+    cached 45s and decoupled from the heavy 90-day history so the daily-P&L cards stay
+    fast. 7 days (not 1) so a round-trip that CLOSES today but opened on a prior day
+    still has its entry leg available to pair. Returns stale-but-safe data on error."""
     num    = str(num)
     rec    = ACCOUNTS_BY_NUM.get(num)
     broker = rec["broker"] if rec else None
@@ -982,7 +985,7 @@ def _get_today_fills_n(num):
         if cache["ts"] > 0 and time.time() - cache["ts"] < ALPACA_TODAY_FILLS_TTL:
             return cache["data"]
         try:
-            cache["data"] = broker.get_fills(days=2)
+            cache["data"] = broker.get_fills(days=_TODAY_FILLS_DAYS)
             cache["ts"]   = time.time()
         except Exception as _e:
             log.debug("today fills fetch failed for %s: %s", num, _e)
@@ -1502,10 +1505,13 @@ def _manual_halted_for(tag):
 
 
 def _realized_daily_pnl(fills_fn):
-    """Sum of CLOSED round-trip P&L for today (ET), using the same LIFO pairing
-    as the analysis endpoints. Returns None on failure so the profit-lock loop
-    can skip this account instead of misreading it as $0 (which would look
-    below-floor and trigger a false halt for an already-armed account)."""
+    """Realized P&L from round-trips CLOSED today (ET), using the same LIFO pairing
+    as the analysis endpoints. Counts by EXIT date, not entry date, so a position
+    carried overnight and closed today IS included (matches Alpaca's calendar-day
+    view). Pairs the full supplied fills window first — filtering fills to today
+    before pairing would orphan a prior-day entry and silently drop its P&L.
+    Returns None on failure so the profit-lock loop can skip this account instead of
+    misreading it as $0 (which would look below-floor and trigger a false halt)."""
     try:
         _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     except Exception:
@@ -1513,8 +1519,14 @@ def _realized_daily_pnl(fills_fn):
         _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
     try:
         fills  = fills_fn()
-        paired = _pair_alpaca_fills_lifo(fills, from_date=_today, to_date=_today)
-        return round(sum(float(t.get("pnl") or 0) for t in paired.get("closed_clean", [])), 2)
+        paired = _pair_alpaca_fills_lifo(fills)      # pair everything; entry may be prior day
+        # Use ALL paired round-trips (closed), not just closed_clean: the orphan flag
+        # exists for STRATEGY attribution (e.g. an intraday slug held cross-day), but
+        # the LIFO cash P&L is still real account money. For an account daily-P&L card
+        # we want that cash — a carried position closed today at a loss must show.
+        return round(sum(float(t.get("pnl") or 0)
+                         for t in paired.get("closed", [])
+                         if (t.get("exit_time") or "")[:10] == _today), 2)
     except Exception as _e:
         log.debug("Realized daily P&L calc failed: %s", _e)
         return None
