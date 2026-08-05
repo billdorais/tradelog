@@ -1282,7 +1282,14 @@ class AlpacaBroker:
             dropped_no_fill = 0
             after_ts  = datetime.now(timezone.utc) - timedelta(days=days)
             until_ts  = None
+            _pages, _MAX_PAGES = 0, 120   # safety cap (~60k orders) so a huge history
+                                          # can't spin the pagination for minutes
             while True:
+                _pages += 1
+                if _pages > _MAX_PAGES:
+                    log.warning("Alpaca get_fills: hit %d-page cap (days=%s) — returning "
+                                "partial history; consider a shorter window", _MAX_PAGES, days)
+                    break
                 kwargs = dict(status=QueryOrderStatus.CLOSED, limit=500, after=after_ts)
                 if until_ts:
                     kwargs["until"] = until_ts

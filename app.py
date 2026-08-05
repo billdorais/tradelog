@@ -954,6 +954,40 @@ def _get_cached_fills_n(num):
         cache["ts"]   = time.time()
     return cache["data"]
 
+
+# Today-scoped fills — a SMALL, fast fetch just for the daily-P&L glance. The
+# 90-day _get_cached_fills_n above grows without bound as the paper accounts trade;
+# once a cold 90-day fetch exceeds ALPACA_CACHE_TTL it can never warm the cache, so
+# every request re-fetches and the dashboard stalls for minutes. Daily P&L only
+# needs today, so fetch ~2 days (covers the ET/UTC boundary) and cache it briefly.
+ALPACA_TODAY_FILLS_TTL = 45
+_alpaca_today_caches = {}   # num -> {"data": [...], "ts": float}
+_alpaca_today_locks  = {}   # num -> Lock
+
+def _get_today_fills_n(num):
+    """Today-scoped Alpaca fills for account `num` (get_fills(days=2)), cached 45s and
+    decoupled from the heavy 90-day history so the daily-P&L cards stay fast. Returns
+    stale-but-safe data on a fetch error rather than blocking."""
+    num    = str(num)
+    rec    = ACCOUNTS_BY_NUM.get(num)
+    broker = rec["broker"] if rec else None
+    if broker is None:
+        return []
+    cache = _alpaca_today_caches.setdefault(num, {"data": [], "ts": 0.0})
+    lock  = _alpaca_today_locks.setdefault(num, threading.Lock())
+    now = time.time()
+    if cache["ts"] > 0 and now - cache["ts"] < ALPACA_TODAY_FILLS_TTL:
+        return cache["data"]
+    with lock:
+        if cache["ts"] > 0 and time.time() - cache["ts"] < ALPACA_TODAY_FILLS_TTL:
+            return cache["data"]
+        try:
+            cache["data"] = broker.get_fills(days=2)
+            cache["ts"]   = time.time()
+        except Exception as _e:
+            log.debug("today fills fetch failed for %s: %s", num, _e)
+    return cache["data"]
+
 _sig_lookup_cache = {"data": None, "ts": 0.0}
 _sig_lookup_lock  = threading.Lock()
 SIG_LOOKUP_TTL    = 60  # seconds — the fills it annotates are themselves cached 120s
@@ -1394,7 +1428,7 @@ def _risk_monitor_loop():
                     # actually closed above the floor) can't arm-then-halt the account
                     # while the position ultimately closes below floor. broker.daily_pnl()
                     # (equity - last_equity) was the old source and included unrealized.
-                    _apnl = _realized_daily_pnl(_acct["fills_fn"])
+                    _apnl = _realized_daily_pnl(lambda _n=_acct["num"]: _get_today_fills_n(_n))
                     if _apnl is None:
                         continue
                     _just_armed = _just_halted = False
@@ -2979,8 +3013,9 @@ def api_alpaca_account():
         # Alpaca paper-account resets that zero out last_equity (which would
         # make broker.daily_pnl() = equity - 0 = the entire balance).
         try:
-            _, _, _, _acct_fills_fn = _alpaca_account_ctx(account)
-            daily_pnl = _realized_daily_pnl(_acct_fills_fn)
+            # Today-scoped fills only — NOT the 90-day shared cache, which grows until
+            # a cold fetch exceeds its TTL and stalls the dashboard for minutes.
+            daily_pnl = _realized_daily_pnl(lambda: _get_today_fills_n(account))
         except Exception as _e:
             log.debug("api_alpaca_account: %s realized daily_pnl failed: %s", broker_tag, _e)
             daily_pnl = None
@@ -3303,7 +3338,7 @@ def risk_status():
         if _a.get("broker") is None:
             continue
         try:
-            _apnl = _realized_daily_pnl(_a["fills_fn"])
+            _apnl = _realized_daily_pnl(lambda _n=_a["num"]: _get_today_fills_n(_n))
         except Exception:
             _apnl = None
         _pnl_accts.append({
