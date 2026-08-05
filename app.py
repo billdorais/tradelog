@@ -955,41 +955,17 @@ def _get_cached_fills_n(num):
     return cache["data"]
 
 
-# Today-scoped fills — a SMALL, fast fetch just for the daily-P&L glance. The
-# 90-day _get_cached_fills_n above grows without bound as the paper accounts trade;
-# once a cold 90-day fetch exceeds ALPACA_CACHE_TTL it can never warm the cache, so
-# every request re-fetches and the dashboard stalls for minutes. Daily P&L only
-# needs today, so fetch ~2 days (covers the ET/UTC boundary) and cache it briefly.
-ALPACA_TODAY_FILLS_TTL = 45
-_TODAY_FILLS_DAYS      = 7   # wide enough to include the ENTRY leg of a position that
-                            # carried a few days and closes today (max-hold can be off)
-_alpaca_today_caches = {}   # num -> {"data": [...], "ts": float}
-_alpaca_today_locks  = {}   # num -> Lock
-
+# Daily-P&L fills source. It MUST be the same fills the analysis endpoint / equity
+# chart pair from, or the NET P&L card diverges from the chart (it did: a separate
+# short-window fetch missed the entry leg of carried positions, so a −$43 day showed
+# as −$1). Reuse the shared 90-day cache — it's already populated by the chart, so
+# this is a cache hit, and get_fills pages newest→oldest (capped) so today's fills
+# are always present even if the deep history is truncated.
 def _get_today_fills_n(num):
-    """Recent Alpaca fills for account `num` for daily-P&L pairing — get_fills(days=7),
-    cached 45s and decoupled from the heavy 90-day history so the daily-P&L cards stay
-    fast. 7 days (not 1) so a round-trip that CLOSES today but opened on a prior day
-    still has its entry leg available to pair. Returns stale-but-safe data on error."""
-    num    = str(num)
-    rec    = ACCOUNTS_BY_NUM.get(num)
-    broker = rec["broker"] if rec else None
-    if broker is None:
-        return []
-    cache = _alpaca_today_caches.setdefault(num, {"data": [], "ts": 0.0})
-    lock  = _alpaca_today_locks.setdefault(num, threading.Lock())
-    now = time.time()
-    if cache["ts"] > 0 and now - cache["ts"] < ALPACA_TODAY_FILLS_TTL:
-        return cache["data"]
-    with lock:
-        if cache["ts"] > 0 and time.time() - cache["ts"] < ALPACA_TODAY_FILLS_TTL:
-            return cache["data"]
-        try:
-            cache["data"] = broker.get_fills(days=_TODAY_FILLS_DAYS)
-            cache["ts"]   = time.time()
-        except Exception as _e:
-            log.debug("today fills fetch failed for %s: %s", num, _e)
-    return cache["data"]
+    """Alias to the shared cached fills for account `num`, so daily-P&L pairing uses
+    the exact same source as the analysis/chart (kept as a named seam in case we later
+    want a lighter incremental fetch here)."""
+    return _get_cached_fills_n(num)
 
 _sig_lookup_cache = {"data": None, "ts": 0.0}
 _sig_lookup_lock  = threading.Lock()
