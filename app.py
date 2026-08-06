@@ -9416,7 +9416,7 @@ def _refined_scheduler_loop():
                 try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 30
                 except (TypeError, ValueError): _sched_days = 30
                 _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
-                log.info("Scheduled Refined refresh complete for %s (anchor=%s)", today, _anchor or "rolling")
+                log.info("Scheduled Refined refresh complete for %s (rolling %dd window)", today, _sched_days)
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
         # Kairos Refined snapshot — offset 1 min from the TV refresh so the two
