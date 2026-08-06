@@ -84,7 +84,8 @@ def test_curated_books_get_the_dollar_cap_farms_do_not(monkeypatch, _stops):
         return True
     # Rather than reach into the close internals, re-implement the decision the way
     # _check_position_stops does and assert on the trigger set. Drive the real function
-    # but capture log.error calls (it logs "POSITION STOP (...)" per close).
+    # and capture the "POSITION STOP (...)" line it logs per close (now INFO — a
+    # routine exit isn't an error — so the logger must be at INFO to see it).
     import logging
     records = []
 
@@ -92,11 +93,14 @@ def test_curated_books_get_the_dollar_cap_farms_do_not(monkeypatch, _stops):
         def emit(self, r): records.append(r.getMessage())
 
     h = _H()
+    _prev_level = a.log.level
+    a.log.setLevel(logging.INFO)
     a.log.addHandler(h)
     try:
         a._check_position_stops()
     finally:
         a.log.removeHandler(h)
+        a.log.setLevel(_prev_level)
 
     fired = " ".join(records)
     # Curated books hit the -$40 cap on a -$50 loss.

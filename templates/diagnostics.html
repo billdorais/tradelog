@@ -271,22 +271,34 @@
             <div style="margin:3px 0 0 130px">${gates}</div>
           </div>`;
         }).join('');
-        html += `<div style="font-size:0.7rem;color:#666;margin:12px 0 4px">Most recent</div>
-          <table style="width:100%;border-collapse:collapse;font-size:0.72rem">
-          <thead style="color:#666;font-size:0.62rem"><tr>
-            <th style="text-align:left">When (ET)</th><th style="text-align:left">Account</th>
-            <th style="text-align:left">Ticker</th><th style="text-align:left">Side</th>
-            <th style="text-align:left">Gate</th><th style="text-align:left">Reason</th>
-            <th style="text-align:left">Via</th></tr></thead><tbody>`;
-        html += (d.recent || []).map(r => `<tr>
-            <td style="color:#888">${(r.ts || '').slice(5, 16)}</td>
-            <td style="color:#aaa">${r.account || ''}</td>
-            <td style="color:#ccc">${r.ticker || ''}</td>
-            <td style="color:#888">${r.side || ''}</td>
-            <td style="color:#f0a35e">${r.gate || ''}</td>
-            <td style="color:#777">${(r.reason || '').replace(/</g, '&lt;')}</td>
-            <td style="color:#555">${r.source || ''}</td></tr>`).join('');
-        html += '</tbody></table>';
+        // Most recent — GROUPED by account (Farm names), in the same order as the
+        // summary above (most-blocked book first), each account its own block.
+        const recent = d.recent || [];
+        const groups = {};
+        for (const r of recent) (groups[r.account] = groups[r.account] || []).push(r);
+        const acctOrder = (d.by_account || []).map(a => a.account)
+          .filter(a => groups[a]);                       // summary order, only accts with rows
+        for (const a of Object.keys(groups)) if (!acctOrder.includes(a)) acctOrder.push(a);
+        html += `<div style="font-size:0.7rem;color:#666;margin:14px 0 4px">Most recent — by account</div>`;
+        for (const a of acctOrder) {
+          const rows = groups[a];
+          const lbl  = (rows[0] && rows[0].account_label) || a;
+          html += `<div style="margin:8px 0 2px;font-size:0.74rem;color:#7FE098;font-weight:600">${lbl}`
+            + ` <span style="color:#555;font-weight:400">· ${rows.length}</span></div>`
+            + `<table style="width:100%;border-collapse:collapse;font-size:0.72rem">`
+            + `<thead style="color:#666;font-size:0.62rem"><tr>`
+            + `<th style="text-align:left">When (ET)</th><th style="text-align:left">Ticker</th>`
+            + `<th style="text-align:left">Side</th><th style="text-align:left">Gate</th>`
+            + `<th style="text-align:left">Reason</th><th style="text-align:left">Via</th></tr></thead><tbody>`
+            + rows.map(r => `<tr>
+                <td style="color:#888">${(r.ts || '').slice(5, 16)}</td>
+                <td style="color:#ccc">${r.ticker || ''}</td>
+                <td style="color:#888">${r.side || ''}</td>
+                <td style="color:#f0a35e">${r.gate || ''}</td>
+                <td style="color:#777">${(r.reason || '').replace(/</g, '&lt;')}</td>
+                <td style="color:#555">${r.source || ''}</td></tr>`).join('')
+            + '</tbody></table>';
+        }
         body.innerHTML = html;
       } catch (e) {
         meta.textContent = 'unavailable';

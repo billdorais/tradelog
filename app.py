@@ -1594,7 +1594,7 @@ def _check_position_stops():
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
     if stale_holds:
-        log.warning("Position stop: cleared max-hold timers for %s (no longer open on broker)", stale_holds)
+        log.info("Position stop: cleared max-hold timers for %s (no longer open on broker)", stale_holds)
 
     for pos in all_positions:
         upnl   = float(pos.get("unrealized_pnl") or 0)
@@ -1723,8 +1723,10 @@ def _check_position_stops():
             # Don't add to _auto_closed_symbols yet — only add after a successful close
             # so that a failed close is retried on the next poll rather than silently dropped.
 
-        log.error("POSITION STOP (%s): %s [%s] — %s — closing position",
-                  triggered[0], symbol, broker, triggered[1])
+        # Routine exit — the stop monitor doing its job. INFO, not ERROR (this used to
+        # dominate the diagnostics error count with normal closes).
+        log.info("POSITION STOP (%s): %s [%s] — %s — closing position",
+                 triggered[0], symbol, broker, triggered[1])
 
         # Close the position — only mark as handled if the order is successfully submitted
         close_ok = False
@@ -1734,8 +1736,16 @@ def _check_position_stops():
                 res = _rec["broker"].close_position(symbol)
                 close_ok = res.get("success", False)
                 if not close_ok:
-                    log.error("Position stop close failed for %s (%s): %s",
-                              symbol, _rec["label"], res.get("error"))
+                    _err = str(res.get("error") or "")
+                    if any(k in _err for k in ("does not exist", "not found", "40410000")):
+                        # Already flat — the stop's own fill beat the close. Goal achieved,
+                        # so treat as success (not a failure to retry) and log at INFO.
+                        close_ok = True
+                        log.info("Position stop: %s already flat on %s (close raced the fill)",
+                                 symbol, _rec["label"])
+                    else:
+                        log.error("Position stop close failed for %s (%s): %s",
+                                  symbol, _rec["label"], res.get("error"))
             elif broker == "ib" and _ib_task_queue is not None:
                 _submit_ib_task(ib_broker.close_position, symbol, pos.get("qty", 0), _timeout=30)
                 close_ok = True
@@ -1813,9 +1823,9 @@ def _check_exit_params_recovery():
             with _risk_lock:
                 if (broker_tag, sym) in _auto_closed_symbols:
                     continue
-            log.error("EXIT-PARAMS RECOVERY: %s on %s — stop fired with partial fill, "
-                      "flattening remainder (%s shares)",
-                      sym, broker_tag, pos.get("qty"))
+            log.warning("EXIT-PARAMS RECOVERY: %s on %s — stop fired with partial fill, "
+                        "flattening remainder (%s shares)",
+                        sym, broker_tag, pos.get("qty"))
             try:
                 res = broker_inst.close_position(sym)
                 if res.get("success"):
@@ -13948,7 +13958,9 @@ def api_blocked_by_account():
         "days": days, "account": account, "total": len(rows),
         "by_account": by_account,
         "by_gate": [{"gate": g, "count": n} for g, n in gates.most_common()],
-        "recent": [{**r, "ts": _et(r["ts"])} for r in rows[:40]],
+        "recent": [{**r, "ts": _et(r["ts"]),
+                    "account_label": label.get(r["account"], r["account"])}
+                   for r in rows[:60]],
     })
 
 

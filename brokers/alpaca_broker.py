@@ -825,7 +825,7 @@ class AlpacaBroker:
                         ).start()
                         _trail_activated = True
                     else:
-                        log.warning("Trail activation setup skipped for %s: no ref_price — "
+                        log.info("Trail activation setup skipped for %s: no ref_price — "
                                     "falling back to immediate trail", ticker)
                 except Exception as _ha:
                     log.warning("Hard stop for trail activation failed for %s: %s — "
@@ -1150,8 +1150,10 @@ class AlpacaBroker:
                     log.info("close_position %s: cancelled open order %s (%s, %s)",
                              sym_u, o.id, o.order_type, label)
                 except Exception as _ce:
-                    log.warning("close_position %s: cancel order %s failed (%s): %s",
-                                sym_u, o.id, label, _ce)
+                    # Benign during a close (order usually already filled/canceled);
+                    # the fallback handles anything still live. INFO, not WARNING.
+                    log.info("close_position %s: cancel order %s failed (%s): %s",
+                             sym_u, o.id, label, _ce)
             return len(list(open_orders))
 
         # Pass 1: cancel whatever's open right now.
@@ -1177,8 +1179,13 @@ class AlpacaBroker:
             }
         except Exception as e:
             err_str = str(e)
-            log.warning("Alpaca close_position %s failed (%s) — trying fallback market order",
-                        sym_u, err_str)
+            # Position already gone (its own stop filled first) = success, not a failure.
+            if any(k in err_str for k in ("does not exist", "not found", "40410000")):
+                self._invalidate_pos_cache()
+                log.info("Alpaca close_position %s: already flat (position gone)", sym_u)
+                return {"success": True, "status": "already_flat", "symbol": sym_u}
+            log.info("Alpaca close_position %s failed (%s) — trying fallback market order",
+                     sym_u, err_str)
 
         # Fallback: read the current qty, sweep open orders once more, then
         # place an explicit market order opposite the position direction.
@@ -1186,6 +1193,12 @@ class AlpacaBroker:
             pos = self._trading.get_open_position(sym_u)
             qty = abs(float(pos.qty))
         except Exception as _pe:
+            _es = str(_pe)
+            if any(k in _es for k in ("does not exist", "not found", "40410000")):
+                # Already flat — the goal. Success, logged at INFO (not an error).
+                self._invalidate_pos_cache()
+                log.info("Alpaca close_position %s: already flat (gone before fallback)", sym_u)
+                return {"success": True, "status": "already_flat", "symbol": sym_u}
             log.error("Alpaca close_position fallback %s: get_open_position failed: %s", sym_u, _pe)
             return {"success": False, "error": f"close + fallback failed: {_pe}"}
         if qty <= 0:

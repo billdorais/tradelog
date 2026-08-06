@@ -61,9 +61,11 @@ def _run_capture():
     recs = []
     class _H(logging.Handler):
         def emit(self, r): recs.append(r.getMessage())
-    h = _H(); a.log.addHandler(h)
+    h = _H(); _prev = a.log.level
+    a.log.setLevel(logging.INFO)   # POSITION STOP is now INFO (routine exit, not error)
+    a.log.addHandler(h)
     try:    a._check_position_stops()
-    finally: a.log.removeHandler(h)
+    finally: a.log.removeHandler(h); a.log.setLevel(_prev)
     return " ".join(recs)
 
 
