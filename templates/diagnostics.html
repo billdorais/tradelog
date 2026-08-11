@@ -61,6 +61,11 @@
         <option value="warning">Warnings &amp; errors</option>
         <option value="error">Errors only</option>
       </select>
+      <select class="f" id="windowSel" onchange="loadErrors()" title="The buffer is in-memory and clears on every redeploy; this just scopes the view.">
+        <option value="24h">Last 24h</option>
+        <option value="today">Today (ET)</option>
+        <option value="all">All buffered</option>
+      </select>
       <label class="meta"><input type="checkbox" id="autoRefresh" checked> auto-refresh (15s)</label>
       <button class="btn" onclick="loadErrors()">↻ Refresh</button>
       <button class="btn btn-copy" onclick="copyForClaude()">📋 Copy for Claude</button>
@@ -155,10 +160,15 @@
       const meta  = document.getElementById('diagMeta');
       const rows  = document.getElementById('diagRows');
       try {
-        const d = await fetch('/api/diagnostics/errors?level=' + level + '&limit=300').then(r => r.json());
+        const win = document.getElementById('windowSel')?.value || '24h';
+        const d = await fetch(`/api/diagnostics/errors?level=${level}&window=${win}&limit=300`).then(r => r.json());
         _lastData = d;
         const c = d.counts || {};
-        meta.textContent = `${d.now} · ${c.WARNING||0} warn · ${(c.ERROR||0)+(c.CRITICAL||0)} err · buffer ${d.total||0}/${d.capacity||500}`;
+        const _winTxt = { '24h': 'last 24h', 'today': 'today', 'all': 'all buffered' }[d.window] || d.window;
+        const _older  = Math.max(0, (d.buffered||0) - (d.total||0));
+        meta.textContent = `${d.now} · ${_winTxt} · ${c.WARNING||0} warn · ${(c.ERROR||0)+(c.CRITICAL||0)} err`
+                         + ` · buffer ${d.buffered||0}/${d.capacity||500}`
+                         + (_older ? ` (${_older} older, hidden)` : '');
         const recs = d.records || [];
         if (!recs.length) { rows.innerHTML = '<div class="empty">✓ No ' + (level === 'error' ? 'errors' : 'warnings or errors') + ' in the buffer.</div>'; return; }
         rows.innerHTML = recs.map(r =>
@@ -180,7 +190,7 @@
       const c = d.counts || {};
       const lines = [
         '=== Kairos Diagnostics — app errors/warnings ===',
-        `As of: ${d.now}   ·   buffer ${d.total}/${d.capacity}   ·   ${c.WARNING||0} warnings, ${(c.ERROR||0)+(c.CRITICAL||0)} errors`,
+        `As of: ${d.now}   ·   window ${d.window||'24h'}   ·   buffer ${d.buffered||d.total}/${d.capacity}   ·   ${c.WARNING||0} warnings, ${(c.ERROR||0)+(c.CRITICAL||0)} errors`,
         '(newest first)', '',
       ];
       for (const r of d.records) lines.push(`${r.time}  [${r.level}]  ${r.logger}: ${r.msg}`);

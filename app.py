@@ -9998,20 +9998,39 @@ def diagnostics_page():
 def api_diagnostics_errors():
     """Recent WARNING+ log records from the in-memory ring buffer — the app's own
     error tail, surfaced so bugs that only log a warning are visible/copyable.
-    ?level=warning|error (min level, default warning) · ?limit=N (default 200)."""
+    ?level=warning|error (min level, default warning) · ?limit=N (default 200)
+    ?window=24h|today|all — age filter (default 24h).
+
+    The buffer itself needs no expiry: it is in-memory, capped at 500 records, and
+    wiped on every restart/redeploy. `window` is presentation only — it scopes the
+    view to what is current so a week of low-volume warnings doesn't bury today's.
+    Default 24h rather than today-ET so an error from an hour ago never disappears
+    just because midnight passed.
+    """
     import datetime as _dt
     level = (request.args.get("level") or "warning").strip().upper()
     _rank = {"WARNING": 30, "ERROR": 40, "CRITICAL": 50}
     floor = _rank.get(level, 30)
     try:    limit = max(1, min(500, int(request.args.get("limit") or 200)))
     except Exception: limit = 200
+    window = (request.args.get("window") or "24h").strip().lower()
     with _LOG_RING_LOCK:
         rows = list(_LOG_RING)
     try:    et = ZoneInfo("America/New_York")
     except Exception: et = _dt.timezone.utc
-    out, counts = [], {"WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+    # Cutoff as a unix timestamp so it compares directly against record.created.
+    cutoff = 0.0
+    if window == "24h":
+        cutoff = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)).timestamp()
+    elif window == "today":
+        _midnight = _dt.datetime.now(et).replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = _midnight.timestamp()
+    out, counts, shown_total = [], {"WARNING": 0, "ERROR": 0, "CRITICAL": 0}, 0
     for r in rows:
         lvl = r.get("level", "")
+        if cutoff and (r.get("ts") or 0) < cutoff:
+            continue                       # older than the window
+        shown_total += 1
         counts[lvl] = counts.get(lvl, 0) + 1
         if _rank.get(lvl, 0) < floor:
             continue
@@ -10021,7 +10040,8 @@ def api_diagnostics_errors():
                     "msg": r.get("msg", "")})
     out = out[-limit:]
     out.reverse()   # newest first
-    return jsonify({"records": out, "counts": counts, "total": len(rows),
+    return jsonify({"records": out, "counts": counts, "total": shown_total,
+                    "buffered": len(rows), "window": window,
                     "now": _dt.datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
                     "capacity": _LOG_RING.maxlen})
 
