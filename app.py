@@ -8584,10 +8584,10 @@ _REFINED_MIN_TRADES = 7
 # strategies clear the strict routing bar above.
 _REFINED_ONDECK_MIN_TRADES = 5
 
-# Kairos Refined snapshot uses a much lower floor — the engine account is newer
-# with fewer fills per strategy, and the user wants a wider look at the top of
-# the funnel early. Once the pool matures we'll ratchet this up to match TV's 7.
-_KAIROS_REFINED_MIN_TRADES        = 3
+# Kairos Refined snapshot uses a lower floor than TV — the engine account is newer
+# with fewer fills per strategy. Raised 3→5 as the pool matured (aligned with the
+# crew's [Kairos] sample floor); heading toward TV's 7 as it accrues more history.
+_KAIROS_REFINED_MIN_TRADES        = 5
 _KAIROS_REFINED_ONDECK_MIN_TRADES = 2
 
 
