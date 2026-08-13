@@ -287,7 +287,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveProfitLock()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearProfitLock()" title="Disable profit lock">Off</button>
         </div>
-        <div class="risk-hint" id="plStatusHint">Once daily P&amp;L reaches this, halts NEW entries for the day if it later falls back below it (locks in the gain). Keeps trading while above. 0 = disabled.</div>
+        <div class="risk-hint" id="plStatusHint">Ratchets up in this step size — hit $100 the floor is $100; hit $213 the floor bumps to $200; hit $300 it bumps to $300. Halts NEW entries when P&amp;L falls back below the current floor (locks in the gain). Keeps trading while above. 0 = disabled.</div>
         <label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:0.8rem;color:#ccc;cursor:pointer">
           <input type="checkbox" id="profitLockFlatten" onchange="saveProfitLockFlatten()">
           Flatten on breach — also <b>close open positions</b> when the floor breaks (not just halt entries)
@@ -1169,7 +1169,7 @@
         const plAccts = data.profit_lock_accounts || [];
         if (!data.profit_lock_enabled) {
           plBadge.className = 'risk-status-badge disabled'; plDot.className = 'risk-dot grey'; plText.textContent = 'Disabled';
-          if (plHint) plHint.textContent = 'Per account: once a book’s daily P&L reaches this, halts ITS new entries for the day if it later falls back below (others keep trading). 0 = disabled.';
+          if (plHint) plHint.textContent = 'Per account: ratcheting floor in step-size increments — each time P&L crosses a new step, the halt floor bumps up so max giveback stays capped at one step. Halts NEW entries when P&L falls below the current floor (others keep trading). 0 = disabled.';
         } else {
           const anyHalt = plAccts.some(a => a.halted);
           const anyArm  = plAccts.some(a => a.armed && !a.halted);
@@ -1177,9 +1177,16 @@
           plBadge.className = 'risk-status-badge ' + (anyHalt ? 'halted' : 'active');
           plText.textContent = `$${plAmt} / account`;
           if (plHint) {
-            const parts = plAccts.map(a =>
-              `&nbsp;&nbsp;${a.label}: ${a.halted ? '⛔ halted' : a.armed ? '✓ armed' : '⏳ waiting'}`);
-            plHint.innerHTML = `Per-account floor $${plAmt}:<br>`
+            // Floor ratchets up in $plAmt steps as P&L rises (e.g. at $213 with
+            // step=$100 the floor is $200). Show the live floor per account.
+            const parts = plAccts.map(a => {
+              const status = a.halted ? '⛔ halted' : a.armed ? '✓ armed' : '⏳ waiting';
+              const floorTag = (a.armed || a.halted) && a.floor > 0
+                ? ` · floor $${a.floor.toFixed(0)}`
+                : '';
+              return `&nbsp;&nbsp;${a.label}: ${status}${floorTag}`;
+            });
+            plHint.innerHTML = `Ratcheting floor · step $${plAmt}:<br>`
               + (parts.length ? parts.join('<br>') : '&nbsp;&nbsp;no accounts')
               + (anyHalt ? '<br>use “Clear Halt &amp; Resume” to reset.' : '');
           }

@@ -372,6 +372,7 @@ _daily_loss_day       = None    # ET date the daily-loss halt state applies to (
 _daily_loss_baseline  = {}      # {account_tag: equity captured at the day roll} — the guard's daily-P&L baseline (independent of Alpaca's last_equity timing)
 _profit_lock_armed    = {}      # {account_tag: bool} — that account's daily P&L reached the floor today
 _profit_lock_halted   = {}      # {account_tag: bool} — armed then gave back → its new entries blocked
+_profit_lock_floor    = {}      # {account_tag: float} — dynamic floor that ratchets up in PROFIT_LOCK_DOLLARS steps as P&L rises
 _profit_lock_day      = None    # ET date the arm/halt state applies to (auto-resets daily)
 _manual_halt          = {}      # {account_tag: bool} — user pressed "Halt" (lock in a win); blocks NEW entries only
 _manual_halt_day      = None    # ET date the manual halt applies to (auto-resets at ET midnight)
@@ -1388,7 +1389,7 @@ def _risk_monitor_loop():
         # NEW entries for the day (others keep trading). Halt-only; resets at ET midnight.
         if PROFIT_LOCK_DOLLARS > 0:
             try:
-                global _profit_lock_armed, _profit_lock_halted, _profit_lock_day
+                global _profit_lock_armed, _profit_lock_halted, _profit_lock_floor, _profit_lock_day
                 try:
                     _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
                 except Exception:
@@ -1396,7 +1397,7 @@ def _risk_monitor_loop():
                     _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
                 with _risk_lock:
                     if _profit_lock_day != _today:
-                        _profit_lock_day, _profit_lock_armed, _profit_lock_halted = _today, {}, {}
+                        _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor = _today, {}, {}, {}
                 for _acct in ALPACA_ACCOUNTS:
                     _tag, _br = _acct["tag"], _acct["broker"]
                     if _br is None or not _acct.get("profit_lock", True):
@@ -1411,17 +1412,41 @@ def _risk_monitor_loop():
                     if _apnl is None:
                         continue
                     _just_armed = _just_halted = False
+                    _floor_bumped_from = None
+                    # Ratcheting floor: each time P&L crosses a new PROFIT_LOCK_DOLLARS
+                    # step, the halt floor bumps up to that step so the max giveback
+                    # stays capped at one step-size (e.g. at $213 with step=$100 the
+                    # floor is $200 — giveback tops out at $13, not $113).
+                    _step = PROFIT_LOCK_DOLLARS
+                    _step_floor = (int(_apnl // _step)) * _step if _apnl >= _step else 0.0
                     with _risk_lock:
-                        if not _profit_lock_armed.get(_tag) and _apnl >= PROFIT_LOCK_DOLLARS:
+                        # Default: armed books floor >= step (guards migration from
+                        # pre-ratchet state where pl_floor wasn't persisted, so an
+                        # already-armed book would otherwise start with floor 0.0).
+                        _default_floor = _step if _profit_lock_armed.get(_tag) else 0.0
+                        _current_floor = _profit_lock_floor.get(_tag, _default_floor)
+                        # Backfill so the migration seed persists (otherwise every tick
+                        # re-defaults to _step and the ratcheted floor from earlier ticks
+                        # would be dropped when the process restarts before ratcheting again).
+                        if _tag not in _profit_lock_floor and _current_floor > 0:
+                            _profit_lock_floor[_tag] = _current_floor
+                        if _step_floor > _current_floor:
+                            _floor_bumped_from      = _current_floor
+                            _profit_lock_floor[_tag] = _step_floor
+                            _current_floor           = _step_floor
+                        if not _profit_lock_armed.get(_tag) and _current_floor >= _step:
                             _profit_lock_armed[_tag] = True
                             _just_armed = True
-                            log.info("Profit lock ARMED [%s]: daily P&L $%.2f reached floor $%.2f",
-                                     _tag, _apnl, PROFIT_LOCK_DOLLARS)
-                        if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _apnl < PROFIT_LOCK_DOLLARS:
+                            log.info("Profit lock ARMED [%s]: daily P&L $%.2f — floor set to $%.2f",
+                                     _tag, _apnl, _current_floor)
+                        if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _apnl < _current_floor:
                             _profit_lock_halted[_tag] = True
                             _just_halted = True
                             log.warning("PROFIT LOCK HALT [%s]: daily P&L $%.2f fell back below floor $%.2f "
-                                        "— its new entries halted for the day", _tag, _apnl, PROFIT_LOCK_DOLLARS)
+                                        "— its new entries halted for the day", _tag, _apnl, _current_floor)
+                    if _floor_bumped_from is not None and _floor_bumped_from > 0 and not _just_armed:
+                        log.info("Profit lock floor bumped [%s]: $%.2f → $%.2f (P&L $%.2f)",
+                                 _tag, _floor_bumped_from, _step_floor, _apnl)
                     if _just_armed or _just_halted:
                         _persist_risk_day_state()   # survive a mid-session restart
                     # Flatten on breach: close this account's open positions once, at the
@@ -1513,6 +1538,7 @@ def _persist_risk_day_state():
             "pl_day":    _profit_lock_day,
             "pl_armed":  sorted(k for k, v in _profit_lock_armed.items() if v),
             "pl_halted": sorted(k for k, v in _profit_lock_halted.items() if v),
+            "pl_floor":  {k: float(v) for k, v in _profit_lock_floor.items()},
             "dl_day":    _daily_loss_day,
             "dl_halted": sorted(k for k, v in _daily_loss_halted.items() if v),
             "dl_baseline": {k: float(v) for k, v in _daily_loss_baseline.items()},
@@ -3243,6 +3269,7 @@ def risk_status():
         dl_halted       = dict(_daily_loss_halted)
         pl_armed        = dict(_profit_lock_armed)
         pl_halted       = dict(_profit_lock_halted)
+        pl_floor        = dict(_profit_lock_floor)
         # Manual halts are day-scoped; a prior-day marker means everything's clear.
         mh_snap         = dict(_manual_halt) if _manual_halt_day == _et_today_iso() else {}
         blocked         = dict(_blocked_strategies)
@@ -3357,7 +3384,8 @@ def risk_status():
         "profit_lock_halted":   any(pl_halted.values()),          # any account halted (for reset btn)
         "profit_lock_accounts": [
             {"tag": a["tag"], "label": a["label"],
-             "armed": bool(pl_armed.get(a["tag"])), "halted": bool(pl_halted.get(a["tag"]))}
+             "armed": bool(pl_armed.get(a["tag"])), "halted": bool(pl_halted.get(a["tag"])),
+             "floor": round(pl_floor.get(a["tag"], 0.0), 2)}
             for a in ALPACA_ACCOUNTS if a.get("profit_lock", True)
         ],
         # Manual "lock in the win" halt — same curated set as the profit lock
@@ -3541,6 +3569,7 @@ def risk_set_limit():
         with _risk_lock:
             _profit_lock_armed = {}
             _profit_lock_halted = {}
+            _profit_lock_floor = {}
         _persist_risk_day_state()
         _update_env_file("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
         _save_setting("PROFIT_LOCK_DOLLARS", f"{PROFIT_LOCK_DOLLARS:g}")
@@ -3740,15 +3769,17 @@ def risk_reset():
     token = request.args.get("token") or request.headers.get("X-Webhook-Token")
     if token != WEBHOOK_TOKEN:
         abort(401)
-    global _risk_halted, _profit_lock_armed, _profit_lock_halted
+    global _risk_halted, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor
     with _risk_lock:
         _risk_halted = False
         # Clear the per-account daily-loss halts so those accounts resume trading.
         _daily_loss_halted.clear()
         # Also clear the per-account profit-lock halts (but not the day marker) so
         # trading resumes; each account re-arms if its P&L climbs back above the floor.
+        # Reset the dynamic floor too so the ladder starts fresh on the next arm.
         _profit_lock_armed = {}
         _profit_lock_halted = {}
+        _profit_lock_floor = {}
         # ...and clear manual halts (the "Clear Halt & Resume" button resumes all).
         _manual_halt.clear()
     _persist_risk_day_state()
@@ -19730,7 +19761,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _daily_loss_day, _manual_halt_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor, _daily_loss_day, _manual_halt_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -19757,9 +19788,11 @@ def _restore_risk_settings():
                     _profit_lock_day    = _st["pl_day"]
                     _profit_lock_armed  = {k: True for k in (_st.get("pl_armed") or [])}
                     _profit_lock_halted = {k: True for k in (_st.get("pl_halted") or [])}
+                    _profit_lock_floor  = {k: float(v) for k, v in (_st.get("pl_floor") or {}).items()}
                     if _profit_lock_armed or _profit_lock_halted:
-                        log.warning("Restored same-day profit-lock state: armed=%s halted=%s",
-                                    sorted(_profit_lock_armed), sorted(_profit_lock_halted))
+                        log.warning("Restored same-day profit-lock state: armed=%s halted=%s floor=%s",
+                                    sorted(_profit_lock_armed), sorted(_profit_lock_halted),
+                                    {k: round(v, 2) for k, v in _profit_lock_floor.items()})
                 if _st.get("dl_day") == _today:
                     _daily_loss_day = _st["dl_day"]
                     _daily_loss_halted.update({k: True for k in (_st.get("dl_halted") or [])})
