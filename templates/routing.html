@@ -1108,14 +1108,19 @@
       const resetSec = document.getElementById('riskResetSection');
       const input  = document.getElementById('riskLimitInput');
 
-      // P&L display — combined (across accounts) headline + per-curated-account breakdown
-      if (data.current_pnl !== null && data.current_pnl !== undefined) {
-        const sign = data.current_pnl >= 0 ? '+' : '';
-        pnlEl.textContent = sign + '$' + data.current_pnl.toFixed(2);
-        pnlEl.className = 'risk-value ' + (data.current_pnl >= 0 ? 'positive' : 'negative');
+      // P&L display — headline is the SUM of the shown curated accounts' realized
+      // P&L, so it reconciles with the breakdown below. (data.current_pnl was an
+      // equity-delta across a different set of accounts and didn't tie out.)
+      const _acctRows = data.pnl_accounts || [];
+      const _acctVals = _acctRows.filter(a => a.pnl !== null && a.pnl !== undefined);
+      if (_acctVals.length) {
+        const total = _acctVals.reduce((s, a) => s + a.pnl, 0);
+        const sign  = total >= 0 ? '+' : '';
+        pnlEl.textContent = sign + '$' + total.toFixed(2);
+        pnlEl.className   = 'risk-value ' + (total > 0 ? 'positive' : total < 0 ? 'negative' : 'neutral');
       } else {
         pnlEl.textContent = '—';
-        pnlEl.className = 'risk-value neutral';
+        pnlEl.className   = 'risk-value neutral';
       }
       const acctBox = document.getElementById('riskPnlAccts');
       if (acctBox) {
