@@ -1477,12 +1477,34 @@ def _risk_monitor_loop():
                             log.error("Profit lock flatten failed [%s]: %s", _tag, _fe)
             except Exception as _e:
                 log.warning("Profit lock monitor error: %s", _e)
-        # Poll fast when any book is armed so a fast drop past the floor is caught
-        # within seconds, not up to a minute. Idle 60s cadence otherwise.
+        # Poll fast (10s) when either halt is engaged or approaching engagement:
+        #  - Any book profit-lock armed  → a fast drop past floor caught in seconds
+        #  - Any book already loss-halted → keeps the "halted" state fresh
+        #  - Any book at ≥50% of MAX_DAILY_LOSS drawdown → catch the last leg before halt
+        # Otherwise idle at 60s to keep API load low. Baselines are snapshotted under
+        # the lock, then equity fetches happen outside so a network call can't stall
+        # webhook processing.
         with _risk_lock:
-            _any_armed = any(_profit_lock_armed.get(_a["tag"])
-                             for _a in ALPACA_ACCOUNTS if _a.get("profit_lock", True))
-        time.sleep(10 if _any_armed else 60)
+            _any_armed  = any(_profit_lock_armed.get(_a["tag"])
+                              for _a in ALPACA_ACCOUNTS if _a.get("profit_lock", True))
+            _any_halted = any(_daily_loss_halted.get(_a["tag"])
+                              for _a in ALPACA_ACCOUNTS if _a.get("daily_loss_guard", True))
+            _baselines  = {a["tag"]: (a["broker"], _daily_loss_baseline.get(a["tag"]))
+                           for a in ALPACA_ACCOUNTS
+                           if a.get("daily_loss_guard", True) and a.get("broker") is not None}
+        _any_close_to_loss = False
+        if MAX_DAILY_LOSS < 0:
+            for _tag, (_br, _base) in _baselines.items():
+                if _base is None:
+                    continue
+                try:
+                    _drawdown = float(_br.account_equity() or _base) - _base
+                    if _drawdown <= MAX_DAILY_LOSS * 0.5:   # e.g. limit -$125 → trigger at -$62.50
+                        _any_close_to_loss = True
+                        break
+                except Exception:
+                    pass
+        time.sleep(10 if (_any_armed or _any_halted or _any_close_to_loss) else 60)
 
 
 threading.Thread(target=_risk_monitor_loop, daemon=True).start()
