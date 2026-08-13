@@ -1413,6 +1413,21 @@ def _risk_monitor_loop():
                         continue
                     _just_armed = _just_halted = False
                     _floor_bumped_from = None
+                    # Combined P&L (realized + unrealized) is used for the halt check
+                    # so we catch open positions bleeding hard BEFORE they close and
+                    # realize a loss well past the floor. Arm check stays on realized
+                    # only — a brief wick shouldn't arm the floor if it'll never
+                    # actually close above it.
+                    _unrealized = 0.0
+                    try:
+                        # Bypass the 20s position cache — a stale snapshot could hide
+                        # a fast MTM drop right when we most need to see it.
+                        _br._invalidate_pos_cache()
+                        for _p in _br.get_positions():
+                            _unrealized += float(_p.get("unrealized_pnl") or 0.0)
+                    except Exception as _upe:
+                        log.debug("Profit lock unrealized fetch [%s] failed: %s", _tag, _upe)
+                    _combined_pnl = _apnl + _unrealized
                     # Ratcheting floor: each time P&L crosses a new PROFIT_LOCK_DOLLARS
                     # step, the halt floor bumps up to that step so the max giveback
                     # stays capped at one step-size (e.g. at $213 with step=$100 the
@@ -1439,11 +1454,12 @@ def _risk_monitor_loop():
                             _just_armed = True
                             log.info("Profit lock ARMED [%s]: daily P&L $%.2f — floor set to $%.2f",
                                      _tag, _apnl, _current_floor)
-                        if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _apnl < _current_floor:
+                        if _profit_lock_armed.get(_tag) and not _profit_lock_halted.get(_tag) and _combined_pnl < _current_floor:
                             _profit_lock_halted[_tag] = True
                             _just_halted = True
-                            log.warning("PROFIT LOCK HALT [%s]: daily P&L $%.2f fell back below floor $%.2f "
-                                        "— its new entries halted for the day", _tag, _apnl, _current_floor)
+                            log.warning("PROFIT LOCK HALT [%s]: combined P&L $%.2f (realized $%.2f + unrealized $%.2f) "
+                                        "fell below floor $%.2f — new entries halted, positions flattening",
+                                        _tag, _combined_pnl, _apnl, _unrealized, _current_floor)
                     if _floor_bumped_from is not None and _floor_bumped_from > 0 and not _just_armed:
                         log.info("Profit lock floor bumped [%s]: $%.2f → $%.2f (P&L $%.2f)",
                                  _tag, _floor_bumped_from, _step_floor, _apnl)
@@ -1461,7 +1477,12 @@ def _risk_monitor_loop():
                             log.error("Profit lock flatten failed [%s]: %s", _tag, _fe)
             except Exception as _e:
                 log.warning("Profit lock monitor error: %s", _e)
-        time.sleep(60)
+        # Poll fast when any book is armed so a fast drop past the floor is caught
+        # within seconds, not up to a minute. Idle 60s cadence otherwise.
+        with _risk_lock:
+            _any_armed = any(_profit_lock_armed.get(_a["tag"])
+                             for _a in ALPACA_ACCOUNTS if _a.get("profit_lock", True))
+        time.sleep(10 if _any_armed else 60)
 
 
 threading.Thread(target=_risk_monitor_loop, daemon=True).start()
@@ -3385,7 +3406,9 @@ def risk_status():
         "profit_lock_accounts": [
             {"tag": a["tag"], "label": a["label"],
              "armed": bool(pl_armed.get(a["tag"])), "halted": bool(pl_halted.get(a["tag"])),
-             "floor": round(pl_floor.get(a["tag"], 0.0), 2)}
+             "floor": round(pl_floor.get(a["tag"], 0.0), 2),
+             "unrealized": round(sum(float(p.get("unrealized_pnl") or 0)
+                                     for p in positions if p.get("broker") == a["tag"]), 2)}
             for a in ALPACA_ACCOUNTS if a.get("profit_lock", True)
         ],
         # Manual "lock in the win" halt — same curated set as the profit lock

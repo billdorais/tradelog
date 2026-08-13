@@ -1178,15 +1178,20 @@
           plText.textContent = `$${plAmt} / account`;
           if (plHint) {
             // Floor ratchets up in $plAmt steps as P&L rises (e.g. at $213 with
-            // step=$100 the floor is $200). Show the live floor per account.
+            // step=$100 the floor is $200). Show the live floor per account and
+            // any unrealized P&L on open positions (halt uses realized + unrealized).
             const parts = plAccts.map(a => {
               const status = a.halted ? '⛔ halted' : a.armed ? '✓ armed' : '⏳ waiting';
               const floorTag = (a.armed || a.halted) && a.floor > 0
                 ? ` · floor $${a.floor.toFixed(0)}`
                 : '';
-              return `&nbsp;&nbsp;${a.label}: ${status}${floorTag}`;
+              const u = Number(a.unrealized || 0);
+              const uTag = u !== 0
+                ? ` · <span style="color:${u < 0 ? '#ef5350' : '#7FE098'}">unreal ${u >= 0 ? '+' : ''}$${u.toFixed(0)}</span>`
+                : '';
+              return `&nbsp;&nbsp;${a.label}: ${status}${floorTag}${uTag}`;
             });
-            plHint.innerHTML = `Ratcheting floor · step $${plAmt}:<br>`
+            plHint.innerHTML = `Ratcheting floor · step $${plAmt} · halt uses realized + unrealized:<br>`
               + (parts.length ? parts.join('<br>') : '&nbsp;&nbsp;no accounts')
               + (anyHalt ? '<br>use “Clear Halt &amp; Resume” to reset.' : '');
           }
