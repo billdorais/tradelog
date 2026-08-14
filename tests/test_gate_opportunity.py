@@ -66,10 +66,11 @@ def _block(gate, ticker, strategy="S_CAM_BREAKOUT_R3S3"):
     a._flush_blocked_targets()
 
 
-def _gates(days=14):
+def _gates(days=14, account="alpaca4"):
     with a.app.test_client() as c:
-        d = c.get(f"/api/signals/gate_opportunity?days={days}&account=alpaca4").get_json()
-    return d, {g["gate"]: g for g in d["by_gate"]}
+        d = c.get(f"/api/signals/gate_opportunity?days={days}&account={account}").get_json()
+    book = next(b for b in d["books"] if b["account"] == account)
+    return d, {g["gate"]: g for g in book["by_gate"]}
 
 
 def test_gate_that_blocked_a_winner_is_reported_as_costing_money(opp):
@@ -133,3 +134,58 @@ def test_percent_normalisation_not_raw_dollars(opp):
     _, g = _gates()
     assert g["hours"]["avg_pct"] == pytest.approx(5.0)
     assert g["hours"]["farm_pnl"] == 100.0          # dollars still shown for reference
+
+
+def test_prices_every_curated_book_in_one_call(opp):
+    """All three curated books side by side — the farm index is built once and
+    shared, so adding books costs no extra fill fetches."""
+    farm_rts = opp
+    farm_rts.append(_rt("AAPL", "S_CAM_BREAKOUT_R3S3", pnl=40.0))    # +4%
+    farm_rts.append(_rt("TSLA", "S_CAM_BREAKOUT_R3S3", pnl=-60.0))   # -6%
+    # Same gate, opposite outcomes on two books.
+    a._record_block("alpaca2", "AAPL", "S_CAM_BREAKOUT_R3S3", "long", "hours", "r")
+    a._record_block("alpaca3", "TSLA", "S_CAM_BREAKOUT_R3S3", "long", "hours", "r")
+    a._record_block("alpaca4", "AAPL", "S_CAM_BREAKOUT_R3S3", "long", "rvol", "r")
+    a._flush_blocked_targets()
+
+    with a.app.test_client() as c:
+        d = c.get("/api/signals/gate_opportunity?days=14").get_json()
+
+    books = {b["account"]: b for b in d["books"]}
+    assert set(books) == {"alpaca2", "alpaca3", "alpaca4"}, "defaulted to the curated books"
+    # The union of gates drives the matrix rows, most-blocked first.
+    assert set(d["gates"]) == {"hours", "rvol"}
+    assert d["gates"][0] == "hours"
+
+    g2 = {g["gate"]: g for g in books["alpaca2"]["by_gate"]}
+    g3 = {g["gate"]: g for g in books["alpaca3"]["by_gate"]}
+    # Same gate, opposite verdicts per book — the whole point of splitting them.
+    assert g2["hours"]["verdict"] == "gate COST money"
+    assert g3["hours"]["verdict"] == "gate SAVED money"
+    assert books["alpaca4"]["total_blocks"] == 1
+
+
+def test_explicit_accounts_list_is_honoured(opp):
+    a._record_block("alpaca2", "AAPL", "S", "long", "hours", "r")
+    a._record_block("alpaca4", "AAPL", "S", "long", "hours", "r")
+    a._flush_blocked_targets()
+    with a.app.test_client() as c:
+        d = c.get("/api/signals/gate_opportunity?days=14&accounts=alpaca4").get_json()
+    assert [b["account"] for b in d["books"]] == ["alpaca4"]
+    assert d["total_blocks"] == 1, "queried outside the requested accounts"
+
+
+def test_books_are_ordered_like_every_other_surface(opp):
+    """Columns follow UI_ACCOUNT_ORDER — Crew, Kairos Refined, TV Refined — the
+    same order as the dashboard tabs, not the arbitrary iteration order of a set."""
+    import app as _a
+    a.ALPACA_ACCOUNTS.extend([
+        {"tag": "alpaca2", "num": "2", "label": "TV Refined", "fills_fn": lambda: []},
+        {"tag": "alpaca3", "num": "3", "label": "Kairos Refined", "fills_fn": lambda: []},
+    ])
+    for acct in ("alpaca4", "alpaca3", "alpaca2"):        # inserted out of order
+        _a._record_block(acct, "AAPL", "S", "long", "hours", "r")
+    _a._flush_blocked_targets()
+    with a.app.test_client() as c:
+        d = c.get("/api/signals/gate_opportunity?days=14").get_json()
+    assert [b["account"] for b in d["books"]] == ["alpaca4", "alpaca3", "alpaca2"]

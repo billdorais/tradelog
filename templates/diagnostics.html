@@ -55,7 +55,47 @@
   </header>
 
   <div class="content">
-    <div class="bar">
+    <!-- Per-account entry blocks — from blocked_targets (recorded per dropped target) -->
+    <div id="acctBlockPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-top:0">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#7FE098">Blocked by account</span>
+        <span id="acctBlockMeta" style="font-size:0.75rem;color:#666">loading…</span>
+        <label style="margin-left:auto;font-size:0.72rem;color:#888">Account
+          <select id="acctBlockAcct" onchange="loadBlockedByAccount()"
+                  style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
+            <option value="">All books</option>
+            <option value="alpaca2">TV Refined</option>
+            <option value="alpaca3">Kairos Refined</option>
+            <option value="alpaca4">Crew Paper</option>
+            <option value="alpaca">TV Farm</option>
+            <option value="alpaca5">Kairos Farm</option>
+          </select>
+        </label>
+        <label style="font-size:0.72rem;color:#888">Range
+          <select id="acctBlockDays" onchange="loadBlockedByAccount()"
+                  style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
+            <option value="2">2d</option><option value="7" selected>7d</option>
+            <option value="14">14d</option><option value="30">30d</option>
+          </select>
+        </label>
+      </div>
+      <div id="acctBlockBody"></div>
+      <div style="border-top:1px solid #1e2130;margin-top:14px;padding-top:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#70a8f5">Did the gates cost money?</span>
+          <span id="gateOppMeta" style="font-size:0.72rem;color:#666"></span>
+          <button class="btn" style="margin-left:auto" onclick="loadGateOpportunity()">Price against the farm</button>
+        </div>
+        <div id="gateOppBody" style="margin-top:8px"></div>
+      </div>
+      <div style="font-size:0.66rem;color:#555;margin-top:8px">
+        Recorded per <em>dropped target</em> at each gate, for both the TV webhook and the Kairos engine — so a gate that stops
+        Kairos Refined while the farms keep trading still shows up. Engine blocks are de-duplicated to one row per
+        account/ticker/gate per day (the engine re-evaluates every tick). Retained 45 days.
+      </div>
+    </div>
+
+    <div class="bar" style="margin-top:28px">
       <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#f0a35e;font-weight:700">Recent App Errors &amp; Warnings</span>
       <select class="f" id="levelSel" onchange="loadErrors()">
         <option value="warning">Warnings &amp; errors</option>
@@ -101,45 +141,6 @@
       </div>
     </div>
 
-    <!-- Per-account entry blocks — from blocked_targets (recorded per dropped target) -->
-    <div id="acctBlockPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-top:24px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-        <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#7FE098">Blocked by account</span>
-        <span id="acctBlockMeta" style="font-size:0.75rem;color:#666">loading…</span>
-        <label style="margin-left:auto;font-size:0.72rem;color:#888">Account
-          <select id="acctBlockAcct" onchange="loadBlockedByAccount()"
-                  style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
-            <option value="">All books</option>
-            <option value="alpaca2">TV Refined</option>
-            <option value="alpaca3">Kairos Refined</option>
-            <option value="alpaca4">Crew Paper</option>
-            <option value="alpaca">TV Farm</option>
-            <option value="alpaca5">Kairos Farm</option>
-          </select>
-        </label>
-        <label style="font-size:0.72rem;color:#888">Range
-          <select id="acctBlockDays" onchange="loadBlockedByAccount()"
-                  style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
-            <option value="2">2d</option><option value="7" selected>7d</option>
-            <option value="14">14d</option><option value="30">30d</option>
-          </select>
-        </label>
-      </div>
-      <div id="acctBlockBody"></div>
-      <div style="border-top:1px solid #1e2130;margin-top:14px;padding-top:12px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#70a8f5">Did the gates cost money?</span>
-          <span id="gateOppMeta" style="font-size:0.72rem;color:#666"></span>
-          <button class="btn" style="margin-left:auto" onclick="loadGateOpportunity()">Price against the farm</button>
-        </div>
-        <div id="gateOppBody" style="margin-top:8px"></div>
-      </div>
-      <div style="font-size:0.66rem;color:#555;margin-top:8px">
-        Recorded per <em>dropped target</em> at each gate, for both the TV webhook and the Kairos engine — so a gate that stops
-        Kairos Refined while the farms keep trading still shows up. Engine blocks are de-duplicated to one row per
-        account/ticker/gate per day (the engine re-evaluates every tick). Retained 45 days.
-      </div>
-    </div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -325,37 +326,61 @@
     }
 
     // ── Gate opportunity cost: price blocked entries against the ungated farm ──
+    // Matrix: gates down, books across. Same gate can cost one book and save
+    // another, which is the whole reason for splitting it per account.
     async function loadGateOpportunity() {
       const meta = document.getElementById('gateOppMeta');
       const body = document.getElementById('gateOppBody');
       const days = document.getElementById('acctBlockDays')?.value || '7';
-      const acct = document.getElementById('acctBlockAcct')?.value || 'alpaca4';
-      if (!acct) { body.innerHTML = '<div style="color:#888;font-size:0.78rem">Pick a single account above — the farm comparison is per book.</div>'; return; }
+      const acct = document.getElementById('acctBlockAcct')?.value || '';
       meta.textContent = 'pricing…'; body.innerHTML = '';
       try {
-        const d = await fetch(`/api/signals/gate_opportunity?days=${days}&account=${encodeURIComponent(acct)}`).then(r => r.json());
+        const qs = `days=${days}` + (acct ? `&account=${encodeURIComponent(acct)}` : '');
+        const d  = await fetch('/api/signals/gate_opportunity?' + qs).then(r => r.json());
         if (d.error) { meta.textContent = 'unavailable'; body.innerHTML = `<div style="color:#c66">${d.error}</div>`; return; }
-        meta.textContent = `${d.total_blocks} block(s) over ${d.days}d vs the ungated farms`;
-        if (!d.by_gate || !d.by_gate.length) { body.innerHTML = '<div style="color:#888;font-size:0.78rem">Nothing blocked in this window.</div>'; return; }
-        const col = v => (v >= 0 ? '#7FE098' : '#e08a8a');
-        let html = '<table style="width:100%;border-collapse:collapse;font-size:0.74rem">'
-          + '<thead style="color:#666;font-size:0.62rem"><tr>'
-          + '<th style="text-align:left">GATE</th><th style="text-align:right">BLOCKED</th>'
-          + '<th style="text-align:right">MATCHED</th><th style="text-align:right">FARM AVG %</th>'
-          + '<th style="text-align:right">WIN %</th><th style="text-align:left">VERDICT</th></tr></thead><tbody>';
-        for (const g of d.by_gate) {
-          const dim = g.unanswerable || !g.matched;
-          html += `<tr>
-            <td style="color:#f0a35e">${g.gate}</td>
-            <td style="text-align:right;color:#ccc">${g.blocked}</td>
-            <td style="text-align:right;color:#888">${g.matched}${g.loose_matches ? ` <span title="matched on ticker+day but a different strategy" style="color:#666">(${g.loose_matches} loose)</span>` : ''}</td>
-            <td style="text-align:right;color:${dim ? '#555' : col(g.avg_pct)}">${dim ? '—' : (g.avg_pct >= 0 ? '+' : '') + g.avg_pct.toFixed(2) + '%'}</td>
-            <td style="text-align:right;color:#888">${dim ? '—' : g.win_rate.toFixed(0) + '%'}</td>
-            <td style="color:${g.unanswerable ? '#777' : (g.matched ? (g.avg_pct > 0 ? '#e08a8a' : '#7FE098') : '#777')}">${g.verdict}</td>
-          </tr>`;
+        const books = d.books || [];
+        meta.textContent = `${d.total_blocks} block(s) over ${d.days}d · ${books.length} book(s) vs the ungated farms`;
+        if (!d.gates || !d.gates.length) {
+          body.innerHTML = '<div style="color:#888;font-size:0.78rem">Nothing blocked in this window.</div>';
+          return;
         }
-        html += '</tbody></table>';
+        const byBook = {};
+        for (const b of books) byBook[b.account] = Object.fromEntries((b.by_gate || []).map(g => [g.gate, g]));
+
+        let html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">'
+          + '<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left;padding:4px 8px">GATE</th>'
+          + books.map(b => `<th style="text-align:right;padding:4px 8px">${b.label}</th>`).join('')
+          + '</tr></thead><tbody>';
+        for (const gate of d.gates) {
+          html += `<tr style="border-top:1px solid #22242f"><td style="padding:4px 8px;color:#f0a35e">${gate}</td>`;
+          for (const b of books) {
+            const g = byBook[b.account][gate];
+            if (!g || !g.blocked) { html += '<td style="text-align:right;padding:4px 8px;color:#333">—</td>'; continue; }
+            let cell, tip;
+            if (g.unanswerable) {
+              cell = `<span style="color:#777">${g.blocked} blk</span> <span style="color:#555">n/a</span>`;
+              tip  = 'The farms are gated on this too — no control group.';
+            } else if (!g.matched) {
+              cell = `<span style="color:#aaa">${g.blocked} blk</span> <span style="color:#555">no match</span>`;
+              tip  = 'The farm did not take these setups either.';
+            } else {
+              const cost = g.avg_pct > 0;
+              cell = `<span style="color:#aaa">${g.blocked} blk</span> `
+                   + `<b style="color:${cost ? '#e08a8a' : '#7FE098'}">${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct.toFixed(2)}%</b>`
+                   + ` <span style="color:#555">(${g.matched})</span>`;
+              tip  = `${g.matched} matched of ${g.blocked}${g.loose_matches ? `, ${g.loose_matches} loose` : ''}`
+                   + ` · farm ${g.farm_pnl >= 0 ? '+' : ''}$${g.farm_pnl.toFixed(2)} · win ${g.win_rate.toFixed(0)}%`
+                   + ` · ${g.verdict}`;
+            }
+            html += `<td style="text-align:right;padding:4px 8px;white-space:nowrap" title="${tip}">${cell}</td>`;
+          }
+          html += '</tr>';
+        }
+        html += '</tbody></table></div>';
         html += '<div style="font-size:0.64rem;color:#555;margin-top:8px">'
+             + 'Cell = blocks · farm avg % per matched trade (matched count). '
+             + '<span style="color:#e08a8a">Red</span> = the farm made money on what this gate blocked, so the gate <b>cost</b> you. '
+             + '<span style="color:#7FE098">Green</span> = the farm lost, so the gate <b>saved</b> you. Hover for detail.<br>'
              + (d.caveats || []).map(c => '• ' + c).join('<br>') + '</div>';
         body.innerHTML = html;
       } catch (e) { meta.textContent = 'unavailable'; console.warn('gate opportunity failed:', e); }

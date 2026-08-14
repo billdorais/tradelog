@@ -14080,15 +14080,25 @@ def api_gate_opportunity():
       * exit params (trail, max-hold) can differ per book, so even a matched entry
         might not have exited where the farm exited.
 
-    ?days=14&account=alpaca4
+    ?days=14 · ?accounts=alpaca2,alpaca3,alpaca4 (default: the curated books)
+    · ?account=<tag> for one book.
     """
     import datetime as _dt
     from collections import defaultdict
     try:    days = max(1, min(BLOCKED_TARGETS_RETENTION_DAYS, int(request.args.get("days") or 14)))
     except Exception: days = 14
-    account = (request.args.get("account") or "alpaca4").strip()
-    try:    et = ZoneInfo("America/New_York")
-    except Exception: et = _dt.timezone.utc
+    one = (request.args.get("account") or "").strip()
+    if one:
+        accounts = [one]
+    else:
+        csv = (request.args.get("accounts") or "").strip()
+        # Order columns the way every other surface orders books (UI_ACCOUNT_ORDER).
+        # Derive num from ALPACA_ACCOUNTS — the live registry — rather than
+        # ACCOUNTS_BY_TAG, which can be sparse and silently collapses the sort.
+        _num = {a["tag"]: a.get("num", "9") for a in (ALPACA_ACCOUNTS or [])}
+        accounts = ([t.strip() for t in csv.split(",") if t.strip()] if csv
+                    else sorted(_CURATED_TAGS,
+                                key=lambda t: _ui_account_rank(_num.get(t, "9"))))
 
     now_utc = _dt.datetime.now(_dt.timezone.utc)
     cutoff  = (now_utc - _dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
@@ -14097,17 +14107,18 @@ def api_gate_opportunity():
     p = placeholder()
     try:
         conn = get_db(); cur = conn.cursor()
+        marks = ",".join([p] * len(accounts)) or p
         cur.execute(f"SELECT ts, account, ticker, strategy, side, gate, reason "
-                    f"FROM blocked_targets WHERE ts >= {p} AND account = {p} ORDER BY ts",
-                    (cutoff, account))
+                    f"FROM blocked_targets WHERE ts >= {p} AND account IN ({marks}) "
+                    f"ORDER BY ts", tuple([cutoff] + accounts))
         cols = [c[0] for c in cur.description]
         blocks = [dict(zip(cols, r)) for r in cur.fetchall()]
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)[:200], "days": days, "account": account,
-                        "by_gate": [], "total_blocks": 0})
+        return jsonify({"error": str(e)[:200], "days": days, "accounts": accounts,
+                        "books": [], "gates": [], "total_blocks": 0})
 
-    # Farm round-trips over the same window, keyed for lookup.
+    # Farm round-trips, fetched ONCE and shared across every book being priced.
     from_date = (now_utc - _dt.timedelta(days=days)).date().isoformat()
     to_date   = now_utc.date().isoformat()
     farm_by_key = defaultdict(list)
@@ -14116,8 +14127,8 @@ def api_gate_opportunity():
         if _a["tag"] not in _FARM_TAGS:
             continue
         try:
-            fills  = _a["fills_fn"]()
-            paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+            paired = _pair_alpaca_fills_lifo(_a["fills_fn"](),
+                                             from_date=from_date, to_date=to_date)
             for rt in paired.get("closed_clean", []):
                 farm_by_key[((rt.get("ticker") or "").upper(), rt.get("date"))].append(
                     {**rt, "farm": _a["tag"]})
@@ -14128,24 +14139,24 @@ def api_gate_opportunity():
         base = abs(float(rt.get("entry_price") or 0)) * abs(float(rt.get("qty") or 0))
         return (float(rt.get("pnl") or 0) / base * 100.0) if base else 0.0
 
-    # day-type gates the farms too — there is no control group for those.
+    # These gate the farms too, so there is no control group for them.
     _no_control = {"day-type", "reversal", "side"}
 
-    per_gate, samples = defaultdict(lambda: {"blocked": 0, "matched": 0, "loose": 0,
-                                             "pcts": [], "dollars": 0.0, "wins": 0}), []
+    stats = defaultdict(lambda: defaultdict(
+        lambda: {"blocked": 0, "matched": 0, "loose": 0, "pcts": [],
+                 "dollars": 0.0, "wins": 0}))
+    samples = []
     for b in blocks:
-        g = b["gate"]
-        st = per_gate[g]
+        acct, g = b["account"], b["gate"]
+        st = stats[acct][g]
         st["blocked"] += 1
         if g in _no_control:
             continue
         try:
             bt = _dt.datetime.fromisoformat(b["ts"]).replace(tzinfo=_dt.timezone.utc)
-            # Match on the UTC date, because _pair_alpaca_fills_lifo derives a
-            # round-trip's "date" from the raw fill timestamp (fill_ts[:10], UTC).
-            # Keying on the ET date instead silently missed every block after
-            # 20:00 ET, where the two calendars diverge. Regular-session fills
-            # (09:30-16:00 ET = 13:30-20:00 UTC) share the same date either way.
+            # UTC date: _pair_alpaca_fills_lifo derives a round-trip's "date" from
+            # the raw fill timestamp (fill_ts[:10], UTC). Keying on the ET date
+            # silently matched nothing after 20:00 ET, where the calendars diverge.
             bday = bt.date().isoformat()
         except Exception:
             continue
@@ -14160,33 +14171,44 @@ def api_gate_opportunity():
         st["pcts"].append(pc)
         st["dollars"] += float(hit.get("pnl") or 0)
         st["wins"]    += 1 if float(hit.get("pnl") or 0) > 0 else 0
-        if len(samples) < 40:
-            samples.append({"ts": bt.astimezone(et).strftime("%Y-%m-%d %H:%M"),
+        if len(samples) < 60:
+            samples.append({"ts": bt.strftime("%Y-%m-%d %H:%M"), "account": acct,
                             "gate": g, "ticker": b["ticker"], "side": b["side"],
                             "strategy": b["strategy"], "farm": hit.get("farm"),
                             "farm_pnl": round(float(hit.get("pnl") or 0), 2),
                             "pct": round(pc, 3), "loose": loose})
 
-    out = []
-    for g, st in sorted(per_gate.items(), key=lambda kv: -kv[1]["blocked"]):
+    def _row(g, st):
         n = st["matched"]
         avg = round(sum(st["pcts"]) / n, 3) if n else 0.0
-        out.append({
-            "gate": g, "blocked": st["blocked"], "matched": n,
-            "loose_matches": st["loose"],
-            "unanswerable": g in _no_control,
-            "farm_pnl": round(st["dollars"], 2) if n else 0.0,
-            "avg_pct": avg,
-            "win_rate": round(st["wins"] / n * 100, 1) if n else 0.0,
-            # The farm made money on what this gate blocked ⇒ the gate cost you.
-            "verdict": ("no control group — the farms are gated too"
-                        if g in _no_control else
-                        "no farm match" if not n else
-                        "gate COST money" if avg > 0 else "gate SAVED money"),
-        })
-    return jsonify({"days": days, "account": account, "total_blocks": len(blocks),
-                    "by_gate": out, "samples": samples,
-                    "farm_errors": farm_err,
+        return {"gate": g, "blocked": st["blocked"], "matched": n,
+                "loose_matches": st["loose"], "unanswerable": g in _no_control,
+                "farm_pnl": round(st["dollars"], 2) if n else 0.0,
+                "avg_pct": avg,
+                "win_rate": round(st["wins"] / n * 100, 1) if n else 0.0,
+                "verdict": ("no control group — the farms are gated too"
+                            if g in _no_control else
+                            "no farm match" if not n else
+                            "gate COST money" if avg > 0 else "gate SAVED money")}
+
+    label = {a["tag"]: a["label"] for a in (ALPACA_ACCOUNTS or [])}
+    books = []
+    for acct in accounts:
+        rows = [_row(g, st) for g, st in
+                sorted(stats.get(acct, {}).items(), key=lambda kv: -kv[1]["blocked"])]
+        books.append({"account": acct, "label": label.get(acct, acct),
+                      "total_blocks": sum(r["blocked"] for r in rows),
+                      "by_gate": rows})
+    # Union of gates seen, most-blocked first — the matrix's row order.
+    gate_totals = defaultdict(int)
+    for acct in stats:
+        for g, st in stats[acct].items():
+            gate_totals[g] += st["blocked"]
+    gates = [g for g, _ in sorted(gate_totals.items(), key=lambda kv: -kv[1])]
+
+    return jsonify({"days": days, "accounts": accounts, "books": books,
+                    "gates": gates, "total_blocks": len(blocks),
+                    "samples": samples, "farm_errors": farm_err,
                     "caveats": [
                         "Farms are equal-dollar sized; use avg % per trade, not farm $.",
                         "Exit params can differ per book, so a matched entry might not "
