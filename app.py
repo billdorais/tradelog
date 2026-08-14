@@ -6989,6 +6989,7 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
                 "win_rate": round(sum(1 for x in seq if x > 0) / len(seq) * 100, 1)}
 
     folds = []
+    pooled_p_seq, pooled_r_seq = [], []
     for sp in splits:
         r_lo = (sp - _dt.timedelta(days=rank_days)).isoformat()
         r_hi = sp.isoformat()                                  # exclusive
@@ -7008,6 +7009,8 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
         if not p_seq or not r_seq:
             continue
         pa, ra = _agg(p_seq), _agg(r_seq)
+        pooled_p_seq.extend(p_seq)
+        pooled_r_seq.extend(r_seq)
         folds.append({"split": r_hi, "rank_from": r_lo, "forward_to": f_hi,
                       "ranked_strategies": len(eligible), "picked": len(picked),
                       "picked_fwd": pa, "unpicked_fwd": ra,
@@ -7027,16 +7030,42 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
     wsum = sum(f["spread_pct"] * f["picked_fwd"]["trades"] for f in folds)
     wmean = round(wsum / pooled_p, 4) if pooled_p else 0.0
 
-    if wins == len(folds) and wmean > 0:
-        verdict = "ranking predicts forward performance in EVERY fold"
-    elif wmean > 0 and wins > len(folds) / 2:
-        verdict = "weak positive — ranking helps more often than not"
-    elif abs(wmean) < 0.01:
-        verdict = "NO predictive power — picked and unpicked perform the same"
-    elif wmean < 0:
-        verdict = "NEGATIVE — the top-ranked cohort UNDERPERFORMS the rest"
+    # Significance, not just sign. A spread can be positive in every fold and still
+    # be pure noise: with ~1.3% per-trade dispersion and a few hundred trades the
+    # standard error is ~0.07%, so a +0.02% spread is a third of a sigma. Reporting
+    # "predicts in EVERY fold" off the sign alone actively misleads.
+    import statistics as _stats
+    def _mean(x): return sum(x) / len(x) if x else 0.0
+    p_mean, r_mean = _mean(pooled_p_seq), _mean(pooled_r_seq)
+    t_stat = None
+    try:
+        if len(pooled_p_seq) > 1 and len(pooled_r_seq) > 1:
+            vp = _stats.pvariance(pooled_p_seq); vr = _stats.pvariance(pooled_r_seq)
+            se = (vp / len(pooled_p_seq) + vr / len(pooled_r_seq)) ** 0.5
+            if se > 0:
+                t_stat = round((p_mean - r_mean) / se, 2)
+            elif p_mean != r_mean:
+                # Zero dispersion in both cohorts: the separation is exact, not
+                # unmeasurable. Only reachable with synthetic data, but returning
+                # None here would report perfect skill as "not enough data".
+                t_stat = 99.0 if p_mean > r_mean else -99.0
+    except Exception:
+        pass
+
+    significant = t_stat is not None and abs(t_stat) >= 2.0
+    if t_stat is None:
+        verdict = "not enough data to judge significance"
+    elif not significant:
+        verdict = (f"NOT distinguishable from zero (t={t_stat:.2f}, needs |t|≥2) — "
+                   f"the spread is within noise even at {wins}/{len(folds)} folds positive")
+    elif t_stat <= -2.0:
+        verdict = f"NEGATIVE (t={t_stat:.2f}) — the top-ranked cohort UNDERPERFORMS the rest"
+    elif p_mean > 0:
+        verdict = (f"ranking predicts AND the picked cohort is profitable "
+                   f"({p_mean:+.3f}%/trade, t={t_stat:.2f})")
     else:
-        verdict = "mixed / inconclusive"
+        verdict = (f"ranking helps (t={t_stat:.2f}) but the picked cohort STILL LOSES "
+                   f"({p_mean:+.3f}%/trade) — you are picking the best of a losing pool")
 
     return {
         "folds": folds, "fold_count": len(folds),
@@ -7046,6 +7075,8 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
         "mean_spread_pct": round(mean_sp, 4),
         "weighted_spread_pct": wmean,
         "pooled_picked_trades": pooled_p, "pooled_unpicked_trades": pooled_r,
+        "picked_avg_pct": round(p_mean, 4), "unpicked_avg_pct": round(r_mean, 4),
+        "t_stat": t_stat, "significant": significant,
         "verdict": verdict,
         "caveats": [
             "Spread (picked minus unpicked) is the signal; absolute forward P&L "
@@ -7053,7 +7084,10 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
             "Avg % per trade, not dollars — strategies carry very different "
             "position sizes and a dollar sum would just rank by size.",
             "Farm fills are ungated, so this measures the RANKING, not what a "
-            "curated book would have been able to take.",
+            "curated book would have been able to take — gates and tuned exits are "
+            "applied on top and are not reflected here.",
+            "A positive spread with a NEGATIVE picked average means selection is "
+            "only picking the best of a losing pool, not creating a winner.",
         ],
     }
 

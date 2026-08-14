@@ -1499,7 +1499,10 @@
       let html = `<div style="font-size:0.9rem;margin-bottom:8px">`
         + `<b style="color:${col(d.weighted_spread_pct)};font-size:1.05rem">${pc(d.weighted_spread_pct)}</b>`
         + ` weighted spread · <b>${d.folds_with_positive_spread}/${d.fold_count}</b> folds positive`
-        + ` · <span style="color:${col(d.weighted_spread_pct)}">${d.verdict}</span></div>`
+        + ` · t=<b>${d.t_stat == null ? '—' : d.t_stat.toFixed(2)}</b></div>`
+        + `<div style="font-size:0.82rem;margin-bottom:6px">picked <b style="color:${col(d.picked_avg_pct)}">${pc(d.picked_avg_pct)}</b>/trade`
+        + ` vs unpicked <b style="color:${col(d.unpicked_avg_pct)}">${pc(d.unpicked_avg_pct)}</b>/trade</div>`
+        + `<div style="font-size:0.84rem;margin-bottom:8px;color:${d.significant ? col(d.weighted_spread_pct) : '#f0a35e'}">${d.verdict}</div>`
         + `<div style="font-size:0.72rem;color:#666;margin-bottom:10px">${d.label} · history ${d.history.from} → ${d.history.to}`
         + ` · rank ${d.rank_days}d → forward ${d.fwd_days}d · top ${d.n} · ${d.pooled_picked_trades} picked / ${d.pooled_unpicked_trades} unpicked trades</div>`;
       const th='style="text-align:right;padding:4px 10px;color:#888;font-weight:500"', td='style="text-align:right;padding:4px 10px"';
