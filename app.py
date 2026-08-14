@@ -8512,7 +8512,57 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             "orphans": orphans, "signal_lookup": signal_lookup}
 
 
-def _compute_strategy_stats(days=45, from_date=None, fills_fn=None):
+def _takeable_by(round_trips, account_tag):
+    """Keep only the farm round-trips `account_tag` would actually have taken.
+
+    Replays each trade through the SAME gate functions the live path uses, so the
+    filter tracks the account's real configuration — including per-account
+    overrides — instead of a second copy of the rules that can rot.
+
+    Returns (kept, {gate: dropped_count}). Fails OPEN per trade: if a gate check
+    raises (e.g. an unclassifiable ticker), the trade is kept, matching how the
+    live gates themselves fail open.
+    """
+    from collections import Counter
+    kept, dropped = [], Counter()
+    windows = _account_hours_windows(account_tag)
+    for c in round_trips:
+        strat = c.get("strategy") or ""
+        tk    = (c.get("ticker") or "").upper()
+        date  = c.get("date") or ""
+        try:
+            if _daytype_gate_block(strat, tk, date, account_tag)[0]:
+                dropped["day-type"] += 1
+                continue
+        except Exception:
+            pass
+        try:
+            if _reversal_gate_block(strat, (c.get("side") or ""), account_tag):
+                dropped["reversal"] += 1
+                continue
+        except Exception:
+            pass
+        # Hours: the entry has to fall inside the book's trading window. This is
+        # the bias that predates the farm ungating — the farms have always been
+        # all-day while the curated books are not.
+        if windows:
+            try:
+                iso = c.get("entry_time") or ""
+                if iso:
+                    _d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                    if _d.tzinfo is None:
+                        _d = _d.replace(tzinfo=timezone.utc)
+                    if not _hhmm_in_windows(_d.astimezone(ZoneInfo("America/New_York"))
+                                            .strftime("%H:%M"), windows):
+                        dropped["hours"] += 1
+                        continue
+            except Exception:
+                pass
+        kept.append(c)
+    return kept, dict(dropped)
+
+
+def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None):
     """Per-strategy stats from an Alpaca account's fills, using the same
     signal-resolution + LIFO pairing as /api/alpaca/analysis so the leaderboard
     and any Refined snapshot agree on the same numbers.
@@ -8527,7 +8577,16 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None):
 
     `fills_fn` picks the source account (default = TV Farm's cached fills, which
     the TV Refined snapshot uses as its wide audition pool). Pass e.g.
-    _get_cached_fills_5 for the Kairos Farm audition pool."""
+    _get_cached_fills_5 for the Kairos Farm audition pool.
+
+    `gate_as` = a curated account tag ("alpaca2"/"alpaca3"). The farms trade
+    UNGATED, so their raw leaderboard contains trades the curated book could never
+    have taken — outside its hours, on a blocked day type, or on a reversal side it
+    refuses. Promoting on that ranks strategies partly on unreachable P&L. With
+    gate_as set, each farm round-trip is replayed through that book's OWN live gate
+    functions and dropped if the book would have refused it, so the leaderboard
+    reflects only takeable performance. Using the live gates (rather than a copy of
+    their logic) means the filter cannot drift from real behaviour."""
     import datetime as _dt
 
     if not from_date:
@@ -8542,6 +8601,14 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None):
 
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date)
     closed_clean = paired["closed_clean"]
+
+    if gate_as:
+        closed_clean, _drop = _takeable_by(closed_clean, gate_as)
+        if _drop:
+            log.info("Leaderboard gate filter (%s): dropped %d of %d farm round-trips "
+                     "the book could not have taken (%s)", gate_as, sum(_drop.values()),
+                     sum(_drop.values()) + len(closed_clean),
+                     ", ".join(f"{k} {v}" for k, v in sorted(_drop.items())))
 
     excluded         = _load_excluded_strategies()
     excluded_tickers = _load_excluded_tickers()
@@ -8753,9 +8820,12 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
     enough trades to clear the eligibility floor."""
     global _refined_last_run, _refined_last_result
 
-    stats_map    = _compute_strategy_stats(days=days, from_date=from_date)
+    # gate_as: rank the TV Farm pool on what TV Refined could actually have taken.
+    stats_map    = _compute_strategy_stats(days=days, from_date=from_date,
+                                           gate_as="alpaca2")
     # 10-day recency window for the blended score
-    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date)
+    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date,
+                                            gate_as="alpaca2")
     # Eligibility: net-positive AND at least _REFINED_MIN_TRADES round-trips.
     # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
     # 100% win) out of the top-N — they need more sample evidence first.
@@ -9104,8 +9174,11 @@ def _do_refresh_kairos_refined(n=20, days=30, from_date=None):
         log.warning("Kairos Refined refresh: Kairos Farm (acct5) not configured — skipping")
         return {"error": "Kairos Farm (acct5) not configured", "top_strategies": []}
 
-    stats_map     = _compute_strategy_stats(days=days, from_date=from_date, fills_fn=_fills_fn)
-    stats_map_10d = _compute_strategy_stats(days=10,   from_date=from_date, fills_fn=_fills_fn)
+    # gate_as: rank the Kairos Farm pool on what Kairos Refined could have taken.
+    stats_map     = _compute_strategy_stats(days=days, from_date=from_date,
+                                            fills_fn=_fills_fn, gate_as="alpaca3")
+    stats_map_10d = _compute_strategy_stats(days=10,   from_date=from_date,
+                                            fills_fn=_fills_fn, gate_as="alpaca3")
     demoted = [k for k, v in stats_map.items()
                if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
     if demoted:
