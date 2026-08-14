@@ -126,6 +126,14 @@
         </label>
       </div>
       <div id="acctBlockBody"></div>
+      <div style="border-top:1px solid #1e2130;margin-top:14px;padding-top:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#70a8f5">Did the gates cost money?</span>
+          <span id="gateOppMeta" style="font-size:0.72rem;color:#666"></span>
+          <button class="btn" style="margin-left:auto" onclick="loadGateOpportunity()">Price against the farm</button>
+        </div>
+        <div id="gateOppBody" style="margin-top:8px"></div>
+      </div>
       <div style="font-size:0.66rem;color:#555;margin-top:8px">
         Recorded per <em>dropped target</em> at each gate, for both the TV webhook and the Kairos engine — so a gate that stops
         Kairos Refined while the farms keep trading still shows up. Engine blocks are de-duplicated to one row per
@@ -314,6 +322,43 @@
         meta.textContent = 'unavailable';
         console.warn('blocked by account failed:', e);
       }
+    }
+
+    // ── Gate opportunity cost: price blocked entries against the ungated farm ──
+    async function loadGateOpportunity() {
+      const meta = document.getElementById('gateOppMeta');
+      const body = document.getElementById('gateOppBody');
+      const days = document.getElementById('acctBlockDays')?.value || '7';
+      const acct = document.getElementById('acctBlockAcct')?.value || 'alpaca4';
+      if (!acct) { body.innerHTML = '<div style="color:#888;font-size:0.78rem">Pick a single account above — the farm comparison is per book.</div>'; return; }
+      meta.textContent = 'pricing…'; body.innerHTML = '';
+      try {
+        const d = await fetch(`/api/signals/gate_opportunity?days=${days}&account=${encodeURIComponent(acct)}`).then(r => r.json());
+        if (d.error) { meta.textContent = 'unavailable'; body.innerHTML = `<div style="color:#c66">${d.error}</div>`; return; }
+        meta.textContent = `${d.total_blocks} block(s) over ${d.days}d vs the ungated farms`;
+        if (!d.by_gate || !d.by_gate.length) { body.innerHTML = '<div style="color:#888;font-size:0.78rem">Nothing blocked in this window.</div>'; return; }
+        const col = v => (v >= 0 ? '#7FE098' : '#e08a8a');
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:0.74rem">'
+          + '<thead style="color:#666;font-size:0.62rem"><tr>'
+          + '<th style="text-align:left">GATE</th><th style="text-align:right">BLOCKED</th>'
+          + '<th style="text-align:right">MATCHED</th><th style="text-align:right">FARM AVG %</th>'
+          + '<th style="text-align:right">WIN %</th><th style="text-align:left">VERDICT</th></tr></thead><tbody>';
+        for (const g of d.by_gate) {
+          const dim = g.unanswerable || !g.matched;
+          html += `<tr>
+            <td style="color:#f0a35e">${g.gate}</td>
+            <td style="text-align:right;color:#ccc">${g.blocked}</td>
+            <td style="text-align:right;color:#888">${g.matched}${g.loose_matches ? ` <span title="matched on ticker+day but a different strategy" style="color:#666">(${g.loose_matches} loose)</span>` : ''}</td>
+            <td style="text-align:right;color:${dim ? '#555' : col(g.avg_pct)}">${dim ? '—' : (g.avg_pct >= 0 ? '+' : '') + g.avg_pct.toFixed(2) + '%'}</td>
+            <td style="text-align:right;color:#888">${dim ? '—' : g.win_rate.toFixed(0) + '%'}</td>
+            <td style="color:${g.unanswerable ? '#777' : (g.matched ? (g.avg_pct > 0 ? '#e08a8a' : '#7FE098') : '#777')}">${g.verdict}</td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+        html += '<div style="font-size:0.64rem;color:#555;margin-top:8px">'
+             + (d.caveats || []).map(c => '• ' + c).join('<br>') + '</div>';
+        body.innerHTML = html;
+      } catch (e) { meta.textContent = 'unavailable'; console.warn('gate opportunity failed:', e); }
     }
 
     loadErrors();

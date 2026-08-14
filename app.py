@@ -14060,6 +14060,141 @@ def api_blocked_by_account():
     })
 
 
+_FARM_TAGS = ("alpaca", "alpaca5")     # ungated audition pools — the control group
+
+
+@app.route("/api/signals/gate_opportunity")
+def api_gate_opportunity():
+    """Did the gates cost money? Prices each blocked entry against the FARM.
+
+    The farms are deliberately ungated on hours / RVOL / profit-lock / daily-loss,
+    so when a gate stops a curated book the farm usually still took the same setup.
+    That farm round-trip is the counterfactual: what the blocked trade would
+    roughly have done.
+
+    Three things this CANNOT tell you, surfaced in the payload rather than buried:
+      * day-type is ON for the farms too, so day-type blocks have no control at
+        all — they are reported as unanswerable, not as zero.
+      * position sizing differs (farms are equal-dollar), so the honest metric is
+        % return per trade; farm dollars are shown only for reference.
+      * exit params (trail, max-hold) can differ per book, so even a matched entry
+        might not have exited where the farm exited.
+
+    ?days=14&account=alpaca4
+    """
+    import datetime as _dt
+    from collections import defaultdict
+    try:    days = max(1, min(BLOCKED_TARGETS_RETENTION_DAYS, int(request.args.get("days") or 14)))
+    except Exception: days = 14
+    account = (request.args.get("account") or "alpaca4").strip()
+    try:    et = ZoneInfo("America/New_York")
+    except Exception: et = _dt.timezone.utc
+
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    cutoff  = (now_utc - _dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    _flush_blocked_targets()
+
+    p = placeholder()
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT ts, account, ticker, strategy, side, gate, reason "
+                    f"FROM blocked_targets WHERE ts >= {p} AND account = {p} ORDER BY ts",
+                    (cutoff, account))
+        cols = [c[0] for c in cur.description]
+        blocks = [dict(zip(cols, r)) for r in cur.fetchall()]
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)[:200], "days": days, "account": account,
+                        "by_gate": [], "total_blocks": 0})
+
+    # Farm round-trips over the same window, keyed for lookup.
+    from_date = (now_utc - _dt.timedelta(days=days)).date().isoformat()
+    to_date   = now_utc.date().isoformat()
+    farm_by_key = defaultdict(list)
+    farm_err = []
+    for _a in (ALPACA_ACCOUNTS or []):
+        if _a["tag"] not in _FARM_TAGS:
+            continue
+        try:
+            fills  = _a["fills_fn"]()
+            paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+            for rt in paired.get("closed_clean", []):
+                farm_by_key[((rt.get("ticker") or "").upper(), rt.get("date"))].append(
+                    {**rt, "farm": _a["tag"]})
+        except Exception as _fe:
+            farm_err.append(f"{_a['tag']}: {str(_fe)[:100]}")
+
+    def _pct(rt):
+        base = abs(float(rt.get("entry_price") or 0)) * abs(float(rt.get("qty") or 0))
+        return (float(rt.get("pnl") or 0) / base * 100.0) if base else 0.0
+
+    # day-type gates the farms too — there is no control group for those.
+    _no_control = {"day-type", "reversal", "side"}
+
+    per_gate, samples = defaultdict(lambda: {"blocked": 0, "matched": 0, "loose": 0,
+                                             "pcts": [], "dollars": 0.0, "wins": 0}), []
+    for b in blocks:
+        g = b["gate"]
+        st = per_gate[g]
+        st["blocked"] += 1
+        if g in _no_control:
+            continue
+        try:
+            bt = _dt.datetime.fromisoformat(b["ts"]).replace(tzinfo=_dt.timezone.utc)
+            # Match on the UTC date, because _pair_alpaca_fills_lifo derives a
+            # round-trip's "date" from the raw fill timestamp (fill_ts[:10], UTC).
+            # Keying on the ET date instead silently missed every block after
+            # 20:00 ET, where the two calendars diverge. Regular-session fills
+            # (09:30-16:00 ET = 13:30-20:00 UTC) share the same date either way.
+            bday = bt.date().isoformat()
+        except Exception:
+            continue
+        cands = farm_by_key.get(((b["ticker"] or "").upper(), bday), [])
+        if not cands:
+            continue
+        exact = [c for c in cands if (c.get("strategy") or "") == (b["strategy"] or "")]
+        hit, loose = (exact[0], False) if exact else (cands[0], True)
+        st["matched"] += 1
+        st["loose"]   += 1 if loose else 0
+        pc = _pct(hit)
+        st["pcts"].append(pc)
+        st["dollars"] += float(hit.get("pnl") or 0)
+        st["wins"]    += 1 if float(hit.get("pnl") or 0) > 0 else 0
+        if len(samples) < 40:
+            samples.append({"ts": bt.astimezone(et).strftime("%Y-%m-%d %H:%M"),
+                            "gate": g, "ticker": b["ticker"], "side": b["side"],
+                            "strategy": b["strategy"], "farm": hit.get("farm"),
+                            "farm_pnl": round(float(hit.get("pnl") or 0), 2),
+                            "pct": round(pc, 3), "loose": loose})
+
+    out = []
+    for g, st in sorted(per_gate.items(), key=lambda kv: -kv[1]["blocked"]):
+        n = st["matched"]
+        avg = round(sum(st["pcts"]) / n, 3) if n else 0.0
+        out.append({
+            "gate": g, "blocked": st["blocked"], "matched": n,
+            "loose_matches": st["loose"],
+            "unanswerable": g in _no_control,
+            "farm_pnl": round(st["dollars"], 2) if n else 0.0,
+            "avg_pct": avg,
+            "win_rate": round(st["wins"] / n * 100, 1) if n else 0.0,
+            # The farm made money on what this gate blocked ⇒ the gate cost you.
+            "verdict": ("no control group — the farms are gated too"
+                        if g in _no_control else
+                        "no farm match" if not n else
+                        "gate COST money" if avg > 0 else "gate SAVED money"),
+        })
+    return jsonify({"days": days, "account": account, "total_blocks": len(blocks),
+                    "by_gate": out, "samples": samples,
+                    "farm_errors": farm_err,
+                    "caveats": [
+                        "Farms are equal-dollar sized; use avg % per trade, not farm $.",
+                        "Exit params can differ per book, so a matched entry might not "
+                        "have exited where the farm exited.",
+                        "day-type / reversal / side gates apply to the farms too — no control group.",
+                    ]})
+
+
 @app.route("/api/signals/unmatched_strategies")
 def api_unmatched_strategies():
     """Strategy names that fired but matched NO routing rule ('no pipeline matched'
