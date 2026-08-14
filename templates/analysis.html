@@ -1325,7 +1325,7 @@
         return ` <span style="color:#e74c3c;font-size:0.7rem;margin-left:3px" title="Moved down ${d} spot${d===1?'':'s'} since last run">▼${d}</span>`;
       };
       // Days since the strategy's most recent closed Alpaca trade. Yellow >5d, red >10d.
-      const _lastTradeCell = (iso) => {
+      const _lastTradeCell = (iso, isoAll) => {
         if (!iso) return '<span style="color:#444">—</span>';
         const t = new Date(iso).getTime();
         if (!t || isNaN(t)) return '<span style="color:#444">—</span>';
@@ -1333,10 +1333,26 @@
         // yesterday morning should read "1d" once the ET date rolls over, even if
         // fewer than 24 hours have elapsed.
         const _etDay = (d) => d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-        const days = Math.round((Date.parse(_etDay(new Date())) - Date.parse(_etDay(new Date(iso)))) / 86400000);
+        const _days = (x) => Math.round((Date.parse(_etDay(new Date())) - Date.parse(_etDay(new Date(x)))) / 86400000);
+        const days  = _days(iso);
         const label = days <= 0 ? 'today' : `${days}d`;
         const color = days > 10 ? '#e74c3c' : days > 5 ? '#F2E7AC' : '#888';
-        return `<span style="color:${color}" title="Last closed trade ${iso}">${label}</span>`;
+        // The number counts from the last TAKEABLE trade — the newest one this book
+        // could actually have placed, which is what the leaderboard ranks on. The
+        // strategy modal lists EVERY farm round-trip, so when a newer trade was
+        // gate-blocked the two views look contradictory (row says 14d, modal shows
+        // one 3d old). Surface both instead of silently showing only the gated one.
+        let extra = '', tip = `Last takeable trade ${iso}`;
+        if (isoAll && isoAll > iso) {
+          const dAll  = _days(isoAll);
+          const dAllL = dAll <= 0 ? 'today' : `${dAll}d`;
+          extra = `<span style="color:#666;font-size:0.85em"> (${dAllL} raw)</span>`;
+          tip = `Last TAKEABLE trade ${label} ago — the newest one this book could have placed, `
+              + `which is what ranking uses. The farm last traded this ${dAllL} ago, but that trade `
+              + `was gate-blocked for this book so it does not count. The strategy modal lists every `
+              + `farm round-trip, which is why it can show a newer trade than this column.`;
+        }
+        return `<span style="color:${color}" title="${tip}">${label}</span>${extra}`;
       };
       // Overlay the Trades/Win%/PF/Total P&L columns with stats from the SELECTED
       // snapshot account (TV Farm / TV Refined toggle), date-range scoped — always
@@ -1382,7 +1398,7 @@
           <td style="color:#666">${i + 1}${_rankChip(r.rank_delta)}</td>
           <td class="name">${i < 5 ? '<span title="Top 5 Refined — GOAT" style="margin-right:4px">🐐</span>' : i < 10 ? '<span title="Ranks 6–10 — Workhorse" style="margin-right:4px">🐎</span>' : i < 20 ? '<span class="bee-buzz" title="Ranks 11–20 — Busy Bee" style="margin-right:4px">🐝</span>' : ''}<span style="color:#60a5fa;margin-right:6px">★</span>${esc(r.name)}</td>
           <td style="text-align:right">${tenureCell}</td>
-          <td style="text-align:right">${_lastTradeCell(r.last_trade_at)}</td>
+          <td style="text-align:right">${_lastTradeCell(r.last_trade_at, r.last_trade_at_all)}</td>
           <td style="text-align:right;color:#c4b5fd;font-weight:600">${scorePct}</td>
           <td style="text-align:right;color:#c4b5fd">${shares}</td>
           <td style="text-align:right;color:#888">${price}</td>
@@ -1430,7 +1446,7 @@
           return `<tr class="drill" data-kind="strategy" data-key="${esc(r.name)}" data-snap-trades="${trades}" data-snap-wr="${winRate}" data-snap-pnl="${total}" title="Click to see round-trip pairs (from current date range)">
             <td style="color:#666">${baseRank + j + 1}${_rankChip(r.rank_delta)}</td>
             <td class="name"><span style="color:#555;margin-right:6px">☆</span>${esc(r.name)}</td>
-            <td style="text-align:right">${_lastTradeCell(r.last_trade_at)}</td>
+            <td style="text-align:right">${_lastTradeCell(r.last_trade_at, r.last_trade_at_all)}</td>
             <td style="text-align:right;color:#888;font-weight:600">${scorePct}</td>
             <td style="text-align:right;color:#888">${shares}</td>
             <td style="text-align:right;color:#888">${price}</td>
@@ -1609,6 +1625,24 @@
 
   // ── Kairos Refined snapshot (mirror of the TV one, view-only) ─────────────
   // Sourced from Kairos Farm (acct5) fills; renders top-N + on-deck the same way.
+  // "Last trade" label for Kairos snapshot rows. Counts from the last TAKEABLE trade
+  // (what this book could actually have placed — the basis for ranking). When the farm
+  // has a NEWER trade that was gate-blocked here, show it as "(Nd raw)" so this column
+  // and the strategy modal — which lists every farm round-trip — stop looking like they
+  // contradict each other. Hoisted: used by both the top-N and On-Deck renderers.
+  function _snapLastTradeLabel(s) {
+    if (!s || !s.last_trade_at) return '—';
+    const d = (x) => Math.max(0, Math.round((Date.now() - new Date(x).getTime()) / 86400000));
+    const days = d(s.last_trade_at);
+    const all  = s.last_trade_at_all;
+    if (all && all > s.last_trade_at) {
+      return `<span title="Last takeable trade ${days}d ago; the farm traded this ${d(all)}d ago `
+           + `but it was gate-blocked for this book, so it does not count toward ranking.">`
+           + `${days}d<span style="color:#666;font-size:0.85em"> (${d(all)}d raw)</span></span>`;
+    }
+    return days + 'd';
+  }
+
   async function _loadKairosSnapshot() {
     const meta   = document.getElementById('kairosSnapMeta');
     const status = document.getElementById('kairosSnapStatus');
@@ -1688,9 +1722,7 @@
           ? ` <span style="color:#f0a35e;font-size:0.72em" title="Takeable trades in the selection window — what the min-trades floor was applied to.">(${_selT} takeable)</span>`
           : '';
         const _trCell = _noTr ? '<span style="color:#444">0</span>' : ((_ps.trades ?? 0) + _tkTag);
-        const lt  = s.last_trade_at
-          ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
-          : '—';
+        const lt  = _snapLastTradeLabel(s);
         const sh  = s.shares != null ? s.shares : '—';
         const px  = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
         // Rank-tier animal — top 5 crocodile, 6-10 king cobra, 11-20 lizard.
@@ -1745,9 +1777,7 @@
         ? ` <span style="color:#f0a35e;font-size:0.72em" title="Takeable trades in the selection window — what the min-trades floor was applied to.">(${_selT2} takeable)</span>`
         : '';
       const _trCell = _noTr ? '<span style="color:#444">0</span>' : ((_ps.trades ?? 0) + _tkTag2);
-      const lt  = s.last_trade_at
-        ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
-        : '—';
+      const lt  = _snapLastTradeLabel(s);
       const sh = s.shares != null ? s.shares : '—';
       const px = s.last_price != null ? '$' + s.last_price.toFixed(2) : '—';
       // On-deck ranks continue past the top-N cutoff (rank = topN + i + 1),

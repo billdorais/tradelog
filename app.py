@@ -8881,6 +8881,17 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
     paired = _pair_alpaca_fills_lifo(fills, from_date=from_date)
     closed_clean = paired["closed_clean"]
 
+    # Most recent round-trip BEFORE the takeable filter. Without this the leaderboard's
+    # "last trade" silently means "last trade this book could have TAKEN", which reads
+    # as a contradiction next to the strategy modal (that lists ALL farm round-trips):
+    # a row can show 14d while the modal's newest trade is 3 days old, because the
+    # newer one was gate-blocked. Carried through so the UI can show both.
+    last_trade_all = {}
+    for _c in closed_clean:
+        _ex = _c.get("exit_time") or ""
+        if _ex and _ex > last_trade_all.get(_c["strategy"], ""):
+            last_trade_all[_c["strategy"]] = _ex
+
     if gate_as:
         closed_clean, _drop = _takeable_by(closed_clean, gate_as)
         if _drop:
@@ -8937,7 +8948,10 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
             "sharpe":         _sharpe_from_pnls(pnl_per_share),
             "consec_losses":  sum(1 for _ in __import__('itertools').takewhile(
                 lambda p: p <= 0, reversed(pnls))),
-            "last_trade_at":  last_trade_at.get(strat) or None,
+            # last_trade_at = last TAKEABLE trade (what this book could have placed);
+            # last_trade_at_all = last trade the farm actually took, gated or not.
+            "last_trade_at":     last_trade_at.get(strat) or None,
+            "last_trade_at_all": last_trade_all.get(strat) or None,
         }
     return stats_map
 
@@ -9429,6 +9443,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
                 "last_price":    qty_by_strat.get(name, (None, 0, None))[2],
                 "last_trade_at": stats.get("last_trade_at"),
+                "last_trade_at_all": stats.get("last_trade_at_all"),
                 "rank_delta":    rank_deltas.get(name),
             }
             for name, stats, score in top_scored
@@ -9449,6 +9464,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
                 "last_price":    qty_by_strat.get(name, (None, 0, None))[2],
                 "last_trade_at": stats.get("last_trade_at"),
+                "last_trade_at_all": stats.get("last_trade_at_all"),
                 "rank_delta":    rank_deltas.get(name),
             }
             for name, stats, score in on_deck_scored
@@ -9671,6 +9687,7 @@ def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
                 "last_price": qty_by_strat.get(name, (None, 0, None))[2],
                 "last_trade_at": stats.get("last_trade_at"),
+                "last_trade_at_all": stats.get("last_trade_at_all"),
                 "rank_delta": rank_deltas.get(name),
             }
             for name, stats, score in top_scored
@@ -9687,6 +9704,7 @@ def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
                 "last_price": qty_by_strat.get(name, (None, 0, None))[2],
                 "last_trade_at": stats.get("last_trade_at"),
+                "last_trade_at_all": stats.get("last_trade_at_all"),
                 "rank_delta": rank_deltas.get(name),
             }
             for name, stats, score in on_deck_scored
