@@ -8778,9 +8778,12 @@ _REFINED_MIN_TRADES = 5
 _REFINED_ONDECK_MIN_TRADES = 3
 
 # Kairos Refined snapshot uses a lower floor than TV — the engine account is newer
-# with fewer fills per strategy. Raised 3→5 as the pool matured (aligned with the
-# crew's [Kairos] sample floor); heading toward TV's 7 as it accrues more history.
-_KAIROS_REFINED_MIN_TRADES        = 5
+# with fewer fills per strategy. Raised 3→5 as the pool matured, then 5→4
+# (2026-08-14) for the same reason TV went 7→5: promotion now ranks on TAKEABLE
+# trades, so the existing number quietly became a stricter bar than the one that
+# was calibrated. This is a partial, not full, compensation — Kairos was filling
+# 9 of 20 slots against TV's 5, so it needed less relief.
+_KAIROS_REFINED_MIN_TRADES        = 4
 _KAIROS_REFINED_ONDECK_MIN_TRADES = 2
 
 
