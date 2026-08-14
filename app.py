@@ -8898,8 +8898,12 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
             continue
         if excluded_tickers and _strategy_to_ticker(c["strategy"]) in excluded_tickers:
             continue
+        # Carry the trade's NOTIONAL (entry_price × qty) so expectancy can be
+        # expressed as a % of capital deployed — size-independent, unlike total $.
+        _q  = float(c.get("qty") or 1)
+        _ep = abs(float(c.get("entry_price") or 0))
         strat_map.setdefault(c["strategy"], []).append(
-            (c["pnl"], float(c.get("qty") or 1))
+            (c["pnl"], _q, _ep * _q)
         )
         ex = c.get("exit_time") or ""
         if ex and ex > last_trade_at.get(c["strategy"], ""):
@@ -8907,8 +8911,13 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
 
     stats_map = {}
     for strat, trade_pairs in strat_map.items():
-        pnls          = [p for p, _ in trade_pairs]
-        pnl_per_share = [p / max(q, 0.01) for p, q in trade_pairs]
+        pnls          = [p for p, _q, _n in trade_pairs]
+        pnl_per_share = [p / max(q, 0.01) for p, q, _n in trade_pairs]
+        # Expectancy = mean % return on notional per trade. Size-independent, so it
+        # adds MAGNITUDE to the score without the feedback loop raw dollars would
+        # create (position size is assigned BY score, so ranking on $ is circular).
+        _pcts = [p / n * 100.0 for p, _q, n in trade_pairs if n > 0]
+        expectancy_pct = round(sum(_pcts) / len(_pcts), 4) if _pcts else 0.0
         # Match the analysis endpoint's _stats() exactly: zero-PnL trades count as losses.
         wins       = [p for p in pnls if p > 0]
         losses     = [p for p in pnls if p <= 0]
@@ -8924,6 +8933,7 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
             "gross_loss":    gross_loss,
             "total_pnl":     total_pnl,
             "profit_factor":  round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+            "expectancy_pct": expectancy_pct,
             "sharpe":         _sharpe_from_pnls(pnl_per_share),
             "consec_losses":  sum(1 for _ in __import__('itertools').takewhile(
                 lambda p: p <= 0, reversed(pnls))),
@@ -8936,23 +8946,39 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
 # Keep these in sync with the client-side mirror in templates/analysis.html
 # (addTopNToRefined) so manual and scheduled refreshes pick the same top N.
 _REFINED_SCORE_WEIGHTS = {
-    "sharpe":        0.35,   # primary — risk-adjusted consistency of returns
+    "sharpe":        0.30,   # risk-adjusted consistency of returns
     "profit_factor": 0.30,   # trade quality — $ won per $ lost
-    "win_rate":      0.20,   # hit rate
+    "expectancy":    0.15,   # MAGNITUDE — mean % return on notional per trade
+    "win_rate":      0.10,   # hit rate
     "trades":        0.15,   # sample-size confidence
 }
+# 2026-08-14: added `expectancy` (15%), funded by win_rate 0.20→0.10 and sharpe
+# 0.35→0.30. Rationale: PF and win-rate are pure RATIOS — a strategy grinding
+# +0.01%/trade scores the same as one making +0.30%/trade at identical PF, so the
+# score was blind to how much a name actually earns. Expectancy is measured as a
+# % of notional (NOT raw dollars) on purpose: position size is assigned BY score
+# (_REFINED_SIZE_BANDS), so ranking on total $ would be self-reinforcing — bigger
+# size → bigger $ → higher rank → bigger size. Win rate was the weakest signal to
+# trim (a 21% win-rate name can still be profitable on payoff ratio).
 # Saturation points — beyond these, additional gains stop contributing to score.
 _REFINED_SHARPE_SATURATION = 3.5   # raised from 2.0 — better separates elite from good
 _REFINED_PF_SATURATION     = 2.5   # PF >= 2.5 is "great"
 _REFINED_TRADES_SATURATION = 7     # 7+ trades counts as a full sample
+# Mean % return per trade that counts as "great" for a 5-min intraday scalp whose
+# trails run 0.1–0.54%. NEEDS CALIBRATION against the live distribution — set too
+# high and every name scores ~0 here (the term does nothing); too low and every
+# name saturates (also does nothing). expectancy_pct is exposed in the snapshot
+# payload so the spread can be eyeballed and this tuned.
+_REFINED_EXPECTANCY_SATURATION = 0.15
 
 
 def _composite_score(stats, max_pnl):
     """Composite ranking score in [0, 1]. Higher = better.
 
-    Weights: Sharpe 35% · PF 30% · Win rate 20% · Trades 15%
-      - sharpe:        sharpe / 2.0, capped at 1.0; negative → 0; None → 0
+    Weights: Sharpe 30% · PF 30% · Expectancy 15% · Win rate 10% · Trades 15%
+      - sharpe:        sharpe / 3.5, capped at 1.0; negative → 0; None → 0
       - profit_factor: pf / 2.5, capped at 1.0; None (no losses) → 1.0
+      - expectancy:    mean % return on notional / 0.15, capped at 1.0; negative → 0
       - win_rate:      win_rate / 100
       - trades:        trades / 7, capped at 1.0
     """
@@ -8960,6 +8986,8 @@ def _composite_score(stats, max_pnl):
     sh_norm     = 0.0 if sh is None else max(min(sh / _REFINED_SHARPE_SATURATION, 1.0), 0.0)
     pf = stats.get("profit_factor")
     pf_norm     = 1.0 if pf is None else max(min(pf / _REFINED_PF_SATURATION, 1.0), 0.0)
+    exp_norm    = max(min((stats.get("expectancy_pct") or 0.0)
+                          / _REFINED_EXPECTANCY_SATURATION, 1.0), 0.0)
     win_norm    = max(min((stats.get("win_rate") or 0) / 100.0, 1.0), 0.0)
     trades_norm = min((stats.get("trades") or 0) / _REFINED_TRADES_SATURATION, 1.0)
 
@@ -8967,6 +8995,7 @@ def _composite_score(stats, max_pnl):
     return round(
         w["sharpe"]        * sh_norm +
         w["profit_factor"] * pf_norm +
+        w["expectancy"]    * exp_norm +
         w["win_rate"]      * win_norm +
         w["trades"]        * trades_norm,
         4,
@@ -9095,7 +9124,7 @@ def _compute_refined_qty(score, last_price):
     return max(1, round(target / last_price))
 
 
-def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=None):
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
     Ranking uses a weighted composite score (Sharpe 35% · PF 30% · Win 20% · Trades 15%)
@@ -9392,6 +9421,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
                 "trades":        stats.get("trades"),
                 "win_rate":      stats.get("win_rate"),
                 "profit_factor": stats.get("profit_factor"),
+                "expectancy_pct": stats.get("expectancy_pct"),
                 "total_pnl":     stats.get("total_pnl"),
                 "sharpe":        stats.get("sharpe"),
                 "consec_losses": stats.get("consec_losses", 0),
@@ -9411,6 +9441,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=30, from_date=No
                 "trades":        stats.get("trades"),
                 "win_rate":      stats.get("win_rate"),
                 "profit_factor": stats.get("profit_factor"),
+                "expectancy_pct": stats.get("expectancy_pct"),
                 "total_pnl":     stats.get("total_pnl"),
                 "sharpe":        stats.get("sharpe"),
                 "consec_losses": stats.get("consec_losses", 0),
@@ -9630,7 +9661,8 @@ def _do_refresh_kairos_refined(n=20, days=30, from_date=None):
             {
                 "name": name, "score": score,
                 "trades": stats.get("trades"), "win_rate": stats.get("win_rate"),
-                "profit_factor": stats.get("profit_factor"), "total_pnl": stats.get("total_pnl"),
+                "profit_factor": stats.get("profit_factor"),
+                "expectancy_pct": stats.get("expectancy_pct"), "total_pnl": stats.get("total_pnl"),
                 "sharpe": stats.get("sharpe"), "consec_losses": stats.get("consec_losses", 0),
                 "shares": qty_by_strat.get(name, (None, 0, None))[0],
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
@@ -9645,7 +9677,8 @@ def _do_refresh_kairos_refined(n=20, days=30, from_date=None):
             {
                 "name": name, "score": score,
                 "trades": stats.get("trades"), "win_rate": stats.get("win_rate"),
-                "profit_factor": stats.get("profit_factor"), "total_pnl": stats.get("total_pnl"),
+                "profit_factor": stats.get("profit_factor"),
+                "expectancy_pct": stats.get("expectancy_pct"), "total_pnl": stats.get("total_pnl"),
                 "sharpe": stats.get("sharpe"), "consec_losses": stats.get("consec_losses", 0),
                 "shares": qty_by_strat.get(name, (None, 0, None))[0],
                 "target_dollars": qty_by_strat.get(name, (None, 0, None))[1],
@@ -9865,8 +9898,8 @@ def _refined_scheduler_loop():
                 # so the daily 4:15 PM scheduler stays in sync with the manual
                 # Refresh Now control. Falls back to 20 if nothing saved.
                 _sched_days_raw = _load_setting("REFINED_DAYS")
-                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 30
-                except (TypeError, ValueError): _sched_days = 30
+                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 45
+                except (TypeError, ValueError): _sched_days = 45
                 _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
                 log.info("Scheduled Refined refresh complete for %s (rolling %dd window)", today, _sched_days)
             except Exception as _re:
@@ -10025,8 +10058,8 @@ def remove_excluded_ticker(ticker):
 def get_refined_status():
     anchor = _load_setting("REFINED_FROM_DATE") or ""
     days   = _load_setting("REFINED_DAYS")
-    try:    days = int(days) if days else 30
-    except (TypeError, ValueError): days = 30
+    try:    days = int(days) if days else 45
+    except (TypeError, ValueError): days = 45
     if _refined_last_run:
         return jsonify({**_refined_last_result, "anchor_from_date": anchor, "days": days})
     return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
@@ -10046,8 +10079,8 @@ def refresh_refined():
         _save_setting("REFINED_DAYS", str(days))
     else:
         stored_days = _load_setting("REFINED_DAYS")
-        try:    days = int(stored_days) if stored_days else 30
-        except (TypeError, ValueError): days = 30
+        try:    days = int(stored_days) if stored_days else 45
+        except (TypeError, ValueError): days = 45
     if "from_date" in data:
         # Caller is explicitly setting (or clearing) the anchor — persist it
         # so the daily scheduler picks it up on subsequent runs.
@@ -20657,6 +20690,16 @@ def _restore_risk_settings():
         _save_setting("REFINED_DAYS", "30")
         _save_setting("REFINED_DAYS_30_MIGRATED", "1")
         log.info("Migrated REFINED_DAYS to 30 (one-time)")
+    # One-time migration: 30 → 45 days. The takeable filter (rank only on trades the
+    # book could actually have placed) shrank the denominator, so at 30d only ~10 of
+    # the 20 slots could clear the 5-trade floor — the whole On-Deck list sat at 3-4
+    # takeable. Widening the window raises the sample WITHOUT lowering the evidence
+    # bar (the alternative, dropping the floor below 5, is the small-sample mirage
+    # this gate exists to catch). Flag-guarded so a later manual change sticks.
+    if not _load_setting("REFINED_DAYS_45_MIGRATED"):
+        _save_setting("REFINED_DAYS", "45")
+        _save_setting("REFINED_DAYS_45_MIGRATED", "1")
+        log.info("Migrated REFINED_DAYS to 45 (one-time) — takeable filter needs a wider window")
 
 _restore_risk_settings()
 

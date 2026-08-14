@@ -2766,8 +2766,10 @@
   function filterTickerTable() { renderTickerTable(_lastTickerMap); }
 
   // Composite ranking score — must stay in sync with _composite_score in app.py.
-  // Weights: Sharpe 35% · PF 30% · Win 20% · Trades 15%.
-  // Saturation: Sharpe at 3.5, PF at 2.5, trades at 7.
+  // Weights: Sharpe 30% · PF 30% · Expectancy 15% · Win 10% · Trades 15%.
+  // Saturation: Sharpe at 3.5, PF at 2.5, expectancy at 0.15%/trade, trades at 7.
+  // Expectancy = mean % return on notional per trade (size-independent on purpose;
+  // position size is assigned BY score, so ranking on raw $ would be circular).
   // Note: server-side also blends a 10-day recency score (60/40); this client
   // version uses only the loaded window stats for the leaderboard score column.
   function _refinedScore(s, maxPnl) {
@@ -2775,9 +2777,11 @@
     const shNorm = (sh == null || sh < 0) ? 0 : Math.min(sh / 3.5, 1.0);
     const pf     = s.profit_factor;
     const pfNorm = (pf == null) ? 1.0 : Math.max(Math.min(pf / 2.5, 1.0), 0);
+    const expNorm = Math.max(Math.min((s.expectancy_pct || 0) / 0.15, 1.0), 0);
     const winNorm = Math.max(Math.min((s.win_rate || 0) / 100, 1.0), 0);
     const trNorm  = Math.min((s.trades || 0) / 7, 1.0);
-    return 0.35 * shNorm + 0.30 * pfNorm + 0.20 * winNorm + 0.15 * trNorm;
+    return 0.30 * shNorm + 0.30 * pfNorm + 0.15 * expNorm
+         + 0.10 * winNorm + 0.15 * trNorm;
   }
 
   async function addTopNToRefined() {
