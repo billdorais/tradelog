@@ -6930,6 +6930,167 @@ def api_backtest_gap_fill():
     return jsonify(out)
 
 
+def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
+                            min_trades=5, max_folds=12):
+    """Does ranking farm strategies on past P&L predict FORWARD P&L?
+
+    The whole 2x2 design rests on that assumption, and a hindsight-filtered equity
+    curve cannot test it — picking the best 20 of 160 after the fact produces a
+    beautiful curve from pure noise 100% of the time. This is the out-of-sample
+    version: rank on a window, score on the NEXT window, never letting the ranker
+    see the data it is judged on.
+
+    Walk-forward across several folds rather than one split date, because a single
+    fold is one coin flip. Reported per fold and pooled.
+
+    Compares the picked cohort against the strategies NOT picked over the same
+    forward window — the control. Absolute forward P&L says little (the market
+    drifts); the SPREAD between picked and unpicked is the predictive signal.
+
+    Uses avg % per trade, not dollars: strategies carry very different position
+    sizes and a raw sum would just rank by size.
+    """
+    import datetime as _dt
+    from collections import defaultdict
+
+    def _pct(rt):
+        base = abs(float(rt.get("entry_price") or 0)) * abs(float(rt.get("qty") or 0))
+        return (float(rt.get("pnl") or 0) / base * 100.0) if base else None
+
+    rows = []
+    for c in round_trips:
+        d = (c.get("date") or "")[:10]
+        p = _pct(c)
+        if d and c.get("strategy") and p is not None:
+            rows.append((d, c["strategy"], p))
+    if not rows:
+        return {"error": "no round-trips with usable prices", "folds": []}
+    rows.sort()
+    first, last = rows[0][0], rows[-1][0]
+    d0 = _dt.date.fromisoformat(first)
+    d1 = _dt.date.fromisoformat(last)
+
+    # Fold boundaries: first split is rank_days after the earliest fill, then every
+    # fwd_days until there is no full forward window left.
+    splits, t = [], d0 + _dt.timedelta(days=rank_days)
+    while t + _dt.timedelta(days=fwd_days) <= d1 and len(splits) < max_folds:
+        splits.append(t)
+        t += _dt.timedelta(days=fwd_days)
+    if not splits:
+        return {"error": f"history too short: {first} to {last} cannot fit a "
+                         f"{rank_days}d rank + {fwd_days}d forward window",
+                "folds": []}
+
+    def _agg(seq):
+        if not seq:
+            return {"trades": 0, "avg_pct": None, "win_rate": None}
+        return {"trades": len(seq),
+                "avg_pct": round(sum(seq) / len(seq), 4),
+                "win_rate": round(sum(1 for x in seq if x > 0) / len(seq) * 100, 1)}
+
+    folds = []
+    for sp in splits:
+        r_lo = (sp - _dt.timedelta(days=rank_days)).isoformat()
+        r_hi = sp.isoformat()                                  # exclusive
+        f_hi = (sp + _dt.timedelta(days=fwd_days)).isoformat()  # exclusive
+
+        rank_by, fwd_by = defaultdict(list), defaultdict(list)
+        for d, st, p in rows:
+            if r_lo <= d < r_hi:  rank_by[st].append(p)
+            elif r_hi <= d < f_hi: fwd_by[st].append(p)
+        eligible = {st: v for st, v in rank_by.items() if len(v) >= min_trades}
+        if not eligible or not fwd_by:
+            continue
+        picked = {st for st, _ in sorted(eligible.items(),
+                                         key=lambda kv: -sum(kv[1]))[:n]}
+        p_seq = [x for st, v in fwd_by.items() if st in picked for x in v]
+        r_seq = [x for st, v in fwd_by.items() if st not in picked for x in v]
+        if not p_seq or not r_seq:
+            continue
+        pa, ra = _agg(p_seq), _agg(r_seq)
+        folds.append({"split": r_hi, "rank_from": r_lo, "forward_to": f_hi,
+                      "ranked_strategies": len(eligible), "picked": len(picked),
+                      "picked_fwd": pa, "unpicked_fwd": ra,
+                      "spread_pct": round(pa["avg_pct"] - ra["avg_pct"], 4)})
+
+    if not folds:
+        return {"error": "no fold had both picked and unpicked forward trades",
+                "folds": []}
+
+    spreads = [f["spread_pct"] for f in folds]
+    wins    = sum(1 for x in spreads if x > 0)
+    mean_sp = sum(spreads) / len(spreads)
+    pooled_p = sum(f["picked_fwd"]["trades"] for f in folds)
+    pooled_r = sum(f["unpicked_fwd"]["trades"] for f in folds)
+    # Weight each fold by its picked-trade count so a 3-trade fold does not carry
+    # the same weight as a 90-trade one.
+    wsum = sum(f["spread_pct"] * f["picked_fwd"]["trades"] for f in folds)
+    wmean = round(wsum / pooled_p, 4) if pooled_p else 0.0
+
+    if wins == len(folds) and wmean > 0:
+        verdict = "ranking predicts forward performance in EVERY fold"
+    elif wmean > 0 and wins > len(folds) / 2:
+        verdict = "weak positive — ranking helps more often than not"
+    elif abs(wmean) < 0.01:
+        verdict = "NO predictive power — picked and unpicked perform the same"
+    elif wmean < 0:
+        verdict = "NEGATIVE — the top-ranked cohort UNDERPERFORMS the rest"
+    else:
+        verdict = "mixed / inconclusive"
+
+    return {
+        "folds": folds, "fold_count": len(folds),
+        "rank_days": rank_days, "fwd_days": fwd_days, "n": n,
+        "min_trades": min_trades, "history": {"from": first, "to": last},
+        "folds_with_positive_spread": wins,
+        "mean_spread_pct": round(mean_sp, 4),
+        "weighted_spread_pct": wmean,
+        "pooled_picked_trades": pooled_p, "pooled_unpicked_trades": pooled_r,
+        "verdict": verdict,
+        "caveats": [
+            "Spread (picked minus unpicked) is the signal; absolute forward P&L "
+            "mostly reflects market drift.",
+            "Avg % per trade, not dollars — strategies carry very different "
+            "position sizes and a dollar sum would just rank by size.",
+            "Farm fills are ungated, so this measures the RANKING, not what a "
+            "curated book would have been able to take.",
+        ],
+    }
+
+
+@app.route("/api/backtest/selection_test", methods=["POST"])
+def api_selection_test():
+    """Out-of-sample test of the promotion premise: does past farm ranking predict
+    FORWARD performance? Rank on one window, score on the next, walk forward.
+
+    Body: {account: "1"|"5", rank_days: 30, fwd_days: 14, n: 20, min_trades: 5}
+    """
+    data = request.get_json(silent=True) or {}
+    acct = str(data.get("account") or "1")
+    def _int(k, dflt, lo, hi):
+        try:    return max(lo, min(hi, int(data.get(k) or dflt)))
+        except (TypeError, ValueError): return dflt
+    rank_days  = _int("rank_days", 30, 5, 180)
+    fwd_days   = _int("fwd_days",  14, 3, 90)
+    n          = _int("n",         20, 1, 200)
+    min_trades = _int("min_trades", 5, 1, 50)
+
+    rec = ACCOUNTS_BY_NUM.get(acct)
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": f"account {acct} not configured"}), 400
+    try:
+        paired = _pair_alpaca_fills_lifo(rec["fills_fn"]())
+        out = _selection_walk_forward(paired.get("closed_clean", []),
+                                      rank_days=rank_days, fwd_days=fwd_days,
+                                      n=n, min_trades=min_trades)
+        out["account"] = acct
+        out["label"]   = rec.get("label", acct)
+        return jsonify(out)
+    except Exception as e:
+        log.error("selection_test failed: %s", e, exc_info=True)
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @app.route("/api/backtest/earnings_study", methods=["POST"])
 def api_earnings_study():
     """Earnings REACTION study — enumerate each ticker's announcement dates and

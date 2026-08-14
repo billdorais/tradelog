@@ -686,6 +686,23 @@
     <div id="gapFillResult" style="margin-top:14px"></div>
   </div>
 
+  <!-- Selection test: does farm ranking predict forward performance? -->
+  <div class="config-panel" style="margin-top:18px">
+    <div class="section-title" style="margin-bottom:10px">Selection Test &mdash; does farm ranking predict the future?
+      <span style="font-size:0.72rem;color:#666;font-weight:400">&mdash; rank on one window, score on the next, walk forward</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label>Farm</label><select id="stAcct" style="padding:6px 8px">
+        <option value="1">TV Farm</option><option value="5">Kairos Farm</option></select></div>
+      <div class="param-group"><label>Rank window (d)</label><div class="input-wrap"><input type="number" id="stRank" value="30" style="width:80px"></div></div>
+      <div class="param-group"><label>Forward window (d)</label><div class="input-wrap"><input type="number" id="stFwd" value="14" style="width:80px"></div></div>
+      <div class="param-group"><label>Top N</label><div class="input-wrap"><input type="number" id="stN" value="20" style="width:70px"></div></div>
+      <div class="param-group"><label>Min trades</label><div class="input-wrap"><input type="number" id="stMin" value="5" style="width:80px"></div></div>
+      <button class="run-btn" onclick="runSelectionTest()" style="padding:8px 18px">&#9654; Run Test</button>
+    </div>
+    <div style="font-size:0.7rem;color:#555;margin-top:6px">Filtering a farm chart to its top N is <b>hindsight</b> &mdash; picking the best 20 of 160 after the fact produces a great-looking curve from pure noise almost every time. This ranks strategies using only the rank window, then scores them on the <b>next</b> window they never saw, repeated across folds. The number that matters is the <b>spread</b>: picked minus unpicked over the same forward window. Absolute forward P&amp;L mostly reflects market drift.</div>
+    <div id="selTestResult" style="margin-top:14px"></div>
+  </div>
+
   <!-- Earnings reaction study -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Earnings Reaction Study
@@ -1462,6 +1479,49 @@
   // Gap-fill → prior-day-VWAP backtest (read-only; new bespoke strategy).
   // Earnings reaction study — enumerate real earnings dates, measure the next
   // session. Deliberately ignores the From/To range (see the panel note).
+  async function runSelectionTest() {
+    const out = document.getElementById('selTestResult');
+    const body = {
+      account:    document.getElementById('stAcct').value,
+      rank_days:  parseInt(document.getElementById('stRank').value, 10) || 30,
+      fwd_days:   parseInt(document.getElementById('stFwd').value, 10) || 14,
+      n:          parseInt(document.getElementById('stN').value, 10) || 20,
+      min_trades: parseInt(document.getElementById('stMin').value, 10) || 5,
+    };
+    out.innerHTML = '<div style="color:#888;font-size:0.85rem">Running walk-forward…</div>';
+    try {
+      const r = await fetch('/api/backtest/selection_test', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (d.error) { out.innerHTML = `<div style="color:#c66">${d.error}</div>`; return; }
+      const col = v => (v > 0 ? '#7FE098' : v < 0 ? '#e08a8a' : '#888');
+      const pc  = v => (v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(3) + '%');
+      let html = `<div style="font-size:0.9rem;margin-bottom:8px">`
+        + `<b style="color:${col(d.weighted_spread_pct)};font-size:1.05rem">${pc(d.weighted_spread_pct)}</b>`
+        + ` weighted spread · <b>${d.folds_with_positive_spread}/${d.fold_count}</b> folds positive`
+        + ` · <span style="color:${col(d.weighted_spread_pct)}">${d.verdict}</span></div>`
+        + `<div style="font-size:0.72rem;color:#666;margin-bottom:10px">${d.label} · history ${d.history.from} → ${d.history.to}`
+        + ` · rank ${d.rank_days}d → forward ${d.fwd_days}d · top ${d.n} · ${d.pooled_picked_trades} picked / ${d.pooled_unpicked_trades} unpicked trades</div>`;
+      const th='style="text-align:right;padding:4px 10px;color:#888;font-weight:500"', td='style="text-align:right;padding:4px 10px"';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:0.76rem">'
+        + '<tr><th style="text-align:left;padding:4px 10px;color:#888;font-weight:500">SPLIT</th>'
+        + `<th ${th}>RANKED</th><th ${th}>PICKED %/tr</th><th ${th}>UNPICKED %/tr</th>`
+        + `<th ${th}>SPREAD</th><th ${th}>PICKED WIN%</th></tr>`;
+      for (const f of d.folds) {
+        html += `<tr style="border-top:1px solid #22242f">`
+          + `<td style="padding:4px 10px;color:#aaa">${f.split}</td>`
+          + `<td ${td}>${f.ranked_strategies}</td>`
+          + `<td ${td}>${pc(f.picked_fwd.avg_pct)} <span style="color:#555">(${f.picked_fwd.trades})</span></td>`
+          + `<td ${td}>${pc(f.unpicked_fwd.avg_pct)} <span style="color:#555">(${f.unpicked_fwd.trades})</span></td>`
+          + `<td ${td}><b style="color:${col(f.spread_pct)}">${pc(f.spread_pct)}</b></td>`
+          + `<td ${td}>${f.picked_fwd.win_rate == null ? '—' : f.picked_fwd.win_rate.toFixed(0) + '%'}</td></tr>`;
+      }
+      html += '</table><div style="font-size:0.64rem;color:#555;margin-top:8px">'
+           + (d.caveats || []).map(c => '• ' + c).join('<br>') + '</div>';
+      out.innerHTML = html;
+    } catch (e) { out.innerHTML = `<div style="color:#c66">${e}</div>`; }
+  }
+
   async function runEarningsStudy() {
     const out = document.getElementById('earningsStudyResult');
     const body = {
