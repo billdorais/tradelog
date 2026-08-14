@@ -1398,8 +1398,10 @@
         }
         // Ensure picker names include Alpaca strategy names (may differ from TV signals)
         const alpacaNames = Object.keys(data.per_strategy || {});
-        const combined = [...new Set([..._allStrategyNames, ...alpacaNames])].sort();
-        if (combined.length > _allStrategyNames.length) _allStrategyNames = combined;
+        // Union unconditionally. The old `if (combined.length > ...)` guard meant a
+        // switch between accounts could leave names out entirely, so the picker's
+        // contents depended on which tabs you happened to visit.
+        _allStrategyNames = [...new Set([..._allStrategyNames, ...alpacaNames])].sort();
       } else {
         // TV signals mode
         const data = await fetch(buildStatsUrl('', fromDate, toDate)).then(r => r.json()).catch(() => ({}));
@@ -1469,6 +1471,11 @@
     async function selectIndices(e) {
       if (e) e.stopPropagation();
       const picks = _allStrategyNames.filter(s => _INDEX_TICKERS.has(s.toUpperCase().split('_')[0]));
+      if (!picks.length) {
+        alert('No index strategies (SPY/QQQ/IWM/SMH) are known yet — none have fired '
+            + 'or are wired to an enabled rule.');
+        return;
+      }
       if (!picks.length) { alert('No index/ETF strategies (SPY, QQQ, IWM, SMH) in this view.'); return; }
       selectedStrategies = new Set(picks);
       _tabSelections[activeTab] = selectedStrategies;
@@ -3190,9 +3197,20 @@
         sel.value = prevTable;
         selectedStrategy = sel.value;
 
-        // Keep existing visibility selection; add any new strategies as visible
+        // Keep existing visibility selection; add any new strategies as visible.
+        // NOTE: `strategies` comes from the /api/trades page, which is capped at
+        // 200 rows (~1 day at current signal volume) — fine for the table, far too
+        // narrow for the picker. /api/strategies returns every distinct name, so a
+        // strategy that simply hasn't fired lately stays selectable.
         const prevNames = new Set(_allStrategyNames);
-        _allStrategyNames = strategies;
+        let _fullNames = strategies;
+        try {
+          const _sn = await fetch('/api/strategies').then(r => r.json());
+          if (_sn && Array.isArray(_sn.strategies) && _sn.strategies.length) {
+            _fullNames = [...new Set([...(_sn.strategies), ...strategies])].sort();
+          }
+        } catch (e) { /* fall back to the table's names */ }
+        _allStrategyNames = _fullNames;
         if (selectedStrategies.size > 0) {
           // Add newly appearing strategies as visible
           strategies.filter(s => !prevNames.has(s)).forEach(s => selectedStrategies.add(s));

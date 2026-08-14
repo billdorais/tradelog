@@ -2988,6 +2988,51 @@ def api_trades():
     return jsonify(result)
 
 
+@app.route("/api/strategies")
+def api_strategy_names():
+    """Distinct strategy names for the dashboard's strategy picker.
+
+    The picker used to derive its list from /api/trades, which is capped at 200
+    rows — at ~190 signals a day that is roughly ONE day of history, so any
+    strategy that had not fired yesterday silently vanished from the picker (the
+    "Indices" preset would return only whichever index happened to trade). The
+    row cap is right for the table and wrong for a name list, so they are split.
+
+    Includes names from enabled routing rules too, so a strategy that is wired
+    but has not fired yet is still selectable.
+
+    ?days=N to scope to recent signals (default: all history).
+    """
+    import datetime as _dt
+    names = set()
+    p = placeholder()
+    try:    days = int(request.args.get("days") or 0)
+    except (TypeError, ValueError): days = 0
+    try:
+        conn = get_db(); cur = conn.cursor()
+        if days > 0:
+            cutoff = (_dt.datetime.now(_dt.timezone.utc)
+                      - _dt.timedelta(days=days)).strftime("%Y-%m-%d")
+            cur.execute(f"SELECT DISTINCT strategy FROM trades "
+                        f"WHERE strategy IS NOT NULL AND received_at >= {p}", (cutoff,))
+        else:
+            cur.execute("SELECT DISTINCT strategy FROM trades WHERE strategy IS NOT NULL")
+        names.update((r[0] or "").strip() for r in cur.fetchall())
+        cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        for (nodes,) in cur.fetchall():
+            try:
+                for nd in json.loads(nodes or "[]"):
+                    if nd.get("type") == "strategy" and nd.get("value"):
+                        names.add(str(nd["value"]).strip())
+            except Exception:
+                continue
+        conn.close()
+    except Exception as e:
+        log.warning("api_strategy_names failed: %s", e)
+    out = sorted(n for n in names if n)
+    return jsonify({"strategies": out, "count": len(out), "days": days or None})
+
+
 @app.route("/api/trades/<int:trade_id>", methods=["DELETE"])
 def delete_trade(trade_id):
     conn = get_db()
