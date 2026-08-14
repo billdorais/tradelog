@@ -1680,7 +1680,14 @@
         const pf  = _noTr ? '—' : (_ps.profit_factor == null ? '∞' : _ps.profit_factor.toFixed(2));
         const pn  = _noTr ? '—' : fmt(_ps.total_pnl);
         const pnCls = ((_ps && _ps.total_pnl) || 0) >= 0 ? 'pos' : 'neg';
-        const _trCell = _noTr ? '<span style="color:#444">0</span>' : (_ps.trades ?? 0);
+        // Selection used the gate-filtered (takeable) count over its own window;
+        // this column is a raw overlay for the page's date range. Show both when
+        // they differ, or "5 trades but not routed" reads as a broken floor.
+        const _selT = s.trades;
+        const _tkTag = (_selT != null && _selT !== (_ps && _ps.trades))
+          ? ` <span style="color:#f0a35e;font-size:0.72em" title="Takeable trades in the selection window — what the min-trades floor was applied to.">(${_selT} takeable)</span>`
+          : '';
+        const _trCell = _noTr ? '<span style="color:#444">0</span>' : ((_ps.trades ?? 0) + _tkTag);
         const lt  = s.last_trade_at
           ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
           : '—';
@@ -1733,7 +1740,11 @@
       const pf  = _noTr ? '—' : (_ps.profit_factor == null ? '∞' : _ps.profit_factor.toFixed(2));
       const pn  = _noTr ? '—' : fmt(_ps.total_pnl);
       const pnCls = ((_ps && _ps.total_pnl) || 0) >= 0 ? 'pos' : 'neg';
-      const _trCell = _noTr ? '<span style="color:#444">0</span>' : (_ps.trades ?? 0);
+      const _selT2 = s.trades;
+      const _tkTag2 = (_selT2 != null && _selT2 !== (_ps && _ps.trades))
+        ? ` <span style="color:#f0a35e;font-size:0.72em" title="Takeable trades in the selection window — what the min-trades floor was applied to.">(${_selT2} takeable)</span>`
+        : '';
+      const _trCell = _noTr ? '<span style="color:#444">0</span>' : ((_ps.trades ?? 0) + _tkTag2);
       const lt  = s.last_trade_at
         ? Math.max(0, Math.round((Date.now() - new Date(s.last_trade_at).getTime()) / 86400000)) + 'd'
         : '—';
