@@ -126,3 +126,78 @@ def test_ranking_changes_when_the_edge_is_unreachable(gates, monkeypatch):
     assert gated[REAL]["total_pnl"] > gated[MIRAGE]["total_pnl"], \
         "promotion still ranks on unreachable P&L"
     assert gated[MIRAGE]["trades"] == 1      # only the reachable one survives
+
+
+# ── Performance: the filter must not hammer the network ───────────────────────
+# _classify_day costs an Alpaca fetch per (ticker, date). A 45-day farm window
+# across every ticker is four figures of calls — enough to hang a refresh, which
+# is exactly what happened when day-type ran before the free gates.
+
+def test_cheap_gates_run_before_the_network_gate(gates, monkeypatch):
+    """A trade already excluded by hours must never be day-classified."""
+    calls = []
+    monkeypatch.setattr(a, "_get_day_classification",
+                        lambda tk, d: (calls.append(tk), {"day_type": "Outside"})[1])
+    monkeypatch.setattr(a, "_account_hours_windows", lambda tag: [("09:35", "10:00")])
+    rts = [_rt(BRK, "OUT1", entry_hhmm_et="11:30"),
+           _rt(BRK, "OUT2", entry_hhmm_et="14:00"),
+           _rt(BRK, "IN",   entry_hhmm_et="09:45")]
+    kept, dropped = a._takeable_by(rts, "alpaca2")
+    assert dropped == {"hours": 2}
+    assert calls == ["IN"], f"classified out-of-hours trades: {calls}"
+
+
+def test_classification_budget_keeps_trades_rather_than_stalling(gates, monkeypatch):
+    """Past the budget the filter degrades to 'unfiltered', never to 'hung' or
+    'silently dropped'."""
+    calls = []
+    monkeypatch.setattr(a, "_get_day_classification",
+                        lambda tk, d: (calls.append(tk), {"day_type": "Inside"})[1])
+    a._day_class_cache.clear()
+    rts = [_rt(BRK, f"T{i}", date=f"2026-07-{i+1:02d}") for i in range(10)]
+    kept, dropped = a._takeable_by(rts, "alpaca2", classify_budget=3)
+    assert len(calls) == 3, "budget did not cap the network work"
+    # 3 classified (Inside → blocked), the other 7 kept unfiltered.
+    assert dropped.get("day-type") == 3 and len(kept) == 7
+
+
+def test_day_classification_is_persisted_and_reused(monkeypatch, tmp_path):
+    """Past dates are immutable, so the fetch must happen once — not once per
+    worker, per redeploy, per refresh."""
+    import sqlite3
+    db = tmp_path / "dc.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE day_classifications (ticker TEXT, date TEXT, "
+                 "payload TEXT, PRIMARY KEY (ticker, date))")
+    conn.commit(); conn.close()
+    monkeypatch.setattr(a, "get_db",
+                        lambda: sqlite3.connect(db))
+    fetches = []
+    monkeypatch.setattr(a, "_classify_day",
+                        lambda tk, d: (fetches.append((tk, d)), {"day_type": "Outside"})[1])
+    a._day_class_cache.clear()
+
+    assert a._get_day_classification("AAPL", "2026-07-01")["day_type"] == "Outside"
+    a._day_class_cache.clear()                      # simulate a fresh worker
+    assert a._get_day_classification("AAPL", "2026-07-01")["day_type"] == "Outside"
+    assert len(fetches) == 1, f"re-fetched a past date: {fetches}"
+
+
+def test_todays_classification_is_not_persisted(monkeypatch, tmp_path):
+    """Only closed days are written — today could still be computed off a partial
+    feed, and a wrong value would be cached forever."""
+    import datetime as _dt
+    import sqlite3
+    db = tmp_path / "dc2.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE day_classifications (ticker TEXT, date TEXT, "
+                 "payload TEXT, PRIMARY KEY (ticker, date))")
+    conn.commit(); conn.close()
+    monkeypatch.setattr(a, "get_db", lambda: sqlite3.connect(db))
+    monkeypatch.setattr(a, "_classify_day", lambda tk, d: {"day_type": "Outside"})
+    a._day_class_cache.clear()
+    today = _dt.datetime.now(a.ZoneInfo("America/New_York")).date().isoformat()
+    a._get_day_classification("AAPL", today)
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM day_classifications").fetchone()[0] == 0
+    c.close()

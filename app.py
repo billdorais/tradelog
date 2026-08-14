@@ -2483,6 +2483,21 @@ def init_db():
     # anywhere but the app log. That made "why has this book not traded?"
     # unanswerable, and biased the blocked-reason chart toward whole-signal gates
     # (day-type) over account-specific ones (hours, RVOL, side, reversal).
+    # day_classifications: Inside/Outside/Neutral per (ticker, date). Immutable once
+    # the day is closed — it is derived from the two prior sessions — so persisting
+    # turns a per-worker, per-redeploy network fetch into a one-time cost. Without
+    # it, retroactive day-type work (takeable-promotion filter, gate-cost analysis)
+    # re-fetches weeks of history on every refresh.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS day_classifications (
+            ticker  TEXT NOT NULL,
+            date    TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    conn.commit()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS blocked_targets (
             ts        TEXT NOT NULL,
@@ -8512,39 +8527,38 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
             "orphans": orphans, "signal_lookup": signal_lookup}
 
 
-def _takeable_by(round_trips, account_tag):
+def _takeable_by(round_trips, account_tag, classify_budget=400):
     """Keep only the farm round-trips `account_tag` would actually have taken.
 
     Replays each trade through the SAME gate functions the live path uses, so the
     filter tracks the account's real configuration — including per-account
     overrides — instead of a second copy of the rules that can rot.
 
-    Returns (kept, {gate: dropped_count}). Fails OPEN per trade: if a gate check
-    raises (e.g. an unclassifiable ticker), the trade is kept, matching how the
-    live gates themselves fail open.
+    ORDER MATTERS. hours and reversal are pure in-memory checks; the day-type gate
+    calls _get_day_classification, which on a cache miss fetches daily bars from
+    Alpaca — one network round-trip per (ticker, date). Over a 45-day farm window
+    that is easily four figures of calls and will hang a refresh, so the cheap
+    gates run first and only survivors are ever classified.
+
+    `classify_budget` caps fresh classifications per call. Past the cap the trade
+    is KEPT and a warning is logged: a slow filter must degrade to "unfiltered",
+    never to "silently dropped" or "hung".
+
+    Returns (kept, {gate: dropped_count}). Fails OPEN per trade, matching the live
+    gates: an unclassifiable ticker keeps its trade.
     """
     from collections import Counter
     kept, dropped = [], Counter()
     windows = _account_hours_windows(account_tag)
+    et = ZoneInfo("America/New_York")
+    spent = 0
     for c in round_trips:
         strat = c.get("strategy") or ""
         tk    = (c.get("ticker") or "").upper()
         date  = c.get("date") or ""
-        try:
-            if _daytype_gate_block(strat, tk, date, account_tag)[0]:
-                dropped["day-type"] += 1
-                continue
-        except Exception:
-            pass
-        try:
-            if _reversal_gate_block(strat, (c.get("side") or ""), account_tag):
-                dropped["reversal"] += 1
-                continue
-        except Exception:
-            pass
-        # Hours: the entry has to fall inside the book's trading window. This is
-        # the bias that predates the farm ungating — the farms have always been
-        # all-day while the curated books are not.
+
+        # 1. Hours (free). The bias that predates the farm ungating — the farms
+        #    have always been all-day while the curated books are not.
         if windows:
             try:
                 iso = c.get("entry_time") or ""
@@ -8552,13 +8566,38 @@ def _takeable_by(round_trips, account_tag):
                     _d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
                     if _d.tzinfo is None:
                         _d = _d.replace(tzinfo=timezone.utc)
-                    if not _hhmm_in_windows(_d.astimezone(ZoneInfo("America/New_York"))
-                                            .strftime("%H:%M"), windows):
+                    if not _hhmm_in_windows(_d.astimezone(et).strftime("%H:%M"), windows):
                         dropped["hours"] += 1
                         continue
             except Exception:
                 pass
+
+        # 2. Reversal side policy (free).
+        try:
+            if _reversal_gate_block(strat, (c.get("side") or ""), account_tag):
+                dropped["reversal"] += 1
+                continue
+        except Exception:
+            pass
+
+        # 3. Day type (may hit the network). Only reached by trades that already
+        #    passed the free gates.
+        try:
+            if (tk, date) not in _day_class_cache:
+                if spent >= classify_budget:
+                    kept.append(c)          # over budget → keep, do not stall
+                    continue
+                spent += 1
+            if _daytype_gate_block(strat, tk, date, account_tag)[0]:
+                dropped["day-type"] += 1
+                continue
+        except Exception:
+            pass
         kept.append(c)
+
+    if spent >= classify_budget:
+        log.warning("Takeable filter (%s): hit the %d day-classification budget — "
+                    "remaining trades kept unfiltered on day-type", account_tag, classify_budget)
     return kept, dict(dropped)
 
 
@@ -18621,11 +18660,52 @@ _day_class_cache: dict = {}   # {(ticker, date): result} — cached per session
 
 
 def _get_day_classification(ticker: str, trade_date: str) -> dict:
-    """Cached wrapper around _classify_day."""
+    """Cached wrapper around _classify_day — memory, then DB, then compute.
+
+    _classify_day costs an Alpaca daily-bars fetch per (ticker, date). A live gate
+    only ever asks about today, so an in-process dict was enough; retroactive work
+    (the takeable-promotion filter, gate-cost analysis) asks about weeks of history
+    across every ticker, which turned a refresh into four figures of network calls.
+
+    A PAST date's classification is immutable — _classify_day derives it purely
+    from the two prior CLOSED sessions — so it is safe to persist forever. Today's
+    is not written, purely to avoid caching anything computed from a partial feed.
+    """
     key = (ticker.upper(), trade_date)
-    if key not in _day_class_cache:
-        _day_class_cache[key] = _classify_day(ticker, trade_date)
-    return _day_class_cache[key]
+    if key in _day_class_cache:
+        return _day_class_cache[key]
+
+    p = placeholder()
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT payload FROM day_classifications "
+                    f"WHERE ticker={p} AND date={p}", (key[0], trade_date))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            val = json.loads(row[0])
+            _day_class_cache[key] = val
+            return val
+    except Exception as _e:
+        log.debug("day_classifications read failed (%s %s): %s", key[0], trade_date, _e)
+
+    val = _classify_day(ticker, trade_date)
+    _day_class_cache[key] = val
+    try:
+        _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        if val and trade_date < _today:          # immutable once the day is done
+            conn = get_db(); cur = conn.cursor()
+            if DATABASE_URL:
+                cur.execute(f"INSERT INTO day_classifications (ticker, date, payload) "
+                            f"VALUES ({p},{p},{p}) ON CONFLICT (ticker, date) DO NOTHING",
+                            (key[0], trade_date, json.dumps(val)))
+            else:
+                cur.execute(f"INSERT OR IGNORE INTO day_classifications (ticker, date, payload) "
+                            f"VALUES ({p},{p},{p})", (key[0], trade_date, json.dumps(val)))
+            conn.commit(); conn.close()
+    except Exception as _e:
+        log.debug("day_classifications write failed (%s %s): %s", key[0], trade_date, _e)
+    return val
 
 
 def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str):
