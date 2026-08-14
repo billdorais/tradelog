@@ -1366,7 +1366,15 @@
           : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
         // Dim the cells when overlay is active but this strategy hasn't traded in the current view.
         const dim = noTabTrades ? 'color:#444' : '';
-        const tradesCell  = noTabTrades ? '<span style="color:#444">0</span>' : trades;
+        // The TRADES column is an OVERLAY: raw stats for the account toggle + the
+        // page's date range. Selection used the gate-filtered (takeable) count over
+        // its own window, which is what the min-trades floor was applied to. Show
+        // it when they differ, otherwise "13 trades but not routed" is unreadable.
+        const _selTr = r.trades;
+        const _takeableTag = (_selTr != null && _selTr !== trades)
+          ? ` <span style="color:#f0a35e;font-size:0.72em" title="Takeable trades in the selection window — what the min-trades floor was applied to. The larger number is raw ${_SNAP_ACCT_LABEL[_refinedSnapAcct]} stats for the page's date range.">(${_selTr} takeable)</span>`
+          : '';
+        const tradesCell  = noTabTrades ? '<span style="color:#444">0</span>' : (trades + _takeableTag);
         const winRateCell = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${wrCls}">${winRate}%</span>`;
         const pfCell      = noTabTrades ? '<span style="color:#444">—</span>' : pfBadge(pf);
         const totalCell   = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${pnlCls}">${fmt(total)}</span>`;
@@ -1411,7 +1419,11 @@
             ? `$${Number(r.last_price).toFixed(2)}`
             : '<span style="color:#666">—</span>';
           const dim = noTabTrades ? 'color:#444' : '';
-          const tradesCell  = noTabTrades ? '<span style="color:#444">0</span>' : trades;
+          const _selTr2 = r.trades;
+          const _takeableTag2 = (_selTr2 != null && _selTr2 !== trades)
+            ? ` <span style="color:#f0a35e;font-size:0.72em" title="Takeable trades in the selection window — what the min-trades floor was applied to.">(${_selTr2} takeable)</span>`
+            : '';
+          const tradesCell  = noTabTrades ? '<span style="color:#444">0</span>' : (trades + _takeableTag2);
           const winRateCell = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${wrCls}">${winRate}%</span>`;
           const pfCell      = noTabTrades ? '<span style="color:#444">—</span>' : pfBadge(pf);
           const totalCell   = noTabTrades ? '<span style="color:#444">—</span>' : `<span class="${pnlCls}">${fmt(total)}</span>`;
