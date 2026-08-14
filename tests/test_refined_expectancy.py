@@ -79,6 +79,30 @@ def test_expectancy_pct_is_notional_based(monkeypatch):
     assert abs(st["expectancy_pct"] - 0.25) < 1e-6
 
 
+def test_tv_and_kairos_share_the_same_ranking_window():
+    """Both books must rank over the SAME window or TV-vs-Kairos comparisons (and
+    the crew's [TV]/[Kairos] tagging, which reads both leaderboards) aren't
+    apples-to-apples. Kairos silently sat on 30 days after TV moved to 45."""
+    import inspect
+    tv  = inspect.signature(a._do_refresh_refined).parameters["days"].default
+    kai = inspect.signature(a._do_refresh_kairos_refined).parameters["days"].default
+    assert tv == kai == 45
+
+
+def test_min_trade_floors_keep_their_deliberate_asymmetry():
+    """The floors are intentionally NOT equal. When the takeable filter shrank the
+    denominator, each book got relief proportional to how starved it was: TV was
+    filling 5 of 20 slots (7->5), Kairos 9 of 20 (5->4). Pinned so a future change
+    is a conscious decision rather than drift — but Kairos must never exceed TV."""
+    assert a._REFINED_MIN_TRADES == 5
+    assert a._KAIROS_REFINED_MIN_TRADES == 4
+    assert a._KAIROS_REFINED_MIN_TRADES <= a._REFINED_MIN_TRADES
+    # On-Deck (display-only) must stay BELOW its routing floor or the watchlist
+    # empties out — at parity every qualifying name gets routed.
+    assert a._REFINED_ONDECK_MIN_TRADES < a._REFINED_MIN_TRADES
+    assert a._KAIROS_REFINED_ONDECK_MIN_TRADES < a._KAIROS_REFINED_MIN_TRADES
+
+
 def test_expectancy_pct_independent_of_share_count(monkeypatch):
     """10x the shares at the same prices => same expectancy %, 10x the dollars."""
     def _mk(qty):

@@ -9473,10 +9473,13 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     return _refined_last_result
 
 
-def _do_refresh_kairos_refined(n=20, days=30, from_date=None):
+def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
     """Kairos Refined snapshot — mirrors _do_refresh_refined but sourced from
-    Kairos Farm (acct5) fills and gated at a lower min_trades (3, vs. TV's 7)
-    so the top-of-the-funnel is visible earlier in the account's life.
+    Kairos Farm (acct5) fills. Shares TV's 45-day ranking window and composite
+    score, so TV-vs-Kairos comparisons (and the crew's [TV]/[Kairos] tagging) are
+    apples-to-apples. The min_trades floor is deliberately LOWER than TV's (4 vs 5):
+    when the takeable filter shrank the denominator each book got relief in
+    proportion to how starved it was — TV was filling 5 of 20 slots, Kairos 9 of 20.
 
     VIEW-ONLY for now: computes the leaderboard + on-deck + persists to
     KAIROS_REFINED_LAST_RESULT + kairos_refined_history, but does NOT touch
@@ -9710,8 +9713,8 @@ def _do_refresh_kairos_refined(n=20, days=30, from_date=None):
 def get_kairos_refined_status():
     anchor = _load_setting("KAIROS_REFINED_FROM_DATE") or ""
     days   = _load_setting("KAIROS_REFINED_DAYS")
-    try:    days = int(days) if days else 30
-    except (TypeError, ValueError): days = 30
+    try:    days = int(days) if days else 45
+    except (TypeError, ValueError): days = 45
     if _kairos_refined_last_run:
         return jsonify({**_kairos_refined_last_result, "anchor_from_date": anchor, "days": days})
     return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
@@ -9728,8 +9731,8 @@ def refresh_kairos_refined():
         _save_setting("KAIROS_REFINED_DAYS", str(days))
     else:
         stored = _load_setting("KAIROS_REFINED_DAYS")
-        try:    days = int(stored) if stored else 30
-        except (TypeError, ValueError): days = 30
+        try:    days = int(stored) if stored else 45
+        except (TypeError, ValueError): days = 45
     if "from_date" in data:
         from_date = (data.get("from_date") or "").strip() or None
         _save_setting("KAIROS_REFINED_FROM_DATE", from_date or "")
@@ -9910,8 +9913,8 @@ def _refined_scheduler_loop():
             _kairos_ran_today = today
             try:
                 _kdays_raw = _load_setting("KAIROS_REFINED_DAYS")
-                try:    _kdays = int(_kdays_raw) if _kdays_raw else 30
-                except (TypeError, ValueError): _kdays = 30
+                try:    _kdays = int(_kdays_raw) if _kdays_raw else 45
+                except (TypeError, ValueError): _kdays = 45
                 _kfrom = (_load_setting("KAIROS_REFINED_FROM_DATE") or "").strip() or None
                 _do_refresh_kairos_refined(days=_kdays, from_date=_kfrom)
                 log.info("Scheduled Kairos Refined refresh complete for %s", today)
@@ -20700,6 +20703,15 @@ def _restore_risk_settings():
         _save_setting("REFINED_DAYS", "45")
         _save_setting("REFINED_DAYS_45_MIGRATED", "1")
         log.info("Migrated REFINED_DAYS to 45 (one-time) — takeable filter needs a wider window")
+    # Same 30 → 45 widening for the Kairos snapshot. Kairos needs it MORE than TV:
+    # it runs the same takeable filter (gate_as=alpaca3), its min_trades floor just
+    # went 3 → 5, and acct5 is the younger book with fewer fills per strategy — a
+    # triple squeeze on an already-thin roster. Matching windows also keeps TV-vs-
+    # Kairos comparisons apples-to-apples for the crew's [TV]/[Kairos] tagging.
+    if not _load_setting("KAIROS_REFINED_DAYS_45_MIGRATED"):
+        _save_setting("KAIROS_REFINED_DAYS", "45")
+        _save_setting("KAIROS_REFINED_DAYS_45_MIGRATED", "1")
+        log.info("Migrated KAIROS_REFINED_DAYS to 45 (one-time)")
 
 _restore_risk_settings()
 
