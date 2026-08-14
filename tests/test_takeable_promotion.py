@@ -201,3 +201,23 @@ def test_todays_classification_is_not_persisted(monkeypatch, tmp_path):
     c = sqlite3.connect(db)
     assert c.execute("SELECT COUNT(*) FROM day_classifications").fetchone()[0] == 0
     c.close()
+
+
+# ── Eligibility floors ────────────────────────────────────────────────────────
+
+def test_ondeck_floor_stays_below_the_routing_floor():
+    """On-Deck is the 'next up' watchlist. At parity with the routing floor it
+    empties out — every qualifying name gets routed (20 slots) and there is
+    nothing left to watch. Lowering the routing floor has to bring this with it."""
+    assert a._REFINED_ONDECK_MIN_TRADES < a._REFINED_MIN_TRADES, \
+        "TV Refined On-Deck floor must be strictly below the routing floor"
+    assert a._KAIROS_REFINED_ONDECK_MIN_TRADES < a._KAIROS_REFINED_MIN_TRADES, \
+        "Kairos On-Deck floor must be strictly below the routing floor"
+
+
+def test_routing_floor_is_not_below_the_small_sample_guard():
+    """The floor exists to keep lucky handfuls out. Takeable trades are better
+    evidence than mixed ones, but 5 is the agreed lower bound — below that a
+    PF of 8 on three trades starts routing real money."""
+    assert a._REFINED_MIN_TRADES >= 5
+    assert a._KAIROS_REFINED_MIN_TRADES >= 5

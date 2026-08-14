@@ -8760,16 +8760,22 @@ _REFINED_SIZE_BANDS = [
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# Set to 7 — aligns with the score's trades-component saturation, so a strategy
-# is eligible once its trade count reaches "full sample" weight. Lowered from 10
-# because the 20-day rolling window was gating genuinely top strategies that
-# simply hadn't traded 10 times in the window. Trade-off: thinner samples (7-9
-# trades) can now route, so their Sharpe/PF may swing more between refreshes.
-_REFINED_MIN_TRADES = 7
+# 7 → 5 (2026-08-14) because the DENOMINATOR changed, not the standard. Promotion
+# now ranks on TAKEABLE trades only (see _takeable_by), so "7 trades" silently
+# became "7 trades the book could actually have placed" — a materially higher bar
+# than the one that was calibrated. It starved the roster: n=20 slots, 5 filled,
+# with the whole On-Deck list sitting at 5-6 takeable.
+# 5 takeable trades is also better evidence than the 7 mixed ones the old floor
+# accepted, since every counted trade is one this book could have taken. Not going
+# below 5: PF 8.2 on 5 trades is exactly the small-sample mirage this gate exists
+# to catch.
+_REFINED_MIN_TRADES = 5
 # Looser threshold for the On-Deck watchlist only (display, never routed) — lets
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
-# strategies clear the strict routing bar above.
-_REFINED_ONDECK_MIN_TRADES = 5
+# strategies clear the strict routing bar above. Must stay BELOW the routing floor
+# or On-Deck empties out: at parity every qualifying name gets routed (20 slots)
+# and the watchlist has nothing left to show.
+_REFINED_ONDECK_MIN_TRADES = 3
 
 # Kairos Refined snapshot uses a lower floor than TV — the engine account is newer
 # with fewer fills per strategy. Raised 3→5 as the pool matured (aligned with the
