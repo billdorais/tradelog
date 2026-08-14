@@ -14063,6 +14063,35 @@ def api_blocked_by_account():
 _FARM_TAGS = ("alpaca", "alpaca5")     # ungated audition pools — the control group
 
 
+def _book_position_notional(tag, from_date, to_date, fills_fn=None):
+    """(median notional, sample size) for one book's recent positions.
+
+    Converting a farm % into "what it would have cost THIS book" needs the book's
+    own position size, and the honest source is what it actually traded — not a
+    hardcoded number that silently rots when band sizing changes. Median rather
+    than mean so one oversized position doesn't skew it.
+    """
+    try:
+        if fills_fn is None:
+            rec = next((a for a in (ALPACA_ACCOUNTS or []) if a["tag"] == tag), None)
+            if not rec:
+                return None, 0
+            fills_fn = rec["fills_fn"]
+        paired = _pair_alpaca_fills_lifo(fills_fn(), from_date=from_date, to_date=to_date)
+        sizes = []
+        for rt in paired.get("closed_clean", []):
+            n = abs(float(rt.get("entry_price") or 0)) * abs(float(rt.get("qty") or 0))
+            if n > 0:
+                sizes.append(n)
+        if not sizes:
+            return None, 0
+        import statistics as _st
+        return round(_st.median(sizes), 2), len(sizes)
+    except Exception as _e:
+        log.debug("_book_position_notional failed for %s: %s", tag, _e)
+        return None, 0
+
+
 @app.route("/api/signals/gate_opportunity")
 def api_gate_opportunity():
     """Did the gates cost money? Prices each blocked entry against the FARM.
@@ -14081,7 +14110,8 @@ def api_gate_opportunity():
         might not have exited where the farm exited.
 
     ?days=14 · ?accounts=alpaca2,alpaca3,alpaca4 (default: the curated books)
-    · ?account=<tag> for one book.
+    · ?account=<tag> for one book · ?size=<dollars> to override the assumed
+    position size (default: the median of that book's own recent positions).
     """
     import datetime as _dt
     from collections import defaultdict
@@ -14178,13 +14208,17 @@ def api_gate_opportunity():
                             "farm_pnl": round(float(hit.get("pnl") or 0), 2),
                             "pct": round(pc, 3), "loose": loose})
 
-    def _row(g, st):
+    def _row(g, st, notional):
         n = st["matched"]
         avg = round(sum(st["pcts"]) / n, 3) if n else 0.0
+        # Farm % re-priced at THIS book's own size. Summed per matched trade
+        # rather than avg x count, so one big mover isn't averaged away.
+        est = (round(sum(pc / 100.0 * notional for pc in st["pcts"]), 2)
+               if (n and notional) else None)
         return {"gate": g, "blocked": st["blocked"], "matched": n,
                 "loose_matches": st["loose"], "unanswerable": g in _no_control,
                 "farm_pnl": round(st["dollars"], 2) if n else 0.0,
-                "avg_pct": avg,
+                "avg_pct": avg, "est_dollars": est,
                 "win_rate": round(st["wins"] / n * 100, 1) if n else 0.0,
                 "verdict": ("no control group — the farms are gated too"
                             if g in _no_control else
@@ -14192,12 +14226,21 @@ def api_gate_opportunity():
                             "gate COST money" if avg > 0 else "gate SAVED money")}
 
     label = {a["tag"]: a["label"] for a in (ALPACA_ACCOUNTS or [])}
+    try:    size_override = float(request.args.get("size") or 0) or None
+    except (TypeError, ValueError): size_override = None
     books = []
     for acct in accounts:
-        rows = [_row(g, st) for g, st in
+        notional, nsample = (size_override, 0) if size_override else             _book_position_notional(acct, from_date, to_date)
+        rows = [_row(g, st, notional) for g, st in
                 sorted(stats.get(acct, {}).items(), key=lambda kv: -kv[1]["blocked"])]
+        est_tot = [r["est_dollars"] for r in rows if r["est_dollars"] is not None]
         books.append({"account": acct, "label": label.get(acct, acct),
                       "total_blocks": sum(r["blocked"] for r in rows),
+                      "position_size": notional,
+                      "position_size_source": ("override" if size_override else
+                                               f"median of {nsample} recent position(s)"
+                                               if nsample else "unknown — no recent trades"),
+                      "est_dollars_total": round(sum(est_tot), 2) if est_tot else None,
                       "by_gate": rows})
     # Union of gates seen, most-blocked first — the matrix's row order.
     gate_totals = defaultdict(int)
@@ -14214,6 +14257,9 @@ def api_gate_opportunity():
                         "Exit params can differ per book, so a matched entry might not "
                         "have exited where the farm exited.",
                         "day-type / reversal / side gates apply to the farms too — no control group.",
+                        "Estimated $ = farm % re-priced at this book's median recent position "
+                        "size; it assumes the book would have taken its usual size and exited "
+                        "where the farm exited.",
                     ]})
 
 

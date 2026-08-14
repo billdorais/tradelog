@@ -349,7 +349,9 @@
 
         let html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">'
           + '<thead style="color:#666;font-size:0.62rem"><tr><th style="text-align:left;padding:4px 8px">GATE</th>'
-          + books.map(b => `<th style="text-align:right;padding:4px 8px">${b.label}</th>`).join('')
+          + books.map(b => `<th style="text-align:right;padding:4px 8px">${b.label}`
+              + (b.position_size ? `<br><span style="font-weight:400;color:#555;text-transform:none">@ $${b.position_size.toLocaleString('en-US',{maximumFractionDigits:0})}/pos</span>` : '')
+              + `</th>`).join('')
           + '</tr></thead><tbody>';
         for (const gate of d.gates) {
           html += `<tr style="border-top:1px solid #22242f"><td style="padding:4px 8px;color:#f0a35e">${gate}</td>`;
@@ -365,9 +367,12 @@
               tip  = 'The farm did not take these setups either.';
             } else {
               const cost = g.avg_pct > 0;
+              const dol = (g.est_dollars === null || g.est_dollars === undefined) ? '' :
+                `<br><b style="color:${cost ? '#e08a8a' : '#7FE098'};font-size:0.8rem">`
+                + `${g.est_dollars >= 0 ? '+' : '-'}$${Math.abs(g.est_dollars).toFixed(2)}</b>`;
               cell = `<span style="color:#aaa">${g.blocked} blk</span> `
-                   + `<b style="color:${cost ? '#e08a8a' : '#7FE098'}">${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct.toFixed(2)}%</b>`
-                   + ` <span style="color:#555">(${g.matched})</span>`;
+                   + `<span style="color:${cost ? '#e08a8a' : '#7FE098'}">${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct.toFixed(2)}%</span>`
+                   + ` <span style="color:#555">(${g.matched})</span>` + dol;
               tip  = `${g.matched} matched of ${g.blocked}${g.loose_matches ? `, ${g.loose_matches} loose` : ''}`
                    + ` · farm ${g.farm_pnl >= 0 ? '+' : ''}$${g.farm_pnl.toFixed(2)} · win ${g.win_rate.toFixed(0)}%`
                    + ` · ${g.verdict}`;
@@ -376,9 +381,20 @@
           }
           html += '</tr>';
         }
+        // Per-book total: the headline "what the gates cost this book" number.
+        html += '<tr style="border-top:2px solid #2a2d3e"><td style="padding:6px 8px;color:#ccc;font-weight:600">TOTAL est.</td>';
+        for (const b of books) {
+          const t = b.est_dollars_total;
+          html += `<td style="text-align:right;padding:6px 8px;font-weight:600;color:${
+            (t === null || t === undefined) ? '#555' : (t > 0 ? '#e08a8a' : '#7FE098')}"
+            title="${b.position_size_source}">`
+            + ((t === null || t === undefined) ? '—'
+               : `${t >= 0 ? '+' : '-'}$${Math.abs(t).toFixed(2)}`) + '</td>';
+        }
+        html += '</tr>';
         html += '</tbody></table></div>';
         html += '<div style="font-size:0.64rem;color:#555;margin-top:8px">'
-             + 'Cell = blocks · farm avg % per matched trade (matched count). '
+             + 'Cell = blocks · farm avg % per matched trade (matched count) · estimated $ at this book&rsquo;s own position size. '
              + '<span style="color:#e08a8a">Red</span> = the farm made money on what this gate blocked, so the gate <b>cost</b> you. '
              + '<span style="color:#7FE098">Green</span> = the farm lost, so the gate <b>saved</b> you. Hover for detail.<br>'
              + (d.caveats || []).map(c => '• ' + c).join('<br>') + '</div>';

@@ -189,3 +189,60 @@ def test_books_are_ordered_like_every_other_surface(opp):
     with a.app.test_client() as c:
         d = c.get("/api/signals/gate_opportunity?days=14").get_json()
     assert [b["account"] for b in d["books"]] == ["alpaca4", "alpaca3", "alpaca2"]
+
+
+# ── Dollar estimate at the book's own position size ───────────────────────────
+
+def test_estimates_dollars_at_the_books_own_position_size(opp, monkeypatch):
+    """A farm % is only meaningful once re-priced at the size THIS book trades."""
+    farm_rts = opp
+    farm_rts.append(_rt("AAPL", "S", pnl=50.0, entry_price=100.0, qty=10))   # +5%
+    # Crew's own recent positions are ~$2,000 notional → 5% of 2000 = $100.
+    monkeypatch.setattr(a, "_book_position_notional",
+                        lambda tag, f, t, fills_fn=None: (2000.0, 6))
+    _block("hours", "AAPL")
+    d, g = _gates()
+    book = next(b for b in d["books"] if b["account"] == "alpaca4")
+    assert book["position_size"] == 2000.0
+    assert "median of 6" in book["position_size_source"]
+    assert g["hours"]["est_dollars"] == pytest.approx(100.0)
+    assert book["est_dollars_total"] == pytest.approx(100.0)
+
+
+def test_size_override_is_honoured(opp, monkeypatch):
+    farm_rts = opp
+    farm_rts.append(_rt("AAPL", "S", pnl=50.0, entry_price=100.0, qty=10))   # +5%
+    _block("hours", "AAPL")
+    with a.app.test_client() as c:
+        d = c.get("/api/signals/gate_opportunity?days=14&account=alpaca4&size=1000").get_json()
+    book = d["books"][0]
+    assert book["position_size"] == 1000.0
+    assert book["position_size_source"] == "override"
+    assert book["by_gate"][0]["est_dollars"] == pytest.approx(50.0)   # 5% of 1000
+
+
+def test_estimate_is_null_not_zero_when_size_is_unknown(opp, monkeypatch):
+    """A book with no recent trades has no basis for a dollar figure. Reporting 0
+    would read as 'this gate cost nothing', which is a different claim."""
+    farm_rts = opp
+    farm_rts.append(_rt("AAPL", "S", pnl=50.0))
+    monkeypatch.setattr(a, "_book_position_notional",
+                        lambda tag, f, t, fills_fn=None: (None, 0))
+    _block("hours", "AAPL")
+    d, g = _gates()
+    book = next(b for b in d["books"] if b["account"] == "alpaca4")
+    assert g["hours"]["est_dollars"] is None
+    assert book["est_dollars_total"] is None
+    assert "no recent trades" in book["position_size_source"]
+
+
+def test_notional_uses_median_not_mean(opp, monkeypatch):
+    """One oversized position must not drag the assumed size upward."""
+    rts = [_rt("A", "S", 1.0, entry_price=100.0, qty=10),      # 1,000
+           _rt("B", "S", 1.0, entry_price=100.0, qty=10),      # 1,000
+           _rt("C", "S", 1.0, entry_price=100.0, qty=500)]     # 50,000 outlier
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo",
+                        lambda fills, **kw: {"closed_clean": rts})
+    size, n = a._book_position_notional("alpaca4", "2026-01-01", "2026-12-31",
+                                        fills_fn=lambda: ["x"])
+    assert size == 1000.0 and n == 3      # mean would be ~17,333
