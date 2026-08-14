@@ -213,8 +213,13 @@ TV_PILOT_ALL          = os.environ.get("TV_PILOT_ALL", "")
 #   per entry mechanism — TV Farm -> TV Refined, Kairos Farm -> Kairos Refined.
 #   UI order (paired): TV Farm, TV Refined, Kairos Farm, Kairos Refined, Crew Paper.
 ACCOUNT_META = {
+    # daytype/reversal gates OFF (2026-08-13): the farms are the CONTROL GROUP for
+    # gate-cost analysis (/api/signals/gate_opportunity). While a farm shared a gate
+    # with the curated books, blocks from that gate had no counterfactual and were
+    # unpriceable — day-type alone was ~a third of all blocks. Ungated farms also
+    # match their stated role as full-sample audition pools.
     "1": {"tag": "alpaca",  "label": "TV Farm",        "color": "#9aa0b5",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
+          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
     # reversal_side "off": TV Refined's reversals had ONE winner in 22 over
     # 2026-07-01..17 (−$394, both sides dead) — no edge left to side-gate. TV Farm
     # keeps trading them, so the evidence for a comeback keeps accruing.
@@ -235,7 +240,7 @@ ACCOUNT_META = {
     # each farm's selection pool matches its execution mechanism. Farm exemptions
     # mirror TV Farm: no profit lock, no daily-loss guard, no reversal-side gate.
     "5": {"tag": "alpaca5", "label": "Kairos Farm",    "color": "#5FC8D4",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
+          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -14063,6 +14068,26 @@ def api_blocked_by_account():
 _FARM_TAGS = ("alpaca", "alpaca5")     # ungated audition pools — the control group
 
 
+def _gates_without_control():
+    """Gate names the farms are ALSO subject to, so a block has no counterfactual.
+
+    Derived from config, not hardcoded: the farms' exemptions are the whole basis
+    of the comparison, so if one is ever re-gated (or un-gated) this has to follow.
+    A hardcoded list silently mislabels answerable gates — it initially marked
+    "reversal" unanswerable when the farms carry no reversal-side policy at all,
+    hiding a third of the priceable sample.
+    """
+    out = set()
+    farms = set(_FARM_TAGS)
+    if farms & (set(DAYTYPE_GATE_ACCOUNTS) | set(DAYTYPE_REVERSAL_GATE_ACCOUNTS)):
+        out.add("day-type")
+    if any(_REVERSAL_SIDE_BY_TAG.get(t) for t in farms):
+        out.add("reversal")
+    # "side" is a per-RULE gate (crew side_gate); farm targets come from the
+    # PILOT_ALL fan-out and never carry one, so it always has a control.
+    return out
+
+
 def _book_position_notional(tag, from_date, to_date, fills_fn=None):
     """(median notional, sample size) for one book's recent positions.
 
@@ -14169,8 +14194,8 @@ def api_gate_opportunity():
         base = abs(float(rt.get("entry_price") or 0)) * abs(float(rt.get("qty") or 0))
         return (float(rt.get("pnl") or 0) / base * 100.0) if base else 0.0
 
-    # These gate the farms too, so there is no control group for them.
-    _no_control = {"day-type", "reversal", "side"}
+    # Config-derived: only gates the FARMS are also subject to lack a control.
+    _no_control = _gates_without_control()
 
     stats = defaultdict(lambda: defaultdict(
         lambda: {"blocked": 0, "matched": 0, "loose": 0, "pcts": [],

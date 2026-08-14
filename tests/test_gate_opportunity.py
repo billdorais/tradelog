@@ -92,9 +92,12 @@ def test_gate_that_blocked_a_loser_is_reported_as_saving_money(opp):
     assert g["rvol"]["avg_pct"] < 0
 
 
-def test_day_type_has_no_control_group(opp):
-    """The farms are day-type gated too, so those blocks are unanswerable — they
-    must NOT be scored as zero, which would read as 'the gate cost nothing'."""
+def test_a_gate_the_farms_share_is_unanswerable(opp, monkeypatch):
+    """A gate the farms are ALSO subject to has no counterfactual, and must not be
+    scored as zero — zero reads as 'the gate cost nothing', a different claim.
+    Farms are ungated on day-type as of 2026-08-13, so re-gate one to exercise it."""
+    monkeypatch.setattr(a, "DAYTYPE_GATE_ACCOUNTS",
+                        set(a.DAYTYPE_GATE_ACCOUNTS) | {"alpaca"})
     farm_rts = opp
     farm_rts.append(_rt("UBER", "S_CAM_BREAKOUT_R3S3", pnl=99.0))   # must be ignored
     _block("day-type", "UBER")
@@ -103,6 +106,17 @@ def test_day_type_has_no_control_group(opp):
     assert row["unanswerable"] is True
     assert row["matched"] == 0 and row["farm_pnl"] == 0.0
     assert "no control group" in row["verdict"]
+
+
+def test_day_type_is_priceable_now_that_the_farms_are_ungated(opp):
+    """With the farms ungated, day-type blocks finally get a counterfactual —
+    the reason for turning those gates off on the farms."""
+    farm_rts = opp
+    farm_rts.append(_rt("UBER", "S_CAM_BREAKOUT_R3S3", pnl=99.0))
+    _block("day-type", "UBER")
+    _, g = _gates()
+    assert g["day-type"]["unanswerable"] is False
+    assert g["day-type"]["matched"] == 1
 
 
 def test_no_farm_match_is_distinguished_from_a_zero_result(opp):
@@ -246,3 +260,37 @@ def test_notional_uses_median_not_mean(opp, monkeypatch):
     size, n = a._book_position_notional("alpaca4", "2026-01-01", "2026-12-31",
                                         fills_fn=lambda: ["x"])
     assert size == 1000.0 and n == 3      # mean would be ~17,333
+
+
+# ── Which gates have a control group is CONFIG-derived, not hardcoded ─────────
+
+def test_farms_are_exempt_from_the_curated_gates():
+    """The farms are the control group; sharing a gate with the curated books
+    makes that gate's blocks unpriceable. Guards against a farm being re-gated
+    without anyone noticing the analysis went blind."""
+    for farm in a._FARM_TAGS:
+        assert farm not in a.DAYTYPE_GATE_ACCOUNTS, f"{farm} re-gated on day-type"
+        assert farm not in a.DAYTYPE_REVERSAL_GATE_ACCOUNTS, f"{farm} re-gated on reversal day-type"
+        assert not a._REVERSAL_SIDE_BY_TAG.get(farm), f"{farm} has a reversal-side policy"
+    assert a._gates_without_control() == set(), "some gate lost its control group"
+
+
+def test_no_control_follows_config_if_a_farm_is_re_gated(monkeypatch):
+    """If a farm ever shares the day-type gate again, that gate must go back to
+    reporting 'no control group' rather than a bogus number."""
+    monkeypatch.setattr(a, "DAYTYPE_GATE_ACCOUNTS", set(a.DAYTYPE_GATE_ACCOUNTS) | {"alpaca"})
+    assert "day-type" in a._gates_without_control()
+
+
+def test_reversal_blocks_are_priceable(opp):
+    """Regression: 'reversal' was hardcoded as unanswerable, but the farms carry no
+    reversal-side policy, so those blocks always had a counterfactual. That
+    mislabel hid roughly a third of the priceable sample."""
+    farm_rts = opp
+    farm_rts.append(_rt("AMZN", "S_CAM_REVERSAL_R4S4", pnl=30.0))
+    a._record_block("alpaca4", "AMZN", "S_CAM_REVERSAL_R4S4", "short", "reversal", "policy")
+    a._flush_blocked_targets()
+    _, g = _gates()
+    assert g["reversal"]["unanswerable"] is False
+    assert g["reversal"]["matched"] == 1
+    assert g["reversal"]["verdict"] == "gate COST money"
