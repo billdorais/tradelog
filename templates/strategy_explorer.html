@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Explorer — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    .content { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+    .btn { background: transparent; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .btn:hover { border-color: #4a5568; }
+    .btn.on { border-color: #3a7a4e; color: #7FE098; }
+    select.f { background: #1a1d2e; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 8px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+    /* Bands are titled with the QUESTION they answer, not the metric name, and
+       always appear in the same order — you should be able to click through
+       strategies and compare band 3 without re-reading labels. */
+    .band-q { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #f0a35e; margin-bottom: 2px; }
+    .band-sub { font-size: 0.72rem; color: #666; margin-bottom: 12px; }
+    /* Card rail: 4 facts max. 18 cards x 6 metrics is 108 numbers nobody reads. */
+    .rail { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 10px; }
+    .card { flex: 0 0 auto; width: 152px; background: #171a24; border: 1px solid #232735; border-radius: 8px; padding: 9px 10px; cursor: pointer; transition: border-color .12s; }
+    .card:hover { border-color: #3d4258; }
+    .card.sel { border-color: #7FE098; background: #16211a; }
+    .card .nm { font-size: 0.64rem; color: #9aa0b5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+    .card .pl { font-size: 0.95rem; font-weight: 700; }
+    .card .n  { font-size: 0.62rem; color: #666; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .tile { background: #171a24; border: 1px solid #232735; border-radius: 8px; padding: 10px 12px; }
+    .tile .k { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+    .tile .v { font-size: 1.25rem; font-weight: 700; margin-top: 3px; }
+    .tile .s { font-size: 0.66rem; color: #666; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+    th { text-align: right; padding: 5px 9px; color: #666; font-weight: 500; font-size: 0.64rem; text-transform: uppercase; }
+    th:first-child, td:first-child { text-align: left; }
+    td { text-align: right; padding: 5px 9px; border-top: 1px solid #1e2130; }
+    .pos { color: #7FE098; } .neg { color: #e08a8a; }
+    /* Under the sample floor everything renders gray — no green, no red. Colour is
+       a claim, and a claim on three trades is one the data cannot support. */
+    .thin { color: #5a5f70 !important; }
+    .empty { color: #666; font-size: 0.85rem; padding: 20px 0; text-align: center; }
+    .scroll { max-height: 420px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+      <h1>Kairos Automata — Strategy Explorer</h1>
+    </div>
+    <div style="position:relative;display:inline-block">
+      <button onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+      <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:190px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+        <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+        <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+        <a href="/simulate" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Replay</a>
+        <a href="/strategy-explorer" style="display:block;padding:10px 16px;color:#7FE098;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128202; Strategy Explorer</a>
+        <a href="/crew" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#10022; Crew</a>
+        <a href="/diagnostics" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128736; Diagnostics</a>
+        <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <select class="f" id="acctSel" onchange="loadAll()">
+        <option value="4">Crew Paper</option>
+        <option value="3">Kairos Refined</option>
+        <option value="2">TV Refined</option>
+        <option value="5">Kairos Farm</option>
+        <option value="1">TV Farm</option>
+      </select>
+      <select class="f" id="daysSel" onchange="loadAll()">
+        <option value="14">14d</option><option value="30" selected>30d</option>
+        <option value="60">60d</option><option value="90">90d</option>
+      </select>
+      <span id="meta" style="font-size:0.75rem;color:#666">loading…</span>
+      <span style="margin-left:auto;font-size:0.7rem;color:#666" title="Rates and P&L below this many trades render gray instead of green/red — colour is a claim the sample cannot support.">min sample for colour:</span>
+      <select class="f" id="minN" onchange="render()">
+        <option value="5">5</option><option value="8" selected>8</option><option value="10">10</option>
+      </select>
+    </div>
+
+    <div class="panel">
+      <div class="band-q">Strategies</div>
+      <div class="band-sub">Click a card. Sorted by net P&amp;L. The sparkline is the equity shape; the number is the total.</div>
+      <div class="rail" id="rail"></div>
+    </div>
+
+    <div id="detail"></div>
+  </div>
+
+<script>
+  let DATA = null, SEL = null, chart = null, cutChart = null;
+  let showSpy = false, showAll = true;
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
+  const esc = s => String(s == null ? '' : s).replace(/</g, '&lt;');
+  const cls = (v, thin) => thin ? 'thin' : (v >= 0 ? 'pos' : 'neg');
+
+  async function loadAll() {
+    const acct = document.getElementById('acctSel').value;
+    const days = document.getElementById('daysSel').value;
+    document.getElementById('meta').textContent = 'loading…';
+    try {
+      const d = await fetch(`/api/crew/strategies?account=${acct}&days=${days}`).then(r => r.json());
+      if (d.error) { document.getElementById('meta').textContent = d.error; return; }
+      DATA = d;
+      document.getElementById('meta').textContent =
+        `${d.label} · ${d.strategy_count} strategies · ${d.from} → ${d.to}`;
+      if (!DATA.strategies.some(s => s.name === SEL)) SEL = (DATA.strategies[0] || {}).name || null;
+      render();
+    } catch (e) { document.getElementById('meta').textContent = 'failed: ' + e; }
+  }
+
+  function sparkline(curve, w = 130, h = 26) {
+    if (!curve || curve.length < 2) return `<div style="height:${h}px"></div>`;
+    const ys = curve.map(p => p.cum);
+    const lo = Math.min(0, ...ys), hi = Math.max(0, ...ys), rng = (hi - lo) || 1;
+    const pts = ys.map((y, i) =>
+      `${(i / (ys.length - 1) * w).toFixed(1)},${(h - (y - lo) / rng * h).toFixed(1)}`).join(' ');
+    const zero = (h - (0 - lo) / rng * h).toFixed(1);
+    return `<svg width="${w}" height="${h}" style="display:block">
+      <line x1="0" y1="${zero}" x2="${w}" y2="${zero}" stroke="#2a2d3e" stroke-width="1"/>
+      <polyline points="${pts}" fill="none" stroke="${ys[ys.length - 1] >= 0 ? '#7FE098' : '#e08a8a'}" stroke-width="1.5"/></svg>`;
+  }
+
+  function render() {
+    if (!DATA) return;
+    const minN = parseInt(document.getElementById('minN').value, 10);
+    document.getElementById('rail').innerHTML = (DATA.strategies || []).map(s => `
+      <div class="card ${s.name === SEL ? 'sel' : ''}" onclick="pick('${esc(s.name)}')" title="${esc(s.name)}">
+        <div class="nm">${esc(s.name.replace(/_V02_5MIN$/, ''))}</div>
+        ${sparkline(s.curve)}
+        <div class="pl ${cls(s.net_pnl, s.trades < minN)}">${money(s.net_pnl)}</div>
+        <div class="n">${s.trades} trade${s.trades === 1 ? '' : 's'}</div>
+      </div>`).join('') || '<div class="empty">No closed trades in this window.</div>';
+    renderDetail(minN);
+  }
+
+  function pick(name) { SEL = name; render(); }
+
+  function renderDetail(minN) {
+    const s = (DATA.strategies || []).find(x => x.name === SEL);
+    const host = document.getElementById('detail');
+    if (!s) { host.innerHTML = ''; return; }
+    const thin = s.trades < minN;
+    const se = s.expectancy_se;
+    const cutWinners = (s.hold_win_median_min != null && s.hold_loss_median_min != null
+                        && s.hold_win_median_min < s.hold_loss_median_min);
+
+    host.innerHTML = `
+      <div class="panel">
+        <div class="band-q">1 · Is it making money?</div>
+        <div class="band-sub">${esc(s.name)}${thin
+          ? ' — <span style="color:#f0a35e">fewer than ' + minN + ' trades; every number here is provisional</span>' : ''}</div>
+        <div class="tiles">
+          <div class="tile"><div class="k">Expectancy / trade</div>
+            <div class="v ${cls(s.expectancy, thin)}">${money(s.expectancy)}</div>
+            <div class="s">${se == null ? 'n=1 — no error estimate' : '± ' + money(se) + ' std error'}</div></div>
+          <div class="tile"><div class="k">Net P&amp;L</div>
+            <div class="v ${cls(s.net_pnl, thin)}">${money(s.net_pnl)}</div>
+            <div class="s">over ${s.trades} trade${s.trades === 1 ? '' : 's'}</div></div>
+          <div class="tile"><div class="k">Win rate</div>
+            <div class="v ${thin ? 'thin' : ''}">${s.win_rate.toFixed(1)}%</div>
+            <div class="s">${Math.round(s.win_rate / 100 * s.trades)}/${s.trades}</div></div>
+          <div class="tile"><div class="k">Max drawdown</div>
+            <div class="v ${thin ? 'thin' : 'neg'}">${money(s.max_drawdown)}</div>
+            <div class="s">peak to trough, realized</div></div>
+          <div class="tile"><div class="k">Hold: win / loss</div>
+            <div class="v ${thin ? 'thin' : ''}">${s.hold_win_median_min ?? '—'} / ${s.hold_loss_median_min ?? '—'}<span style="font-size:0.7rem;color:#666"> min</span></div>
+            <div class="s">${cutWinners
+              ? '<span style="color:#f0a35e">winners cut shorter than losers</span>' : 'median, by outcome'}</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">2 · How did it get there?</div>
+        <div class="band-sub">Cumulative realized P&amp;L by trade. Turn on the other strategies to see whether this one is typical or an outlier.</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="btn ${showAll ? 'on' : ''}" onclick="showAll=!showAll;render()">All strategies</button>
+          <button class="btn ${showSpy ? 'on' : ''}" onclick="showSpy=!showSpy;render()">SPY overlay</button>
+        </div>
+        <div style="height:280px"><canvas id="eq"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">3 · When does it work?</div>
+        <div class="band-sub">Bucketed on <b>entry</b> time (ET) — the decision your hours gate acts on. The Analysis page buckets on <i>exit</i>; the two answer different questions and will not agree.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div>
+            <table><thead><tr><th>Entry bucket</th><th>Trades</th><th>Win %</th><th>Total</th><th>Avg</th></tr></thead><tbody>
+            ${(s.by_bucket || []).map(b => {
+              const t = b.trades < minN;
+              return `<tr><td>${b.bucket}</td><td class="${t ? 'thin' : ''}">${b.trades}</td>
+                <td class="${t ? 'thin' : ''}">${b.win_rate.toFixed(0)}%</td>
+                <td class="${cls(b.pnl, t)}">${money(b.pnl)}</td>
+                <td class="${cls(b.avg, t)}">${money(b.avg)}</td></tr>`;
+            }).join('') || '<tr><td colspan="5" class="empty">No entries.</td></tr>'}
+            </tbody></table>
+          </div>
+          <div><div style="height:200px"><canvas id="cut"></canvas></div>
+            <div style="font-size:0.66rem;color:#666;margin-top:4px">Cumulative if you only <b>entered before</b> each time.</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">4 · Show me the receipts</div>
+        <div class="band-sub">Most recent first, up to 200.</div>
+        <div class="scroll">
+        <table><thead><tr><th>Entry (UTC)</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Exit reason</th></tr></thead><tbody>
+        ${(s.rows || []).map(r => `<tr>
+          <td>${esc(r.entry_time).replace('T', ' ')}</td><td>${esc(r.ticker)}</td>
+          <td style="color:${r.side === 'SHORT' ? '#e08a8a' : '#7FE098'}">${esc(r.side)}</td>
+          <td>${esc(r.qty)}</td><td>${r.entry == null ? '—' : Number(r.entry).toFixed(2)}</td>
+          <td>${r.exit == null ? '—' : Number(r.exit).toFixed(2)}</td>
+          <td class="${r.pnl >= 0 ? 'pos' : 'neg'}">${money(r.pnl)}</td>
+          <td style="color:#888">${esc(r.exit_reason || '')}</td></tr>`).join('')}
+        </tbody></table></div>
+      </div>`;
+
+    drawEquity(s);
+    drawCutoffs(s);
+  }
+
+  function drawEquity(s) {
+    const el = document.getElementById('eq');
+    if (!el) return;
+    if (chart) { chart.destroy(); chart = null; }
+    const ds = [];
+    if (showAll) {
+      // Spaghetti: every other strategy in faint gray. 18 distinct colours plus a
+      // legend is unreadable; gray with one highlight shows dispersion for free.
+      for (const o of DATA.strategies) {
+        if (o.name === SEL || !o.curve || o.curve.length < 2) continue;
+        ds.push({ label: o.name, data: o.curve.map((p, i) => ({ x: i, y: p.cum })),
+                  borderColor: 'rgba(150,158,180,0.18)', borderWidth: 1,
+                  pointRadius: 0, tension: 0.15 });
+      }
+    }
+    const selIdx = ds.length;
+    ds.push({ label: s.name, data: s.curve.map((p, i) => ({ x: i, y: p.cum })),
+              borderColor: '#7FE098', borderWidth: 2.5, pointRadius: 0, tension: 0.15 });
+    chart = new Chart(el, {
+      type: 'line', data: { datasets: ds },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+        plugins: { legend: { display: false },
+                   tooltip: { filter: i => i.datasetIndex === selIdx } },
+        scales: {
+          x: { type: 'linear', title: { display: true, text: 'trade #', color: '#555' },
+               ticks: { color: '#555' }, grid: { color: '#1a1d2a' } },
+          y: { ticks: { color: '#555', callback: v => '$' + v }, grid: { color: '#1a1d2a' } },
+        },
+      },
+    });
+    if (showSpy) drawSpy();
+  }
+
+  async function drawSpy() {
+    // Reuses the existing rebased-benchmark endpoint rather than duplicating it.
+    // SPY is a % series and the strategy curve is dollars, so it gets its own axis.
+    try {
+      const acct = document.getElementById('acctSel').value;
+      const d = await fetch(`/api/perf/vs_benchmark?accounts=${acct}&from_date=${DATA.from}&to_date=${DATA.to}`)
+        .then(r => r.json());
+      const pts = d.benchmark || d.spy || [];
+      if (!pts.length || !chart) return;
+      chart.data.datasets.push({
+        label: 'SPY %', data: pts.map((p, i) => ({ x: i, y: p.pct ?? p.value ?? p.y })),
+        borderColor: '#9aa0b5', borderDash: [5, 4], borderWidth: 1.5,
+        pointRadius: 0, yAxisID: 'y2',
+      });
+      chart.options.scales.y2 = { position: 'right',
+        ticks: { color: '#777', callback: v => v + '%' }, grid: { display: false } };
+      chart.update();
+    } catch (e) { /* benchmark unavailable — leave the P&L curve intact */ }
+  }
+
+  function drawCutoffs(s) {
+    const el = document.getElementById('cut');
+    if (!el) return;
+    if (cutChart) { cutChart.destroy(); cutChart = null; }
+    cutChart = new Chart(el, {
+      type: 'line',
+      data: { labels: (s.entry_cutoffs || []).map(c => c.time),
+              datasets: [{ data: (s.entry_cutoffs || []).map(c => c.cum),
+                           borderColor: '#70a8f5', borderWidth: 2, pointRadius: 3,
+                           tension: 0.15, fill: false }] },
+      options: { responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: '#555' }, grid: { color: '#1a1d2a' } },
+                  y: { ticks: { color: '#555', callback: v => '$' + v }, grid: { color: '#1a1d2a' } } } },
+    });
+  }
+
+  loadAll();
+</script>
+</body>
+</html>

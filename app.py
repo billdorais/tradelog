@@ -8310,6 +8310,13 @@ def strategies():
     return render_template("strategies.html")
 
 
+@app.route("/strategy-explorer")
+def strategy_explorer():
+    """Per-strategy performance explorer. Distinct from /strategies, which is the
+    Pine Script uploader/converter."""
+    return render_template("strategy_explorer.html")
+
+
 
 @app.route("/optimize")
 def optimize_page():
@@ -12516,6 +12523,144 @@ def alpaca_portfolio_history():
     except Exception as e:
         log.error("alpaca_portfolio_history error: %s", e)
         return jsonify([])
+
+
+def _strategy_breakdown(round_trips, bucket_mins=30):
+    """Per-strategy detail for the strategy explorer.
+
+    Buckets on ENTRY time-of-day, not exit. Entry is the decision you control and
+    the thing the hours gate acts on, so "9:30-10:00 loses money" is directly
+    actionable. (The older Trade Time Analysis panel buckets on exit; they answer
+    different questions and will not agree.)
+    """
+    import datetime as _dt
+    import statistics as _stats
+    from collections import defaultdict
+    from zoneinfo import ZoneInfo as _ZI
+    et = _ZI("America/New_York")
+
+    def _et_dt(iso):
+        try:
+            d = _dt.datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_dt.timezone.utc)
+            return d.astimezone(et)
+        except Exception:
+            return None
+
+    by_strat = defaultdict(list)
+    for c in round_trips:
+        if c.get("strategy"):
+            by_strat[c["strategy"]].append(c)
+
+    out = []
+    for name, rts in by_strat.items():
+        rts = sorted(rts, key=lambda c: c.get("exit_time") or "")
+        pnls = [float(c.get("pnl") or 0) for c in rts]
+        n = len(pnls)
+        if not n:
+            continue
+        # Equity curve + max drawdown from the running peak.
+        curve, cum, peak, mdd = [], 0.0, 0.0, 0.0
+        for c, p in zip(rts, pnls):
+            cum += p
+            peak = max(peak, cum)
+            mdd = min(mdd, cum - peak)
+            curve.append({"t": (c.get("exit_time") or "")[:19], "cum": round(cum, 2)})
+        wins = [p for p in pnls if p > 0]
+        exp  = sum(pnls) / n
+        # Standard error of the mean — the honest companion to expectancy at these
+        # sample sizes. A PF of 8 on 10 trades says nothing; +$46 +/- $38 does.
+        se = (_stats.stdev(pnls) / (n ** 0.5)) if n > 1 else None
+
+        # Entry-time buckets.
+        buckets = defaultdict(list)
+        for c, p in zip(rts, pnls):
+            d = _et_dt(c.get("entry_time"))
+            if d is None:
+                continue
+            slot = (d.hour * 60 + d.minute) // bucket_mins * bucket_mins
+            buckets[slot].append(p)
+        by_bucket = []
+        for slot in sorted(buckets):
+            v = buckets[slot]
+            by_bucket.append({
+                "bucket": f"{slot // 60:02d}:{slot % 60:02d}",
+                "trades": len(v),
+                "pnl": round(sum(v), 2),
+                "avg": round(sum(v) / len(v), 2),
+                "win_rate": round(sum(1 for x in v if x > 0) / len(v) * 100, 1),
+            })
+        # "Only ENTER before HH:MM" — cumulative as later entries are excluded.
+        cutoffs, run = [], 0.0
+        for b in by_bucket:
+            run += b["pnl"]
+            cutoffs.append({"time": b["bucket"], "cum": round(run, 2)})
+
+        # Hold time, split by outcome. Winners held SHORTER than losers is the
+        # classic cut-winners/ride-losers signature.
+        hw, hl = [], []
+        for c, p in zip(rts, pnls):
+            a_, b_ = _et_dt(c.get("entry_time")), _et_dt(c.get("exit_time"))
+            if not a_ or not b_:
+                continue
+            (hw if p > 0 else hl).append((b_ - a_).total_seconds() / 60.0)
+        def _med(x): return round(_stats.median(x), 1) if x else None
+
+        out.append({
+            "name": name, "trades": n,
+            "net_pnl": round(sum(pnls), 2),
+            "win_rate": round(len(wins) / n * 100, 1),
+            "expectancy": round(exp, 2),
+            "expectancy_se": round(se, 2) if se is not None else None,
+            "max_drawdown": round(mdd, 2),
+            "curve": curve, "by_bucket": by_bucket, "entry_cutoffs": cutoffs,
+            "hold_win_median_min": _med(hw), "hold_loss_median_min": _med(hl),
+            "rows": [{
+                "entry_time": (c.get("entry_time") or "")[:19],
+                "exit_time":  (c.get("exit_time") or "")[:19],
+                "ticker": c.get("ticker"), "side": c.get("side"),
+                "qty": c.get("qty"), "entry": c.get("entry_price"),
+                "exit": c.get("exit_price"), "pnl": round(float(c.get("pnl") or 0), 2),
+                "exit_reason": c.get("exit_reason"),
+            } for c in reversed(rts)][:200],
+        })
+    out.sort(key=lambda x: x["net_pnl"], reverse=True)
+    return out
+
+
+@app.route("/api/crew/strategies")
+def api_crew_strategies():
+    """Every strategy on one account, with the detail the explorer page needs.
+
+    Returned in ONE call rather than per-click: the page overlays all strategy
+    curves at once (spaghetti), so it needs them all anyway, and 18 crew picks is
+    a small payload.
+
+    ?account=4&days=30
+    """
+    import datetime as _dt
+    acct = str(request.args.get("account") or "4")
+    try:    days = max(1, min(365, int(request.args.get("days") or 30)))
+    except (TypeError, ValueError): days = 30
+    rec = ACCOUNTS_BY_NUM.get(acct)
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": f"account {acct} not configured"}), 400
+    to_d   = _dt.datetime.now(_dt.timezone.utc).date()
+    from_d = to_d - _dt.timedelta(days=days)
+    try:
+        paired = _pair_alpaca_fills_lifo(rec["fills_fn"](),
+                                         from_date=from_d.isoformat(),
+                                         to_date=to_d.isoformat())
+        strategies = _strategy_breakdown(paired.get("closed_clean", []))
+        return jsonify({"account": acct, "label": rec.get("label", acct),
+                        "days": days, "from": from_d.isoformat(),
+                        "to": to_d.isoformat(),
+                        "strategy_count": len(strategies),
+                        "strategies": strategies})
+    except Exception as e:
+        log.error("crew strategies failed: %s", e, exc_info=True)
+        return jsonify({"error": str(e)[:300]}), 500
 
 
 @app.route("/api/perf/vs_benchmark")
