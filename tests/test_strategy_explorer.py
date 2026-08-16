@@ -155,3 +155,50 @@ def test_zero_pnl_trade_counts_as_a_loss():
     s = a._strategy_breakdown([_rt("S", 10), _rt("S", 0)])[0]
     assert s["loss_count"] == 1 and s["win_rate"] == 50.0
     assert s["profit_factor"] is None      # gross loss is 0 → undefined, not 10
+
+
+def test_curves_are_forward_filled_onto_a_shared_date_axis(monkeypatch):
+    """A benchmark is a daily series and trade #5 is a different date for every
+    strategy, so the overlay only means anything on a shared DATE axis. Between
+    trading days the cumulative carries forward rather than dropping to zero."""
+    class _B: _paper = True
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM",
+                        {"4": {"tag": "alpaca4", "num": "4", "label": "Crew Paper",
+                               "broker": _B(), "fills_fn": lambda: ["x"]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo",
+                        lambda fills, **kw: {"closed_clean": [
+                            _rt("S", 100, date="2026-08-10"),
+                            _rt("S", -40, date="2026-08-12")]})
+    monkeypatch.setattr(a, "_fetch_daily_closes", lambda tk, s_, e_: [
+        {"date": "2026-08-10", "close": 100.0},
+        {"date": "2026-08-11", "close": 101.0},
+        {"date": "2026-08-12", "close": 102.0}])
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/crew/strategies?account=4&days=30").get_json()
+    assert d["dates"] == ["2026-08-10", "2026-08-11", "2026-08-12"]
+    assert d["spy_pct"] == [0.0, 1.0, 2.0]
+    s = d["strategies"][0]
+    # 100 on the 10th, carried through the 11th (no trades), 60 after the 12th.
+    assert s["daily_cum"] == [100.0, 100.0, 60.0]
+    assert len(s["daily_cum"]) == len(d["dates"])
+    # notional is the base SPY gets scaled to: 100.0 price x 10 qty
+    assert s["notional"] == 1000.0
+
+
+def test_benchmark_failure_leaves_the_curves_usable(monkeypatch):
+    """No SPY data must not take the P&L chart down with it."""
+    class _B: _paper = True
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM",
+                        {"4": {"tag": "alpaca4", "num": "4", "label": "Crew",
+                               "broker": _B(), "fills_fn": lambda: ["x"]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo",
+                        lambda fills, **kw: {"closed_clean": [_rt("S", 10)]})
+    def _boom(tk, s_, e_):
+        raise RuntimeError("no bars")
+    monkeypatch.setattr(a, "_fetch_daily_closes", _boom)
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/crew/strategies?account=4&days=30").get_json()
+    assert d["dates"] == [] and d["spy_pct"] == []
+    assert d["strategies"][0]["net_pnl"] == 10.0     # curve still there

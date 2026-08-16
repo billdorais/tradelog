@@ -197,7 +197,7 @@
 
       <div class="panel">
         <div class="band-q">2 · How did it get there?</div>
-        <div class="band-sub">Cumulative realized P&amp;L by trade. Turn on the other strategies to see whether this one is typical or an outlier.</div>
+        <div class="band-sub">Cumulative realized P&amp;L by date. SPY is converted to <b>dollars on this strategy&rsquo;s own median position size</b>${s.notional ? ' (' + money(s.notional) + '/position)' : ''} &mdash; same units, one axis, no dual-axis scaling.</div>
         <div style="display:flex;gap:8px;margin-bottom:10px">
           <button class="btn ${showAll ? 'on' : ''}" onclick="showAll=!showAll;render()">All strategies</button>
           <button class="btn ${showSpy ? 'on' : ''}" onclick="showSpy=!showSpy;render()">SPY overlay</button>
@@ -248,54 +248,56 @@
     const el = document.getElementById('eq');
     if (!el) return;
     if (chart) { chart.destroy(); chart = null; }
+    // X axis is DATE, not trade index. A benchmark is a daily series, and trade #5
+    // is a different date for every strategy — overlaying the two on a trade-index
+    // axis compares nothing. Curves are forward-filled onto the shared date axis.
+    const labels = DATA.dates || [];
+    const useDates = labels.length > 0 && Array.isArray(s.daily_cum);
     const ds = [];
     if (showAll) {
-      // Spaghetti: every other strategy in faint gray. 18 distinct colours plus a
+      // Spaghetti: every other strategy faint gray. 18 distinct colours plus a
       // legend is unreadable; gray with one highlight shows dispersion for free.
       for (const o of DATA.strategies) {
-        if (o.name === SEL || !o.curve || o.curve.length < 2) continue;
-        ds.push({ label: o.name, data: o.curve.map((p, i) => ({ x: i, y: p.cum })),
-                  borderColor: 'rgba(150,158,180,0.18)', borderWidth: 1,
-                  pointRadius: 0, tension: 0.15 });
+        if (o.name === SEL) continue;
+        const d = useDates ? o.daily_cum : (o.curve || []).map(p => p.cum);
+        if (!d || d.length < 2) continue;
+        ds.push({ label: o.name, data: d, borderColor: 'rgba(150,158,180,0.18)',
+                  borderWidth: 1, pointRadius: 0, tension: 0.15 });
       }
     }
     const selIdx = ds.length;
-    ds.push({ label: s.name, data: s.curve.map((p, i) => ({ x: i, y: p.cum })),
+    ds.push({ label: s.name,
+              data: useDates ? s.daily_cum : (s.curve || []).map(p => p.cum),
               borderColor: '#7FE098', borderWidth: 2.5, pointRadius: 0, tension: 0.15 });
+
+    if (showSpy && useDates && (DATA.spy_pct || []).length && s.notional) {
+      // Same units, same axis. SPY % is converted to DOLLARS on this strategy's own
+      // median position size, so the line answers "what would the same money in SPY
+      // have done". A second y-axis would let any two series be scaled into
+      // agreement, which is exactly the comparison we do not want to invite.
+      ds.push({ label: 'SPY (same $)',
+                data: DATA.spy_pct.map(p => Math.round(p / 100 * s.notional * 100) / 100),
+                borderColor: '#9aa0b5', borderDash: [5, 4], borderWidth: 1.5,
+                pointRadius: 0, tension: 0 });
+    }
+
     chart = new Chart(el, {
-      type: 'line', data: { datasets: ds },
+      type: 'line',
+      data: { labels: useDates ? labels : (s.curve || []).map((_, i) => i + 1), datasets: ds },
       options: {
-        responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
-        plugins: { legend: { display: false },
-                   tooltip: { filter: i => i.datasetIndex === selIdx } },
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { filter: i => i.datasetIndex >= selIdx,
+                     callbacks: { label: c => `${c.dataset.label}: ${money(c.parsed.y)}` } },
+        },
         scales: {
-          x: { type: 'linear', title: { display: true, text: 'trade #', color: '#555' },
-               ticks: { color: '#555' }, grid: { color: '#1a1d2a' } },
+          x: { ticks: { color: '#555', maxTicksLimit: 10 }, grid: { color: '#1a1d2a' } },
           y: { ticks: { color: '#555', callback: v => '$' + v }, grid: { color: '#1a1d2a' } },
         },
       },
     });
-    if (showSpy) drawSpy();
-  }
-
-  async function drawSpy() {
-    // Reuses the existing rebased-benchmark endpoint rather than duplicating it.
-    // SPY is a % series and the strategy curve is dollars, so it gets its own axis.
-    try {
-      const acct = document.getElementById('acctSel').value;
-      const d = await fetch(`/api/perf/vs_benchmark?accounts=${acct}&from_date=${DATA.from}&to_date=${DATA.to}`)
-        .then(r => r.json());
-      const pts = d.benchmark || d.spy || [];
-      if (!pts.length || !chart) return;
-      chart.data.datasets.push({
-        label: 'SPY %', data: pts.map((p, i) => ({ x: i, y: p.pct ?? p.value ?? p.y })),
-        borderColor: '#9aa0b5', borderDash: [5, 4], borderWidth: 1.5,
-        pointRadius: 0, yAxisID: 'y2',
-      });
-      chart.options.scales.y2 = { position: 'right',
-        ticks: { color: '#777', callback: v => v + '%' }, grid: { display: false } };
-      chart.update();
-    } catch (e) { /* benchmark unavailable — leave the P&L curve intact */ }
   }
 
   function drawCutoffs(s) {

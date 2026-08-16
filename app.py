@@ -12614,8 +12614,26 @@ def _strategy_breakdown(round_trips, bucket_mins=30):
             (hw if p > 0 else hl).append((b_ - a_).total_seconds() / 60.0)
         def _med(x): return round(_stats.median(x), 1) if x else None
 
+        # Cumulative P&L keyed by DATE (last value wins for a day), so the curve can
+        # share an x-axis with a daily benchmark. Plotting against trade index makes
+        # a benchmark overlay meaningless — trade #5 is a different date for every
+        # strategy.
+        cum_by_date, running = {}, 0.0
+        for c, p in zip(rts, pnls):
+            running += p
+            d = (c.get("exit_time") or c.get("date") or "")[:10]
+            if d:
+                cum_by_date[d] = round(running, 2)
+        # Median position notional — the base SPY gets scaled to, so the overlay
+        # reads "the same dollars in SPY", in the same units on the same axis.
+        notionals = [abs(float(c.get("entry_price") or 0)) * abs(float(c.get("qty") or 0))
+                     for c in rts]
+        notionals = [x for x in notionals if x > 0]
+        notional = round(_stats.median(notionals), 2) if notionals else None
+
         out.append({
             "name": name, "trades": n,
+            "cum_by_date": cum_by_date, "notional": notional,
             "net_pnl": round(sum(pnls), 2),
             "win_rate": round(len(wins) / n * 100, 1),
             "profit_factor": round(pf, 2) if pf is not None else None,
@@ -12663,9 +12681,28 @@ def api_crew_strategies():
                                          from_date=from_d.isoformat(),
                                          to_date=to_d.isoformat())
         strategies = _strategy_breakdown(paired.get("closed_clean", []))
+        # Shared daily axis + benchmark, fetched once. Every strategy curve is
+        # forward-filled onto these dates so the overlay lines up; SPY is returned
+        # as % and scaled to each strategy's own notional client-side.
+        dates, spy_pct = [], []
+        try:
+            bench = _fetch_daily_closes("SPY", from_d, to_d)
+            if bench:
+                c0 = bench[0]["close"] or 1.0
+                dates   = [b["date"] for b in bench]
+                spy_pct = [round((b["close"] / c0 - 1) * 100, 3) for b in bench]
+        except Exception as _be:
+            log.debug("strategy explorer benchmark fetch failed: %s", _be)
+        for st in strategies:
+            cbd, run, series = st.pop("cum_by_date", {}), 0.0, []
+            for d in dates:
+                if d in cbd:
+                    run = cbd[d]
+                series.append(run)          # forward-fill between trading days
+            st["daily_cum"] = series
         return jsonify({"account": acct, "label": rec.get("label", acct),
                         "days": days, "from": from_d.isoformat(),
-                        "to": to_d.isoformat(),
+                        "to": to_d.isoformat(), "dates": dates, "spy_pct": spy_pct,
                         "strategy_count": len(strategies),
                         "strategies": strategies})
     except Exception as e:
