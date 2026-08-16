@@ -175,13 +175,23 @@
           <div class="tile"><div class="k">Win rate</div>
             <div class="v ${thin ? 'thin' : ''}">${s.win_rate.toFixed(1)}%</div>
             <div class="s">${Math.round(s.win_rate / 100 * s.trades)}/${s.trades}</div></div>
+          <div class="tile" title="Gross wins divided by gross losses. Highly unstable at low loss counts — one more loser can halve it.">
+            <div class="k">Profit factor</div>
+            <div class="v ${thin ? 'thin' : (s.profit_factor == null || s.profit_factor >= 1 ? 'pos' : 'neg')}">${
+              s.profit_factor == null ? '∞' : s.profit_factor.toFixed(2)}</div>
+            <div class="s">${money(s.gross_win)} won / ${money(s.gross_loss)} lost${
+              s.loss_count <= 2 ? ' <span style="color:#f0a35e">· only ' + s.loss_count + ' loser' + (s.loss_count === 1 ? '' : 's') + '</span>' : ''}</div></div>
           <div class="tile"><div class="k">Max drawdown</div>
             <div class="v ${thin ? 'thin' : 'neg'}">${money(s.max_drawdown)}</div>
             <div class="s">peak to trough, realized</div></div>
-          <div class="tile"><div class="k">Hold: win / loss</div>
-            <div class="v ${thin ? 'thin' : ''}">${s.hold_win_median_min ?? '—'} / ${s.hold_loss_median_min ?? '—'}<span style="font-size:0.7rem;color:#666"> min</span></div>
+          <div class="tile" title="Median minutes from entry fill to exit fill. Not a ratio — these are two separate durations."><div class="k">Median hold time</div>
+            <div class="v ${thin ? 'thin' : ''}" style="font-size:1.05rem">
+              <span style="color:#7FE098">${s.hold_win_median_min ?? '—'}m</span>
+              <span style="color:#555;font-weight:400"> win &nbsp;·&nbsp; </span>
+              <span style="color:#e08a8a">${s.hold_loss_median_min ?? '—'}m</span>
+              <span style="color:#555;font-weight:400"> loss</span></div>
             <div class="s">${cutWinners
-              ? '<span style="color:#f0a35e">winners cut shorter than losers</span>' : 'median, by outcome'}</div></div>
+              ? '<span style="color:#f0a35e">winners cut shorter than losers</span>' : 'entry fill → exit fill'}</div></div>
         </div>
       </div>
 

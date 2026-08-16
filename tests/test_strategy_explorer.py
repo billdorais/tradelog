@@ -130,3 +130,28 @@ def test_unconfigured_account_is_a_clean_error(monkeypatch):
     with a.app.test_client() as c:
         r = c.get("/api/crew/strategies?account=9")
     assert r.status_code == 400 and "not configured" in r.get_json()["error"]
+
+
+def test_profit_factor_and_its_inputs():
+    """PF is reported with the gross figures it comes from, so an 8.29 or an ∞ is
+    interpretable rather than just impressive."""
+    out = a._strategy_breakdown([_rt("S", 100), _rt("S", 60), _rt("S", -20)])
+    s = out[0]
+    assert s["gross_win"] == 160.0 and s["gross_loss"] == 20.0
+    assert s["profit_factor"] == pytest.approx(8.0)
+    assert s["loss_count"] == 1
+
+
+def test_no_losses_gives_null_profit_factor_not_a_big_number():
+    """'No losers yet' and 'a large finite PF' are different claims — the UI shows
+    the former as ∞, so it must not be collapsed into a number."""
+    s = a._strategy_breakdown([_rt("S", 10), _rt("S", 20)])[0]
+    assert s["profit_factor"] is None
+    assert s["loss_count"] == 0
+
+
+def test_zero_pnl_trade_counts_as_a_loss():
+    """Matches the analysis endpoint's _stats(), so the two never disagree."""
+    s = a._strategy_breakdown([_rt("S", 10), _rt("S", 0)])[0]
+    assert s["loss_count"] == 1 and s["win_rate"] == 50.0
+    assert s["profit_factor"] is None      # gross loss is 0 → undefined, not 10

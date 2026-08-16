@@ -12567,7 +12567,14 @@ def _strategy_breakdown(round_trips, bucket_mins=30):
             peak = max(peak, cum)
             mdd = min(mdd, cum - peak)
             curve.append({"t": (c.get("exit_time") or "")[:19], "cum": round(cum, 2)})
-        wins = [p for p in pnls if p > 0]
+        wins   = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        gross_win  = sum(wins)
+        gross_loss = abs(sum(losses))
+        # None == no losing trades yet, which the UI shows as ∞. That is a very
+        # different statement from a large finite PF, so it is not collapsed to a
+        # number. Zero-P&L trades count as losses, matching the analysis endpoint.
+        pf = (gross_win / gross_loss) if gross_loss > 0 else None
         exp  = sum(pnls) / n
         # Standard error of the mean — the honest companion to expectancy at these
         # sample sizes. A PF of 8 on 10 trades says nothing; +$46 +/- $38 does.
@@ -12611,6 +12618,9 @@ def _strategy_breakdown(round_trips, bucket_mins=30):
             "name": name, "trades": n,
             "net_pnl": round(sum(pnls), 2),
             "win_rate": round(len(wins) / n * 100, 1),
+            "profit_factor": round(pf, 2) if pf is not None else None,
+            "gross_win": round(gross_win, 2), "gross_loss": round(gross_loss, 2),
+            "loss_count": len(losses),
             "expectancy": round(exp, 2),
             "expectancy_se": round(se, 2) if se is not None else None,
             "max_drawdown": round(mdd, 2),
