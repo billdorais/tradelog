@@ -224,17 +224,17 @@ ACCOUNT_META = {
     # 2026-07-01..17 (−$394, both sides dead) — no edge left to side-gate. TV Farm
     # keeps trading them, so the evidence for a comeback keeps accruing.
     "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True, "rvol_gate": True},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True},
     # reversal_side "long": pause Kairos REVERSAL SHORTS only. The short_filter_test
     # (Jul '26, 309 setups) put reversal shorts at breakeven-at-best even with the
     # confirmation entry (reject -> 20-EMA break); Kairos reversal LONGS have been
     # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "rvol_gate": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True},
     # reversal_side "long": Crew Paper pauses reversal SHORTS too (same breakeven
     # finding). A hard gate rather than relying on the crew to stop wiring them.
     "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "open_loc_gate": True},
     # Kairos Farm — the engine-entry twin of TV Farm. Full-sample audition pool
     # fired by ENGINE_PILOT_ALL=alpaca5:$1000 (TV Farm gets TV via TV_PILOT_ALL), so
     # each farm's selection pool matches its execution mechanism. Farm exemptions
@@ -296,6 +296,20 @@ RVOL_GATE_MIN       = float(os.environ.get("RVOL_GATE_MIN", "1.5"))        # req
 RVOL_GATE_SHORT_CAP = float(os.environ.get("RVOL_GATE_SHORT_CAP", "3.0"))  # block shorts >= this (0 = off)
 RVOL_GATE_LOOKBACK  = int(os.environ.get("RVOL_GATE_LOOKBACK", "20"))      # baseline bars
 RVOL_GATE_ACCOUNTS  = _accounts_with("rvol_gate")
+
+# Opening-location gate (breakouts only). Blocks entries whose SESSION OPENED
+# already at/past the level being broken — "exhausted on arrival" in Thor Young's
+# framing. Default OFF and LONG-only, because that is where the evidence is: the
+# LONG at/past-extreme cell is 19 trades at -$385 (the largest bucket and the
+# biggest loser), while SHORT at/past-extreme is 7 trades at -$23, which is noise.
+# Blocking both sides would cost real sample for no demonstrated benefit.
+OPEN_LOC_GATE_ENABLED = os.environ.get("OPEN_LOC_GATE_ENABLED", "0") == "1"
+OPEN_LOC_GATE_BUCKETS = {b.strip().lower() for b in
+                         os.environ.get("OPEN_LOC_GATE_BUCKETS", "at/past extreme").split(",")
+                         if b.strip()}
+OPEN_LOC_GATE_SIDES   = {x.strip().lower() for x in
+                         os.environ.get("OPEN_LOC_GATE_SIDES", "long").split(",") if x.strip()}
+OPEN_LOC_GATE_ACCOUNTS = _accounts_with("open_loc_gate")
 # Which RVOL definition the LIVE gate uses:
 #   'trailing' — entry bar vs prior N bars of the same session (self-deflates at
 #                the open; silent for the first ~5 min until min_bars exist).
@@ -3536,6 +3550,9 @@ def risk_status():
         "strikes_per_level_short": STRIKES_PER_LEVEL_SHORT,
         "strikes":             _strikes_status_list(),
         "rvol_gate_enabled":   RVOL_GATE_ENABLED,
+        "open_loc_gate_enabled": OPEN_LOC_GATE_ENABLED,
+        "open_loc_gate_sides":   sorted(OPEN_LOC_GATE_SIDES),
+        "open_loc_gate_buckets": sorted(OPEN_LOC_GATE_BUCKETS),
         "rvol_gate_min":       RVOL_GATE_MIN,
         "rvol_gate_short_cap": RVOL_GATE_SHORT_CAP,
         "rvol_gate_method":    RVOL_GATE_METHOD,
@@ -3636,7 +3653,7 @@ def api_max_hold_release():
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, OPEN_LOC_GATE_ENABLED, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -3784,6 +3801,14 @@ def risk_set_limit():
         _save_setting("RVOL_GATE_ENABLED", "1" if RVOL_GATE_ENABLED else "0")
         log.info("RVOL_GATE_ENABLED set to %s (TV Refined + Kairos Refined breakouts)", RVOL_GATE_ENABLED)
         changed.append("rvol_gate_enabled")
+    if "open_loc_gate_enabled" in data:
+        OPEN_LOC_GATE_ENABLED = bool(data["open_loc_gate_enabled"])
+        _update_env_file("OPEN_LOC_GATE_ENABLED", "1" if OPEN_LOC_GATE_ENABLED else "0")
+        _save_setting("OPEN_LOC_GATE_ENABLED", "1" if OPEN_LOC_GATE_ENABLED else "0")
+        log.info("OPEN_LOC_GATE_ENABLED set to %s (curated breakouts, %s side(s), buckets %s)",
+                 OPEN_LOC_GATE_ENABLED, ",".join(sorted(OPEN_LOC_GATE_SIDES)),
+                 ",".join(sorted(OPEN_LOC_GATE_BUCKETS)))
+        changed.append("open_loc_gate_enabled")
     if "rvol_gate_min" in data:
         try:
             RVOL_GATE_MIN = max(0.0, float(data["rvol_gate_min"]))
@@ -17974,6 +17999,15 @@ def _engine_pilot_tick(now_et, today):
                 continue
             # RVOL gate (gated books only): skip breakout entries below the RVOL
             # floor, or short blow-offs >= the cap. Reversals pass; fails open.
+            # Opening-location gate: skip breakouts whose session opened already
+            # at/past the level ("exhausted on arrival"). Reversals pass.
+            _ol_block, _ol_reason, _ol_bucket = _open_location_gate_block(
+                strat, tk, today, side, broker_tag)
+            if _ol_block:
+                log.info("ENGINE PILOT skip %s %s [%s]: %s", act, tk, broker_tag, _ol_reason)
+                _record_block(broker_tag, tk, strat, side, "open-location", _ol_reason,
+                              source="engine", once_per_day=True)
+                continue
             _rv_block, _rv_reason, _rv_val = _rvol_gate_block(strat, side, tk, broker_tag,
                                                               now_dt=now_utc)
             if _rv_block:
@@ -19015,6 +19049,86 @@ def _fetch_day_open(ticker: str, date_str: str):
     return None
 
 
+def _open_location_gate_block(strategy, ticker, date, side, account_tag):
+    """Opening-location entry gate. Returns (blocked, reason, bucket).
+
+    Blocks a BREAKOUT whose session opened in a configured bucket (default
+    "at/past extreme") on a configured side (default LONG only). Reuses the same
+    _open_frac/_open_bucket the Long/Short diagnostic uses, so the gate can never
+    disagree with the numbers the decision was made on.
+
+    FAILS OPEN. An unclassifiable ticker, a missing session open, or a non-breakout
+    all return not-blocked — matching every other gate here. A gate that blocks on
+    missing data silently stops trading when a data feed hiccups.
+    """
+    if "BREAKOUT" not in (strategy or "").upper():
+        return False, "", None
+    _ov = _account_gate_overrides(account_tag).get("open_loc")
+    if _ov is not None:
+        if not _ov.get("enabled"):
+            return False, "", None
+        buckets = {b.lower() for b in (_ov.get("buckets") or OPEN_LOC_GATE_BUCKETS)}
+        sides   = {x.lower() for x in (_ov.get("sides")   or OPEN_LOC_GATE_SIDES)}
+    else:
+        if not OPEN_LOC_GATE_ENABLED or account_tag not in OPEN_LOC_GATE_ACCOUNTS:
+            return False, "", None
+        buckets, sides = OPEN_LOC_GATE_BUCKETS, OPEN_LOC_GATE_SIDES
+    sd = (side or "").strip().lower()
+    if sd not in sides:
+        return False, "", None
+    try:
+        cls  = _get_day_classification(ticker, date)
+        opx  = _get_day_open(ticker, date)
+        frac = _open_frac(strategy, (side or "").upper(), cls, opx)
+        if frac is None:
+            return False, "", None
+        bucket = _open_bucket(frac)
+    except Exception as _e:
+        log.debug("open-location gate unresolved for %s %s: %s", ticker, date, _e)
+        return False, "", None
+    if bucket.lower() in buckets:
+        return True, (f"open-location gate: {side} breakout blocked — session opened "
+                      f"'{bucket}' ({frac:.2f}x to the level)"), bucket
+    return False, "", bucket
+
+
+def _open_frac(strat, side, cls, open_px):
+    """How far toward its target level the session OPENED, as a fraction.
+
+    0 = opened at the CPR mid (full room to travel), 1 = opened right at the level
+    (no room), >1 = opened beyond it. Thor Young's heuristic: a breakout that opens
+    near the CPR and travels to the level is a real range extension; one that opens
+    already at the extreme is exhausted on arrival and tends to revert.
+
+    Module-level so the Long/Short diagnostic and the live entry gate share ONE
+    implementation — a second copy would let the gate drift from the numbers the
+    decision was made on. Returns None when unresolvable (non-breakout, missing
+    classification, missing open), and every caller treats None as "allow".
+    """
+    if "BREAKOUT" not in (strat or "").upper() or not cls or open_px is None:
+        return None
+    mid  = cls.get("mid_cpr")
+    band = _kind_band(strat)                     # "BREAKOUT R4S4" / "BREAKOUT R3S3"
+    if side == "LONG":
+        lvl = cls.get("r4") if "R4S4" in band else cls.get("r3") if "R3S3" in band else None
+    else:
+        lvl = cls.get("s4") if "R4S4" in band else cls.get("s3") if "R3S3" in band else None
+    if mid is None or lvl is None:
+        return None
+    denom = (lvl - mid) if side == "LONG" else (mid - lvl)
+    if denom <= 0:
+        return None
+    return ((open_px - mid) if side == "LONG" else (mid - open_px)) / denom
+
+
+def _open_bucket(frac):
+    """Bucket an _open_frac into the four labels the diagnostic reports."""
+    if   frac <= 0.33: return "near CPR (room)"
+    elif frac <= 0.66: return "mid-travel"
+    elif frac <= 1.00: return "extended"
+    else:              return "at/past extreme"
+
+
 def _get_day_open(ticker: str, date_str: str):
     """Cached wrapper around _fetch_day_open (per session)."""
     key = (ticker.upper(), date_str)
@@ -19691,28 +19805,6 @@ def api_alpaca_ls_breakdown():
     # level is a real range-extension move; one that opens already at the extreme
     # is exhausted on arrival and tends to revert. Split by (side, bucket) so we
     # can see whether the losing breakouts opened extended.
-    def _open_frac(strat, side, cls, open_px):
-        if "BREAKOUT" not in (strat or "").upper() or not cls or open_px is None:
-            return None
-        mid  = cls.get("mid_cpr")
-        band = _kind_band(strat)                     # "BREAKOUT R4S4" / "BREAKOUT R3S3"
-        if side == "LONG":
-            lvl = cls.get("r4") if "R4S4" in band else cls.get("r3") if "R3S3" in band else None
-        else:
-            lvl = cls.get("s4") if "R4S4" in band else cls.get("s3") if "R3S3" in band else None
-        if mid is None or lvl is None:
-            return None
-        denom = (lvl - mid) if side == "LONG" else (mid - lvl)
-        if denom <= 0:
-            return None
-        return ((open_px - mid) if side == "LONG" else (mid - open_px)) / denom
-
-    def _open_bucket(frac):
-        if   frac <= 0.33: return "near CPR (room)"
-        elif frac <= 0.66: return "mid-travel"
-        elif frac <= 1.00: return "extended"
-        else:              return "at/past extreme"
-
     ol = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})   # (side, open_bucket)
     ol_unresolved = 0
     for t in trades:

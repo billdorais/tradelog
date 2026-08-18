@@ -859,6 +859,30 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _kept
 
+    # Opening-location gate (entries only, breakouts): drop targets whose account
+    # gates breakouts that OPENED at/past the level being broken. Per-target so
+    # gating one book never touches another. Reversals pass; fails open.
+    if not _is_exit and alpaca_targets:
+        _ol_kept, _ol_dropped = [], []
+        for bt in alpaca_targets:
+            _acct_tag = _alpaca_broker_name(bt[0])
+            _blk, _why, _bkt = app._open_location_gate_block(
+                strategy_name, ticker, _gate_today, _gate_entry_side or "", _acct_tag)
+            if _blk:
+                _ol_dropped.append((_acct_tag, _why))
+            else:
+                _ol_kept.append(bt)
+        if _ol_dropped:
+            app.log.info("Open-location gate: %s %s — skipped %s (%s)", order_action, ticker,
+                         ",".join(t for t, _w in _ol_dropped), _ol_dropped[0][1])
+            for _t, _w in _ol_dropped:
+                app._record_block(_t, ticker, strategy_name, _gate_entry_side,
+                                  "open-location", _w)
+            if not _ol_kept and conn:
+                app._update_exec(cur, trade_id, "skipped", _ol_dropped[0][1])
+                conn.commit()
+        alpaca_targets = _ol_kept
+
     # Per-account reversal policy (entries only): drop targets whose account takes
     # reversals on one side only (e.g. "short") or takes none at all ("off", TV
     # Refined). Accounts with no policy (Kairos, Crew Paper, the farms) pass — the

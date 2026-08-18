@@ -471,6 +471,25 @@
     </div>
 
     <!-- Row 4b: RVOL entry gate — TV Refined + Kairos Refined breakouts -->
+    <div class="rg-card" style="margin-top:10px;border-color:#8a6ea8">
+      <div class="rg-card-title" style="color:#b39ddb">&#9670; Opening-Location Gate — block breakouts that opened at the level</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px">
+          Block breakouts whose session opened <b>at/past</b> the level
+          <span style="color:#666;font-size:0.68rem">curated books · breakouts only · <b>LONG only</b> · farms ungated</span>
+          <span id="openLocBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="openLocDot"></span>
+            <span id="openLocText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row" id="openLocBtnRow">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setOpenLocGate(true)">Enable</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setOpenLocGate(false)">Off</button>
+        </div>
+        <div class="risk-hint">Thor Young&rsquo;s &ldquo;exhausted on arrival&rdquo;: a breakout that opens near the CPR and travels to the level is a real range extension; one that opens already <i>at</i> the level has no room left and tends to revert. Evidence at time of build &mdash; <b>LONG at/past extreme: 19 trades, 31.6% win, &minus;$385</b> (the largest bucket and the biggest loser). SHORT at/past extreme was 7 trades at &minus;$23, which is noise, so <b>shorts are deliberately not gated</b>. Fails open when the day can&rsquo;t be classified. The farms stay ungated so this gate&rsquo;s blocks stay priceable on <a href="/diagnostics" style="color:#7FE098">Diagnostics &rarr; gate cost</a>.</div>
+      </div>
+    </div>
+
     <div class="rg-card" style="margin-top:10px;border-color:#5a8fa8">
       <div class="rg-card-title" style="color:#7bb3d6">&#9670; RVOL Entry Gate — block thin-volume breakouts</div>
       <div class="risk-section">
@@ -1289,6 +1308,15 @@
       if (rvCapInput && document.activeElement !== rvCapInput && data.rvol_gate_short_cap != null) {
         rvCapInput.value = data.rvol_gate_short_cap;
       }
+      const olBadge = document.getElementById('openLocBadge');
+      if (olBadge) {
+        const on = !!data.open_loc_gate_enabled;
+        olBadge.className = 'risk-status-badge ' + (on ? 'active' : 'disabled');
+        document.getElementById('openLocDot').className = 'risk-dot ' + (on ? 'green' : 'grey');
+        document.getElementById('openLocText').textContent = on
+          ? ((data.open_loc_gate_sides || ['long']).join('/') + ' · ' + (data.open_loc_gate_buckets || []).join(', '))
+          : 'Disabled';
+      }
       const rvBadge = document.getElementById('rvolGateBadge');
       const rvDot   = document.getElementById('rvolGateDot');
       const rvText  = document.getElementById('rvolGateText');
@@ -1685,6 +1713,11 @@
   }
 
   // RVOL entry gate (TV Refined + Kairos Refined breakouts)
+  async function setOpenLocGate(on) {
+    try { await _postLimit({open_loc_gate_enabled: !!on}); }
+    catch (e) { console.error('setOpenLocGate failed:', e); }
+  }
+
   async function setRvolGate(on) {
     try { await _postLimit({rvol_gate_enabled: !!on}); }
     catch(e) { console.error('setRvolGate failed:', e); }
