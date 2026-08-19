@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Recap — Kairos Automata</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -37,6 +38,15 @@
     .script-line { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid #171a24; font-size: 0.85rem; line-height: 1.55; }
     .script-seg { flex: 0 0 150px; color: #f0a35e; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; padding-top: 3px; }
     .day-chart { height: 300px; }
+    .eq-wrap { height: 240px; margin-bottom: 14px; }
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+    .mini { border: 1px solid #1e2130; border-radius: 8px; overflow: hidden; background: #0f1219; }
+    .mini-head { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-bottom: 1px solid #1e2130; }
+    .mini-name { font-size: 0.76rem; font-weight: 700; color: #ddd; }
+    .mini-meta { font-size: 0.68rem; color: #666; }
+    .mini-pl { margin-left: auto; font-weight: 700; font-size: 0.8rem; }
+    .mini-chart { height: 200px; }
     .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1d2e; border: 1px solid #3a7a4e; color: #7FE098; padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
     .toast.show { opacity: 1; }
   </style>
@@ -85,7 +95,9 @@
   <div class="toast" id="toast"></div>
 
 <script>
-  let DATA = null, GATES = null, period = 'last_week', chart = null;
+  let DATA = null, GATES = null, period = 'last_week';
+  let eqChart = null;          // Chart.js equity curve
+  const miniCharts = [];       // lightweight-charts instances, destroyed on reload
   const PERIODS = ['last_week', 'this_week', 'last_month', 'this_month'];
 
   function toggleNavMenu() {
@@ -139,8 +151,9 @@
       DATA = d;
       document.getElementById('meta').textContent = `${d.label} · ${d.week_label}`;
       render();
+      drawEquity();         // cumulative P&L, same period as everything else
       loadGates();          // the Refusal panel — separate call, it is the slow one
-      loadTradeChart();     // trade of the week
+      loadSixCharts();      // top 3 + bottom 3, one session each
     } catch (e) {
       document.getElementById('meta').textContent = 'failed: ' + e;
     }
@@ -162,7 +175,9 @@
     document.getElementById('body').innerHTML = `
       <div class="panel">
         <div class="band-q">1 · The book</div>
-        <div class="band-sub">Crew Paper only — one book, one narrative. <b>Paper money.</b></div>
+        <div class="band-sub">Crew Paper only — one book, one narrative. <b>Paper money.</b>
+          Cumulative P&amp;L from closed trades over the selected period.</div>
+        <div class="eq-wrap"><canvas id="eq"></canvas></div>
         <div class="tiles">
           <div class="tile"><div class="k">Week P&amp;L</div>
             <div class="v ${cls(b.pnl)}">${money(b.pnl)}</div>
@@ -199,14 +214,16 @@
       </div>
 
       <div class="panel">
-        <div class="band-q">2 · Trade of the week</div>
-        <div class="band-sub" id="totSub">${d.best_trade
-          ? `${esc(d.best_trade.side)} ${esc(d.best_trade.ticker)} on ${esc(d.best_trade.date)} —
-             ${money(d.best_trade.pnl)}, ${esc(d.best_trade.qty)} @ ${d.best_trade.entry_price}
-             → ${d.best_trade.exit_price}, out on ${esc(d.best_trade.exit_reason || 'exit')}.
-             Times ET.`
-          : 'No trades this week.'}</div>
-        <div id="totChart"></div>
+        <div class="band-q">2 · The charts</div>
+        <div class="band-sub">${d.best_trade
+          ? `<b>Trade of the week:</b> ${esc(d.best_trade.side)} ${esc(d.best_trade.ticker)} on
+             ${esc(d.best_trade.date)} — ${money(d.best_trade.pnl)},
+             ${esc(d.best_trade.qty)} @ ${d.best_trade.entry_price} → ${d.best_trade.exit_price},
+             out on ${esc(d.best_trade.exit_reason || 'exit')}.`
+          : 'No trades in this period.'}
+          <br>Each strategy is charted on its biggest-move session, with Camarilla levels and
+          entry/exit arrows. Times ET.</div>
+        <div id="sixCharts"><div class="empty">loading charts…</div></div>
       </div>
 
       <div class="panel">
@@ -287,46 +304,127 @@
     }
   }
 
-  async function loadTradeChart() {
-    const t = DATA && DATA.best_trade;
-    const host = document.getElementById('totChart');
-    if (!host || !t) return;
-    host.innerHTML = '<div class="empty">loading chart…</div>';
-    try {
-      const d = await fetch(`/api/strategy/day_charts?strategy=${encodeURIComponent(t.strategy)}`
-                            + `&account=4&days=60&limit=40`).then(r => r.json());
-      const ss = (d.sessions || []).find(x => x.date === t.date);
-      if (!ss || !(ss.bars || []).length) {
-        host.innerHTML = '<div class="empty">No bars for that session.</div>'; return;
-      }
-      host.innerHTML = '<div class="day-chart" id="totCanvas"></div>';
-      const el = document.getElementById('totCanvas');
-      if (chart) { chart.remove(); chart = null; }
-      chart = LightweightCharts.createChart(el, {
-        width: el.clientWidth, height: 300,
-        layout: { background: { color: '#0f1219' }, textColor: '#8a90a0', fontSize: 10 },
-        grid: { vertLines: { color: '#171a24' }, horzLines: { color: '#171a24' } },
-        rightPriceScale: { borderColor: '#2a2d3e' },
-        timeScale: { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false,
-                     tickMarkFormatter: (x) => _etTime.format(new Date(x * 1000)) },
-        localization: { timeFormatter: (x) => _etFull.format(new Date(x * 1000)) },
-        crosshair: { mode: 0 },
-      });
-      const series = chart.addCandlestickSeries({
-        upColor: '#26a69a', downColor: '#ef5350', borderUpColor: '#26a69a',
-        borderDownColor: '#ef5350', wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
-      series.setData(ss.bars.map(b => ({
-        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
-      if (ss.markers) series.setMarkers(ss.markers);
-      for (const lv of (ss.levels || [])) {
-        series.createPriceLine({ price: lv.price, color: lv.color, lineWidth: 1,
-          lineStyle: lv.style === 'dashed' ? 2 : 0, axisLabelVisible: true, title: lv.title });
-      }
-      chart.timeScale().fitContent();
-      new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
-    } catch (e) {
-      host.innerHTML = `<div class="empty">failed: ${esc(e)}</div>`;
+  // Cumulative P&L from closed trades — the dashboard's curve, scoped to the recap
+  // period and to Crew Paper. One point per closed trade, ordered by exit.
+  function drawEquity() {
+    const el = document.getElementById('eq');
+    if (!el) return;
+    if (eqChart) { eqChart.destroy(); eqChart = null; }
+    const curve = (DATA.book && DATA.book.curve) || [];
+    if (!curve.length) {
+      const c = el.getContext('2d');
+      c.clearRect(0, 0, el.width, el.height);
+      c.fillStyle = '#555'; c.font = '13px DM Sans, sans-serif'; c.textAlign = 'center';
+      c.fillText('No closed trades in this period', el.width / 2, 40);
+      return;
     }
+    eqChart = new Chart(el, {
+      type: 'line',
+      data: {
+        labels: curve.map(p => p.date),
+        datasets: [{
+          data: curve.map(p => p.cum),
+          borderColor: '#7FE098', borderWidth: 2,
+          pointRadius: curve.length > 60 ? 0 : 2.5, pointBackgroundColor: '#7FE098',
+          tension: 0.15,
+          // Green above the zero line, red below — the shape reads at a glance.
+          fill: { target: 'origin',
+                  above: 'rgba(127,224,152,0.13)', below: 'rgba(224,138,138,0.13)' },
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (it) => {
+                const p = curve[it[0].dataIndex];
+                return `${p.date} ${_etHM(p.t)} ET`;
+              },
+              label: (it) => {
+                const p = curve[it.dataIndex];
+                return [`Cumulative ${money(p.cum)}`,
+                        `${p.ticker || ''} ${money(p.pnl)}`,
+                        String(p.strategy || '').replace(/_V02_5MIN$/, '')];
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { color: '#171a24' },
+               ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+          y: { grid: { color: '#171a24' },
+               ticks: { color: '#666', callback: (v) => money(v) } },
+        },
+      },
+    });
+  }
+
+  // Top 3 + bottom 3, each charted on its biggest-move session. from == to so the
+  // server fetches exactly that one session's bars/pivots rather than the window's.
+  async function loadSixCharts() {
+    const host = document.getElementById('sixCharts');
+    if (!host) return;
+    for (const c of miniCharts.splice(0)) { try { c.remove(); } catch (e) {} }
+
+    const picks = [
+      ...(DATA.winners || []).map(w => ({ ...w, kind: 'win' })),
+      ...(DATA.losers  || []).map(l => ({ ...l, kind: 'loss' })),
+    ].filter(p => p.chart_date);
+    if (!picks.length) { host.innerHTML = '<div class="empty">No strategies to chart.</div>'; return; }
+
+    host.innerHTML = '<div class="chart-grid">' + picks.map((p, i) => `
+      <div class="mini">
+        <div class="mini-head">
+          <span class="mini-name">${esc(p.name.replace(/_V02_5MIN$/, ''))}</span>
+          <span class="mini-meta">${esc(p.chart_date)} · ${p.trades} tr</span>
+          <span class="mini-pl ${p.kind === 'win' ? 'pos' : 'neg'}">${money(p.pnl)}</span>
+        </div>
+        <div class="mini-chart" id="mc${i}"><div class="empty">loading…</div></div>
+      </div>`).join('') + '</div>';
+
+    await Promise.all(picks.map(async (p, i) => {
+      const el = document.getElementById('mc' + i);
+      try {
+        const d = await fetch(`/api/strategy/day_charts?strategy=${encodeURIComponent(p.name)}`
+                              + `&account=4&from=${p.chart_date}&to=${p.chart_date}&limit=1`)
+                        .then(r => r.json());
+        const ss = (d.sessions || [])[0];
+        if (!ss || !(ss.bars || []).length) { el.innerHTML = '<div class="empty">No bars.</div>'; return; }
+        el.innerHTML = '';
+        miniCharts.push(makeChart(el, ss, 200));
+      } catch (e) {
+        el.innerHTML = `<div class="empty">failed</div>`;
+      }
+    }));
+  }
+
+  // Shared candle-chart builder — same rendering as the Chart Review page.
+  function makeChart(el, ss, height) {
+    const c = LightweightCharts.createChart(el, {
+      width: el.clientWidth, height,
+      layout: { background: { color: '#0f1219' }, textColor: '#8a90a0', fontSize: 10 },
+      grid: { vertLines: { color: '#171a24' }, horzLines: { color: '#171a24' } },
+      rightPriceScale: { borderColor: '#2a2d3e' },
+      timeScale: { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false,
+                   tickMarkFormatter: (x) => _etTime.format(new Date(x * 1000)) },
+      localization: { timeFormatter: (x) => _etFull.format(new Date(x * 1000)) },
+      crosshair: { mode: 0 },
+    });
+    const series = c.addCandlestickSeries({
+      upColor: '#26a69a', downColor: '#ef5350', borderUpColor: '#26a69a',
+      borderDownColor: '#ef5350', wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+    series.setData(ss.bars.map(b => ({
+      time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    if (ss.markers) series.setMarkers(ss.markers);
+    for (const lv of (ss.levels || [])) {
+      series.createPriceLine({ price: lv.price, color: lv.color, lineWidth: 1,
+        lineStyle: lv.style === 'dashed' ? 2 : 0, axisLabelVisible: true, title: lv.title });
+    }
+    c.timeScale().fitContent();
+    new ResizeObserver(() => c.applyOptions({ width: el.clientWidth })).observe(el);
+    return c;
   }
 
   function copyScript() {

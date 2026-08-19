@@ -13654,8 +13654,19 @@ def api_strategy_day_charts():
     try:    limit = max(1, min(40, int(request.args.get("limit") or 12)))
     except (TypeError, ValueError): limit = 12
 
-    to_d   = _dt.datetime.now(_dt.timezone.utc).date()
-    from_d = to_d - _dt.timedelta(days=days)
+    # Explicit window beats the rolling lookback. Callers that want ONE session
+    # (the recap charts a specific date per strategy) pass from == to, so only that
+    # session's bars and pivots get fetched instead of the whole lookback's.
+    _af, _at = (request.args.get("from") or "").strip(), (request.args.get("to") or "").strip()
+    if _af and _at:
+        try:
+            from_d = _dt.date.fromisoformat(_af)
+            to_d   = _dt.date.fromisoformat(_at)
+        except ValueError:
+            return jsonify({"error": "from/to must be YYYY-MM-DD"}), 400
+    else:
+        to_d   = _dt.datetime.now(_dt.timezone.utc).date()
+        from_d = to_d - _dt.timedelta(days=days)
     try:
         paired = _pair_alpaca_fills_lifo(rec["fills_fn"](),
                                          from_date=from_d.isoformat(),
@@ -14968,10 +14979,42 @@ def api_recap():
         "worst_day": min(by_day.items(), key=lambda kv: kv[1]) if by_day else None,
     }
 
+    # Cumulative equity curve, one point per CLOSED trade (not per day) — the same
+    # "cumulative P&L from closed trades" shape the dashboard draws, so the recap
+    # and the dashboard tell the same story. Ordered by exit, since that is when the
+    # P&L is realised.
+    curve = []
+    _cum = 0.0
+    for t in sorted(rts, key=lambda x: (x.get("exit_time") or x.get("entry_time") or "")):
+        _cum += float(t.get("pnl") or 0)
+        curve.append({
+            "t":        t.get("exit_time") or t.get("entry_time"),
+            "date":     t.get("date") or (t.get("entry_time") or "")[:10],
+            "cum":      round(_cum, 2),
+            "pnl":      round(float(t.get("pnl") or 0), 2),
+            "ticker":   t.get("ticker"),
+            "strategy": t.get("strategy"),
+        })
+    book["curve"] = curve
+
+    # The session to chart for each strategy: the one holding its biggest-magnitude
+    # trade in the window. One chart per strategy beats one per session — a name that
+    # traded eight days would otherwise bury the page.
+    _peak_day = {}
+    for t in rts:
+        k = t.get("strategy")
+        d = t.get("date") or (t.get("entry_time") or "")[:10]
+        if not k or not d:
+            continue
+        mag = abs(float(t.get("pnl") or 0))
+        if k not in _peak_day or mag > _peak_day[k][1]:
+            _peak_day[k] = (d, mag)
+
     def _slim(s):
         return {"name": s["name"], "pnl": s["net_pnl"], "trades": s["trades"],
                 "win_rate": s["win_rate"], "expectancy": s["expectancy"],
-                "ticker": _strategy_to_ticker(s["name"])}
+                "ticker": _strategy_to_ticker(s["name"]),
+                "chart_date": (_peak_day.get(s["name"]) or (None, 0))[0]}
     ranked  = sorted(strategies, key=lambda s: s["net_pnl"], reverse=True)
     winners = [_slim(s) for s in ranked if s["net_pnl"] > 0][:3]
     losers  = [_slim(s) for s in reversed(ranked) if s["net_pnl"] < 0][:3]

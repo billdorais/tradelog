@@ -176,3 +176,31 @@ def test_gate_opportunity_honours_an_explicit_window(monkeypatch):
                      "&from=nope&to=nope").status_code == 400
     finally:
         _seed_blocks([])
+
+
+def test_explicit_window_narrows_to_a_single_session(monkeypatch, acct):
+    """The recap charts ONE session per strategy, so it passes from == to. Without a
+    window the endpoint would fetch bars+pivots for every session in the lookback."""
+    ALL = [_rt("S", -30.0, "2026-08-10"), _rt("S", 90.0, "2026-08-12"),
+           _rt("S", 5.0, "2026-08-14")]
+
+    def _windowed(fills, from_date="", to_date="", **kw):
+        return {"closed_clean": [t for t in ALL
+                                 if (not from_date or t["date"] >= from_date)
+                                 and (not to_date or t["date"] <= to_date)]}
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", _windowed)
+    monkeypatch.setattr(a, "_fetch_review_bars",
+                        lambda tk, d, **kw: [{"time": 1, "open": 1, "high": 2, "low": 0, "close": 1}])
+    monkeypatch.setattr(a, "_camarilla_levels", lambda tk, d: {})
+
+    c = _client()
+    one = c.get("/api/strategy/day_charts?strategy=S&account=1"
+                "&from=2026-08-12&to=2026-08-12").get_json()
+    assert [s["date"] for s in one["sessions"]] == ["2026-08-12"]
+
+    wk = c.get("/api/strategy/day_charts?strategy=S&account=1"
+               "&from=2026-08-10&to=2026-08-16").get_json()
+    assert len(wk["sessions"]) == 3
+
+    assert c.get("/api/strategy/day_charts?strategy=S&account=1"
+                 "&from=bad&to=bad").status_code == 400

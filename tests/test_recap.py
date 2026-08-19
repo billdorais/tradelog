@@ -193,3 +193,39 @@ def test_week_param_still_works_for_back_compat(monkeypatch, crew):
     _with(monkeypatch, [])
     assert _client().get("/api/recap?week=this").get_json()["period"] == "this_week"
     assert _client().get("/api/recap?week=last").get_json()["period"] == "last_week"
+
+
+def test_curve_is_cumulative_by_trade_and_reconciles_with_book_pnl(monkeypatch, crew):
+    """The equity curve at the top of the page. One point per CLOSED trade ordered
+    by exit — the same shape the dashboard draws — so its last point must equal the
+    headline P&L or the chart and the tile would disagree on camera."""
+    mon = _last_week_monday()
+    d0, d1, d2 = [(mon + dt.timedelta(days=i)).isoformat() for i in (0, 1, 2)]
+    _with(monkeypatch, [
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN", -30.0, d0),
+        _rt("B_CAM_REVERSAL_R3S3_V02_5MIN", -40.0, d1, ticker="BA"),
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",  90.0, d2),
+    ])
+    d = _client().get("/api/recap").get_json()
+    curve = d["book"]["curve"]
+    assert [p["cum"] for p in curve] == [-30.0, -70.0, 20.0]      # running total
+    assert curve[-1]["cum"] == d["book"]["pnl"]                    # chart == headline
+    assert curve[0]["ticker"] and curve[0]["strategy"]             # tooltip fields
+
+
+def test_each_strategy_is_charted_on_its_biggest_move_session(monkeypatch, crew):
+    """Six charts = top 3 + bottom 3, one session each. A name that traded several
+    days would otherwise bury the page, so each gets the session holding its
+    largest-magnitude trade."""
+    mon = _last_week_monday()
+    d0, d2 = mon.isoformat(), (mon + dt.timedelta(days=2)).isoformat()
+    _with(monkeypatch, [
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN", -30.0, d0),   # smaller move
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",  90.0, d2),   # the one to chart
+        _rt("B_CAM_REVERSAL_R3S3_V02_5MIN", -40.0, d0, ticker="BA"),
+    ])
+    d = _client().get("/api/recap").get_json()
+    win = next(w for w in d["winners"] if w["name"].startswith("A_"))
+    assert win["chart_date"] == d2      # biggest magnitude, not the first or last
+    loss = next(l for l in d["losers"] if l["name"].startswith("B_"))
+    assert loss["chart_date"] == d0
