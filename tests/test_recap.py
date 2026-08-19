@@ -229,3 +229,57 @@ def test_each_strategy_is_charted_on_its_biggest_move_session(monkeypatch, crew)
     assert win["chart_date"] == d2      # biggest magnitude, not the first or last
     loss = next(l for l in d["losers"] if l["name"].startswith("B_"))
     assert loss["chart_date"] == d0
+
+
+def test_book_carries_profit_factor_drawdown_and_averages(monkeypatch, crew):
+    """The three tiles added next to P&L. Conventions match _strategy_breakdown so
+    the recap cannot disagree with the Explorer about the same trades."""
+    mon = _last_week_monday()
+    d = [(mon + dt.timedelta(days=i)).isoformat() for i in range(5)]
+    _with(monkeypatch, [
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",  100.0, d[0]),
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",  -60.0, d[1]),
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",   20.0, d[2]),
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",  -50.0, d[3]),
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",   40.0, d[4]),
+    ])
+    b = _client().get("/api/recap").get_json()["book"]
+    assert (b["gross_win"], b["gross_loss"]) == (160.0, 110.0)
+    assert b["profit_factor"] == round(160.0 / 110.0, 2)
+    assert (b["win_count"], b["loss_count"]) == (3, 2)
+    assert b["avg_win"] == round(160.0 / 3, 2)
+    assert b["avg_loss"] == -55.0                      # negative, like the raw P&L
+    # cum runs 100, 40, 60, 10, 50 -> peak 100, trough 10 -> -90, and it is NEGATIVE
+    assert b["max_drawdown"] == -90.0
+
+
+def test_profit_factor_is_null_not_zero_without_losses(monkeypatch, crew):
+    """None means "no losing trades yet", which the tile renders as infinity. Zero
+    would read as the exact opposite — a strategy that only loses."""
+    mon = _last_week_monday().isoformat()
+    _with(monkeypatch, [_rt("A_CAM_BREAKOUT_R3S3_V02_5MIN", 30.0, mon)])
+    b = _client().get("/api/recap").get_json()["book"]
+    assert b["profit_factor"] is None
+    assert b["avg_loss"] is None and b["loss_count"] == 0
+    assert b["max_drawdown"] == 0.0
+
+
+def test_scratch_trade_counts_as_a_loss(monkeypatch, crew):
+    """A 0.00 round-trip is a loss everywhere else in the app; keep that here or
+    win_rate on the recap would drift from the Explorer's."""
+    mon = _last_week_monday()
+    d0, d1 = mon.isoformat(), (mon + dt.timedelta(days=1)).isoformat()
+    _with(monkeypatch, [
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN", 10.0, d0),
+        _rt("A_CAM_BREAKOUT_R3S3_V02_5MIN",  0.0, d1),
+    ])
+    b = _client().get("/api/recap").get_json()["book"]
+    assert (b["win_count"], b["loss_count"]) == (1, 1)
+    assert b["win_rate"] == 50.0
+
+
+def test_empty_period_stats_do_not_crash(monkeypatch, crew):
+    _with(monkeypatch, [])
+    b = _client().get("/api/recap").get_json()["book"]
+    assert b["profit_factor"] is None and b["avg_win"] is None and b["avg_loss"] is None
+    assert b["max_drawdown"] == 0.0 and b["curve"] == []

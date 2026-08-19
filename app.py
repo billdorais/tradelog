@@ -14963,7 +14963,12 @@ def api_recap():
 
     strategies = _strategy_breakdown(rts) if rts else []
     pnls = [float(t.get("pnl") or 0) for t in rts]
-    wins = [p for p in pnls if p > 0]
+    # Same convention as _strategy_breakdown: a scratch (0.00) trade counts as a
+    # loss, so win_rate / PF / avg-loss here agree with every other surface.
+    wins   = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    gross_win  = round(sum(wins), 2)
+    gross_loss = round(abs(sum(losses)), 2)
     by_day = {}
     for t in rts:
         d = (t.get("date") or (t.get("entry_time") or "")[:10])
@@ -14974,6 +14979,13 @@ def api_recap():
         "trades":   len(rts),
         "win_rate": round(len(wins) / len(pnls) * 100, 1) if pnls else 0.0,
         "n_strategies_traded": len(strategies),
+        "win_count": len(wins), "loss_count": len(losses),
+        "gross_win": gross_win, "gross_loss": gross_loss,
+        # None (not 0) when there are no losses yet — the UI shows that as infinity.
+        # PF on a handful of trades is wildly unstable; the tile says so.
+        "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+        "avg_win":  round(sum(wins) / len(wins), 2) if wins else None,
+        "avg_loss": round(sum(losses) / len(losses), 2) if losses else None,
         "by_day":   sorted(by_day.items()),
         "best_day":  max(by_day.items(), key=lambda kv: kv[1]) if by_day else None,
         "worst_day": min(by_day.items(), key=lambda kv: kv[1]) if by_day else None,
@@ -14984,9 +14996,11 @@ def api_recap():
     # and the dashboard tell the same story. Ordered by exit, since that is when the
     # P&L is realised.
     curve = []
-    _cum = 0.0
+    _cum = _peak = _mdd = 0.0
     for t in sorted(rts, key=lambda x: (x.get("exit_time") or x.get("entry_time") or "")):
         _cum += float(t.get("pnl") or 0)
+        _peak = max(_peak, _cum)
+        _mdd  = min(_mdd, _cum - _peak)        # negative; peak-to-trough, realised
         curve.append({
             "t":        t.get("exit_time") or t.get("entry_time"),
             "date":     t.get("date") or (t.get("entry_time") or "")[:10],
@@ -14996,6 +15010,7 @@ def api_recap():
             "strategy": t.get("strategy"),
         })
     book["curve"] = curve
+    book["max_drawdown"] = round(_mdd, 2)
 
     # The session to chart for each strategy: the one holding its biggest-magnitude
     # trade in the window. One chart per strategy beats one per session — a name that

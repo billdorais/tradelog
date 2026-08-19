@@ -227,6 +227,27 @@
           <div class="tile"><div class="k">Worst day</div>
             <div class="v ${b.worst_day ? cls(b.worst_day[1]) : ''}">${b.worst_day ? money(b.worst_day[1]) : '—'}</div>
             <div class="s">${b.worst_day ? esc(b.worst_day[0]) : 'no trades'}</div></div>
+          <div class="tile" title="Gross wins divided by gross losses. Unstable at low loss counts — one more loser can halve it.">
+            <div class="k">Profit factor</div>
+            <div class="v ${b.profit_factor == null ? 'pos' : (b.profit_factor >= 1 ? 'pos' : 'neg')}">${
+              b.trades === 0 ? '—' : (b.profit_factor == null ? '∞' : b.profit_factor.toFixed(2))}</div>
+            <div class="s">${money(b.gross_win)} won / ${money(b.gross_loss)} lost${
+              b.loss_count > 0 && b.loss_count <= 2
+                ? ' <span style="color:#f0a35e">· only ' + b.loss_count + ' loser' + (b.loss_count === 1 ? '' : 's') + '</span>'
+                : ''}</div></div>
+          <div class="tile" title="Largest peak-to-trough fall of the realised equity curve within this period.">
+            <div class="k">Max drawdown</div>
+            <div class="v ${b.max_drawdown < 0 ? 'neg' : ''}">${b.trades === 0 ? '—' : money(b.max_drawdown)}</div>
+            <div class="s">peak to trough, realised</div></div>
+          <div class="tile" title="Mean P&L of winning vs losing trades. A scratch (0.00) trade counts as a loss.">
+            <div class="k">Avg win / loss</div>
+            <div class="v" style="font-size:1.05rem">
+              <span class="pos">${b.avg_win == null ? '—' : money(b.avg_win)}</span>
+              <span style="color:#555;font-weight:400"> / </span>
+              <span class="neg">${b.avg_loss == null ? '—' : money(b.avg_loss)}</span></div>
+            <div class="s">${b.win_count}W · ${b.loss_count}L${
+              b.avg_win != null && b.avg_loss != null && b.avg_loss !== 0
+                ? ' · payoff ' + Math.abs(b.avg_win / b.avg_loss).toFixed(2) + 'x' : ''}</div></div>
         </div>
         <div style="margin-top:12px">${gatePills}</div>
         <div class="band-sub" style="margin:6px 0 0">Filled dot = gate live on this book. Hover for the rule.</div>
