@@ -254,7 +254,7 @@
         <div class="band-q">5 · Show me the charts</div>
         <div class="band-sub">One intraday chart per session this strategy traded &mdash; newest first, with its
           Camarilla levels and entry/exit arrows. Same rendering as the Chart Review page, sliced by strategy
-          instead of by day.</div>
+          instead of by day. Times in ET.</div>
         <div id="dayCharts"><div class="empty">loading charts…</div></div>
       </div>`;
 
@@ -345,6 +345,23 @@
   const _dayCache = {};
   let _dayToken = 0;
 
+  // Times come back in UTC; the tape is read in ET. These format for DISPLAY only —
+  // the underlying epochs stay UTC so bars and markers still line up. Mirrors the
+  // Chart Review page's formatters so the same session labels identically on both.
+  const _etTime = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+  const _etFull = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false });
+  // ISO fill timestamp -> "HH:MM" ET. Fills are stored with a trailing Z; append one
+  // if it is ever missing so the string is not parsed as browser-local time.
+  const _etHM = (iso) => {
+    if (!iso) return '';
+    const t = String(iso);
+    const d = new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z');
+    return isNaN(d.getTime()) ? '' : _etTime.format(d);
+  };
+
   async function loadDayCharts(name) {
     const host = document.getElementById('dayCharts');
     if (!host || !name) return;
@@ -378,14 +395,14 @@
         <div class="day-head">
           <span class="day-date">${esc(ss.date)}</span>
           <span class="day-meta">${esc(ss.ticker)} · ${ss.n_trades} trade${ss.n_trades === 1 ? '' : 's'}${
-            ss.first_entry ? ' · first ' + esc(String(ss.first_entry).slice(11, 16)) + ' UTC' : ''}</span>
+            ss.first_entry ? ' · first ' + esc(_etHM(ss.first_entry)) + ' ET' : ''}</span>
           <span class="day-pl ${ss.total_pnl >= 0 ? 'pos' : 'neg'}">${money(ss.total_pnl)}</span>
         </div>
         <div class="day-chart" id="dc${i}"></div>
         <table class="day-rows"><tbody>
           ${(ss.rows || []).map(r => `<tr>
             <td style="color:${r.side === 'SHORT' ? '#e08a8a' : '#7FE098'}">${esc(r.side)}</td>
-            <td style="color:#888">${esc(String(r.entry_time || '').slice(11, 16))}&rarr;${esc(String(r.exit_time || '').slice(11, 16))}</td>
+            <td style="color:#888">${esc(_etHM(r.entry_time))}&rarr;${esc(_etHM(r.exit_time))}</td>
             <td>${esc(r.qty)} @ ${r.entry_price == null ? '—' : Number(r.entry_price).toFixed(2)}</td>
             <td>exit ${r.exit_price == null ? '—' : Number(r.exit_price).toFixed(2)}</td>
             <td style="color:#888">${esc(r.exit_reason || '')}</td>
@@ -408,7 +425,9 @@
         layout: { background: { color: '#0f1219' }, textColor: '#8a90a0', fontSize: 10 },
         grid: { vertLines: { color: '#171a24' }, horzLines: { color: '#171a24' } },
         rightPriceScale: { borderColor: '#2a2d3e' },
-        timeScale: { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false },
+        timeScale: { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false,
+                     tickMarkFormatter: (t) => _etTime.format(new Date(t * 1000)) },
+        localization: { timeFormatter: (t) => _etFull.format(new Date(t * 1000)) },
         crosshair: { mode: 0 },
       });
       const series = c.addCandlestickSeries({
