@@ -32,13 +32,16 @@
     .tile-split { display: flex; align-items: center; gap: 10px; }
     .tile-split .tile-left { min-width: 0; flex: 1; }
     .gauge-wrap { width: 92px; flex: none; }
-    .gauge-wrap canvas { display: block; width: 100% !important; }
+    .gauge-wrap canvas { display: block; width: 100% !important; max-height: 56px; }
     .gauge-counts { display: flex; justify-content: space-between; font-size: 0.66rem;
                     margin-top: 1px; padding: 0 2px; width: 100%; }
     .gauge-counts .wins { color: #7FE098; } .gauge-counts .mid { color: #555; }
     .gauge-counts .losses { color: #ef5350; }
     .ring-wrap { width: 58px; height: 58px; flex: none; }
-    .ring-wrap canvas { width: 100% !important; height: 100% !important; }
+    .ring-wrap canvas { width: 100% !important; height: 100% !important; max-height: 58px; }
+    /* Tiles must not be stretched by their contents. */
+    .tile-split { align-items: center; }
+    .tiles > .tile { align-self: start; }
     .winloss-bar-wrap { width: 84px; flex: none; }
     .winloss-bar { height: 6px; border-radius: 3px; display: flex; overflow: hidden; margin-bottom: 5px; }
     .winloss-bar .win-seg { background: #517356; } .winloss-bar .loss-seg { background: #ef5350; }
@@ -417,7 +420,9 @@
       data: { datasets: [{ data: [wr, 100 - wr],
               backgroundColor: none ? ['#262a38', '#262a38'] : ['#7FE098', '#ef5350'],
               borderWidth: 0, circumference: 180, rotation: 270 }] },
-      options: { animation: false, cutout: '72%', responsive: true, maintainAspectRatio: false,
+      // NO maintainAspectRatio:false here — the canvas would grow to fill a
+      // container sized by the canvas itself, looping until the tile filled the page.
+      options: { animation: false, cutout: '72%',
                  plugins: { legend: { display: false }, tooltip: { enabled: false } } },
     });
 
@@ -430,7 +435,7 @@
       data: { datasets: [{ data: [fill, 100 - fill],
               backgroundColor: [(pf == null || pf >= 1) ? '#7FE098' : '#ef5350', '#1e2130'],
               borderWidth: 0 }] },
-      options: { animation: false, cutout: '75%', responsive: true, maintainAspectRatio: false,
+      options: { animation: false, cutout: '75%',
                  plugins: { legend: { display: false }, tooltip: { enabled: false } } },
     });
 
