@@ -13413,6 +13413,92 @@ def entry_engine_page():
     return render_template("entry_engine.html")
 
 
+# ── Shared intraday-chart builders ──────────────────────────────────────────
+# Used by BOTH /api/review (one day, every ticker) and /api/strategy/day_charts
+# (one strategy, every day it traded). Shared rather than copied inline: the two
+# endpoints must render identical markers/levels, or the same trade would look
+# different depending on which page you opened.
+
+def _bar_epoch(ts_iso):
+    """ISO fill timestamp (UTC) -> Unix seconds, floored to the 5-min bar grid."""
+    import datetime as _dt
+    try:
+        t = _dt.datetime.fromisoformat((ts_iso or "").replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=_dt.timezone.utc)
+        sec = int(t.timestamp())
+        return sec - (sec % 300)
+    except Exception:
+        return None
+
+
+def _chart_markers(tlist):
+    """Entry/exit arrows for lightweight-charts, time-sorted. Entry sits below the
+    bar for longs / above for shorts; the EXIT arrow is coloured by P&L rather than
+    side, so a losing long and a losing short read the same at a glance."""
+    markers = []
+    for t in tlist:
+        is_long = (t.get("side") or "").upper() == "LONG"
+        pnl     = float(t.get("pnl") or 0)
+        en_ep   = _bar_epoch(t.get("entry_time"))
+        ex_ep   = _bar_epoch(t.get("exit_time"))
+        if en_ep is not None:
+            markers.append({
+                "time":     en_ep,
+                "position": "belowBar" if is_long else "aboveBar",
+                "color":    "#7FE098" if is_long else "#ef5350",
+                "shape":    "arrowUp" if is_long else "arrowDown",
+                "text":     ("Buy" if is_long else "Short") + f" {t.get('entry_price')}",
+            })
+        if ex_ep is not None:
+            markers.append({
+                "time":     ex_ep,
+                "position": "aboveBar" if is_long else "belowBar",
+                "color":    "#26a69a" if pnl >= 0 else "#ef5350",
+                "shape":    "arrowDown" if is_long else "arrowUp",
+                "text":     f"Exit {'+' if pnl >= 0 else ''}{round(pnl, 2)}",
+            })
+    markers.sort(key=lambda m: m["time"])
+    return markers
+
+
+def _chart_rows(tlist):
+    """Round-trips flattened for the table under a chart."""
+    return [{
+        "side":        (t.get("side") or "").upper(),
+        "strategy":    t.get("strategy") or "",
+        "qty":         t.get("qty"),
+        "entry_price": t.get("entry_price"),
+        "exit_price":  t.get("exit_price"),
+        "entry_time":  t.get("entry_time"),
+        "exit_time":   t.get("exit_time"),
+        "pnl":         round(float(t.get("pnl") or 0), 2),
+        "exit_reason": t.get("exit_reason") or "",
+    } for t in tlist]
+
+
+def _chart_levels(lv, tlist):
+    """Camarilla pivot lines — only the level pair(s) the day's strategies actually
+    traded (R3S3 -> R3/S3, R4S4 -> R4/S4), plus DP. Unknown strategy shows both."""
+    if not lv:
+        return []
+    pairs = set()
+    for t in tlist:
+        s = (t.get("strategy") or "").upper()
+        if "R3S3" in s: pairs.add("R3S3")
+        if "R4S4" in s: pairs.add("R4S4")
+    if not pairs:
+        pairs = {"R3S3", "R4S4"}
+    levels = [{"title": "DP", "price": lv["dp"], "color": "#3fd0c9", "style": "dashed"}]
+    if "R3S3" in pairs:
+        levels.append({"title": "R3", "price": lv["r3"], "color": "#ef5350", "style": "solid"})
+        levels.append({"title": "S3", "price": lv["s3"], "color": "#7FE098", "style": "solid"})
+    if "R4S4" in pairs:
+        levels.append({"title": "R4", "price": lv["r4"], "color": "#ef5350", "style": "solid"})
+        levels.append({"title": "S4", "price": lv["s4"], "color": "#7FE098", "style": "solid"})
+    return levels
+
+
 @app.route("/api/review")
 def api_review():
     """End-of-day chart review for the Refined (alpaca2) or Kairos engine (alpaca3)
@@ -13448,17 +13534,6 @@ def api_review():
     try:    strikes = max(1, int(request.args.get("strikes", 2)))
     except Exception: strikes = 2
 
-    def _ep(ts_iso):
-        """ISO fill timestamp (UTC) -> Unix seconds, floored to the 5-min bar grid."""
-        try:
-            t = _dt.datetime.fromisoformat((ts_iso or "").replace("Z", "+00:00"))
-            if t.tzinfo is None:
-                t = t.replace(tzinfo=_dt.timezone.utc)
-            sec = int(t.timestamp())
-            return sec - (sec % 300)
-        except Exception:
-            return None
-
     fills         = _fills_fn()
     signal_lookup = _build_signal_lookup_for_alpaca()
     paired        = _pair_alpaca_fills_lifo(fills, from_date=date, to_date=date,
@@ -13489,65 +13564,12 @@ def api_review():
     tickers_out  = []
     grand_total  = 0.0
     for tk, tlist in sorted(by_ticker.items()):
-        markers   = []
-        rows      = []
-        tk_total  = 0.0
-        for t in tlist:
-            side    = (t.get("side") or "").upper()
-            is_long = side == "LONG"
-            pnl     = float(t.get("pnl") or 0)
-            tk_total += pnl
-            grand_total += pnl
-            en_ep = _ep(t.get("entry_time"))
-            ex_ep = _ep(t.get("exit_time"))
-            if en_ep is not None:
-                markers.append({
-                    "time":     en_ep,
-                    "position": "belowBar" if is_long else "aboveBar",
-                    "color":    "#7FE098" if is_long else "#ef5350",
-                    "shape":    "arrowUp" if is_long else "arrowDown",
-                    "text":     ("Buy" if is_long else "Short") + f" {t.get('entry_price')}",
-                })
-            if ex_ep is not None:
-                markers.append({
-                    "time":     ex_ep,
-                    "position": "aboveBar" if is_long else "belowBar",
-                    "color":    "#26a69a" if pnl >= 0 else "#ef5350",
-                    "shape":    "arrowDown" if is_long else "arrowUp",
-                    "text":     f"Exit {'+' if pnl >= 0 else ''}{round(pnl, 2)}",
-                })
-            rows.append({
-                "side":        side,
-                "strategy":    t.get("strategy") or "",
-                "qty":         t.get("qty"),
-                "entry_price": t.get("entry_price"),
-                "exit_price":  t.get("exit_price"),
-                "entry_time":  t.get("entry_time"),
-                "exit_time":   t.get("exit_time"),
-                "pnl":         round(pnl, 2),
-                "exit_reason": t.get("exit_reason") or "",
-            })
-        markers.sort(key=lambda m: m["time"])
-
-        # Camarilla pivot lines — show only the level pair(s) the day's
-        # strategies actually traded (R3S3 → R3/S3, R4S4 → R4/S4), plus DP.
-        lv     = day_levels.get(tk) or {}
-        levels = []
-        if lv:
-            pairs = set()
-            for t in tlist:
-                s = (t.get("strategy") or "").upper()
-                if "R3S3" in s: pairs.add("R3S3")
-                if "R4S4" in s: pairs.add("R4S4")
-            if not pairs:                       # unknown strategy → show both
-                pairs = {"R3S3", "R4S4"}
-            levels.append({"title": "DP", "price": lv["dp"], "color": "#3fd0c9", "style": "dashed"})
-            if "R3S3" in pairs:
-                levels.append({"title": "R3", "price": lv["r3"], "color": "#ef5350", "style": "solid"})
-                levels.append({"title": "S3", "price": lv["s3"], "color": "#7FE098", "style": "solid"})
-            if "R4S4" in pairs:
-                levels.append({"title": "R4", "price": lv["r4"], "color": "#ef5350", "style": "solid"})
-                levels.append({"title": "S4", "price": lv["s4"], "color": "#7FE098", "style": "solid"})
+        tk_total = round(sum(float(t.get("pnl") or 0) for t in tlist), 2)
+        grand_total += tk_total
+        markers = _chart_markers(tlist)
+        rows    = _chart_rows(tlist)
+        lv      = day_levels.get(tk) or {}
+        levels  = _chart_levels(lv, tlist)
 
         # Earliest entry on this ticker — drives chronological ordering
         first_entry = min((t.get("entry_time") or "" for t in tlist), default="")
@@ -13582,6 +13604,103 @@ def api_review():
         "strikes":      strikes,
         "two_strikes_saved": day_saved,
         "tickers":      tickers_out,
+    })
+
+
+@app.route("/api/strategy/day_charts")
+def api_strategy_day_charts():
+    """One intraday chart per SESSION a single strategy traded.
+
+    The Strategy Explorer's receipts table says what happened; this says what it
+    looked like. Same bars/markers/levels payload the Chart Review page renders,
+    but sliced the other way: Review is one day x every ticker, this is one
+    strategy x every day it fired.
+
+      ?strategy=NVDA_CAM_BREAKOUT_R3S3_V02_5MIN   (required)
+      ?account=1..5    which book's fills (default 4, the explorer's default)
+      ?days=30         lookback window — mirrors the explorer's selector
+      ?limit=12        max sessions returned, NEWEST first. Each chart costs a bar
+                       fetch + a pivot fetch, so this is capped deliberately.
+    """
+    import datetime as _dt
+    import concurrent.futures as _cf
+
+    strategy = (request.args.get("strategy") or "").strip().upper()
+    if not strategy:
+        return jsonify({"error": "strategy is required"}), 400
+    acct = str(request.args.get("account") or "4")
+    rec  = ACCOUNTS_BY_NUM.get(acct)
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": f"account {acct} not configured"}), 400
+    try:    days = max(1, min(365, int(request.args.get("days") or 30)))
+    except (TypeError, ValueError): days = 30
+    try:    limit = max(1, min(40, int(request.args.get("limit") or 12)))
+    except (TypeError, ValueError): limit = 12
+
+    to_d   = _dt.datetime.now(_dt.timezone.utc).date()
+    from_d = to_d - _dt.timedelta(days=days)
+    try:
+        paired = _pair_alpaca_fills_lifo(rec["fills_fn"](),
+                                         from_date=from_d.isoformat(),
+                                         to_date=to_d.isoformat())
+    except Exception as e:
+        log.warning("day_charts pairing failed for %s: %s", strategy, e)
+        return jsonify({"error": str(e)[:200]}), 500
+
+    trades = [t for t in (paired.get("closed_clean") or [])
+              if (t.get("strategy") or "").upper() == strategy]
+    if not trades:
+        return jsonify({"strategy": strategy, "account": acct, "label": rec.get("label"),
+                        "from": from_d.isoformat(), "to": to_d.isoformat(),
+                        "sessions": [], "session_count": 0, "truncated": 0})
+
+    # Group by the ENTRY date — one chart per session the strategy fired.
+    by_date = {}
+    for t in trades:
+        d = (t.get("date") or (t.get("entry_time") or "")[:10])
+        if d:
+            by_date.setdefault(d, []).append(t)
+    all_dates = sorted(by_date, reverse=True)          # newest first
+    dates     = all_dates[:limit]
+    ticker    = _strategy_to_ticker(strategy) or (trades[0].get("ticker") or "").upper()
+
+    # Bars + pivots per session, fetched concurrently — this is the slow part.
+    bars_by_date, lv_by_date = {}, {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        bar_futs = {pool.submit(_fetch_review_bars, ticker, d): d for d in dates}
+        lvl_futs = {pool.submit(_camarilla_levels, ticker, d): d for d in dates}
+        for f in _cf.as_completed(bar_futs):
+            d = bar_futs[f]
+            try:    bars_by_date[d] = f.result()
+            except Exception: bars_by_date[d] = []
+        for f in _cf.as_completed(lvl_futs):
+            d = lvl_futs[f]
+            try:    lv_by_date[d] = f.result()
+            except Exception: lv_by_date[d] = {}
+
+    sessions = []
+    for d in dates:
+        tlist = sorted(by_date[d], key=lambda t: t.get("entry_time") or "")
+        lv    = lv_by_date.get(d) or {}
+        sessions.append({
+            "date":        d,
+            "ticker":      ticker,
+            "total_pnl":   round(sum(float(t.get("pnl") or 0) for t in tlist), 2),
+            "n_trades":    len(tlist),
+            "first_entry": min((t.get("entry_time") or "" for t in tlist), default=""),
+            "bars":        bars_by_date.get(d) or [],
+            "markers":     _chart_markers(tlist),
+            "levels":      _chart_levels(lv, tlist),
+            "rows":        _chart_rows(tlist),
+        })
+
+    return jsonify({
+        "strategy": strategy, "account": acct, "label": rec.get("label"),
+        "ticker": ticker, "from": from_d.isoformat(), "to": to_d.isoformat(),
+        "sessions": sessions, "session_count": len(sessions),
+        # How many older sessions the limit cut off, so the UI can say so honestly.
+        "truncated": max(0, len(all_dates) - len(dates)),
+        "total_pnl": round(sum(s["total_pnl"] for s in sessions), 2),
     })
 
 

@@ -6,6 +6,7 @@
   <title>Strategy Explorer — Kairos Automata</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
@@ -45,6 +46,15 @@
     .thin { color: #5a5f70 !important; }
     .empty { color: #666; font-size: 0.85rem; padding: 20px 0; text-align: center; }
     .scroll { max-height: 420px; overflow-y: auto; }
+    /* Day charts — one card per session the strategy traded */
+    .day { border: 1px solid #1e2130; border-radius: 10px; margin-bottom: 14px; overflow: hidden; background: #0f1219; }
+    .day-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 14px; border-bottom: 1px solid #1e2130; }
+    .day-date { font-weight: 700; color: #e0e0e0; font-size: 0.85rem; }
+    .day-meta { font-size: 0.72rem; color: #666; }
+    .day-pl   { margin-left: auto; font-weight: 700; font-size: 0.9rem; }
+    .day-chart { height: 260px; }
+    .day-rows { font-size: 0.72rem; }
+    .day-rows td, .day-rows th { padding: 4px 10px; border-top: 1px solid #171a24; }
   </style>
 </head>
 <body>
@@ -238,10 +248,19 @@
           <td class="${r.pnl >= 0 ? 'pos' : 'neg'}">${money(r.pnl)}</td>
           <td style="color:#888">${esc(r.exit_reason || '')}</td></tr>`).join('')}
         </tbody></table></div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">5 · Show me the charts</div>
+        <div class="band-sub">One intraday chart per session this strategy traded &mdash; newest first, with its
+          Camarilla levels and entry/exit arrows. Same rendering as the Chart Review page, sliced by strategy
+          instead of by day.</div>
+        <div id="dayCharts"><div class="empty">loading charts…</div></div>
       </div>`;
 
     drawEquity(s);
     drawCutoffs(s);
+    loadDayCharts(s.name);
   }
 
   function drawEquity(s) {
@@ -318,6 +337,100 @@
   }
 
   loadAll();
+  // ── Day charts ────────────────────────────────────────────────────────────
+  // One lightweight-charts candle chart per session the selected strategy traded.
+  // Each chart costs a bar fetch + a pivot fetch server-side, so results are cached
+  // per (account, days, strategy) and a stale-response guard keeps a slow reply from
+  // painting over a strategy you have since clicked away from.
+  const _dayCache = {};
+  let _dayToken = 0;
+
+  async function loadDayCharts(name) {
+    const host = document.getElementById('dayCharts');
+    if (!host || !name) return;
+    const acct = document.getElementById('acctSel').value;
+    const days = document.getElementById('daysSel').value;
+    const key  = `${acct}|${days}|${name}`;
+    const token = ++_dayToken;
+
+    if (_dayCache[key]) { paintDayCharts(_dayCache[key], token); return; }
+    host.innerHTML = '<div class="empty">loading charts…</div>';
+    try {
+      const d = await fetch(`/api/strategy/day_charts?strategy=${encodeURIComponent(name)}`
+                            + `&account=${acct}&days=${days}&limit=12`).then(r => r.json());
+      if (token !== _dayToken) return;                 // user clicked another strategy
+      if (d.error) { host.innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+      _dayCache[key] = d;
+      paintDayCharts(d, token);
+    } catch (e) {
+      if (token === _dayToken) host.innerHTML = `<div class="empty">failed: ${esc(e)}</div>`;
+    }
+  }
+
+  function paintDayCharts(d, token) {
+    if (token !== _dayToken) return;
+    const host = document.getElementById('dayCharts');
+    const sessions = d.sessions || [];
+    if (!sessions.length) { host.innerHTML = '<div class="empty">No sessions with trades.</div>'; return; }
+
+    host.innerHTML = sessions.map((ss, i) => `
+      <div class="day">
+        <div class="day-head">
+          <span class="day-date">${esc(ss.date)}</span>
+          <span class="day-meta">${esc(ss.ticker)} · ${ss.n_trades} trade${ss.n_trades === 1 ? '' : 's'}${
+            ss.first_entry ? ' · first ' + esc(String(ss.first_entry).slice(11, 16)) + ' UTC' : ''}</span>
+          <span class="day-pl ${ss.total_pnl >= 0 ? 'pos' : 'neg'}">${money(ss.total_pnl)}</span>
+        </div>
+        <div class="day-chart" id="dc${i}"></div>
+        <table class="day-rows"><tbody>
+          ${(ss.rows || []).map(r => `<tr>
+            <td style="color:${r.side === 'SHORT' ? '#e08a8a' : '#7FE098'}">${esc(r.side)}</td>
+            <td style="color:#888">${esc(String(r.entry_time || '').slice(11, 16))}&rarr;${esc(String(r.exit_time || '').slice(11, 16))}</td>
+            <td>${esc(r.qty)} @ ${r.entry_price == null ? '—' : Number(r.entry_price).toFixed(2)}</td>
+            <td>exit ${r.exit_price == null ? '—' : Number(r.exit_price).toFixed(2)}</td>
+            <td style="color:#888">${esc(r.exit_reason || '')}</td>
+            <td class="${r.pnl >= 0 ? 'pos' : 'neg'}" style="text-align:right">${money(r.pnl)}</td></tr>`).join('')}
+        </tbody></table>
+      </div>`).join('')
+      + (d.truncated
+          ? `<div class="empty">+${d.truncated} older session${d.truncated === 1 ? '' : 's'} not shown (newest 12 only).</div>`
+          : '');
+
+    // Charts must be created AFTER their containers exist in the DOM.
+    sessions.forEach((ss, i) => {
+      const el = document.getElementById('dc' + i);
+      if (!el || !(ss.bars || []).length) {
+        if (el) el.innerHTML = '<div class="empty">No bars for this session.</div>';
+        return;
+      }
+      const c = LightweightCharts.createChart(el, {
+        width: el.clientWidth, height: 260,
+        layout: { background: { color: '#0f1219' }, textColor: '#8a90a0', fontSize: 10 },
+        grid: { vertLines: { color: '#171a24' }, horzLines: { color: '#171a24' } },
+        rightPriceScale: { borderColor: '#2a2d3e' },
+        timeScale: { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false },
+        crosshair: { mode: 0 },
+      });
+      const series = c.addCandlestickSeries({
+        upColor: '#26a69a', downColor: '#ef5350',
+        borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+        wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+      });
+      series.setData(ss.bars.map(b => ({
+        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+      if (ss.markers && ss.markers.length) series.setMarkers(ss.markers);
+      for (const lv of (ss.levels || [])) {
+        series.createPriceLine({
+          price: lv.price, color: lv.color, lineWidth: 1,
+          lineStyle: lv.style === 'dashed' ? 2 : 0,
+          axisLabelVisible: true, title: lv.title,
+        });
+      }
+      c.timeScale().fitContent();
+      // Canvas width is fixed at creation — keep it usable when the window resizes.
+      new ResizeObserver(() => c.applyOptions({ width: el.clientWidth })).observe(el);
+    });
+  }
 </script>
 </body>
 </html>
