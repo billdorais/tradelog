@@ -71,8 +71,10 @@
 
   <div class="content">
     <div class="bar">
-      <button class="btn" id="wLast" onclick="setWeek('last')">Last week</button>
-      <button class="btn" id="wThis" onclick="setWeek('this')">This week</button>
+      <button class="btn" id="p_last_week"  onclick="setPeriod('last_week')">Last week</button>
+      <button class="btn" id="p_this_week"  onclick="setPeriod('this_week')">This week</button>
+      <button class="btn" id="p_last_month" onclick="setPeriod('last_month')">Last month</button>
+      <button class="btn" id="p_this_month" onclick="setPeriod('this_month')">This month</button>
       <span class="meta" id="meta">loading…</span>
       <button class="btn btn-copy" style="margin-left:auto" onclick="copyScript()">📋 Copy script</button>
     </div>
@@ -83,7 +85,8 @@
   <div class="toast" id="toast"></div>
 
 <script>
-  let DATA = null, GATES = null, week = 'last', chart = null;
+  let DATA = null, GATES = null, period = 'last_week', chart = null;
+  const PERIODS = ['last_week', 'this_week', 'last_month', 'this_month'];
 
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
@@ -117,15 +120,17 @@
     setTimeout(() => t.classList.remove('show'), 1800);
   }
 
-  function setWeek(w) { week = w; load(); }
+  function setPeriod(p) { period = p; load(); }
 
   async function load() {
-    document.getElementById('wLast').classList.toggle('on', week === 'last');
-    document.getElementById('wThis').classList.toggle('on', week === 'this');
+    for (const p of PERIODS) {
+      const b = document.getElementById('p_' + p);
+      if (b) b.classList.toggle('on', period === p);
+    }
     document.getElementById('meta').textContent = 'loading…';
     document.getElementById('body').innerHTML = '';
     try {
-      const d = await fetch(`/api/recap?week=${week}`).then(r => r.json());
+      const d = await fetch(`/api/recap?period=${period}`).then(r => r.json());
       if (d.error) {
         document.getElementById('meta').textContent = d.error;
         document.getElementById('body').innerHTML = `<div class="panel"><div class="empty">${esc(d.error)}</div></div>`;
@@ -248,16 +253,19 @@
     const host = document.getElementById('gates');
     if (!host) return;
     try {
-      const d = await fetch('/api/signals/gate_opportunity?account=alpaca4&days=14').then(r => r.json());
+      // Same window as the rest of the page — a rolling ?days= cannot express
+      // "last week", so the Refusal was pricing a different period than it reported.
+      const d = await fetch('/api/signals/gate_opportunity?account=alpaca4'
+                            + `&from=${DATA.from}&to=${DATA.to}`).then(r => r.json());
       GATES = d;
       const bk = (d.books || [])[0];
       if (!bk || !bk.by_gate || !bk.by_gate.length) {
-        host.innerHTML = '<div class="empty">No blocks recorded in the last 14 days.</div>'; return;
+        host.innerHTML = `<div class="empty">No blocks recorded ${esc(d.from)} → ${esc(d.to)}.</div>`; return;
       }
       host.innerHTML = `
         <div style="font-size:0.8rem;margin-bottom:8px">
-          ${bk.total_blocks} block${bk.total_blocks === 1 ? '' : 's'} in 14d ·
-          assumed size ${money(bk.position_size || 0)}
+          ${bk.total_blocks} block${bk.total_blocks === 1 ? '' : 's'} ·
+          ${esc(d.from)} → ${esc(d.to)} · assumed size ${money(bk.position_size || 0)}
           ${bk.est_dollars_total != null
             ? ` · est. <span class="${cls(bk.est_dollars_total)}">${money(bk.est_dollars_total)}</span> of P&L refused`
             : ''}
@@ -339,7 +347,7 @@
     ];
     const bk = GATES && (GATES.books || [])[0];
     if (bk) {
-      lines.push('', 'THE REFUSAL (14d)',
+      lines.push('', `THE REFUSAL (${GATES.from} -> ${GATES.to})`,
         `  ${bk.total_blocks} blocks` + (bk.est_dollars_total != null
           ? `, est. ${money(bk.est_dollars_total)} of P&L refused` : ''),
         ...(bk.by_gate || []).map(g => `  ${g.gate}: ${g.blocked} blocked` +

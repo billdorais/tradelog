@@ -134,3 +134,45 @@ def test_no_trades_returns_empty_not_an_error(monkeypatch, acct):
     monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", lambda *args, **kw: {"closed_clean": []})
     d = _client().get("/api/strategy/day_charts?strategy=NOPE&account=1").get_json()
     assert d["sessions"] == [] and d["session_count"] == 0
+
+
+# ── gate_opportunity window ─────────────────────────────────────────────────
+
+def _seed_blocks(rows):
+    conn = a.get_db(); cur = conn.cursor(); p = a.placeholder()
+    cur.execute("DELETE FROM blocked_targets")
+    for r in rows:
+        cur.execute(f"INSERT INTO blocked_targets (ts,account,ticker,strategy,side,gate,reason) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p},{p})", r)
+    conn.commit(); conn.close()
+
+
+def test_gate_opportunity_honours_an_explicit_window(monkeypatch):
+    """The recap prices the week it REPORTS on. A rolling ?days= always ends now, so
+    it cannot express "last week" at all — hence explicit from/to."""
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", lambda *A, **K: {"closed_clean": []})
+    _seed_blocks([
+        ("2026-08-05 14:00:00", "alpaca4", "AAA", "S1", "long",  "hours",    "x"),
+        ("2026-08-11 14:00:00", "alpaca4", "BBB", "S2", "long",  "day-type", "x"),
+        ("2026-08-12 15:00:00", "alpaca4", "CCC", "S3", "short", "reversal", "x"),
+        ("2026-08-19 14:00:00", "alpaca4", "DDD", "S4", "long",  "hours",    "x"),
+    ])
+    try:
+        c = _client()
+        wk = c.get("/api/signals/gate_opportunity?account=alpaca4"
+                   "&from=2026-08-10&to=2026-08-16").get_json()
+        assert wk["from"] == "2026-08-10" and wk["to"] == "2026-08-16"
+        assert wk["days"] == 7
+        assert wk["total_blocks"] == 2                     # excludes 08-05 and 08-19
+        gates = {g["gate"] for g in wk["books"][0]["by_gate"]}
+        assert gates == {"day-type", "reversal"}
+
+        # A later window sees only its own block — proving it is not a relabel.
+        nxt = c.get("/api/signals/gate_opportunity?account=alpaca4"
+                    "&from=2026-08-17&to=2026-08-23").get_json()
+        assert nxt["total_blocks"] == 1
+
+        assert c.get("/api/signals/gate_opportunity?account=alpaca4"
+                     "&from=nope&to=nope").status_code == 400
+    finally:
+        _seed_blocks([])

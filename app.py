@@ -14914,18 +14914,34 @@ def api_recap():
 
     frm = (request.args.get("from") or "").strip()
     to  = (request.args.get("to") or "").strip()
+    period = (request.args.get("period") or "").strip().lower()
+    if not period:
+        # Back-compat with the original ?week=this|last.
+        period = "this_week" if (request.args.get("week") or "").lower() == "this" else "last_week"
+
     if frm and to:
         week_label = f"{frm} -> {to}"
+    elif period in ("this_month", "last_month"):
+        # Full calendar month, ET. day=28 + 4 days always lands in the next month,
+        # so this finds month-end without a calendar table (February included).
+        first = today_et.replace(day=1)
+        if period == "last_month":
+            first = (first - _dt.timedelta(days=1)).replace(day=1)
+        nxt_first = (first.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
+        last = nxt_first - _dt.timedelta(days=1)
+        frm, to = first.isoformat(), last.isoformat()
+        week_label = (("This month" if period == "this_month" else "Last month")
+                      + f" ({frm} -> {to})")
     else:
-        # Monday of the current ET week, then step back one unless ?week=this. The
+        # Monday of the current ET week, stepping back one for the default. The
         # default is the LAST COMPLETED week because that is the one being recapped.
         monday = today_et - _dt.timedelta(days=today_et.weekday())
-        this_week = (request.args.get("week") or "").lower() == "this"
-        if not this_week:
+        if period != "this_week":
             monday -= _dt.timedelta(days=7)
         sunday = monday + _dt.timedelta(days=6)
         frm, to = monday.isoformat(), sunday.isoformat()
-        week_label = ("This week" if this_week else "Last week") + f" ({frm} -> {to})"
+        week_label = (("This week" if period == "this_week" else "Last week")
+                      + f" ({frm} -> {to})")
 
     try:
         paired = _pair_alpaca_fills_lifo(rec["fills_fn"](), from_date=frm, to_date=to)
@@ -15046,7 +15062,7 @@ def api_recap():
 
     return jsonify({
         "account": ACCT, "label": rec.get("label"), "from": frm, "to": to,
-        "week_label": week_label, "book": book,
+        "period": period, "week_label": week_label, "book": book,
         "winners": winners, "losers": losers,
         "best_trade": best, "worst_trade": worst,
         "gates": gates, "scorecard": scorecard, "script": script,
@@ -15092,7 +15108,23 @@ def api_gate_opportunity():
                                 key=lambda t: _ui_account_rank(_num.get(t, "9"))))
 
     now_utc = _dt.datetime.now(_dt.timezone.utc)
-    cutoff  = (now_utc - _dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    # An explicit ?from=&to= window beats the rolling ?days=. A rolling window always
+    # ENDS now, so it cannot express "last week" at all — the recap page needs to
+    # price exactly the days it is reporting on, not the trailing N.
+    _arg_from = (request.args.get("from") or "").strip()
+    _arg_to   = (request.args.get("to") or "").strip()
+    if _arg_from and _arg_to:
+        from_date, to_date = _arg_from, _arg_to
+        try:
+            days = (_dt.date.fromisoformat(to_date)
+                    - _dt.date.fromisoformat(from_date)).days + 1
+        except ValueError:
+            return jsonify({"error": "from/to must be YYYY-MM-DD"}), 400
+    else:
+        from_date = (now_utc - _dt.timedelta(days=days)).date().isoformat()
+        to_date   = now_utc.date().isoformat()
+    lo_ts = f"{from_date} 00:00:00"
+    hi_ts = f"{to_date} 23:59:59"
     _flush_blocked_targets()
 
     p = placeholder()
@@ -15100,8 +15132,9 @@ def api_gate_opportunity():
         conn = get_db(); cur = conn.cursor()
         marks = ",".join([p] * len(accounts)) or p
         cur.execute(f"SELECT ts, account, ticker, strategy, side, gate, reason "
-                    f"FROM blocked_targets WHERE ts >= {p} AND account IN ({marks}) "
-                    f"ORDER BY ts", tuple([cutoff] + accounts))
+                    f"FROM blocked_targets WHERE ts >= {p} AND ts <= {p} "
+                    f"AND account IN ({marks}) "
+                    f"ORDER BY ts", tuple([lo_ts, hi_ts] + accounts))
         cols = [c[0] for c in cur.description]
         blocks = [dict(zip(cols, r)) for r in cur.fetchall()]
         conn.close()
@@ -15109,9 +15142,8 @@ def api_gate_opportunity():
         return jsonify({"error": str(e)[:200], "days": days, "accounts": accounts,
                         "books": [], "gates": [], "total_blocks": 0})
 
-    # Farm round-trips, fetched ONCE and shared across every book being priced.
-    from_date = (now_utc - _dt.timedelta(days=days)).date().isoformat()
-    to_date   = now_utc.date().isoformat()
+    # Farm round-trips, fetched ONCE and shared across every book being priced,
+    # over the SAME window the blocks were pulled from.
     farm_by_key = defaultdict(list)
     farm_err = []
     for _a in (ALPACA_ACCOUNTS or []):
@@ -15210,7 +15242,8 @@ def api_gate_opportunity():
             gate_totals[g] += st["blocked"]
     gates = [g for g, _ in sorted(gate_totals.items(), key=lambda kv: -kv[1])]
 
-    return jsonify({"days": days, "accounts": accounts, "books": books,
+    return jsonify({"days": days, "from": from_date, "to": to_date,
+                    "accounts": accounts, "books": books,
                     "gates": gates, "total_blocks": len(blocks),
                     "samples": samples, "farm_errors": farm_err,
                     "caveats": [

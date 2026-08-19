@@ -144,3 +144,52 @@ def test_empty_week_still_returns_a_usable_shell(monkeypatch, crew):
     assert d["winners"] == [] and d["losers"] == []
     assert d["best_trade"] is None and d["worst_trade"] is None
     assert d["script"] and d["gates"]
+
+
+@pytest.mark.parametrize("period,label", [
+    ("this_month", "This month"),
+    ("last_month", "Last month"),
+])
+def test_month_periods_span_the_full_calendar_month(monkeypatch, crew, period, label):
+    _with(monkeypatch, [])
+    d = _client().get(f"/api/recap?period={period}").get_json()
+    frm, to = dt.date.fromisoformat(d["from"]), dt.date.fromisoformat(d["to"])
+    assert frm.day == 1                                   # starts on the 1st
+    assert (to + dt.timedelta(days=1)).day == 1           # ends on month-end
+    assert frm.month == to.month
+    assert d["week_label"].startswith(label)
+    assert d["period"] == period
+    today = dt.date.today()
+    if period == "this_month":
+        assert (frm.year, frm.month) == (today.year, today.month)
+    else:
+        prev = today.replace(day=1) - dt.timedelta(days=1)
+        assert (frm.year, frm.month) == (prev.year, prev.month)
+
+
+@pytest.mark.parametrize("year,month,last_day", [
+    (2026, 1, 31), (2026, 2, 28), (2026, 3, 31), (2026, 4, 30),
+    (2024, 2, 29),                                    # leap year
+    (2026, 11, 30), (2026, 12, 31),                   # December must roll the YEAR
+])
+def test_month_end_arithmetic_survives_short_months(year, month, last_day):
+    """The endpoint finds month-end with `day=28 + 4 days, back to the 1st, minus a
+    day` rather than a lookup table. Verify that formula directly — the endpoint
+    test above can only ever exercise whatever month today happens to be."""
+    first = dt.date(year, month, 1)
+    nxt_first = (first.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+    end = nxt_first - dt.timedelta(days=1)
+    assert end == dt.date(year, month, last_day)
+    assert end.month == month and end.year == year
+
+
+def test_explicit_from_to_still_wins(monkeypatch, crew):
+    _with(monkeypatch, [])
+    d = _client().get("/api/recap?period=this_month&from=2026-03-02&to=2026-03-08").get_json()
+    assert (d["from"], d["to"]) == ("2026-03-02", "2026-03-08")
+
+
+def test_week_param_still_works_for_back_compat(monkeypatch, crew):
+    _with(monkeypatch, [])
+    assert _client().get("/api/recap?week=this").get_json()["period"] == "this_week"
+    assert _client().get("/api/recap?week=last").get_json()["period"] == "last_week"
