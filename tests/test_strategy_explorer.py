@@ -202,3 +202,23 @@ def test_benchmark_failure_leaves_the_curves_usable(monkeypatch):
         d = c.get("/api/crew/strategies?account=4&days=30").get_json()
     assert d["dates"] == [] and d["spy_pct"] == []
     assert d["strategies"][0]["net_pnl"] == 10.0     # curve still there
+
+
+def test_trade_dates_are_et_and_distinct():
+    """Powers the "traded this week / last week" filter. Must be ET dates: the
+    payload's cum_by_date is popped server-side and forward-filled (a flat run is
+    ambiguous) and `rows` is capped at 200, so neither is a dependable signal."""
+    out = a._strategy_breakdown([
+        _rt("S", 5, date="2026-08-12", entry_et="09:45"),
+        _rt("S", 5, date="2026-08-12", entry_et="14:00"),   # same day → one entry
+        _rt("S", 5, date="2026-08-10", entry_et="10:00"),
+    ])
+    assert out[0]["trade_dates"] == ["2026-08-10", "2026-08-12"]   # sorted, deduped
+
+
+def test_trade_dates_bucket_a_late_entry_on_the_et_day():
+    """A 16:05 ET entry is 20:05 UTC the SAME day; an 20:05 UTC entry in winter is
+    15:05 ET. Bucketing on the UTC date would put entries on the wrong side of a
+    week boundary — trade_dates is built from the ET datetime for that reason."""
+    out = a._strategy_breakdown([_rt("S", 1, date="2026-08-12", entry_et="16:05")])
+    assert out[0]["trade_dates"] == ["2026-08-12"]

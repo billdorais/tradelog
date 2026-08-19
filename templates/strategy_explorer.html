@@ -101,6 +101,13 @@
     <div class="panel">
       <div class="band-q">Strategies</div>
       <div class="band-sub">Click a card. Sorted by net P&amp;L. The sparkline is the equity shape; the number is the total.</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <span style="font-size:0.7rem;color:#666">Traded in</span>
+        <button class="btn" id="wfAll"  onclick="setWeekFilter('all')">All</button>
+        <button class="btn" id="wfThis" onclick="setWeekFilter('this')">This week</button>
+        <button class="btn" id="wfLast" onclick="setWeekFilter('last')">Last week</button>
+        <span id="wfMeta" style="font-size:0.7rem;color:#666"></span>
+      </div>
       <div class="rail" id="rail"></div>
     </div>
 
@@ -110,6 +117,44 @@
 <script>
   let DATA = null, SEL = null, chart = null, cutChart = null;
   let showSpy = false, showAll = true;
+  let weekFilter = 'all';          // 'all' | 'this' | 'last'
+
+  // Monday→Sunday bounds (ISO dates) for the current ET week, offset back N weeks.
+  // Anchored on the ET calendar date, then done as pure UTC date arithmetic so the
+  // browser's own timezone can never shift the boundary a day either way.
+  function _etWeekBounds(weeksBack) {
+    const todayET = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
+      .format(new Date());                             // YYYY-MM-DD
+    const d   = new Date(todayET + 'T00:00:00Z');
+    const dow = (d.getUTCDay() + 6) % 7;               // Mon=0 … Sun=6
+    const mon = new Date(d); mon.setUTCDate(d.getUTCDate() - dow - 7 * weeksBack);
+    const sun = new Date(mon); sun.setUTCDate(mon.getUTCDate() + 6);
+    const iso = (x) => x.toISOString().slice(0, 10);
+    return [iso(mon), iso(sun)];
+  }
+
+  // A strategy passes if it ENTERED a trade inside the window. trade_dates is ET,
+  // so this agrees with how the rest of the page buckets entries.
+  function _tradedIn(s, bounds) {
+    if (!bounds) return true;
+    const [lo, hi] = bounds;
+    return (s.trade_dates || []).some(d => d >= lo && d <= hi);
+  }
+
+  function _activeBounds() {
+    return weekFilter === 'this' ? _etWeekBounds(0)
+         : weekFilter === 'last' ? _etWeekBounds(1)
+         : null;
+  }
+
+  function setWeekFilter(v) {
+    weekFilter = v;
+    // The visible strategy may have just been filtered out — fall through to the
+    // first one still showing rather than leaving the detail on a hidden card.
+    const vis = (DATA ? DATA.strategies : []).filter(s => _tradedIn(s, _activeBounds()));
+    if (!vis.some(s => s.name === SEL)) SEL = (vis[0] || {}).name || null;
+    render();
+  }
 
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
@@ -149,13 +194,31 @@
   function render() {
     if (!DATA) return;
     const minN = parseInt(document.getElementById('minN').value, 10);
-    document.getElementById('rail').innerHTML = (DATA.strategies || []).map(s => `
+
+    const bounds = _activeBounds();
+    const all    = DATA.strategies || [];
+    const shown  = all.filter(s => _tradedIn(s, bounds));
+    for (const [id, v] of [['wfAll', 'all'], ['wfThis', 'this'], ['wfLast', 'last']]) {
+      const b = document.getElementById(id);
+      if (b) b.classList.toggle('on', weekFilter === v);
+    }
+    const meta = document.getElementById('wfMeta');
+    if (meta) {
+      meta.textContent = bounds
+        ? `${bounds[0]} → ${bounds[1]} ET · ${shown.length} of ${all.length} strategies`
+        : `${all.length} strategies`;
+    }
+
+    document.getElementById('rail').innerHTML = shown.map(s => `
       <div class="card ${s.name === SEL ? 'sel' : ''}" onclick="pick('${esc(s.name)}')" title="${esc(s.name)}">
         <div class="nm">${esc(s.name.replace(/_V02_5MIN$/, ''))}</div>
         ${sparkline(s.curve)}
         <div class="pl ${cls(s.net_pnl, s.trades < minN)}">${money(s.net_pnl)}</div>
         <div class="n">${s.trades} trade${s.trades === 1 ? '' : 's'}</div>
-      </div>`).join('') || '<div class="empty">No closed trades in this window.</div>';
+      </div>`).join('') || `<div class="empty">${bounds
+        ? 'No strategy traded ' + bounds[0] + ' → ' + bounds[1] + '. If that week is outside the '
+          + 'lookback above, widen it — this filter only narrows what is already loaded.'
+        : 'No closed trades in this window.'}</div>`;
     renderDetail(minN);
   }
 

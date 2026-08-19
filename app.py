@@ -12656,9 +12656,20 @@ def _strategy_breakdown(round_trips, bucket_mins=30):
         notionals = [x for x in notionals if x > 0]
         notional = round(_stats.median(notionals), 2) if notionals else None
 
+        # Distinct ET dates this strategy ENTERED on. The client filters "traded this
+        # week / last week" off this: cum_by_date is popped server-side (and forward-
+        # filled, so a flat run is ambiguous) and `rows` is capped at 200, so neither
+        # is a dependable "did it trade in this range" signal. ET, not UTC, so a
+        # 16:05 ET entry lands on the right side of a week boundary.
+        trade_dates = sorted({
+            _d.date().isoformat() for _d in
+            (_et_dt(c.get("entry_time")) for c in rts) if _d is not None
+        })
+
         out.append({
             "name": name, "trades": n,
             "cum_by_date": cum_by_date, "notional": notional,
+            "trade_dates": trade_dates,
             "net_pnl": round(sum(pnls), 2),
             "win_rate": round(len(wins) / n * 100, 1),
             "profit_factor": round(pf, 2) if pf is not None else None,
