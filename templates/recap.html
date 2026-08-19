@@ -22,30 +22,35 @@
     .panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
     .band-q { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #f0a35e; margin-bottom: 2px; }
     .band-sub { font-size: 0.72rem; color: #666; margin-bottom: 12px; line-height: 1.5; }
-    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-    .tile { background: #0f1219; border: 1px solid #1e2130; border-radius: 8px; padding: 10px 12px; }
-    .tile .k { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.07em; color: #555; }
-    .tile .v { font-size: 1.3rem; font-weight: 700; margin: 3px 0; }
-    .tile .s { font-size: 0.66rem; color: #666; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 10px; }
+    /* overflow:hidden is the backstop — nothing inside a tile may paint over its neighbours. */
+    .tile { background: #0f1219; border: 1px solid #1e2130; border-radius: 8px; padding: 10px 12px;
+            overflow: hidden; min-width: 0; }
+    .tile .k { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.07em; color: #555;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile .v { font-size: 1.3rem; font-weight: 700; margin: 3px 0;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile .s { font-size: 0.66rem; color: #666; overflow-wrap: anywhere; }
     .pos { color: #7FE098; } .neg { color: #e08a8a; } .thin { color: #8a90a0; }
     /* Dials — ported from the dashboard perf cards so both read the same. */
     .tile-split { display: flex; align-items: center; gap: 10px; }
     .tile-split .tile-left { min-width: 0; flex: 1; }
-    .gauge-wrap { width: 92px; flex: none; }
-    .gauge-wrap canvas { display: block; width: 100% !important; max-height: 56px; }
-    .gauge-counts { display: flex; justify-content: space-between; font-size: 0.66rem;
+    .gauge-wrap { width: 72px; flex: 0 0 auto; }
+    .gauge-wrap canvas { display: block; width: 100% !important; max-height: 44px; }
+    .gauge-counts { display: flex; justify-content: space-between; font-size: 0.6rem;
                     margin-top: 1px; padding: 0 2px; width: 100%; }
     .gauge-counts .wins { color: #7FE098; } .gauge-counts .mid { color: #555; }
     .gauge-counts .losses { color: #ef5350; }
-    .ring-wrap { width: 58px; height: 58px; flex: none; }
-    .ring-wrap canvas { width: 100% !important; height: 100% !important; max-height: 58px; }
+    .ring-wrap { width: 48px; height: 48px; flex: 0 0 auto; }
+    .ring-wrap canvas { width: 100% !important; height: 100% !important; max-height: 48px; }
     /* Tiles must not be stretched by their contents. */
     .tile-split { align-items: center; }
     .tiles > .tile { align-self: start; }
-    .winloss-bar-wrap { width: 84px; flex: none; }
+    .winloss-bar-wrap { width: 72px; flex: 0 0 auto; }
     .winloss-bar { height: 6px; border-radius: 3px; display: flex; overflow: hidden; margin-bottom: 5px; }
     .winloss-bar .win-seg { background: #517356; } .winloss-bar .loss-seg { background: #ef5350; }
-    .winloss-labels { display: flex; flex-direction: column; gap: 2px; font-size: 0.7rem; }
+    .winloss-labels { display: flex; flex-direction: column; gap: 2px; font-size: 0.66rem;
+                      white-space: nowrap; }
     .winloss-labels .wl-win { color: #7FE098; } .winloss-labels .wl-loss { color: #ef5350; }
     table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
     th { text-align: left; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; font-weight: 600; padding: 5px 8px; }
@@ -242,7 +247,7 @@
           <div class="tile tile-split">
             <div class="tile-left"><div class="k">Win rate</div>
               <div class="v">${b.trades === 0 ? '—' : b.win_rate.toFixed(1) + '%'}</div>
-              <div class="s">${b.n_strategies_traded} strateg${b.n_strategies_traded === 1 ? 'y' : 'ies'} traded</div></div>
+              <div class="s">${b.n_strategies_traded} strateg${b.n_strategies_traded === 1 ? 'y' : 'ies'}</div></div>
             <div class="gauge-wrap">
               <canvas id="winGauge" height="52"></canvas>
               <div class="gauge-counts"><span class="wins">${b.win_count}</span>
