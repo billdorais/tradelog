@@ -283,3 +283,62 @@ def test_empty_period_stats_do_not_crash(monkeypatch, crew):
     b = _client().get("/api/recap").get_json()["book"]
     assert b["profit_factor"] is None and b["avg_win"] is None and b["avg_loss"] is None
     assert b["max_drawdown"] == 0.0 and b["curve"] == []
+
+
+@pytest.fixture
+def w32_scorecard(monkeypatch):
+    """The real 2026-W32 card: 18 picks, 8 traded, net $334.41."""
+    import routes.crew as rc
+    raw = [("NVDA", 2, 249.38), ("AAPL4", 2, -27.54), ("HOOD", 0, None), ("IONQ", 2, 61.82),
+           ("IWMR", 0, None), ("SMHR", 0, None), ("GOOG", 2, -37.96), ("AAPL3", 1, -35.76),
+           ("AVGO", 0, None), ("MS", 2, 22.09), ("SPCX", 0, None), ("GLD", 0, None),
+           ("MSFT", 0, None), ("AMZN", 1, 15.64), ("PLTR", 2, 86.74), ("IWMB", 0, None),
+           ("UBER", 0, None), ("NEM", 0, None)]
+    picks = [{"strategy": n, "side": "both", "trades": t, "pnl": p} for n, t, p in raw]
+    traded = [p for p in picks if p["pnl"] is not None]
+    monkeypatch.setattr(rc, "_pick_scorecard", lambda *A, **K: {
+        "report_week": "2026-W32", "since": "2026-08-05", "n_picks": len(picks),
+        "n_traded": len(traded), "n_positive": sum(1 for p in traded if p["pnl"] > 0),
+        "total_pnl": round(sum(p["pnl"] for p in traded), 2), "picks": picks, "caveat": "x"})
+
+
+def test_scorecard_summary_cards(monkeypatch, crew, w32_scorecard):
+    _with(monkeypatch, [])
+    m = _client().get("/api/recap").get_json()["scorecard"]["summary"]
+    assert (m["n_picks"], m["n_traded"], m["n_untraded"]) == (18, 8, 10)
+    assert (m["n_positive"], m["n_negative"]) == (5, 3)
+    assert (m["trades_positive"], m["trades_negative"]) == (9, 5)
+    # The two halves must reconcile with the headline net.
+    assert round(m["pnl_positive"] + m["pnl_negative"], 2) == 334.41
+    assert m["hit_rate"] == 62.5          # 5 of the 8 that fired
+    assert m["activation"] == 44.4        # only 8 of 18 ever fired
+
+
+def test_top_share_exposes_concentration(monkeypatch, crew, w32_scorecard):
+    """The number the table hides: one name was three-quarters of the net."""
+    _with(monkeypatch, [])
+    m = _client().get("/api/recap").get_json()["scorecard"]["summary"]
+    assert m["top_pick"] == "NVDA" and m["top_pick_pnl"] == 249.38
+    assert m["top_share"] == 74.6          # 249.38 / 334.41
+
+
+def test_top_share_is_null_when_the_book_is_not_net_positive(monkeypatch, crew):
+    """Share-of-net is undefined against a zero or negative denominator — return
+    None rather than a nonsense percentage."""
+    import routes.crew as rc
+    picks = [{"strategy": "A", "side": "both", "trades": 1, "pnl": 10.0},
+             {"strategy": "B", "side": "both", "trades": 1, "pnl": -40.0}]
+    monkeypatch.setattr(rc, "_pick_scorecard", lambda *A, **K: {
+        "report_week": "W", "since": "d", "n_picks": 2, "n_traded": 2, "n_positive": 1,
+        "total_pnl": -30.0, "picks": picks, "caveat": ""})
+    _with(monkeypatch, [])
+    m = _client().get("/api/recap").get_json()["scorecard"]["summary"]
+    assert m["top_share"] is None
+    assert m["n_untraded"] == 0 and m["hit_rate"] == 50.0
+
+
+def test_summary_absent_when_there_is_no_scorecard(monkeypatch, crew):
+    import routes.crew as rc
+    monkeypatch.setattr(rc, "_pick_scorecard", lambda *A, **K: {})
+    _with(monkeypatch, [])
+    assert _client().get("/api/recap").get_json()["scorecard"] == {}

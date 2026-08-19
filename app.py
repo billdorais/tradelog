@@ -15078,6 +15078,39 @@ def api_recap():
     except Exception as e:
         log.debug("recap scorecard failed: %s", e)
 
+    # Headline cards for the scorecard table. Two of these are the ones the table
+    # itself hides: how many picks NEVER fired (a pick that cannot trade is a
+    # selection failure, not a neutral result), and how concentrated the net is —
+    # a book whose profit is one name is a different story from a broad one.
+    if scorecard.get("picks"):
+        _sp    = scorecard["picks"]
+        _traded = [p for p in _sp if p.get("pnl") is not None]
+        _pos    = [p for p in _traded if p["pnl"] > 0]
+        _neg    = [p for p in _traded if p["pnl"] <= 0]
+        _net    = round(sum(p["pnl"] for p in _traded), 2)
+        _top    = max(_traded, key=lambda p: p["pnl"], default=None)
+        scorecard["summary"] = {
+            "n_picks":    len(_sp),
+            "n_traded":   len(_traded),
+            "n_untraded": len(_sp) - len(_traded),
+            "n_positive": len(_pos),
+            "n_negative": len(_neg),
+            "trades_positive": sum(p.get("trades") or 0 for p in _pos),
+            "trades_negative": sum(p.get("trades") or 0 for p in _neg),
+            "pnl_positive":    round(sum(p["pnl"] for p in _pos), 2),
+            "pnl_negative":    round(sum(p["pnl"] for p in _neg), 2),
+            # Of the picks that actually fired, what share made money.
+            "hit_rate": round(len(_pos) / len(_traded) * 100, 1) if _traded else None,
+            # What share of the roster ever fired at all.
+            "activation": round(len(_traded) / len(_sp) * 100, 1) if _sp else None,
+            "top_pick":     (_top or {}).get("strategy"),
+            "top_pick_pnl": (_top or {}).get("pnl"),
+            # Only meaningful when the book is net-positive: "X% of the net came from
+            # one name". Undefined when net <= 0, so return None rather than a number.
+            "top_share": (round((_top["pnl"] / _net) * 100, 1)
+                          if (_top and _net > 0 and _top.get("pnl", 0) > 0) else None),
+        }
+
     # Talking points with the numbers already filled in — the teleprompter. Written
     # so they can be read aloud as-is; "on paper" is in the cold open by design.
     def _m(v):

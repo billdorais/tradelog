@@ -356,7 +356,33 @@
       <td>${p.trades}</td>
       <td class="${p.pnl == null ? 'thin' : cls(p.pnl)}" style="text-align:right">
         ${p.pnl == null ? 'no trades' : money(p.pnl)}</td></tr>`).join('');
-    return `<div style="font-size:0.8rem;margin-bottom:8px">
+    const m = sc.summary || {};
+    const cards = !sc.summary ? '' : `
+      <div class="tiles" style="margin-bottom:12px">
+        <div class="tile"><div class="k">Net since wire</div>
+          <div class="v ${cls(sc.total_pnl)}">${money(sc.total_pnl)}</div>
+          <div class="s">${m.n_traded} of ${m.n_picks} picks traded</div></div>
+        <div class="tile"><div class="k">Picks in profit</div>
+          <div class="v pos">${m.n_positive}</div>
+          <div class="s">${m.trades_positive} trade${m.trades_positive === 1 ? '' : 's'} · ${money(m.pnl_positive)}</div></div>
+        <div class="tile"><div class="k">Picks in the red</div>
+          <div class="v neg">${m.n_negative}</div>
+          <div class="s">${m.trades_negative} trade${m.trades_negative === 1 ? '' : 's'} · ${money(m.pnl_negative)}</div></div>
+        <div class="tile" title="A pick that never fires is a selection failure, not a neutral result — the slot could have gone to a name that trades.">
+          <div class="k">Never traded</div>
+          <div class="v ${m.n_untraded ? 'thin' : ''}">${m.n_untraded}</div>
+          <div class="s">${m.activation == null ? '—' : m.activation.toFixed(0) + '% of the roster fired'}</div></div>
+        <div class="tile" title="Of the picks that actually fired, the share that made money. This is the out-of-sample read on the selection method.">
+          <div class="k">Hit rate</div>
+          <div class="v">${m.hit_rate == null ? '—' : m.hit_rate.toFixed(0) + '%'}</div>
+          <div class="s">${m.n_positive}/${m.n_traded} traded picks green</div></div>
+        ${m.top_share == null ? '' : `
+        <div class="tile" title="Share of the net that came from the single best pick. High concentration means the book's result is one name, not the method.">
+          <div class="k">Top pick share</div>
+          <div class="v ${m.top_share >= 60 ? 'thin' : ''}">${m.top_share.toFixed(0)}%</div>
+          <div class="s">${esc(String(m.top_pick || '').replace(/_V02_5MIN$/, '').split('_CAM_')[0])} ${money(m.top_pick_pnl)}</div></div>`}
+      </div>`;
+    return cards + `<div style="font-size:0.8rem;margin-bottom:8px">
         Report <b>${esc(sc.report_week)}</b> · ${sc.n_traded}/${sc.n_picks} traded ·
         <span class="${cls(sc.n_positive)}">${sc.n_positive} positive</span> ·
         net <span class="${cls(sc.total_pnl)}">${money(sc.total_pnl)}</span> since ${esc(sc.since || '')}
