@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recap — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    .content { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+    .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+    .btn { background: transparent; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .btn:hover { border-color: #4a5568; }
+    .btn.on { border-color: #3a7a4e; color: #7FE098; }
+    .btn-copy { border-color: #3a7a4e; color: #7FE098; }
+    .meta { font-size: 0.75rem; color: #666; }
+    .panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+    .band-q { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #f0a35e; margin-bottom: 2px; }
+    .band-sub { font-size: 0.72rem; color: #666; margin-bottom: 12px; line-height: 1.5; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .tile { background: #0f1219; border: 1px solid #1e2130; border-radius: 8px; padding: 10px 12px; }
+    .tile .k { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.07em; color: #555; }
+    .tile .v { font-size: 1.3rem; font-weight: 700; margin: 3px 0; }
+    .tile .s { font-size: 0.66rem; color: #666; }
+    .pos { color: #7FE098; } .neg { color: #e08a8a; } .thin { color: #8a90a0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    th { text-align: left; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; font-weight: 600; padding: 5px 8px; }
+    td { padding: 5px 8px; border-top: 1px solid #171a24; }
+    .empty { padding: 16px; text-align: center; color: #555; font-size: 0.82rem; }
+    .pill { display: inline-block; font-size: 0.66rem; padding: 2px 8px; border-radius: 20px; margin: 2px 4px 2px 0; }
+    .pill.on  { background: rgba(127,224,152,0.12); color: #7FE098; border: 1px solid #2a4a35; }
+    .pill.off { background: rgba(120,120,140,0.08); color: #666; border: 1px solid #262a38; }
+    .script-line { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid #171a24; font-size: 0.85rem; line-height: 1.55; }
+    .script-seg { flex: 0 0 150px; color: #f0a35e; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; padding-top: 3px; }
+    .day-chart { height: 300px; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1d2e; border: 1px solid #3a7a4e; color: #7FE098; padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+      <h1>Kairos Automata — Recap</h1>
+    </div>
+    <div style="position:relative;display:inline-block">
+      <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+      <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:190px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+        <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+        <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+        <a href="/strategy-explorer" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#129517; Strategy Explorer</a>
+        <a href="/recap" style="display:block;padding:10px 16px;color:#7FE098;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Recap</a>
+        <a href="/crew" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#10022; Crew</a>
+        <a href="/diagnostics" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#128736; Diagnostics</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="bar">
+      <button class="btn" id="wLast" onclick="setWeek('last')">Last week</button>
+      <button class="btn" id="wThis" onclick="setWeek('this')">This week</button>
+      <span class="meta" id="meta">loading…</span>
+      <button class="btn btn-copy" style="margin-left:auto" onclick="copyScript()">📋 Copy script</button>
+    </div>
+
+    <div id="body"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+  let DATA = null, GATES = null, week = 'last', chart = null;
+
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    const btn = document.getElementById('navMenuBtn'), menu = document.getElementById('navMenu');
+    if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+  });
+
+  const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
+  const esc   = s => String(s == null ? '' : s).replace(/</g, '&lt;');
+  const cls   = v => (v >= 0 ? 'pos' : 'neg');
+
+  // Fills come back UTC; the tape is read in ET. Display-only formatting.
+  const _etTime = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+  const _etFull = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false });
+  const _etHM = (iso) => {
+    if (!iso) return '';
+    const t = String(iso);
+    const d = new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z');
+    return isNaN(d.getTime()) ? '' : _etTime.format(d);
+  };
+
+  function _toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  function setWeek(w) { week = w; load(); }
+
+  async function load() {
+    document.getElementById('wLast').classList.toggle('on', week === 'last');
+    document.getElementById('wThis').classList.toggle('on', week === 'this');
+    document.getElementById('meta').textContent = 'loading…';
+    document.getElementById('body').innerHTML = '';
+    try {
+      const d = await fetch(`/api/recap?week=${week}`).then(r => r.json());
+      if (d.error) {
+        document.getElementById('meta').textContent = d.error;
+        document.getElementById('body').innerHTML = `<div class="panel"><div class="empty">${esc(d.error)}</div></div>`;
+        return;
+      }
+      DATA = d;
+      document.getElementById('meta').textContent = `${d.label} · ${d.week_label}`;
+      render();
+      loadGates();          // the Refusal panel — separate call, it is the slow one
+      loadTradeChart();     // trade of the week
+    } catch (e) {
+      document.getElementById('meta').textContent = 'failed: ' + e;
+    }
+  }
+
+  function render() {
+    const d = DATA, b = d.book;
+    const gatePills = (d.gates || []).map(g =>
+      `<span class="pill ${g.on ? 'on' : 'off'}" title="${esc(g.detail)}">${g.on ? '●' : '○'} ${esc(g.gate)}</span>`).join('');
+
+    const stratRow = (s, i) => `<tr>
+      <td style="color:#666">${i + 1}</td>
+      <td class="mono">${esc(s.name.replace(/_V02_5MIN$/, ''))}</td>
+      <td>${s.trades}</td>
+      <td>${s.win_rate.toFixed(0)}%</td>
+      <td class="${cls(s.expectancy)}">${money(s.expectancy)}</td>
+      <td class="${cls(s.pnl)}" style="text-align:right;font-weight:700">${money(s.pnl)}</td></tr>`;
+
+    document.getElementById('body').innerHTML = `
+      <div class="panel">
+        <div class="band-q">1 · The book</div>
+        <div class="band-sub">Crew Paper only — one book, one narrative. <b>Paper money.</b></div>
+        <div class="tiles">
+          <div class="tile"><div class="k">Week P&amp;L</div>
+            <div class="v ${cls(b.pnl)}">${money(b.pnl)}</div>
+            <div class="s">${b.trades} trade${b.trades === 1 ? '' : 's'}</div></div>
+          <div class="tile"><div class="k">Win rate</div>
+            <div class="v">${b.win_rate.toFixed(1)}%</div>
+            <div class="s">${b.n_strategies_traded} strateg${b.n_strategies_traded === 1 ? 'y' : 'ies'} traded</div></div>
+          <div class="tile"><div class="k">Best day</div>
+            <div class="v ${b.best_day ? cls(b.best_day[1]) : ''}">${b.best_day ? money(b.best_day[1]) : '—'}</div>
+            <div class="s">${b.best_day ? esc(b.best_day[0]) : 'no trades'}</div></div>
+          <div class="tile"><div class="k">Worst day</div>
+            <div class="v ${b.worst_day ? cls(b.worst_day[1]) : ''}">${b.worst_day ? money(b.worst_day[1]) : '—'}</div>
+            <div class="s">${b.worst_day ? esc(b.worst_day[0]) : 'no trades'}</div></div>
+        </div>
+        <div style="margin-top:12px">${gatePills}</div>
+        <div class="band-sub" style="margin:6px 0 0">Filled dot = gate live on this book. Hover for the rule.</div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">Winners &amp; losers</div>
+        <div class="band-sub">Top and bottom three by net P&amp;L for the week.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div>
+            <div style="font-size:0.7rem;color:#7FE098;margin-bottom:4px">Winners</div>
+            <table><thead><tr><th>#</th><th>Strategy</th><th>Tr</th><th>Win</th><th>Exp</th><th style="text-align:right">P&amp;L</th></tr></thead>
+            <tbody>${(d.winners || []).map(stratRow).join('') || '<tr><td colspan="6" class="empty">None.</td></tr>'}</tbody></table>
+          </div>
+          <div>
+            <div style="font-size:0.7rem;color:#e08a8a;margin-bottom:4px">Losers</div>
+            <table><thead><tr><th>#</th><th>Strategy</th><th>Tr</th><th>Win</th><th>Exp</th><th style="text-align:right">P&amp;L</th></tr></thead>
+            <tbody>${(d.losers || []).map(stratRow).join('') || '<tr><td colspan="6" class="empty">None.</td></tr>'}</tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">2 · Trade of the week</div>
+        <div class="band-sub" id="totSub">${d.best_trade
+          ? `${esc(d.best_trade.side)} ${esc(d.best_trade.ticker)} on ${esc(d.best_trade.date)} —
+             ${money(d.best_trade.pnl)}, ${esc(d.best_trade.qty)} @ ${d.best_trade.entry_price}
+             → ${d.best_trade.exit_price}, out on ${esc(d.best_trade.exit_reason || 'exit')}.
+             Times ET.`
+          : 'No trades this week.'}</div>
+        <div id="totChart"></div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">3 · The Refusal</div>
+        <div class="band-sub">What the gates blocked on Crew Paper, priced against the ungated farm.
+          This is the segment nobody else can make — the trades the machine <i>refused</i>.</div>
+        <div id="gates"><div class="empty">pricing blocks against the farm…</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">4 · Grading the Crew</div>
+        <div class="band-sub">The last report's picks, forward / out-of-sample since they were wired.</div>
+        ${renderScorecard(d.scorecard)}
+      </div>
+
+      <div class="panel">
+        <div class="band-q">5 · Script notes</div>
+        <div class="band-sub">Read these aloud as-is; the numbers are already filled in.
+          <b>Copy script</b> puts them on the clipboard.</div>
+        ${(d.script || []).map(x => `<div class="script-line">
+          <div class="script-seg">${esc(x.segment)}</div><div>${esc(x.line)}</div></div>`).join('')}
+      </div>`;
+  }
+
+  function renderScorecard(sc) {
+    if (!sc || !sc.picks) return '<div class="empty">No crew report with parseable picks yet.</div>';
+    const rows = sc.picks.map(p => `<tr>
+      <td class="mono">${esc(p.strategy.replace(/_V02_5MIN$/, ''))}</td>
+      <td style="color:#888">${esc(p.side)}</td>
+      <td>${p.trades}</td>
+      <td class="${p.pnl == null ? 'thin' : cls(p.pnl)}" style="text-align:right">
+        ${p.pnl == null ? 'no trades' : money(p.pnl)}</td></tr>`).join('');
+    return `<div style="font-size:0.8rem;margin-bottom:8px">
+        Report <b>${esc(sc.report_week)}</b> · ${sc.n_traded}/${sc.n_picks} traded ·
+        <span class="${cls(sc.n_positive)}">${sc.n_positive} positive</span> ·
+        net <span class="${cls(sc.total_pnl)}">${money(sc.total_pnl)}</span> since ${esc(sc.since || '')}
+      </div>
+      <table><thead><tr><th>Pick</th><th>Side</th><th>Trades</th><th style="text-align:right">P&amp;L since wire</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="band-sub" style="margin-top:8px">${esc(sc.caveat || '')}</div>`;
+  }
+
+  async function loadGates() {
+    const host = document.getElementById('gates');
+    if (!host) return;
+    try {
+      const d = await fetch('/api/signals/gate_opportunity?account=alpaca4&days=14').then(r => r.json());
+      GATES = d;
+      const bk = (d.books || [])[0];
+      if (!bk || !bk.by_gate || !bk.by_gate.length) {
+        host.innerHTML = '<div class="empty">No blocks recorded in the last 14 days.</div>'; return;
+      }
+      host.innerHTML = `
+        <div style="font-size:0.8rem;margin-bottom:8px">
+          ${bk.total_blocks} block${bk.total_blocks === 1 ? '' : 's'} in 14d ·
+          assumed size ${money(bk.position_size || 0)}
+          ${bk.est_dollars_total != null
+            ? ` · est. <span class="${cls(bk.est_dollars_total)}">${money(bk.est_dollars_total)}</span> of P&L refused`
+            : ''}
+        </div>
+        <table><thead><tr><th>Gate</th><th>Blocked</th><th>Matched on farm</th><th>Avg %</th>
+          <th style="text-align:right">Est. $</th><th>Verdict</th></tr></thead><tbody>
+        ${bk.by_gate.map(g => `<tr>
+          <td style="color:#f0a35e">${esc(g.gate)}</td>
+          <td>${g.blocked}</td>
+          <td>${g.unanswerable ? '<span class="thin">no control</span>' : g.matched}</td>
+          <td class="${g.avg_pct == null ? 'thin' : cls(g.avg_pct)}">${g.avg_pct == null ? '—' : g.avg_pct + '%'}</td>
+          <td class="${g.est_dollars == null ? 'thin' : cls(g.est_dollars)}" style="text-align:right">
+            ${g.est_dollars == null ? '—' : money(g.est_dollars)}</td>
+          <td style="color:#888;font-size:0.72rem">${esc(g.verdict || '')}</td></tr>`).join('')}
+        </tbody></table>
+        <div class="band-sub" style="margin-top:8px">${(d.caveats || []).map(esc).join(' ')}</div>`;
+    } catch (e) {
+      host.innerHTML = `<div class="empty">failed: ${esc(e)}</div>`;
+    }
+  }
+
+  async function loadTradeChart() {
+    const t = DATA && DATA.best_trade;
+    const host = document.getElementById('totChart');
+    if (!host || !t) return;
+    host.innerHTML = '<div class="empty">loading chart…</div>';
+    try {
+      const d = await fetch(`/api/strategy/day_charts?strategy=${encodeURIComponent(t.strategy)}`
+                            + `&account=4&days=60&limit=40`).then(r => r.json());
+      const ss = (d.sessions || []).find(x => x.date === t.date);
+      if (!ss || !(ss.bars || []).length) {
+        host.innerHTML = '<div class="empty">No bars for that session.</div>'; return;
+      }
+      host.innerHTML = '<div class="day-chart" id="totCanvas"></div>';
+      const el = document.getElementById('totCanvas');
+      if (chart) { chart.remove(); chart = null; }
+      chart = LightweightCharts.createChart(el, {
+        width: el.clientWidth, height: 300,
+        layout: { background: { color: '#0f1219' }, textColor: '#8a90a0', fontSize: 10 },
+        grid: { vertLines: { color: '#171a24' }, horzLines: { color: '#171a24' } },
+        rightPriceScale: { borderColor: '#2a2d3e' },
+        timeScale: { borderColor: '#2a2d3e', timeVisible: true, secondsVisible: false,
+                     tickMarkFormatter: (x) => _etTime.format(new Date(x * 1000)) },
+        localization: { timeFormatter: (x) => _etFull.format(new Date(x * 1000)) },
+        crosshair: { mode: 0 },
+      });
+      const series = chart.addCandlestickSeries({
+        upColor: '#26a69a', downColor: '#ef5350', borderUpColor: '#26a69a',
+        borderDownColor: '#ef5350', wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+      series.setData(ss.bars.map(b => ({
+        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+      if (ss.markers) series.setMarkers(ss.markers);
+      for (const lv of (ss.levels || [])) {
+        series.createPriceLine({ price: lv.price, color: lv.color, lineWidth: 1,
+          lineStyle: lv.style === 'dashed' ? 2 : 0, axisLabelVisible: true, title: lv.title });
+      }
+      chart.timeScale().fitContent();
+      new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
+    } catch (e) {
+      host.innerHTML = `<div class="empty">failed: ${esc(e)}</div>`;
+    }
+  }
+
+  function copyScript() {
+    if (!DATA) { _toast('Nothing to copy'); return; }
+    const b = DATA.book;
+    const lines = [
+      `KAIROS RECAP — ${DATA.label} — ${DATA.week_label}`,
+      `(paper trading — say this out loud)`, '',
+      ...(DATA.script || []).map(x => `${x.segment}\n  ${x.line}`),
+      '', 'NUMBERS',
+      `  Week P&L: ${money(b.pnl)} over ${b.trades} trades, ${b.win_rate.toFixed(1)}% win`,
+      `  Best day: ${b.best_day ? b.best_day[0] + ' ' + money(b.best_day[1]) : '—'}`,
+      `  Worst day: ${b.worst_day ? b.worst_day[0] + ' ' + money(b.worst_day[1]) : '—'}`,
+      '  Winners: ' + ((DATA.winners || []).map(w => `${w.name} ${money(w.pnl)}`).join(', ') || 'none'),
+      '  Losers:  ' + ((DATA.losers || []).map(w => `${w.name} ${money(w.pnl)}`).join(', ') || 'none'),
+      '  Gates live: ' + (DATA.gates || []).filter(g => g.on).map(g => g.gate).join(', '),
+      '  Gates off:  ' + (DATA.gates || []).filter(g => !g.on).map(g => g.gate).join(', '),
+    ];
+    const bk = GATES && (GATES.books || [])[0];
+    if (bk) {
+      lines.push('', 'THE REFUSAL (14d)',
+        `  ${bk.total_blocks} blocks` + (bk.est_dollars_total != null
+          ? `, est. ${money(bk.est_dollars_total)} of P&L refused` : ''),
+        ...(bk.by_gate || []).map(g => `  ${g.gate}: ${g.blocked} blocked` +
+          (g.unanswerable ? ' (no control group)'
+            : `, ${g.matched} matched, avg ${g.avg_pct}%` +
+              (g.est_dollars == null ? '' : `, est ${money(g.est_dollars)}`))));
+    }
+    const text = lines.join('\n');
+    const done = () => _toast('Script copied');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => _fallbackCopy(text, done));
+    } else { _fallbackCopy(text, done); }
+  }
+  function _fallbackCopy(text, done) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { _toast('Copy failed'); }
+    document.body.removeChild(ta);
+  }
+
+  load();
+</script>
+</body>
+</html>

@@ -8335,6 +8335,12 @@ def strategies():
     return render_template("strategies.html")
 
 
+@app.route("/recap")
+def recap_page():
+    """Weekly Crew Paper recap — the show outline, with the numbers filled in."""
+    return render_template("recap.html")
+
+
 @app.route("/strategy-explorer")
 def strategy_explorer():
     """Per-strategy performance explorer. Distinct from /strategies, which is the
@@ -14877,6 +14883,174 @@ def _book_position_notional(tag, from_date, to_date, fills_fn=None):
     except Exception as _e:
         log.debug("_book_position_notional failed for %s: %s", tag, _e)
         return None, 0
+
+
+@app.route("/api/recap")
+def api_recap():
+    """Everything a Crew Paper recap episode needs, in one call.
+
+    Scoped to Crew Paper (acct4) on purpose: one book is one narrative. Assembles
+    what is cheap server-side — window, book totals, winners/losers, the trade of
+    the week, which gates are actually live, the crew's out-of-sample scorecard,
+    and pre-written talking points. The page fetches the two expensive pieces
+    itself: /api/signals/gate_opportunity (the Refusal segment) and
+    /api/strategy/day_charts (the charts).
+
+      ?from=&to=   explicit ET dates
+      ?week=this   current Mon-Sun week (default: the LAST COMPLETED week, which
+                   is the one you are recapping)
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+
+    ACCT = "4"
+    rec  = ACCOUNTS_BY_NUM.get(ACCT)
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": "Crew Paper (acct4) is not configured"}), 400
+
+    try:    et = _ZI("America/New_York")
+    except Exception: et = _dt.timezone.utc
+    today_et = _dt.datetime.now(et).date()
+
+    frm = (request.args.get("from") or "").strip()
+    to  = (request.args.get("to") or "").strip()
+    if frm and to:
+        week_label = f"{frm} -> {to}"
+    else:
+        # Monday of the current ET week, then step back one unless ?week=this. The
+        # default is the LAST COMPLETED week because that is the one being recapped.
+        monday = today_et - _dt.timedelta(days=today_et.weekday())
+        this_week = (request.args.get("week") or "").lower() == "this"
+        if not this_week:
+            monday -= _dt.timedelta(days=7)
+        sunday = monday + _dt.timedelta(days=6)
+        frm, to = monday.isoformat(), sunday.isoformat()
+        week_label = ("This week" if this_week else "Last week") + f" ({frm} -> {to})"
+
+    try:
+        paired = _pair_alpaca_fills_lifo(rec["fills_fn"](), from_date=frm, to_date=to)
+        rts    = paired.get("closed_clean") or []
+    except Exception as e:
+        log.warning("recap pairing failed: %s", e)
+        return jsonify({"error": str(e)[:200]}), 500
+
+    strategies = _strategy_breakdown(rts) if rts else []
+    pnls = [float(t.get("pnl") or 0) for t in rts]
+    wins = [p for p in pnls if p > 0]
+    by_day = {}
+    for t in rts:
+        d = (t.get("date") or (t.get("entry_time") or "")[:10])
+        if d:
+            by_day[d] = round(by_day.get(d, 0.0) + float(t.get("pnl") or 0), 2)
+    book = {
+        "pnl":      round(sum(pnls), 2),
+        "trades":   len(rts),
+        "win_rate": round(len(wins) / len(pnls) * 100, 1) if pnls else 0.0,
+        "n_strategies_traded": len(strategies),
+        "by_day":   sorted(by_day.items()),
+        "best_day":  max(by_day.items(), key=lambda kv: kv[1]) if by_day else None,
+        "worst_day": min(by_day.items(), key=lambda kv: kv[1]) if by_day else None,
+    }
+
+    def _slim(s):
+        return {"name": s["name"], "pnl": s["net_pnl"], "trades": s["trades"],
+                "win_rate": s["win_rate"], "expectancy": s["expectancy"],
+                "ticker": _strategy_to_ticker(s["name"])}
+    ranked  = sorted(strategies, key=lambda s: s["net_pnl"], reverse=True)
+    winners = [_slim(s) for s in ranked if s["net_pnl"] > 0][:3]
+    losers  = [_slim(s) for s in reversed(ranked) if s["net_pnl"] < 0][:3]
+
+    def _trade(t):
+        return {"strategy": t.get("strategy"), "ticker": t.get("ticker"),
+                "side": t.get("side"), "qty": t.get("qty"),
+                "entry_price": t.get("entry_price"), "exit_price": t.get("exit_price"),
+                "entry_time": t.get("entry_time"), "exit_time": t.get("exit_time"),
+                "pnl": round(float(t.get("pnl") or 0), 2),
+                "exit_reason": t.get("exit_reason"),
+                "date": t.get("date") or (t.get("entry_time") or "")[:10]}
+    best  = _trade(max(rts, key=lambda t: float(t.get("pnl") or 0))) if rts else None
+    worst = _trade(min(rts, key=lambda t: float(t.get("pnl") or 0))) if rts else None
+
+    # Which gates are ACTUALLY live on this book, so the script never narrates a
+    # gate that is switched off. RVOL is the reason this exists: it is not wired to
+    # Crew Paper at all, so toggling it globally changes nothing here.
+    meta = ACCOUNT_META.get(ACCT, {})
+    tag  = rec["tag"]
+    rvol_on = bool(RVOL_GATE_ENABLED and tag in RVOL_GATE_ACCOUNTS)
+    gates = [
+        {"gate": "Day-type", "on": bool(DAYTYPE_GATE_ENABLED and tag in DAYTYPE_GATE_ACCOUNTS),
+         "detail": "breakouts only on " + ", ".join(sorted(DAYTYPE_GATE_BREAKOUT_OK_DAYS)) + " days"},
+        {"gate": "Reversal side", "on": meta.get("reversal_side") in ("long", "short"),
+         "detail": (f"reversal {meta.get('reversal_side')}-only"
+                    if meta.get("reversal_side") in ("long", "short") else "both sides")},
+        {"gate": "Opening location",
+         "on": bool(OPEN_LOC_GATE_ENABLED and tag in OPEN_LOC_GATE_ACCOUNTS),
+         "detail": "blocks breakouts that opened at/past the level"},
+        {"gate": "RVOL", "on": rvol_on,
+         "detail": ("not wired to Crew Paper" if tag not in RVOL_GATE_ACCOUNTS
+                    else f"min {RVOL_GATE_MIN}x")},
+        {"gate": "Strikes", "on": bool(STRIKES_ENABLED),
+         "detail": f"{STRIKES_PER_LEVEL} losses per level per day"},
+        {"gate": "Profit lock", "on": bool(PROFIT_LOCK_DOLLARS > 0 and meta.get("profit_lock")),
+         "detail": (f"${PROFIT_LOCK_DOLLARS:g} give-back floor" if PROFIT_LOCK_DOLLARS > 0 else "off")},
+        {"gate": "Daily loss", "on": bool(MAX_DAILY_LOSS < 0 and meta.get("daily_loss_guard")),
+         "detail": (f"${MAX_DAILY_LOSS:g}" if MAX_DAILY_LOSS < 0 else "off")},
+    ]
+
+    scorecard = {}
+    try:
+        from routes.crew import _pick_scorecard
+        scorecard = _pick_scorecard() or {}
+    except Exception as e:
+        log.debug("recap scorecard failed: %s", e)
+
+    # Talking points with the numbers already filled in — the teleprompter. Written
+    # so they can be read aloud as-is; "on paper" is in the cold open by design.
+    def _m(v):
+        v = float(v or 0)
+        return ("-$" if v < 0 else "$") + f"{abs(v):,.2f}"
+    head = week_label.split(" (")[0].lower()
+    script = [{"segment": "0 - Cold open",
+               "line": (f"Crew Paper {'made' if book['pnl'] >= 0 else 'lost'} "
+                        f"{_m(abs(book['pnl']))} over {book['trades']} trades "
+                        f"{head} - on paper.")}]
+    if winners:
+        w = winners[0]
+        script.append({"segment": "1 - The book",
+                       "line": (f"{w['name']} carried it: {_m(w['pnl'])} on {w['trades']} "
+                                f"trade{'' if w['trades'] == 1 else 's'} at "
+                                f"{w['win_rate']:.0f}% win rate.")})
+    if losers:
+        l = losers[0]
+        script.append({"segment": "1 - The book",
+                       "line": (f"The drag was {l['name']} at {_m(l['pnl'])} over "
+                                f"{l['trades']} trade{'' if l['trades'] == 1 else 's'}.")})
+    if best:
+        script.append({"segment": "2 - Trade of the week",
+                       "line": (f"Best fill: {best['side']} {best['ticker']} on {best['date']} "
+                                f"for {_m(best['pnl'])}, out on "
+                                f"{best['exit_reason'] or 'exit'}.")})
+    on_gates  = [g["gate"] for g in gates if g["on"]]
+    off_gates = [g["gate"] for g in gates if not g["on"]]
+    script.append({"segment": "3 - The Refusal",
+                   "line": ("Live gates: " + (", ".join(on_gates) or "none")
+                            + (f". Off: {', '.join(off_gates)}." if off_gates else "."))})
+    if scorecard:
+        script.append({"segment": "4 - Grading the Crew",
+                       "line": (f"Report {scorecard.get('report_week')}: "
+                                f"{scorecard.get('n_traded')} of {scorecard.get('n_picks')} "
+                                f"picks traded, {scorecard.get('n_positive')} positive, net "
+                                f"{_m(scorecard.get('total_pnl'))} since wiring.")})
+    script.append({"segment": "5 - The claim",
+                   "line": "State one testable claim here, then grade it next episode."})
+
+    return jsonify({
+        "account": ACCT, "label": rec.get("label"), "from": frm, "to": to,
+        "week_label": week_label, "book": book,
+        "winners": winners, "losers": losers,
+        "best_trade": best, "worst_trade": worst,
+        "gates": gates, "scorecard": scorecard, "script": script,
+    })
 
 
 @app.route("/api/signals/gate_opportunity")
