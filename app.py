@@ -9081,30 +9081,23 @@ _REFINED_SIZE_BANDS = [
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# 7 → 5 (2026-08-14) because the DENOMINATOR changed, not the standard. Promotion
-# now ranks on TAKEABLE trades only (see _takeable_by), so "7 trades" silently
-# became "7 trades the book could actually have placed" — a materially higher bar
-# than the one that was calibrated. It starved the roster: n=20 slots, 5 filled,
-# with the whole On-Deck list sitting at 5-6 takeable.
-# 5 takeable trades is also better evidence than the 7 mixed ones the old floor
-# accepted, since every counted trade is one this book could have taken. Not going
-# below 5: PF 8.2 on 5 trades is exactly the small-sample mirage this gate exists
-# to catch.
-_REFINED_MIN_TRADES = 5
+# Back to 7 (2026-08-21). It was cut to 5 purely to offset the takeable filter
+# shrinking the denominator; with promotion back on the raw farm pool, "7 trades"
+# means what it originally meant, and leaving it at 5 would be a permanently looser
+# bar than was ever calibrated — a change nobody chose.
+_REFINED_MIN_TRADES = 7
 # Looser threshold for the On-Deck watchlist only (display, never routed) — lets
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
 # strategies clear the strict routing bar above. Must stay BELOW the routing floor
 # or On-Deck empties out: at parity every qualifying name gets routed (20 slots)
 # and the watchlist has nothing left to show.
-_REFINED_ONDECK_MIN_TRADES = 3
+_REFINED_ONDECK_MIN_TRADES = 5
 
 # Kairos Refined snapshot uses a lower floor than TV — the engine account is newer
-# with fewer fills per strategy. Raised 3→5 as the pool matured, then 5→4
-# (2026-08-14) for the same reason TV went 7→5: promotion now ranks on TAKEABLE
-# trades, so the existing number quietly became a stricter bar than the one that
-# was calibrated. This is a partial, not full, compensation — Kairos was filling
-# 9 of 20 slots against TV's 5, so it needed less relief.
-_KAIROS_REFINED_MIN_TRADES        = 4
+# with fewer fills per strategy. Raised 3→5 as the pool matured; briefly 4 while
+# promotion ran on the takeable subset, back to 5 (2026-08-21) now that it ranks on
+# the raw farm pool again.
+_KAIROS_REFINED_MIN_TRADES        = 5
 _KAIROS_REFINED_ONDECK_MIN_TRADES = 2
 
 
@@ -9189,12 +9182,15 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     enough trades to clear the eligibility floor."""
     global _refined_last_run, _refined_last_result
 
-    # gate_as: rank the TV Farm pool on what TV Refined could actually have taken.
-    stats_map    = _compute_strategy_stats(days=days, from_date=from_date,
-                                           gate_as="alpaca2")
+    # Ranks on the RAW farm pool, not the takeable subset (reverted 2026-08-21).
+    # The takeable filter removed real bias — the farms trade hours/day-types the
+    # curated books refuse — but it cost enough sample to force two floor cuts, and
+    # the walk-forward Selection Test puts the ranking signal at t=0.35σ. With a
+    # signal that weak, the variance from a smaller pool outweighs the bias it
+    # removes. Pass gate_as="alpaca2" to switch back; _takeable_by is still tested.
+    stats_map    = _compute_strategy_stats(days=days, from_date=from_date)
     # 10-day recency window for the blended score
-    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date,
-                                            gate_as="alpaca2")
+    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date)
     # Eligibility: net-positive AND at least _REFINED_MIN_TRADES round-trips.
     # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
     # 100% win) out of the top-N — they need more sample evidence first.
@@ -9550,11 +9546,11 @@ def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
         log.warning("Kairos Refined refresh: Kairos Farm (acct5) not configured — skipping")
         return {"error": "Kairos Farm (acct5) not configured", "top_strategies": []}
 
-    # gate_as: rank the Kairos Farm pool on what Kairos Refined could have taken.
+    # Raw farm pool — see the note on the TV refresh above (reverted 2026-08-21).
     stats_map     = _compute_strategy_stats(days=days, from_date=from_date,
-                                            fills_fn=_fills_fn, gate_as="alpaca3")
+                                            fills_fn=_fills_fn)
     stats_map_10d = _compute_strategy_stats(days=10,   from_date=from_date,
-                                            fills_fn=_fills_fn, gate_as="alpaca3")
+                                            fills_fn=_fills_fn)
     demoted = [k for k, v in stats_map.items()
                if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
     if demoted:

@@ -90,12 +90,16 @@ def test_tv_and_kairos_share_the_same_ranking_window():
 
 
 def test_min_trade_floors_keep_their_deliberate_asymmetry():
-    """The floors are intentionally NOT equal. When the takeable filter shrank the
-    denominator, each book got relief proportional to how starved it was: TV was
-    filling 5 of 20 slots (7->5), Kairos 9 of 20 (5->4). Pinned so a future change
-    is a conscious decision rather than drift — but Kairos must never exceed TV."""
-    assert a._REFINED_MIN_TRADES == 5
-    assert a._KAIROS_REFINED_MIN_TRADES == 4
+    """The floors are intentionally NOT equal — Kairos is the newer, thinner book.
+
+    They were briefly cut (TV 7->5, Kairos 5->4) purely to offset the takeable
+    filter shrinking the denominator. Promotion went back to the raw farm pool on
+    2026-08-21, so the floors went back with it: leaving them low would have been a
+    permanently looser bar than was ever calibrated, arrived at by accident rather
+    than choice. Pinned so a future change is deliberate; Kairos must never exceed TV.
+    """
+    assert a._REFINED_MIN_TRADES == 7
+    assert a._KAIROS_REFINED_MIN_TRADES == 5
     assert a._KAIROS_REFINED_MIN_TRADES <= a._REFINED_MIN_TRADES
     # On-Deck (display-only) must stay BELOW its routing floor or the watchlist
     # empties out — at parity every qualifying name gets routed.

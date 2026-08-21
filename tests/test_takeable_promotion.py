@@ -226,3 +226,29 @@ def test_routing_floor_is_not_below_the_small_sample_guard():
     assert a._REFINED_MIN_TRADES >= 5
     assert a._KAIROS_REFINED_MIN_TRADES >= 4
     assert a._KAIROS_REFINED_MIN_TRADES <= a._REFINED_MIN_TRADES,         "Kairos floor should never exceed TV's — it is the thinner book"
+
+
+# ── Promotion ranks on the RAW farm pool (reverted 2026-08-21) ────────────────
+
+def test_promotion_does_not_apply_the_takeable_filter():
+    """_takeable_by stays tested and available, but the two refresh paths must NOT
+    pass gate_as. It removed real bias, yet cost enough sample to force two floor
+    cuts while the Selection Test puts the ranking signal at t=0.35σ — at that
+    strength the variance from a smaller pool outweighs the bias removed. Pinned so
+    re-wiring it is a decision, not a merge artifact."""
+    import inspect
+    import re
+    for fn in (a._do_refresh_refined, a._do_refresh_kairos_refined):
+        src = inspect.getsource(fn)
+        code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+        calls = re.findall(r"_compute_strategy_stats\((.*?)\)", code, re.S)
+        assert calls, f"{fn.__name__}: no _compute_strategy_stats call found"
+        for c in calls:
+            assert "gate_as" not in c, f"{fn.__name__} still filters promotion: {c.strip()}"
+
+
+def test_takeable_filter_still_works_when_asked_for():
+    """Kept, not deleted — the A/B is worth re-running once there is more history."""
+    assert callable(a._takeable_by)
+    import inspect
+    assert "gate_as" in inspect.signature(a._compute_strategy_stats).parameters
