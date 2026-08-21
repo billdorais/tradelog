@@ -341,7 +341,10 @@ def test_preflight_reports_leverage_not_enabled(live):
     d = a._live_account_preflight("alpaca6")
     assert d["margin_extended"] is False
     assert d["buying_power_ratio"] == 1.0
-    assert "LEVERAGE-ENABLED" in d["margin_note"]
+    # The real payload: $7,000 equity against a $1,000 prior close. Above the floor,
+    # so the note must point at the fresh deposit rather than at a restriction.
+    assert "above Alpaca's $2,000 floor" in d["margin_note"]
+    assert d["recent_deposit_likely"] is True
     assert any("shorting is not enabled" in b for b in d["blockers"])
     # The retired fields must never produce a blocker of their own.
     assert not any("pattern_day_trader" in b for b in d["blockers"])
@@ -386,3 +389,53 @@ def test_preflight_sees_margin_when_it_is_extended(live):
     assert d["margin_extended"] is True
     assert "margin_note" not in d
     assert d["buying_power_fields"], "must surface whatever BP fields Alpaca returns"
+
+
+# ── why buying power is 1x: three different answers ─────────────────────────
+
+def _preflight_with(**fields):
+    base = dict(equity=7_000.0, cash=7_000.0, buying_power=7_000.0,
+                daytrading_buying_power=0.0, regt_buying_power=7_000.0,
+                last_equity=7_000.0, pattern_day_trader=False, trading_blocked=False,
+                account_blocked=False, transfers_blocked=False, shorting_enabled=False,
+                daytrade_count=None, status="ACTIVE")
+    base.update(fields)
+    _A = type("_A", (), base)
+
+    class _T:
+        def get_account(self): return _A()
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
+    return a._live_account_preflight("alpaca6")
+
+
+def test_below_the_2000_floor_is_named_as_the_rule(live):
+    """Alpaca gates 2x margin AND short selling on $2,000 equity. Below it, 1x with
+    no shorting is the documented outcome, not a fault to escalate."""
+    d = _preflight_with(equity=1_500.0, buying_power=1_500.0, last_equity=1_500.0)
+    assert "BELOW Alpaca's $2,000 floor" in d["margin_note"]
+
+
+def test_a_fresh_deposit_is_offered_before_escalating(live):
+    """The real account showed equity $7,000 against a $1,000 prior close. A held
+    deposit looks identical to a restricted account — full equity, 1x buying power,
+    no shorting — so say so rather than sending the user to support first."""
+    d = _preflight_with(last_equity=1_000.0)
+    assert d["recent_deposit_likely"] is True
+    assert "deposit landed recently" in d["margin_note"]
+    assert "re-check before escalating" in d["margin_note"]
+    assert "above Alpaca's $2,000 floor" in d["margin_note"]
+
+
+def test_a_settled_account_above_the_floor_is_a_support_question(live):
+    """Same equity, no recent deposit — now it IS worth asking Alpaca."""
+    d = _preflight_with(last_equity=7_000.0)
+    assert d["recent_deposit_likely"] is False
+    assert "ask Alpaca why margin and shorting are restricted" in d["margin_note"]
+
+
+def test_a_deposit_into_an_already_leveraged_account_says_nothing(live):
+    """recent_deposit_likely is only interesting while buying power is stuck at 1x."""
+    d = _preflight_with(buying_power=28_000.0, last_equity=1_000.0)
+    assert d["margin_extended"] is True
+    assert "margin_note" not in d

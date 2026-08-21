@@ -1770,16 +1770,29 @@ def _live_account_preflight(tag):
     _eq = out.get("equity") or 0
     out["margin_extended"] = bool(_eq > 0 and (out.get("buying_power") or 0) > _eq * 1.05)
     out["buying_power_ratio"] = round((out.get("buying_power") or 0) / _eq, 2) if _eq else None
+    _last = out.get("last_equity") or 0
+    # equity jumping well above the prior close is a fresh deposit. Brokers hold
+    # deposited funds before extending margin against them, which shows up exactly
+    # like this: full equity, 1x buying power, no shorting.
+    out["recent_deposit_likely"] = bool(_eq > 0 and 0 < _last < _eq * 0.6)
     if _eq > 0 and not out["margin_extended"]:
         out["margin_note"] = (
             f"Intraday buying power is {out['buying_power_ratio']}x equity and shorting "
-            f"is {'off' if not out.get('shorting_enabled') else 'on'} — this account "
-            f"does not appear to be LEVERAGE-ENABLED. Under Alpaca's framework (live "
-            f"2026-06-04) leverage-enabled accounts get 4x intraday buying power above "
-            f"$2,000 equity, and this account holds ${_eq:,.0f}, so it clears that floor "
-            f"comfortably. Ask Alpaca to enable leverage. Until then the book is capped "
-            f"at about ${_eq:,.0f} of open position and cannot short at all, which drops "
-            f"every short pick in the roster.")
+            f"is {'off' if not out.get('shorting_enabled') else 'on'}. "
+            + (f"Equity is ${_eq:,.0f}, BELOW Alpaca's $2,000 floor — 2x margin and "
+               f"short selling are unavailable by rule until it clears $2,000."
+               if _eq < 2000 else
+               f"Equity is ${_eq:,.0f}, above Alpaca's $2,000 floor for 2x and shorting, "
+               f"so the floor is not what is restricting this account. "
+               + (f"Prior close was ${_last:,.0f}, so a deposit landed recently — brokers "
+                  f"hold new funds before extending margin against them, which looks "
+                  f"exactly like this. Most likely it clears on settlement; re-check "
+                  f"before escalating."
+                  if out["recent_deposit_likely"] else
+                  f"No recent deposit explains it, so ask Alpaca why margin and shorting "
+                  f"are restricted on an account above the floor."))
+            + f" Until it lifts, the book is capped near ${_eq:,.0f} of open position and "
+              f"cannot short, which drops every short pick in the roster.")
     if not out["paper"] and not out.get("shorting_enabled", True):
         blockers.append("shorting is not enabled — every SHORT pick in the roster "
                         "will be refused; this book can only trade the long side")
