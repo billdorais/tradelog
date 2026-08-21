@@ -166,7 +166,7 @@ def test_prices_every_curated_book_in_one_call(opp):
         d = c.get("/api/signals/gate_opportunity?days=14").get_json()
 
     books = {b["account"]: b for b in d["books"]}
-    assert set(books) == {"alpaca2", "alpaca3", "alpaca4"}, "defaulted to the curated books"
+    assert set(books) == {"alpaca2", "alpaca3", "alpaca4", "alpaca6"}, "defaulted to the curated books"
     # The union of gates drives the matrix rows, most-blocked first.
     assert set(d["gates"]) == {"hours", "rvol"}
     assert d["gates"][0] == "hours"
@@ -202,7 +202,7 @@ def test_books_are_ordered_like_every_other_surface(opp):
     _a._flush_blocked_targets()
     with a.app.test_client() as c:
         d = c.get("/api/signals/gate_opportunity?days=14").get_json()
-    assert [b["account"] for b in d["books"]] == ["alpaca4", "alpaca3", "alpaca2"]
+    assert [b["account"] for b in d["books"]] == ["alpaca6", "alpaca4", "alpaca3", "alpaca2"]
 
 
 # ── Dollar estimate at the book's own position size ───────────────────────────

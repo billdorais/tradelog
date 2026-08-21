@@ -1122,6 +1122,23 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             ):
                 _exec_status = _exec_detail = None
                 try:
+                    # Live-money guard — FIRST, before any other gate. A non-paper
+                    # account is inert until armed and correctly sized; nothing
+                    # downstream distinguishes real money from paper.
+                    if is_entry and action in ("BUY", "SELL"):
+                        _lv_ok, _lv_why = app._live_entry_allowed(broker_tag)
+                        if not _lv_ok:
+                            app.log.warning("LIVE GUARD: %s %s [%s] blocked — %s",
+                                            action, ticker, broker_tag, _lv_why)
+                            app._record_block(broker_tag, ticker, strategy,
+                                              "LONG" if action == "BUY" else "SHORT",
+                                              "live-guard", _lv_why, source="webhook",
+                                              once_per_day=True)
+                            _exec_status = "blocked"
+                            _exec_detail = f"Live guard: {_lv_why}"
+                            return
+                        app._note_live_entry(broker_tag)
+
                     # Capital gates — block new entries on low available buying power
                     # (fixed $) or high buying-power utilization (%). One account
                     # fetch covers both.

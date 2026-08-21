@@ -23,7 +23,7 @@ import app as a
 
 
 def test_curated_tags_are_the_three_books():
-    assert a._CURATED_TAGS == {"alpaca2", "alpaca3", "alpaca4"}
+    assert a._CURATED_TAGS == {"alpaca2", "alpaca3", "alpaca4", "alpaca6"}
 
 
 def test_curated_hours_share_the_refined_window():

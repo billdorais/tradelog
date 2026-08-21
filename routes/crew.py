@@ -749,8 +749,12 @@ curated top-N account):
      Sharpe 35% + Profit Factor 30% + Win Rate 20% + Trades 15%
    - 20-day rolling lookback with 10-day recency blend (60/40)
    - Min 5 trades to be eligible; 3+ consecutive losses = auto-demoted
-   - Will transition to LIVE trading (PDT $25k floor no longer required — Alpaca moved to
-     an intraday-margin model; ~$25k is now a comfort choice, not a regulation)
+   - Will transition to LIVE trading. The PDT $25k floor is gone: the SEC approved
+     FINRA's Rule 4210 amendments on 2026-04-14, effective 2026-06-04, eliminating both
+     the $25,000 minimum and the pattern-day-trader designation, and day trades are no
+     longer counted. Intraday buying power now keys off real-time margin excess. Note
+     brokers have until 2027-10-20 to implement, so whether it binds a given account is
+     a per-broker fact, not an assumption — check the account, do not infer it.
 5. Kairos Farm (account 5): the engine-entry twin of TV Farm — ALL strategies via the
    server-side Kairos engine. Full-sample pool + selection source for Kairos Refined.
 3. Kairos Refined (account 3): the engine-entry curated book. It trades the top strategies,
@@ -2368,6 +2372,7 @@ def api_crew_wire_to_router():
     cur.execute("SELECT id, name, nodes FROM routing_rules")
     source_nodes  = {}   # strat -> (priority, nodes) — best non-acct4 pipeline
     existing_crew = {}   # strat -> rule_id of the acct4 rule
+    existing_live = {}   # strat -> rule_id of the acct6 (Crew Live) mirror rule
     for r in cur.fetchall():
         rid = r[0] if _kairos.DATABASE_URL else r["id"]
         raw = r[2] if _kairos.DATABASE_URL else r["nodes"]
@@ -2375,11 +2380,19 @@ def api_crew_wire_to_router():
         except Exception: nodes = []
         brokers   = [(n.get("value") or "").lower() for n in nodes if n.get("type") == "broker"]
         is_acct4  = any(b in ("alpaca-paper-4", "alpaca-live-4") for b in brokers)
+        # The live mirror is DERIVED from the crew rules, so it must never become
+        # the clone source for the next wire — that would let the mirror's own
+        # sizing feed back into Crew Paper.
+        is_acct6  = any(b in ("alpaca-live-6", "alpaca-paper-6") for b in brokers)
         strat_vals = [(n.get("value") or "").strip().upper()
                       for n in nodes if n.get("type") == "strategy" and n.get("value")]
         if is_acct4:
             for s in strat_vals:
                 existing_crew[s] = rid
+            continue
+        if is_acct6:
+            for s in strat_vals:
+                existing_live[s] = rid
             continue
         # Prefer the Refined (acct2) pipeline as the source of truth for exits/hours.
         prio = 2 if any(b in ("alpaca-paper-2", "alpaca-live-2") for b in brokers) else 1
@@ -2412,7 +2425,7 @@ def api_crew_wire_to_router():
             return max(1, round(size_dollars / prices[tk]))
         return qty
 
-    def _build_nodes(slug, q, side, entry):
+    def _build_nodes(slug, q, side, entry, broker_value="alpaca-paper-4"):
         """Clone the strategy's top-performer pipeline (tuned exit_params, hours,
         instrument) and swap in the Crew broker, dollar-sized quantity, the PICK's
         entry source ([TV]/[Kairos] tag — falls back to the card's global Entries
@@ -2432,7 +2445,7 @@ def api_crew_wire_to_router():
             if t == "broker":
                 if have_broker:
                     continue                      # collapse multiple brokers to one
-                out.append({"type": "broker", "value": "alpaca-paper-4"})
+                out.append({"type": "broker", "value": broker_value})
                 have_broker = True
             elif t == "quantity":
                 out.append({"type": "quantity", "amount": q, "unit": (n.get("unit") or "shares")})
@@ -2444,7 +2457,7 @@ def api_crew_wire_to_router():
             else:
                 out.append(n)                     # strategy, instrument, hours, exit_params, ...
         if not have_broker:
-            out.append({"type": "broker", "value": "alpaca-paper-4"})
+            out.append({"type": "broker", "value": broker_value})
         if not have_entry:
             out.append({"type": "entry_source", "value": entry})
         if gate:
@@ -2472,6 +2485,59 @@ def api_crew_wire_to_router():
                 (f"{slug} · Crew", 1, nodes_json, ts, 0),
             )
             created.append(slug)
+
+    # 3b) Mirror to Crew Live (acct6) — REAL MONEY. Same picks, same sides, same
+    # entry sources, same tuned exits; only the broker and the size differ. Sizing
+    # comes from LIVE_SIZE_DOLLARS, never from _REFINED_SIZE_BANDS, so the live book
+    # cannot inherit a $25k paper position.
+    #
+    # Writing these rules does NOT arm anything: every live entry still has to clear
+    # _live_entry_allowed at order time. A mirror rule on a disarmed account is inert
+    # by design — the roster stays in sync and ready, and arming is one env var.
+    live_created, live_updated, live_deleted = [], [], []
+    _live_tag  = "alpaca6"
+    _mirror_on = _live_tag in getattr(_kairos, "ACCOUNTS_BY_TAG", {})
+    _live_size = float(getattr(_kairos, "LIVE_SIZE_DOLLARS", 0) or 0)
+    if _mirror_on and _live_size > 0:
+        def _live_qty(slug):
+            tk = slug.split("_", 1)[0].upper()
+            if prices.get(tk):
+                return max(1, round(_live_size / prices[tk]))
+            return None          # no price ⇒ no live rule; never guess a live size
+
+        for pick in picks:
+            slug = pick["strategy"]
+            lq   = _live_qty(slug)
+            if lq is None:
+                _kairos.log.warning("crew wire: no price for %s — skipping its LIVE mirror", slug)
+                continue
+            nodes_json = _json.dumps(_build_nodes(slug, lq, pick.get("side"), pick.get("entry"),
+                                                  broker_value="alpaca-live-6"))
+            rid = existing_live.get(slug)
+            if rid is not None:
+                cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (nodes_json, rid))
+                live_updated.append(slug)
+            else:
+                cur.execute(
+                    f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                    f"VALUES ({p},{p},{p},{p},{p})",
+                    (f"{slug} · Crew Live", 1, nodes_json, ts, 0),
+                )
+                live_created.append(slug)
+
+        # Prune live mirrors whose strategy left the report. Unlike the paper prune
+        # below there is no open-position deferral yet: a live rule that no longer
+        # matches a pick should stop taking NEW entries immediately. Deleting the
+        # rule does not touch an open position — its broker-side exits still stand.
+        _new = {pk["strategy"] for pk in picks}
+        _by_rid = {}
+        for _s, _rid in existing_live.items():
+            _by_rid.setdefault(_rid, set()).add(_s)
+        for _rid, _strs in _by_rid.items():
+            if _strs & _new:
+                continue
+            cur.execute(f"DELETE FROM routing_rules WHERE id={p}", (_rid,))
+            live_deleted.extend(sorted(_strs))
 
     # 4) Reconcile — delete Crew rules whose strategy dropped out of this report,
     # so Crew Paper mirrors the latest picks rather than piling up every strategy
@@ -2514,6 +2580,11 @@ def api_crew_wire_to_router():
     return jsonify({
         "created": created, "updated": updated,
         "deleted": deleted, "deferred_open_position": deferred,
+        "live_mirror": {"enabled": _mirror_on and _live_size > 0,
+                        "armed": bool(getattr(_kairos, "LIVE_TRADING_ARMED", False)),
+                        "size_dollars": _live_size or None,
+                        "created": live_created, "updated": live_updated,
+                        "deleted": live_deleted},
         "cloned_from_source": cloned,
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
         "size_dollars": size_dollars, "daytype_gate": parsed["daytype"], "qty": qty,

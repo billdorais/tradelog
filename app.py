@@ -241,6 +241,14 @@ ACCOUNT_META = {
     # mirror TV Farm: no profit lock, no daily-loss guard, no reversal-side gate.
     "5": {"tag": "alpaca5", "label": "Kairos Farm",    "color": "#5FC8D4",
           "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
+    # Crew Live — REAL MONEY. Deliberately a byte-for-byte copy of Crew Paper's
+    # policy (acct4) apart from the label: it mirrors the same crew roster, so any
+    # divergence in gates would make the live-vs-paper comparison measure the
+    # config difference instead of the thing being tested (slippage and fills).
+    # Sizing does NOT come from _REFINED_SIZE_BANDS — see LIVE_SIZE_DOLLARS. This
+    # row alone trades nothing: the account must also be armed.
+    "6": {"tag": "alpaca6", "label": "Crew Live",      "color": "#E8A0BF", "hours_key": "refined",
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "open_loc_gate": True},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -248,7 +256,9 @@ MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 #   Crew Paper (4) is the hero account, Kairos/TV Refined are the curated
 #   graduates, farms are the audition pools at the right. Any configured
 #   account not in this list falls in after (stable by num).
-UI_ACCOUNT_ORDER = ["4", "3", "2", "5", "1"]
+# Crew Live leads: it is the only book with real money on it, so it is the first
+# thing you should see. Its paper twin (4) sits next to it for the comparison.
+UI_ACCOUNT_ORDER = ["6", "4", "3", "2", "5", "1"]
 _UI_ACCOUNT_RANK = {n: i for i, n in enumerate(UI_ACCOUNT_ORDER)}
 def _ui_account_rank(num):
     return (_UI_ACCOUNT_RANK.get(str(num), 99), str(num))
@@ -256,6 +266,12 @@ def _ui_account_rank(num):
 def _meta_tag(num):
     n = str(num)
     return ACCOUNT_META.get(n, {}).get("tag", "alpaca" if n == "1" else "alpaca" + n)
+
+# tag -> slot number, from the STATIC declaration. ALPACA_ACCOUNTS only holds
+# accounts whose keys are actually configured, so ordering that reads it alone
+# collapses to "everything ranks 99" wherever a book is declared but not keyed —
+# every sort key ties and the result falls back to set-iteration order.
+_NUM_BY_TAG = {_meta_tag(_n): _n for _n in ACCOUNT_META}
 
 def _accounts_with(flag):
     """Tags of accounts whose ACCOUNT_META flag is truthy — config-driven gate sets."""
@@ -1550,6 +1566,158 @@ def _et_today_iso():
     except Exception:
         from datetime import timedelta as _td
         return (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+
+# ── Live-money safety ───────────────────────────────────────────────────────
+# Every Alpaca account before acct6 was paper, so `paper` was recorded in the
+# registry and never consulted: nothing between a signal and submit_order asked
+# whether real money was on the other end. Flipping ALPACA_PAPER6=false alone
+# would have started trading the account on the next deploy.
+#
+# So a non-paper account is INERT until explicitly armed, and its size is capped
+# twice — a fixed dollar amount, and a fraction of live equity read at order time.
+# Both have to pass. The arm flag is deliberately an env var rather than a UI
+# toggle: arming should be a deploy-time decision with an audit trail, not a
+# click that a mis-tap can undo.
+LIVE_TRADING_ARMED = os.environ.get("LIVE_TRADING_ARMED", "0") == "1"
+
+# Per-position notional for live books, in dollars. No default: an unset value
+# leaves live entries blocked rather than guessing a size with real money.
+LIVE_SIZE_DOLLARS = float(os.environ.get("LIVE_SIZE_DOLLARS", "0") or 0)
+
+# Hard ceiling on one position as a share of live equity, checked at order time
+# against the broker's own equity figure. Backstop for the case LIVE_SIZE_DOLLARS
+# cannot cover: equity fell (drawdown, withdrawal) after the size was chosen.
+LIVE_MAX_POSITION_PCT = float(os.environ.get("LIVE_MAX_POSITION_PCT", "20") or 20)
+
+# Cap on live entries per session. The PDT day-trade count stopped mattering when
+# the SEC approved FINRA's Rule 4210 amendments (2026-04-14, effective
+# 2026-06-04), but an engine fault that fires in a loop still can, so the ceiling
+# stays as a runaway guard rather than a regulatory one. 0 = unlimited.
+LIVE_MAX_ENTRIES_PER_DAY = int(os.environ.get("LIVE_MAX_ENTRIES_PER_DAY", "0") or 0)
+
+_live_entry_counts = {}          # (tag, ET date) -> entries submitted
+_live_entry_lock   = threading.Lock()
+
+
+def _is_live_account(tag):
+    """True if `tag` is a configured account trading real money."""
+    rec = ACCOUNTS_BY_TAG.get(tag) or {}
+    return bool(rec) and not rec.get("paper", True)
+
+
+def _live_entry_allowed(tag, notional=None):
+    """(ok, reason) for a LIVE entry on `tag`. Paper books always pass untouched.
+
+    Order matters: the cheap config checks run before the equity fetch so a
+    disarmed book never makes a network call, and a broker outage cannot turn
+    into a reason to skip the size check.
+    """
+    if not _is_live_account(tag):
+        return True, ""
+    if not LIVE_TRADING_ARMED:
+        return False, "live trading is not armed (set LIVE_TRADING_ARMED=1)"
+    if LIVE_SIZE_DOLLARS <= 0:
+        return False, "LIVE_SIZE_DOLLARS is unset — refusing to size a live order"
+
+    if LIVE_MAX_ENTRIES_PER_DAY > 0:
+        _today = _et_today_iso()
+        with _live_entry_lock:
+            n = _live_entry_counts.get((tag, _today), 0)
+        if n >= LIVE_MAX_ENTRIES_PER_DAY:
+            return False, (f"live entry cap reached ({n}/{LIVE_MAX_ENTRIES_PER_DAY} today) "
+                           f"— runaway guard")
+
+    want = float(notional if notional is not None else LIVE_SIZE_DOLLARS)
+    try:
+        broker = (ACCOUNTS_BY_TAG.get(tag) or {}).get("broker")
+        equity = float(broker.account_equity())
+    except Exception as e:
+        # FAILS CLOSED, unlike every gate above it. Those gates protect an edge and
+        # a data glitch costs one trade; this one protects the account balance, and
+        # an unverifiable balance is not permission to spend it.
+        return False, f"could not read live equity ({e}) — refusing the entry"
+    if equity <= 0:
+        return False, f"live equity reads {equity:.2f} — refusing the entry"
+    cap = equity * (LIVE_MAX_POSITION_PCT / 100.0)
+    if want > cap:
+        return False, (f"position ${want:,.0f} exceeds {LIVE_MAX_POSITION_PCT:g}% of "
+                       f"${equity:,.0f} equity (cap ${cap:,.0f})")
+    return True, ""
+
+
+def _note_live_entry(tag):
+    """Count a submitted live entry against today's runaway cap."""
+    if not _is_live_account(tag) or LIVE_MAX_ENTRIES_PER_DAY <= 0:
+        return
+    _today = _et_today_iso()
+    with _live_entry_lock:
+        _live_entry_counts[(tag, _today)] = _live_entry_counts.get((tag, _today), 0) + 1
+
+
+def _live_account_preflight(tag):
+    """Read what the broker actually says about a live account.
+
+    The PDT designation was eliminated effective 2026-06-04, but brokers have
+    until 2027-10-20 to implement it, so whether it still binds THIS account is a
+    question only the account can answer. Reported rather than assumed.
+    """
+    rec = ACCOUNTS_BY_TAG.get(tag) or {}
+    if not rec:
+        return {"error": f"unknown account {tag}"}
+    out = {"account": tag, "label": rec.get("label", tag), "paper": bool(rec.get("paper", True)),
+           "armed": LIVE_TRADING_ARMED, "size_dollars": LIVE_SIZE_DOLLARS,
+           "max_position_pct": LIVE_MAX_POSITION_PCT,
+           "max_entries_per_day": LIVE_MAX_ENTRIES_PER_DAY or None}
+    try:
+        acct = rec["broker"]._trading.get_account()
+    except Exception as e:
+        out["error"] = f"could not read account: {e}"
+        return out
+    for k in ("equity", "cash", "buying_power", "daytrading_buying_power",
+              "regt_buying_power", "last_equity"):
+        try:    out[k] = float(getattr(acct, k, 0) or 0)
+        except (TypeError, ValueError): out[k] = None
+    for k in ("pattern_day_trader", "trading_blocked", "account_blocked",
+              "transfers_blocked", "shorting_enabled"):
+        out[k] = bool(getattr(acct, k, False))
+    out["daytrade_count"] = getattr(acct, "daytrade_count", None)
+    out["status"]         = str(getattr(acct, "status", "") or "")
+
+    blockers = []
+    if out.get("trading_blocked"):  blockers.append("trading_blocked")
+    if out.get("account_blocked"):  blockers.append("account_blocked")
+    if not out["paper"] and not LIVE_TRADING_ARMED:
+        blockers.append("not armed (LIVE_TRADING_ARMED=0)")
+    if not out["paper"] and LIVE_SIZE_DOLLARS <= 0:
+        blockers.append("LIVE_SIZE_DOLLARS unset")
+    eq = out.get("equity") or 0
+    if eq and LIVE_SIZE_DOLLARS > eq * (LIVE_MAX_POSITION_PCT / 100.0):
+        blockers.append(f"LIVE_SIZE_DOLLARS ${LIVE_SIZE_DOLLARS:,.0f} exceeds the "
+                        f"{LIVE_MAX_POSITION_PCT:g}% equity cap")
+    # Informational: the old designation still showing up means this broker has
+    # not moved to the post-2026-06-04 framework for this account yet.
+    if out.get("pattern_day_trader"):
+        blockers.append("broker still flags pattern_day_trader — day-trade counting "
+                        "may still apply on this account")
+    out["blockers"]  = blockers
+    out["will_trade"] = not blockers
+    return out
+
+
+@app.route("/api/accounts/preflight")
+def api_account_preflight():
+    """What the broker says about an account, before any money moves.
+
+    Exists because every other answer on this subject is inferred from config.
+    This one asks Alpaca.
+    """
+    tag = (request.args.get("account") or "").strip()
+    if not tag:
+        return jsonify({"accounts": [_live_account_preflight(a["tag"])
+                                     for a in (ALPACA_ACCOUNTS or [])]})
+    if tag not in ACCOUNTS_BY_TAG:
+        return jsonify({"error": f"unknown account {tag}"}), 400
+    return jsonify(_live_account_preflight(tag))
 
 
 def _manual_halted_for(tag):
@@ -14980,6 +15148,22 @@ _GATE_RULES = {
         "why": "A strategy whose edge is one-directional should not be judged on the side "
                "that never worked.",
     },
+    "live-guard": {
+        "title": "Live-money guard",
+        "what":  "Refuses an entry on a REAL-MONEY book that is not armed, not sized, "
+                 "or too large for the account.",
+        "rule": [
+            "Paper books are never touched by this — it is a no-op unless the account trades real money.",
+            "Requires LIVE_TRADING_ARMED=1, an explicit LIVE_SIZE_DOLLARS, and a position within LIVE_MAX_POSITION_PCT of live equity.",
+            "FAILS CLOSED, unlike every other gate: if equity cannot be read, the entry is refused.",
+            "Optional LIVE_MAX_ENTRIES_PER_DAY caps entries per session as a runaway guard.",
+        ],
+        "why": "Every account before Crew Live was paper, so `paper` sat in the registry "
+               "unchecked — nothing between a signal and submit_order asked whether real "
+               "money was on the other end. The other gates protect an edge, and failing "
+               "open costs one trade. This one protects the balance, so it fails closed: "
+               "an unverifiable equity figure is not permission to spend it.",
+    },
     "strikes": {
         "title": "Strikes per level",
         "what":  "A level goes cold for the rest of the day after N losses on it.",
@@ -15094,6 +15278,19 @@ def _gate_state(tag):
 
     out["manual-halt"] = (bool(_manual_halted_for(tag)), "operator switch · per book", "shared")
     out["side"]        = (True, "set per routing rule when a pick is wired", "rule")
+    # Live guard — reads as "off" on a paper book because it genuinely does nothing
+    # there, rather than because it is disabled.
+    if _is_live_account(tag):
+        out["live-guard"] = (True,
+                             (f"ARMED · ${LIVE_SIZE_DOLLARS:,.0f}/position · "
+                              f"max {LIVE_MAX_POSITION_PCT:g}% of equity"
+                              + (f" · {LIVE_MAX_ENTRIES_PER_DAY}/day"
+                                 if LIVE_MAX_ENTRIES_PER_DAY else ""))
+                             if LIVE_TRADING_ARMED else
+                             "NOT ARMED — every live entry is refused",
+                             "shared")
+    else:
+        out["live-guard"] = (False, "paper book — no live money to guard", "shared")
     return out
 
 
@@ -15560,7 +15757,7 @@ def api_gate_opportunity():
         _num = {a["tag"]: a.get("num", "9") for a in (ALPACA_ACCOUNTS or [])}
         accounts = ([t.strip() for t in csv.split(",") if t.strip()] if csv
                     else sorted(_CURATED_TAGS,
-                                key=lambda t: _ui_account_rank(_num.get(t, "9"))))
+                                key=lambda t: _ui_account_rank(_num.get(t) or _NUM_BY_TAG.get(t, "9"))))
 
     now_utc = _dt.datetime.now(_dt.timezone.utc)
     # An explicit ?from=&to= window beats the rolling ?days=. A rolling window always
@@ -18841,6 +19038,16 @@ def _engine_pilot_tick(now_et, today):
                     qty = _compute_refined_qty(score_by.get(strat.upper()), cur)
             if not qty or qty < 1:
                 continue
+            # Live-money guard — a non-paper book is inert until armed and sized.
+            # Checked here, after qty is known, so the equity cap prices the ACTUAL
+            # order rather than the configured default.
+            _lv_ok, _lv_why = _live_entry_allowed(broker_tag, notional=(qty * cur) if cur else None)
+            if not _lv_ok:
+                log.warning("LIVE GUARD: %s %s [%s] blocked — %s", act, tk, broker_tag, _lv_why)
+                _record_block(broker_tag, tk, strat, side, "live-guard", _lv_why,
+                              source="engine", once_per_day=True)
+                continue
+            _note_live_entry(broker_tag)
             # Mark cooldown FIRST so a slow place_order can't double-fire next tick.
             with _engine_pilot_lock:
                 _engine_pilot_state["last_entry"][key] = now_utc
