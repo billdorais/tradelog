@@ -21222,7 +21222,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor, _daily_loss_day, _manual_halt_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, OPEN_LOC_GATE_ENABLED, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor, _daily_loss_day, _manual_halt_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -21342,6 +21342,16 @@ def _restore_risk_settings():
     if stored is not None:
         RVOL_GATE_ENABLED = stored == "1"
         log.info("Restored RVOL_GATE_ENABLED=%s from DB", RVOL_GATE_ENABLED)
+
+    # Without this the gate silently reverted on every restart: the setter writes
+    # both the DB and .env, but the module global is initialised from os.environ at
+    # import, and Railway's filesystem is ephemeral so the .env write does not
+    # survive a redeploy. Saved-but-never-restored is invisible — the UI reports
+    # "enabled" until the next deploy quietly turns it off.
+    stored = _load_setting("OPEN_LOC_GATE_ENABLED")
+    if stored is not None:
+        OPEN_LOC_GATE_ENABLED = stored == "1"
+        log.info("Restored OPEN_LOC_GATE_ENABLED=%s from DB", OPEN_LOC_GATE_ENABLED)
     stored = _load_setting("RVOL_GATE_MIN")
     if stored is not None:
         try:

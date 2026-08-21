@@ -133,3 +133,38 @@ def test_toggle_round_trips_through_the_risk_endpoint(monkeypatch):
         assert "open_loc_gate_enabled" in (r.get_json().get("changed") or [])
     assert a.OPEN_LOC_GATE_ENABLED is True
     a.OPEN_LOC_GATE_ENABLED = False
+
+
+def test_enabled_state_survives_a_restart(monkeypatch):
+    """The bug this guards: the setter wrote the DB and .env, but the module global
+    is initialised from os.environ at import — and Railway's filesystem is ephemeral,
+    so the .env write dies on redeploy. The gate reported "enabled" in the UI and
+    silently reverted to OFF on the next restart."""
+    store = {"OPEN_LOC_GATE_ENABLED": "1"}
+    monkeypatch.setattr(a, "_load_setting", lambda k, d=None: store.get(k, d))
+    monkeypatch.setattr(a, "OPEN_LOC_GATE_ENABLED", False)      # fresh import state
+    a._restore_risk_settings()
+    assert a.OPEN_LOC_GATE_ENABLED is True, "gate did not survive a restart"
+
+    store["OPEN_LOC_GATE_ENABLED"] = "0"
+    monkeypatch.setattr(a, "OPEN_LOC_GATE_ENABLED", True)
+    a._restore_risk_settings()
+    assert a.OPEN_LOC_GATE_ENABLED is False, "an explicit OFF must also persist"
+
+
+def test_every_env_backed_global_the_setter_persists_is_restored():
+    """Class-level guard. A setting held in a module global initialised from
+    os.environ MUST be read back in _restore_risk_settings, or it reverts on the
+    next deploy with nothing in the UI to indicate it. Reads the source rather than
+    a hand-maintained list, so a new gate cannot be added without being covered."""
+    import re
+    src = open(a.__file__.replace(".pyc", ".py"), encoding="utf-8").read()
+    i = src.index('@app.route("/api/risk/limit"')
+    j = src.index("def _restore_risk_settings")
+    saved   = set(re.findall(r'_save_setting\("([A-Z0-9_]+)"', src[i:j]))
+    loaded  = set(re.findall(r'_load_setting\("([A-Z0-9_]+)"', src[j:j + 20000]))
+    # Only those bound to a module global straight from the environment are at risk;
+    # everything else is re-read from the DB at each use.
+    env_globals = set(re.findall(r'^([A-Z0-9_]+) *= *os\.environ', src, re.M))
+    at_risk = (saved & env_globals) - loaded
+    assert not at_risk, f"persisted but never restored on startup: {sorted(at_risk)}"
