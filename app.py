@@ -14892,6 +14892,119 @@ def _book_position_notional(tag, from_date, to_date, fills_fn=None):
         return None, 0
 
 
+def _recap_prose(week_label, book, winners, losers, best, gates, scorecard):
+    """The script notes as flowing narration — paragraphs to read aloud, rather
+    than the bullet lines above them.
+
+    Written in a plain spoken register on purpose: contractions, short sentences,
+    numbers said once. It also hard-codes the two things that must never be left to
+    memory on camera — that this is a paper account, and that a headline number
+    carried by one name gets called out as such."""
+    def _m(v):
+        v = float(v or 0)
+        return ("minus $" if v < 0 else "$") + f"{abs(v):,.2f}"
+
+    period = week_label.split(" (")[0].lower()          # "last week" / "this month"
+    b      = book or {}
+    n      = b.get("trades") or 0
+    paras  = []
+
+    # 1 — cold open + the disclosure, said before any number lands.
+    if not n:
+        paras.append(
+            f"Alright — Kairos recap for {period}. Quiet one: the Crew Paper book "
+            f"didn't close a single trade, so there's no P&L to talk about. Quick "
+            f"reminder anyway, this is a paper account, nothing here is real money "
+            f"and none of it is advice. Let me show you why it stayed flat."
+        )
+        return paras
+
+    verb = "finished up" if (b.get("pnl") or 0) >= 0 else "gave back"
+    paras.append(
+        f"Alright — Kairos recap for {period}. The Crew Paper book closed {n} "
+        f"trade{'' if n == 1 else 's'} and {verb} {_m(abs(b.get('pnl') or 0))}. "
+        f"Straight up front: this is a paper account. None of it is real money, none "
+        f"of it is advice — it's a systematic trading lab, and every week I audit what "
+        f"the machine decided."
+    )
+
+    # 2 — the shape of the result, not just the total.
+    pf   = b.get("profit_factor")
+    shape = (f"Win rate came in at {b.get('win_rate', 0):.0f}% — "
+             f"{b.get('win_count', 0)} winners against {b.get('loss_count', 0)} losers — "
+             f"with a profit factor of {'infinite, no losers at all' if pf is None else f'{pf:.2f}'}.")
+    aw, al = b.get("avg_win"), b.get("avg_loss")
+    if aw is not None and al not in (None, 0):
+        shape += (f" Average winner {_m(aw)}, average loser {_m(al)}, so a payoff ratio "
+                  f"of about {abs(aw / al):.2f} to one.")
+    if (b.get("max_drawdown") or 0) < 0:
+        shape += f" Deepest peak-to-trough dip inside {period} was {_m(b['max_drawdown'])}."
+    paras.append(shape)
+
+    # 3 — who actually drove it, both directions.
+    drivers = []
+    if winners:
+        w = winners[0]
+        drivers.append(
+            f"{w['ticker']} did the heavy lifting — {_m(w['pnl'])} over {w['trades']} "
+            f"trade{'' if w['trades'] == 1 else 's'} at a {w['win_rate']:.0f}% win rate.")
+    if losers:
+        l = losers[0]
+        drivers.append(
+            f"The drag was {l['ticker']} at {_m(l['pnl'])} across {l['trades']} "
+            f"trade{'' if l['trades'] == 1 else 's'}.")
+    if best:
+        drivers.append(
+            f"Best single fill was the {str(best.get('side', '')).lower()} on "
+            f"{best.get('ticker')} — {_m(best.get('pnl'))}, out on "
+            f"{str(best.get('exit_reason') or 'the exit').lower()}. I'll put that chart up now.")
+    if drivers:
+        paras.append(" ".join(drivers))
+
+    # 4 — the segment nobody else can run.
+    on  = [g["gate"] for g in (gates or []) if g.get("on")]
+    off = [g["gate"] for g in (gates or []) if not g.get("on")]
+    refusal = ("Now the part I think is genuinely more interesting than the P&L: the "
+               "trades this thing refused to take. ")
+    if len(on) == 1:
+        refusal += f"The only gate running live on this book right now is {on[0]}. "
+    elif on:
+        refusal += ("Gates running live on this book right now are "
+                    + ", ".join(on[:-1]) + " and " + on[-1] + ". ")
+    if off:
+        refusal += f"{', '.join(off)} {'are' if len(off) > 1 else 'is'} switched off. "
+    refusal += ("Every block gets priced against the ungated farm account, which took the "
+                "same setups. So I can actually show you whether refusing those trades cost "
+                "me money or saved me money — not guess at it.")
+    paras.append(refusal)
+
+    # 5 — grade the picks out of sample, including the uncomfortable numbers.
+    m = (scorecard or {}).get("summary") or {}
+    if m:
+        grade = (f"Then grading the crew itself. Report {scorecard.get('report_week')}: it picked "
+                 f"{m.get('n_picks')} strategies, and {m.get('n_traded')} of them actually fired — "
+                 f"that's {m.get('activation', 0):.0f}% of the roster. ")
+        if m.get("n_untraded"):
+            grade += (f"{m['n_untraded']} never placed a single trade, and I don't count that as "
+                      f"neutral — a pick that can't trade is a slot wasted. ")
+        if m.get("hit_rate") is not None:
+            grade += (f"Of the ones that did fire, {m.get('n_positive')} made money — a "
+                      f"{m['hit_rate']:.0f}% hit rate, and that's the honest out-of-sample read "
+                      f"on the selection method. ")
+        if m.get("top_share") is not None:
+            grade += (f"One thing I have to be straight about: {m['top_share']:.0f}% of the net came "
+                      f"from a single name. That's not a broad book, that's one pick carrying it.")
+        paras.append(grade.strip())
+
+    # 6 — put yourself on the hook for next time.
+    paras.append(
+        "Last thing, and this is the bit that keeps me honest: one testable claim for next "
+        "time. [Say your claim here.] I'll grade it in the next recap, whether it goes my way "
+        "or not. That's the week — see you in the next one."
+    )
+    return paras
+
+
 @app.route("/api/recap")
 def api_recap():
     """Everything a Crew Paper recap episode needs, in one call.
@@ -15153,6 +15266,7 @@ def api_recap():
         "winners": winners, "losers": losers,
         "best_trade": best, "worst_trade": worst,
         "gates": gates, "scorecard": scorecard, "script": script,
+        "script_prose": _recap_prose(week_label, book, winners, losers, best, gates, scorecard),
     })
 
 

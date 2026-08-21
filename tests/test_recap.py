@@ -342,3 +342,56 @@ def test_summary_absent_when_there_is_no_scorecard(monkeypatch, crew):
     monkeypatch.setattr(rc, "_pick_scorecard", lambda *A, **K: {})
     _with(monkeypatch, [])
     assert _client().get("/api/recap").get_json()["scorecard"] == {}
+
+
+def _prose(monkeypatch, crew_fixture_applied=True):
+    return _client().get("/api/recap").get_json()["script_prose"]
+
+
+def test_prose_always_discloses_paper_before_any_number(monkeypatch, crew):
+    """The disclosure lives in paragraph one, not a footer — it must be said before
+    the P&L lands. Pinned so a future rewrite cannot quietly drop it."""
+    mon = _last_week_monday().isoformat()
+    _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
+    paras = _prose(monkeypatch)
+    assert paras and "paper account" in paras[0]
+    assert "not real money" in paras[0] or "None of it is real money" in paras[0]
+
+
+def test_prose_handles_a_week_with_no_trades(monkeypatch, crew):
+    """A quiet week still needs something readable — not a paragraph full of zeros."""
+    _with(monkeypatch, [])
+    paras = _prose(monkeypatch)
+    assert len(paras) == 1
+    assert "didn't close a single trade" in paras[0]
+    assert "paper account" in paras[0]
+
+
+def test_prose_calls_out_concentration(monkeypatch, crew, w32_scorecard):
+    """If one name carried the book, the narration says so — that is the honesty
+    beat, and it must not depend on the presenter remembering."""
+    mon = _last_week_monday().isoformat()
+    _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
+    joined = " ".join(_prose(monkeypatch))
+    assert "single name" in joined
+    assert "74" in joined or "75" in joined          # NVDA's share of the W32 net
+
+
+def test_prose_reports_only_the_gates_that_are_live(monkeypatch, crew):
+    """Same guarantee as the gate strip: never narrate a gate that is switched off."""
+    mon = _last_week_monday().isoformat()
+    _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
+    monkeypatch.setattr(a, "RVOL_GATE_ENABLED", True)
+    monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", {"alpaca2", "alpaca3"})
+    refusal = next(p for p in _prose(monkeypatch) if "refused to take" in p)
+    assert "switched off" in refusal
+    # RVOL is not wired to Crew Paper, so it must appear on the OFF side of the sentence.
+    live, off = refusal.split("switched off")[0], refusal
+    assert "RVOL" not in live.split("right now")[-1].split(".")[0]
+
+
+def test_prose_leaves_a_placeholder_for_the_claim(monkeypatch, crew):
+    """The falsifiable claim is the one thing the data cannot write."""
+    mon = _last_week_monday().isoformat()
+    _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
+    assert "[Say your claim here.]" in _prose(monkeypatch)[-1]

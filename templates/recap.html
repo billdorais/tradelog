@@ -61,6 +61,17 @@
     .pill.off { background: rgba(120,120,140,0.08); color: #666; border: 1px solid #262a38; }
     .script-line { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid #171a24; font-size: 0.85rem; line-height: 1.55; }
     .script-seg { flex: 0 0 150px; color: #f0a35e; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; padding-top: 3px; }
+    /* Script notes stay COLLAPSED by default so they cannot land on screen mid-record. */
+    .script-toggle { background: rgba(240,163,94,0.08); border: 1px solid #4a3a22; color: #f0a35e;
+                     border-radius: 6px; padding: 6px 14px; font-size: 0.8rem; font-family: inherit;
+                     cursor: pointer; font-weight: 600; }
+    .script-toggle:hover { border-color: #6a5232; }
+    .script-body { display: none; margin-top: 12px; }
+    .script-body.open { display: block; }
+    .prose { margin-top: 14px; border-top: 1px solid #1e2130; padding-top: 12px; }
+    .prose p { font-size: 0.95rem; line-height: 1.75; color: #cdd3e0; margin-bottom: 14px;
+               max-width: 76ch; }
+    .prose p:last-child { margin-bottom: 0; }
     .day-chart { height: 300px; }
     .eq-wrap { height: 240px; margin-bottom: 14px; }
     .chart-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
@@ -341,10 +352,18 @@
 
       <div class="panel">
         <div class="band-q">5 · Script notes</div>
-        <div class="band-sub">Read these aloud as-is; the numbers are already filled in.
-          <b>Copy script</b> puts them on the clipboard.</div>
-        ${(d.script || []).map(x => `<div class="script-line">
-          <div class="script-seg">${esc(x.segment)}</div><div>${esc(x.line)}</div></div>`).join('')}
+        <div class="band-sub">Hidden by default so it can&rsquo;t wander into a screen recording.
+          <b>Copy script</b> works whether or not it&rsquo;s open.</div>
+        <button class="script-toggle" id="scriptToggle" onclick="toggleScript()">Show script notes</button>
+        <div class="script-body" id="scriptBody">
+          ${(d.script || []).map(x => `<div class="script-line">
+            <div class="script-seg">${esc(x.segment)}</div><div>${esc(x.line)}</div></div>`).join('')}
+          <div class="prose">
+            <div class="band-sub" style="margin-bottom:8px">Read-aloud version — same numbers, joined up.</div>
+            ${(d.script_prose || []).map(t => `<p>${esc(t)}</p>`).join('')
+              || '<p style="color:#555">No narration for this period.</p>'}
+          </div>
+        </div>
       </div>`;
   }
 
@@ -658,6 +677,14 @@
     c.timeScale().fitContent();
     new ResizeObserver(() => c.applyOptions({ width: el.clientWidth })).observe(el);
     return c;
+  }
+
+  function toggleScript() {
+    const body = document.getElementById('scriptBody');
+    const btn  = document.getElementById('scriptToggle');
+    if (!body || !btn) return;
+    const open = body.classList.toggle('open');
+    btn.textContent = open ? 'Hide script notes' : 'Show script notes';
   }
 
   function copyScript() {
