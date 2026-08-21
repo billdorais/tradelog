@@ -14863,6 +14863,271 @@ def _gates_without_control():
     return out
 
 
+# ── Gate reference ──────────────────────────────────────────────────────────
+# One place that says what each gate DOES, next to the setting that book is
+# actually running. The Refusal table and the gate strip both NAME gates but
+# neither explains them, so "hours saved $406" was unreadable without opening
+# app.py.
+#
+# The static half (what/rule/why) is prose. The live half (on/setting) is
+# resolved per account and — critically — honours GATES_BY_ACCOUNT overrides.
+# Reading the shared globals alone is what let the strip report RVOL as "not
+# wired to Crew Paper" during a week the gate blocked 11 of its entries: an
+# account can opt IN through an override without ever joining RVOL_GATE_ACCOUNTS.
+_META_BY_TAG = {_meta_tag(_n): _m for _n, _m in ACCOUNT_META.items()}
+
+_GATE_RULES = {
+    "hours": {
+        "title": "Trading hours",
+        "what":  "Blocks entries outside this book's own ET trading window.",
+        "rule": [
+            "Every book carries its OWN window — they are not shared.",
+            "Windows are half-open: an entry exactly at the end time is already out.",
+            "Resolution order: HOURS_<TAG> env, then this account's override, then the shared window for its hours_key.",
+            "No window configured = allowed all day.",
+        ],
+        "why": "Entries late in the session have no room left to reach a trail, and the "
+               "first minutes price off overnight imbalance rather than off the level.",
+    },
+    "rvol": {
+        "title": "RVOL (relative volume)",
+        "what":  "Blocks BREAKOUT entries whose entry bar is too quiet, and short "
+                 "breakouts whose bar is a blow-off.",
+        "rule": [
+            "Breakouts only. Reversals and every exit pass through untouched.",
+            "Blocks below the minimum (rvol_low), and blocks SHORTS at or above the short cap (rvol_blowoff, the run-over zone).",
+            "FAILS OPEN: if RVOL cannot be computed (data glitch, too near the open) the trade is allowed. A gate must never mute a book on a fetch error.",
+            "A book can opt IN through its own override even when it is not in the shared account list.",
+        ],
+        "why": "The Replay RVOL sweep (Jun-Jul '26) put the edge in the 1.5-3.0x band: "
+               "sub-1.5x breakouts bled on both Refined books (TV -$70 to +$484 at >=1.5x; "
+               "Kairos -$711 to +$456), while shorts get run over above 3x.",
+    },
+    "day-type": {
+        "title": "Day-type",
+        "what":  "Blocks breakout entries on days the prior session did not set up for a breakout.",
+        "rule": [
+            "Breakouts fire only on the allowed day types; reversals pass unless the separate reversal day-type gate is on for this book.",
+            "Day type is classified from the prior session's range against its pivots.",
+            "FAILS OPEN: a ticker that cannot be classified (no daily bars) is allowed through.",
+        ],
+        "why": "A breakout needs range to break into. Days that already closed inside "
+               "their pivots tend to chop back through the level.",
+    },
+    "open-location": {
+        "title": "Opening location",
+        "what":  "Blocks breakouts where the session OPENED already at or past the level being broken.",
+        "rule": [
+            "Breakouts only; reversals pass.",
+            "Applies only to the configured side(s) and location bucket(s).",
+            "FAILS OPEN when the open price or the day classification is unavailable.",
+        ],
+        "why": "Exhausted on arrival: if price gapped to the level, the move you would be "
+               "entering already happened. The LONG at/past-extreme cell was the biggest "
+               "single loser in the sample (19 trades, -$385), while SHORT at/past-extreme "
+               "was 7 trades at -$23 — noise. That is why it is long-only by default.",
+    },
+    "reversal": {
+        "title": "Reversal side",
+        "what":  "Restricts, or switches off, reversal entries on this book.",
+        "rule": [
+            "'off' = no reversal entries at all. 'long'/'short' = that side only.",
+            "Breakouts are unaffected.",
+            "Set per book, so the farms keep trading what a Refined book has paused.",
+        ],
+        "why": "TV Refined's reversals went 1-for-22 over 2026-07-01..17 (-$394, both sides "
+               "dead), so they are off there. Kairos and Crew pause reversal SHORTS only: the "
+               "Jul '26 short-filter test (309 setups) put them at breakeven-at-best even with "
+               "the confirmation entry, while reversal longs held up.",
+    },
+    "profit-lock": {
+        "title": "Profit lock",
+        "what":  "Halts the book for the day once it gives back more than the floor from its intraday peak.",
+        "rule": [
+            "Measured as give-back from the day's high-water mark, not from flat.",
+            "Halts NEW entries for the rest of the session; open positions keep their own exits.",
+            "Per book — one book locking does not halt the others.",
+        ],
+        "why": "Stops a green day round-tripping into a red one.",
+    },
+    "daily-loss": {
+        "title": "Daily loss guard",
+        "what":  "Halts the book for the day once its realised P&L hits the daily limit.",
+        "rule": [
+            "An absolute floor on the day, independent of the peak.",
+            "Halts entries and liquidates the book.",
+            "Per book, and the farms are deliberately exempt so the control group stays intact.",
+        ],
+        "why": "A hard stop on the worst case, so a bad regime costs one day rather than the account.",
+    },
+    "manual-halt": {
+        "title": "Manual halt",
+        "what":  "You switched this book off for the day from the Risk Guard panel.",
+        "rule": [
+            "An operator action, not a rule — it appears here so a discretionary stop is counted like any other block.",
+            "Per book; clears at the next session or via Clear Halt & Resume Trading.",
+        ],
+        "why": "The one gate with a human behind it. Priced the same way as the rest, so "
+               "stepping in has a visible cost or benefit rather than an assumed one.",
+    },
+    "side": {
+        "title": "Side gate (per rule)",
+        "what":  "A long-only or short-only routing rule refused the other side.",
+        "rule": [
+            "Set on the individual rule when it is wired, not on the book.",
+            "Crew picks carry the side the pick was made for.",
+        ],
+        "why": "A strategy whose edge is one-directional should not be judged on the side "
+               "that never worked.",
+    },
+    "strikes": {
+        "title": "Strikes per level",
+        "what":  "A level goes cold for the rest of the day after N losses on it.",
+        "rule": [
+            "Counted per ticker-level per day — S3, R4 and so on each keep their own count.",
+            "Curated books can run a tighter cap on SHORT levels than on long ones.",
+            "Enforced, but NOT recorded as a block — so strikes never appear in the Refusal table and its cost has never been priced.",
+        ],
+        "why": "Re-taking a level that has already failed twice is the most reliable way "
+               "to turn a small red day into a large one.",
+    },
+}
+
+# Refusal-table keys and gate-strip labels name the same gates differently.
+_GATE_ALIASES = {
+    "reversal side": "reversal", "opening location": "open-location",
+    "open location": "open-location", "profit lock": "profit-lock",
+    "daily loss": "daily-loss", "manual halt": "manual-halt",
+    "day type": "day-type", "trading hours": "hours",
+}
+
+
+def _gate_key(name):
+    """Normalise a display label or block key to a _GATE_RULES key."""
+    k = (name or "").strip().lower().replace("_", "-")
+    if k in _GATE_RULES:
+        return k
+    return _GATE_ALIASES.get(k.replace("-", " "), k)
+
+
+def _gate_state(tag):
+    """(on, setting, source) per gate for ONE book, honouring per-account overrides.
+
+    `source` reports WHERE the setting came from — an override or the shared config —
+    because that distinction is exactly what reading the globals alone used to hide.
+    """
+    meta = _META_BY_TAG.get(tag) or {}
+    ov   = _account_gate_overrides(tag) or {}
+    out  = {}
+
+    ws = _account_hours_windows(tag)
+    out["hours"] = (bool(ws),
+                    " · ".join(f"{s}-{e} ET" for s, e in ws) if ws else "all day (no window set)",
+                    "override" if (ov.get("hours") or {}) else "shared")
+
+    # RVOL — an override can enable this book independently of the shared list.
+    _rov = ov.get("rvol")
+    if _rov is not None:
+        on  = bool(_rov.get("enabled"))
+        mn  = _rov.get("min")       if _rov.get("min")       is not None else RVOL_GATE_MIN
+        cap = _rov.get("short_cap") if _rov.get("short_cap") is not None else RVOL_GATE_SHORT_CAP
+        src = "override"
+    else:
+        on, mn, cap, src = (bool(RVOL_GATE_ENABLED and tag in RVOL_GATE_ACCOUNTS),
+                            RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, "shared")
+    out["rvol"] = (on,
+                   (f"breakouts need >={float(mn):g}x · shorts blocked >={float(cap):g}x · "
+                    f"{RVOL_GATE_METHOD} baseline over {RVOL_GATE_LOOKBACK} bars") if on
+                   else ("switched off for this book" if src == "override"
+                         else "not wired to this book"),
+                   src)
+
+    _dov = ov.get("daytype")
+    if _dov is not None:
+        on, days, src = (bool(_dov.get("enabled")),
+                         set(_dov.get("breakout_ok_days") or DAYTYPE_GATE_BREAKOUT_OK_DAYS),
+                         "override")
+    else:
+        on, days, src = (bool(DAYTYPE_GATE_ENABLED and tag in DAYTYPE_GATE_ACCOUNTS),
+                         DAYTYPE_GATE_BREAKOUT_OK_DAYS, "shared")
+    rev_on = bool(DAYTYPE_REVERSAL_GATE_ENABLED and tag in DAYTYPE_REVERSAL_GATE_ACCOUNTS)
+    _d = f"breakouts only on {', '.join(sorted(days))} days" if on else "off"
+    if rev_on:
+        _d += f" · reversals only on {', '.join(sorted(DAYTYPE_REVERSAL_OK_DAYS))} days"
+    out["day-type"] = (on or rev_on, _d, src)
+
+    _oov = ov.get("open_loc")
+    if _oov is not None:
+        on, bk, sd, src = (bool(_oov.get("enabled")),
+                           _oov.get("buckets") or OPEN_LOC_GATE_BUCKETS,
+                           _oov.get("sides")   or OPEN_LOC_GATE_SIDES, "override")
+    else:
+        on, bk, sd, src = (bool(OPEN_LOC_GATE_ENABLED and tag in OPEN_LOC_GATE_ACCOUNTS),
+                           OPEN_LOC_GATE_BUCKETS, OPEN_LOC_GATE_SIDES, "shared")
+    out["open-location"] = (on,
+                            (f"blocks {', '.join(sorted(sd))} breakouts that opened "
+                             f"{', '.join(sorted(bk))}") if on else "off", src)
+
+    pol = _REVERSAL_SIDE_BY_TAG.get(tag)
+    out["reversal"] = (pol in ("long", "short", "off"),
+                       "reversals off"           if pol == "off" else
+                       f"reversals {pol}-only"   if pol in ("long", "short") else
+                       "both sides allowed",
+                       "shared")
+
+    out["profit-lock"] = (bool(PROFIT_LOCK_DOLLARS > 0 and meta.get("profit_lock")),
+                          f"${PROFIT_LOCK_DOLLARS:g} give-back floor"
+                          if PROFIT_LOCK_DOLLARS > 0 else "off", "shared")
+    out["daily-loss"]  = (bool(MAX_DAILY_LOSS < 0 and meta.get("daily_loss_guard")),
+                          f"${MAX_DAILY_LOSS:g} daily floor"
+                          if MAX_DAILY_LOSS < 0 else "off", "shared")
+
+    # Strikes — resolved through _strike_limit so overrides and the short cap apply.
+    _sov = ov.get("strikes") or {}
+    _long, _short = _strike_limit("R4", tag), _strike_limit("S4", tag)
+    _son = bool(STRIKES_ENABLED or _sov)
+    out["strikes"] = (_son,
+                      (f"{_long} loss{'' if _long == 1 else 'es'} per level per day"
+                       + (f" · {_short} on short levels" if _short != _long else ""))
+                      if _son else "off",
+                      "override" if _sov else "shared")
+
+    out["manual-halt"] = (bool(_manual_halted_for(tag)), "operator switch · per book", "shared")
+    out["side"]        = (True, "set per routing rule when a pick is wired", "rule")
+    return out
+
+
+def _gate_docs(tag):
+    """Static rule text plus this book's live setting, keyed by gate. Carries
+    `answerable` so a modal can explain an em-dash in Est. $ instead of leaving it."""
+    state = _gate_state(tag)
+    nc    = _gates_without_control()
+    docs  = {}
+    for k, r in _GATE_RULES.items():
+        on, setting, src = state.get(k, (False, "", "shared"))
+        docs[k] = {**r, "key": k, "on": on, "setting": setting, "source": src,
+                   "answerable": k not in nc,
+                   "no_control_note": ("The farms run this gate too, so there is no "
+                                       "un-gated control to price these blocks against."
+                                       if k in nc else "")}
+    return docs
+
+
+@app.route("/api/gates/docs")
+def api_gate_docs():
+    """Gate reference for one book — what each rule does, next to what it is set to.
+
+    Account-scoped on purpose: the same gate is a different rule on a different
+    book (RVOL alone differs three ways), so a shared description would be wrong
+    somewhere.
+    """
+    tag = (request.args.get("account") or "alpaca4").strip()
+    if tag not in _META_BY_TAG:
+        return jsonify({"error": f"unknown account {tag}"}), 400
+    return jsonify({"account": tag, "label": (_META_BY_TAG[tag] or {}).get("label", tag),
+                    "gates": _gate_docs(tag)})
+
+
 def _book_position_notional(tag, from_date, to_date, fills_fn=None):
     """(median notional, sample size) for one book's recent positions.
 
@@ -15157,28 +15422,17 @@ def api_recap():
     # Which gates are ACTUALLY live on this book, so the script never narrates a
     # gate that is switched off. RVOL is the reason this exists: it is not wired to
     # Crew Paper at all, so toggling it globally changes nothing here.
-    meta = ACCOUNT_META.get(ACCT, {})
-    tag  = rec["tag"]
-    rvol_on = bool(RVOL_GATE_ENABLED and tag in RVOL_GATE_ACCOUNTS)
-    gates = [
-        {"gate": "Day-type", "on": bool(DAYTYPE_GATE_ENABLED and tag in DAYTYPE_GATE_ACCOUNTS),
-         "detail": "breakouts only on " + ", ".join(sorted(DAYTYPE_GATE_BREAKOUT_OK_DAYS)) + " days"},
-        {"gate": "Reversal side", "on": meta.get("reversal_side") in ("long", "short"),
-         "detail": (f"reversal {meta.get('reversal_side')}-only"
-                    if meta.get("reversal_side") in ("long", "short") else "both sides")},
-        {"gate": "Opening location",
-         "on": bool(OPEN_LOC_GATE_ENABLED and tag in OPEN_LOC_GATE_ACCOUNTS),
-         "detail": "blocks breakouts that opened at/past the level"},
-        {"gate": "RVOL", "on": rvol_on,
-         "detail": ("not wired to Crew Paper" if tag not in RVOL_GATE_ACCOUNTS
-                    else f"min {RVOL_GATE_MIN}x")},
-        {"gate": "Strikes", "on": bool(STRIKES_ENABLED),
-         "detail": f"{STRIKES_PER_LEVEL} losses per level per day"},
-        {"gate": "Profit lock", "on": bool(PROFIT_LOCK_DOLLARS > 0 and meta.get("profit_lock")),
-         "detail": (f"${PROFIT_LOCK_DOLLARS:g} give-back floor" if PROFIT_LOCK_DOLLARS > 0 else "off")},
-        {"gate": "Daily loss", "on": bool(MAX_DAILY_LOSS < 0 and meta.get("daily_loss_guard")),
-         "detail": (f"${MAX_DAILY_LOSS:g}" if MAX_DAILY_LOSS < 0 else "off")},
-    ]
+    tag   = rec["tag"]
+    _docs = _gate_docs(tag)
+    # Built from _gate_state, NOT from the shared globals. Reading the globals is
+    # what let this strip print "RVOL — not wired to Crew Paper" during a week the
+    # gate blocked 11 of its entries: a book can opt IN via a GATES_BY_ACCOUNT
+    # override without ever joining RVOL_GATE_ACCOUNTS, and the strip never asked.
+    gates = [{"gate": lbl, "key": k, "on": _docs[k]["on"], "detail": _docs[k]["setting"]}
+             for k, lbl in (("hours", "Trading hours"), ("day-type", "Day-type"),
+                            ("reversal", "Reversal side"), ("open-location", "Opening location"),
+                            ("rvol", "RVOL"), ("strikes", "Strikes"),
+                            ("profit-lock", "Profit lock"), ("daily-loss", "Daily loss"))]
 
     scorecard = {}
     try:

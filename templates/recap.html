@@ -59,6 +59,26 @@
     .pill { display: inline-block; font-size: 0.66rem; padding: 2px 8px; border-radius: 20px; margin: 2px 4px 2px 0; }
     .pill.on  { background: rgba(127,224,152,0.12); color: #7FE098; border: 1px solid #2a4a35; }
     .pill.off { background: rgba(120,120,140,0.08); color: #666; border: 1px solid #262a38; }
+    /* Gate reference modal — every gate name on this page opens its own rules. */
+    .pill.tapable { cursor: pointer; }
+    .pill.tapable:hover { filter: brightness(1.35); }
+    .gate-link { background: none; border: none; padding: 0; font: inherit; color: #f0a35e;
+                 cursor: pointer; border-bottom: 1px dotted #6a5232; }
+    .gate-link:hover { color: #ffc48a; border-bottom-color: #f0a35e; }
+    .gm-body { padding: 14px 18px 18px; }
+    .gm-state { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                font-size: 0.76rem; margin-bottom: 12px; }
+    .gm-what { font-size: 0.92rem; line-height: 1.6; color: #dfe4ee; margin-bottom: 14px; }
+    .gm-h { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.08em;
+            color: #666; margin: 14px 0 6px; }
+    .gm-body ul { margin: 0; padding-left: 18px; }
+    .gm-body li { font-size: 0.83rem; line-height: 1.6; color: #c3c9d6; margin-bottom: 5px; }
+    .gm-why { font-size: 0.83rem; line-height: 1.65; color: #a8afc0; border-left: 2px solid #3a3f52;
+              padding-left: 11px; }
+    .gm-note { font-size: 0.78rem; color: #e0b080; background: rgba(240,163,94,0.07);
+               border: 1px solid #4a3a22; border-radius: 6px; padding: 8px 11px; margin-top: 14px; }
+    .gm-src { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em;
+              color: #7a6a4a; border: 1px solid #3a3222; border-radius: 20px; padding: 1px 7px; }
     .script-line { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid #171a24; font-size: 0.85rem; line-height: 1.55; }
     .script-seg { flex: 0 0 150px; color: #f0a35e; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; padding-top: 3px; }
     /* Script notes stay COLLAPSED by default so they cannot land on screen mid-record. */
@@ -161,10 +181,21 @@
     </div>
   </div>
 
+  <div class="modal-back" id="gateModal" onclick="if (event.target === this) closeGateModal()">
+    <div class="modal-card" style="width:min(680px,96vw)">
+      <div class="modal-head">
+        <span class="mini-name" id="gmTitle"></span>
+        <span class="mini-meta" id="gmFor"></span>
+        <button class="modal-x" onclick="closeGateModal()">Close ✕</button>
+      </div>
+      <div class="gm-body" id="gmBody"></div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 <script>
-  let DATA = null, GATES = null, period = 'last_week';
+  let DATA = null, GATES = null, GATE_DOCS = null, period = 'last_week';
   let eqChart = null;          // Chart.js equity curve
   const miniCharts = [];       // lightweight-charts instances, destroyed on reload
   const SESSIONS   = [];       // [{pick, ss}] per card — the modal reuses this, no refetch
@@ -225,6 +256,7 @@
       render();
       drawDials();          // win-rate gauge, PF ring, win/loss bar
       drawEquity();         // cumulative P&L, same period as everything else
+      loadGateDocs();       // gate rule reference — powers every gate modal
       loadGates();          // the Refusal panel — separate call, it is the slow one
       loadSixCharts();      // top 3 + bottom 3, one session each
     } catch (e) {
@@ -235,7 +267,8 @@
   function render() {
     const d = DATA, b = d.book;
     const gatePills = (d.gates || []).map(g =>
-      `<span class="pill ${g.on ? 'on' : 'off'}" title="${esc(g.detail)}">${g.on ? '●' : '○'} ${esc(g.gate)}</span>`).join('');
+      `<span class="pill tapable ${g.on ? 'on' : 'off'}" title="${esc(g.detail)} — click for the rule"
+             onclick="openGateModal('${esc(g.key || g.gate)}')">${g.on ? '●' : '○'} ${esc(g.gate)}</span>`).join('');
 
     const stratRow = (s, i) => `<tr>
       <td style="color:#666">${i + 1}</td>
@@ -435,7 +468,8 @@
         <table><thead><tr><th>Gate</th><th>Blocked</th><th>Matched on farm</th><th>Avg %</th>
           <th style="text-align:right">Est. $</th><th>Verdict</th></tr></thead><tbody>
         ${bk.by_gate.map(g => `<tr>
-          <td style="color:#f0a35e">${esc(g.gate)}</td>
+          <td><button class="gate-link" onclick="openGateModal('${esc(g.gate)}')"
+                      title="What is this rule?">${esc(g.gate)}</button></td>
           <td>${g.blocked}</td>
           <td>${g.unanswerable ? '<span class="thin">no control</span>' : g.matched}</td>
           <td class="${g.avg_pct == null ? 'thin' : cls(g.avg_pct)}">${g.avg_pct == null ? '—' : g.avg_pct + '%'}</td>
@@ -650,7 +684,63 @@
     document.getElementById('chartModal').classList.remove('show');
     if (modalChart) { try { modalChart.remove(); } catch (e) {} modalChart = null; }
   }
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChartModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    closeChartModal();
+    closeGateModal();
+  });
+
+  // ── Gate reference ────────────────────────────────────────────────────────
+  // The Refusal table and the gate strip both name gates without saying what
+  // they do. Every gate name on this page opens its rule here, next to what THIS
+  // book has it set to — served per account, because the same gate is a
+  // different rule on a different book.
+  async function loadGateDocs() {
+    try {
+      GATE_DOCS = await fetch('/api/gates/docs?account=alpaca4').then(r => r.json());
+    } catch (e) {
+      GATE_DOCS = null;      // modals degrade to a short message; the page still works
+    }
+  }
+
+  const GATE_ALIASES = {
+    'reversal side': 'reversal', 'opening location': 'open-location',
+    'open location': 'open-location', 'profit lock': 'profit-lock',
+    'daily loss': 'daily-loss', 'manual halt': 'manual-halt',
+    'day type': 'day-type', 'trading hours': 'hours'
+  };
+
+  function gateKey(name) {
+    const k = (name || '').trim().toLowerCase().replace(/_/g, '-');
+    if (GATE_DOCS && GATE_DOCS.gates && GATE_DOCS.gates[k]) return k;
+    return GATE_ALIASES[k.replace(/-/g, ' ')] || k;
+  }
+
+  function openGateModal(name) {
+    const back = document.getElementById('gateModal');
+    const g    = GATE_DOCS && GATE_DOCS.gates ? GATE_DOCS.gates[gateKey(name)] : null;
+    document.getElementById('gmTitle').textContent = g ? g.title : (name || 'Gate');
+    document.getElementById('gmFor').textContent   =
+      GATE_DOCS ? `on ${GATE_DOCS.label}` : '';
+    document.getElementById('gmBody').innerHTML = g ? `
+      <div class="gm-state">
+        <span class="pill ${g.on ? 'on' : 'off'}">${g.on ? '● live' : '○ off'}</span>
+        <span style="color:#c3c9d6">${esc(g.setting)}</span>
+        ${g.source === 'override' ? '<span class="gm-src">per-account override</span>' : ''}
+      </div>
+      <div class="gm-what">${esc(g.what)}</div>
+      <div class="gm-h">The rule</div>
+      <ul>${(g.rule || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+      <div class="gm-h">Why it exists</div>
+      <div class="gm-why">${esc(g.why)}</div>
+      ${g.answerable ? '' : `<div class="gm-note">${esc(g.no_control_note)}</div>`}`
+      : `<div class="gm-what">No rule reference for "${esc(name)}".</div>`;
+    back.classList.add('show');
+  }
+
+  function closeGateModal() {
+    document.getElementById('gateModal').classList.remove('show');
+  }
 
   // Shared candle-chart builder — same rendering as the Chart Review page.
   function makeChart(el, ss, height) {
