@@ -9081,17 +9081,17 @@ _REFINED_SIZE_BANDS = [
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# Back to 7 (2026-08-21). It was cut to 5 purely to offset the takeable filter
-# shrinking the denominator; with promotion back on the raw farm pool, "7 trades"
-# means what it originally meant, and leaving it at 5 would be a permanently looser
-# bar than was ever calibrated — a change nobody chose.
-_REFINED_MIN_TRADES = 7
+# 5 (2026-08-21), matched to Kairos by choice so the two books are judged on the
+# same bar. Was 7 historically; briefly 5 as relief for the takeable filter, back to
+# 7 when that was reverted, then deliberately set to 5 here — a looser bar chosen on
+# purpose rather than left over, which is the distinction that matters.
+_REFINED_MIN_TRADES = 5
 # Looser threshold for the On-Deck watchlist only (display, never routed) — lets
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
 # strategies clear the strict routing bar above. Must stay BELOW the routing floor
 # or On-Deck empties out: at parity every qualifying name gets routed (20 slots)
-# and the watchlist has nothing left to show.
-_REFINED_ONDECK_MIN_TRADES = 5
+# and the watchlist has nothing left to show. Followed the routing floor down to 5.
+_REFINED_ONDECK_MIN_TRADES = 3
 
 # Kairos Refined snapshot uses a lower floor than TV — the engine account is newer
 # with fewer fills per strategy. Raised 3→5 as the pool matured; briefly 4 while

@@ -89,16 +89,17 @@ def test_tv_and_kairos_share_the_same_ranking_window():
     assert tv == kai == 45
 
 
-def test_min_trade_floors_keep_their_deliberate_asymmetry():
-    """The floors are intentionally NOT equal — Kairos is the newer, thinner book.
+def test_min_trade_floors_are_pinned():
+    """Both books sit at 5 — matched deliberately (2026-08-21) so TV and Kairos are
+    judged on the same bar, rather than TV carrying a historical 7.
 
-    They were briefly cut (TV 7->5, Kairos 5->4) purely to offset the takeable
-    filter shrinking the denominator. Promotion went back to the raw farm pool on
-    2026-08-21, so the floors went back with it: leaving them low would have been a
-    permanently looser bar than was ever calibrated, arrived at by accident rather
-    than choice. Pinned so a future change is deliberate; Kairos must never exceed TV.
+    History worth keeping straight, because the same numbers arrived twice for
+    different reasons: TV was 7, briefly cut to 5 as relief for the takeable filter,
+    restored to 7 when that filter was reverted, then set to 5 again ON PURPOSE.
+    A looser bar chosen deliberately is fine; one left behind by a reverted change
+    is not. Pinned so the next move is also a decision. Kairos must never exceed TV.
     """
-    assert a._REFINED_MIN_TRADES == 7
+    assert a._REFINED_MIN_TRADES == 5
     assert a._KAIROS_REFINED_MIN_TRADES == 5
     assert a._KAIROS_REFINED_MIN_TRADES <= a._REFINED_MIN_TRADES
     # On-Deck (display-only) must stay BELOW its routing floor or the watchlist
