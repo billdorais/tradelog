@@ -137,6 +137,37 @@
   controls.autoRotateSpeed = 0.45; controls.target.set(0, 2, 8);
   controls.minDistance = 70; controls.maxDistance = 900;
 
+  // Zoom is handled here rather than by OrbitControls. In three r160 the wheel
+  // handler dollies a FIXED factor per event and ignores deltaY, so the zoom step
+  // is tied to how many events your device emits rather than how far you actually
+  // scrolled: a mouse wheel (a few discrete events) feels fine, while a trackpad
+  // (dozens of high-frequency events per flick) multiplies straight into
+  // min/maxDistance — the "snap to too close / too wide" behaviour.
+  controls.enableZoom = false;
+  let _zoomTarget = camera.position.distanceTo(controls.target);
+  renderer.domElement.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    // Normalise deltaMode: 0 = pixels, 1 = lines, 2 = pages.
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+    // Cap one event's contribution so a single flick (or a browser that reports
+    // deltaY in the hundreds) can't cross the whole range in one go.
+    const d = Math.max(-120, Math.min(120, e.deltaY * unit));
+    // Exponential, so a notch feels the same whether you're at 70 or at 900 —
+    // linear stepping crawls when far out and lurches when close in.
+    _zoomTarget = Math.min(controls.maxDistance,
+                  Math.max(controls.minDistance, _zoomTarget * Math.exp(d * 0.0016)));
+  }, { passive: false });
+
+  // Ease toward the target in the render loop so zoom damps like the rotation
+  // already does; a hard jump would feel inconsistent with enableDamping.
+  function _applyZoom() {
+    const dir = camera.position.clone().sub(controls.target);
+    const cur = dir.length();
+    if (Math.abs(cur - _zoomTarget) < 0.01) return;
+    camera.position.copy(controls.target)
+          .add(dir.setLength(cur + (_zoomTarget - cur) * 0.18));
+  }
+
   const WIDTH = 300, BAND = 52, AXIS = 960, LANE = 14;   // AXIS: 04:00 → 20:00 ET (960 min)
   // Colour-ways: cool for indexes, warm for refined (low price → high price).
   const PAL = {
@@ -377,6 +408,7 @@
     controls.autoRotate = document.getElementById('vizRotate').checked;
     const showLabels = document.getElementById('vizLabels').checked;
     if (group) group.traverse(o => { if (o.isCSS2DObject && o.element.className.indexOf('grp') < 0 && o.element.className.indexOf('open') < 0) o.visible = showLabels; });
+    _applyZoom();
     controls.update();
     renderer.render(scene, camera);
     labelRenderer.render(scene, camera);
