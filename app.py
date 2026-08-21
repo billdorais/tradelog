@@ -1675,14 +1675,13 @@ def _live_entry_allowed(tag, notional=None, side=None):
         return False, (f"position ${want:,.0f} exceeds {LIVE_MAX_POSITION_PCT:g}% of "
                        f"${equity:,.0f} equity (cap ${cap:,.0f})")
 
-    # Buying power, not just equity. On a CASH account Alpaca's buying_power tracks
-    # SETTLED funds, so this is what keeps same-day proceeds (unsettled until T+1)
-    # from being spent again — the good-faith-violation trap that equity alone
-    # cannot see, since equity counts money that is not yet available.
+    # Buying power, not just equity. Equity counts money that may not be spendable
+    # yet — deposits under a hold, or margin the broker has not extended — so an
+    # equity-only check would pass orders the broker then rejects.
     bp = float(snap.get("buying_power") or 0)
     if bp > 0 and want > bp:
-        return False, (f"position ${want:,.0f} exceeds ${bp:,.0f} buying power "
-                       f"(unsettled funds?) — refusing the entry")
+        return False, (f"position ${want:,.0f} exceeds ${bp:,.0f} available buying "
+                       f"power — refusing the entry")
     return True, ""
 
 
@@ -1718,11 +1717,30 @@ def _live_account_preflight(tag):
               "regt_buying_power", "last_equity"):
         try:    out[k] = float(getattr(acct, k, 0) or 0)
         except (TypeError, ValueError): out[k] = None
-    for k in ("pattern_day_trader", "trading_blocked", "account_blocked",
-              "transfers_blocked", "shorting_enabled"):
+    for k in ("trading_blocked", "account_blocked", "transfers_blocked",
+              "shorting_enabled"):
         out[k] = bool(getattr(acct, k, False))
-    out["daytrade_count"] = getattr(acct, "daytrade_count", None)
-    out["status"]         = str(getattr(acct, "status", "") or "")
+    # DEAD FIELDS — kept only so the response shows they are dead. Alpaca removed
+    # pattern_day_trader / daytrade_count / daytrading_buying_power from the API on
+    # 2026-07-06 along with the PDT rule itself, so they now read false/None/0 for
+    # every account and mean nothing. Reading them as signal produced a confident
+    # wrong diagnosis once already.
+    out["_retired_fields"] = {
+        "note": "removed from Alpaca's API 2026-07-06 with the PDT rule; not signal",
+        "pattern_day_trader": bool(getattr(acct, "pattern_day_trader", False)),
+        "daytrade_count": getattr(acct, "daytrade_count", None),
+        "daytrading_buying_power": float(getattr(acct, "daytrading_buying_power", 0) or 0),
+    }
+    out["status"] = str(getattr(acct, "status", "") or "")
+    # "Intraday Buying Power" REPLACED day-trade buying power on 2026-06-04, so the
+    # field this should read may not be the field it used to read. Scan for any
+    # buying-power attribute rather than hardcoding names, so a renamed or added
+    # one shows up here instead of silently reading as 0.
+    out["buying_power_fields"] = {
+        _n: (lambda _v: float(_v) if _v not in (None, "") else None)(getattr(acct, _n, None))
+        for _n in dir(acct)
+        if "buying_power" in _n and not _n.startswith("_")
+    }
 
     blockers = []
     if out.get("trading_blocked"):  blockers.append("trading_blocked")
@@ -1735,27 +1753,33 @@ def _live_account_preflight(tag):
     if eq and LIVE_SIZE_DOLLARS > eq * (LIVE_MAX_POSITION_PCT / 100.0):
         blockers.append(f"LIVE_SIZE_DOLLARS ${LIVE_SIZE_DOLLARS:,.0f} exceeds the "
                         f"{LIVE_MAX_POSITION_PCT:g}% equity cap")
-    # Informational: the old designation still showing up means this broker has
-    # not moved to the post-2026-06-04 framework for this account yet.
-    if out.get("pattern_day_trader"):
-        blockers.append("broker still flags pattern_day_trader — day-trade counting "
-                        "may still apply on this account")
-
-    # Cash vs margin, inferred rather than asserted: Alpaca does not label it on the
-    # account object, but a margin account carries RegT buying power ABOVE equity
-    # (2x) and non-zero day-trading buying power (4x). Equal-to-equity BP with zero
-    # DTBP is the cash-account signature, and the difference decides whether T+1
-    # settlement limits how many round-trips a day the book can take.
-    _eq  = out.get("equity") or 0
-    _regt, _dtbp = out.get("regt_buying_power") or 0, out.get("daytrading_buying_power") or 0
-    out["likely_cash_account"] = bool(_eq > 0 and _dtbp == 0 and _regt <= _eq * 1.05)
-    if out["likely_cash_account"]:
-        out["settlement_note"] = (
-            "Buying power equals equity and day-trading buying power is zero — the "
-            "signature of a CASH account. If so, sale proceeds are unsettled until "
-            "T+1, so total BUYS per day are capped by settled cash; spending "
-            "unsettled proceeds causes good-faith violations. Confirm the account "
-            "type in Alpaca rather than relying on this inference.")
+    # Leverage, reported rather than diagnosed.
+    #
+    # Two corrections are baked into this block, both from Alpaca directly:
+    #   - Alpaca supports MARGIN accounts only, so reading "buying power == equity,
+    #     DTBP == 0" as a cash account was wrong. It is a state, not a type.
+    #   - Alpaca DID implement the new intraday-margin framework on 2026-06-04, so
+    #     "the broker hasn't shipped it" is not a candidate either.
+    # What remains is Alpaca's own wording: 4x intraday buying power at the lowered
+    # $2,000 equity minimum applies "for LEVERAGE-ENABLED accounts". An account
+    # above that floor still showing 1x buying power, no day-trade buying power and
+    # no shorting is one where leverage is not enabled.
+    # `buying_power` IS the intraday buying power under the new framework — Alpaca
+    # folded the day-trade fields into it. So the leverage question is answered by
+    # this one ratio and nothing else.
+    _eq = out.get("equity") or 0
+    out["margin_extended"] = bool(_eq > 0 and (out.get("buying_power") or 0) > _eq * 1.05)
+    out["buying_power_ratio"] = round((out.get("buying_power") or 0) / _eq, 2) if _eq else None
+    if _eq > 0 and not out["margin_extended"]:
+        out["margin_note"] = (
+            f"Intraday buying power is {out['buying_power_ratio']}x equity and shorting "
+            f"is {'off' if not out.get('shorting_enabled') else 'on'} — this account "
+            f"does not appear to be LEVERAGE-ENABLED. Under Alpaca's framework (live "
+            f"2026-06-04) leverage-enabled accounts get 4x intraday buying power above "
+            f"$2,000 equity, and this account holds ${_eq:,.0f}, so it clears that floor "
+            f"comfortably. Ask Alpaca to enable leverage. Until then the book is capped "
+            f"at about ${_eq:,.0f} of open position and cannot short at all, which drops "
+            f"every short pick in the roster.")
     if not out["paper"] and not out.get("shorting_enabled", True):
         blockers.append("shorting is not enabled — every SHORT pick in the roster "
                         "will be refused; this book can only trade the long side")

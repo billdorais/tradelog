@@ -752,9 +752,10 @@ curated top-N account):
    - Will transition to LIVE trading. The PDT $25k floor is gone: the SEC approved
      FINRA's Rule 4210 amendments on 2026-04-14, effective 2026-06-04, eliminating both
      the $25,000 minimum and the pattern-day-trader designation, and day trades are no
-     longer counted. Intraday buying power now keys off real-time margin excess. Note
-     brokers have until 2027-10-20 to implement, so whether it binds a given account is
-     a per-broker fact, not an assumption — check the account, do not infer it.
+     longer counted. Alpaca shipped its intraday-margin framework the same day and
+     REMOVED pattern_day_trader / daytrade_count / daytrading_buying_power from the API
+     on 2026-07-06 — those fields are dead, not signal. `buying_power` is now the
+     intraday buying power. Leverage-enabled accounts get 4x above $2,000 equity.
 5. Kairos Farm (account 5): the engine-entry twin of TV Farm — ALL strategies via the
    server-side Kairos engine. Full-sample pool + selection source for Kairos Refined.
 3. Kairos Refined (account 3): the engine-entry curated book. It trades the top strategies,

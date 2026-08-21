@@ -200,29 +200,31 @@ def test_preflight_names_every_blocker_at_once(monkeypatch, live):
     assert d["will_trade"] is False
     assert any("not armed" in b for b in d["blockers"])
     assert any("LIVE_SIZE_DOLLARS unset" in b for b in d["blockers"])
-    assert d["equity"] == 20_000.0 and d["daytrade_count"] == 0
+    assert d["equity"] == 20_000.0
 
 
-def test_preflight_reports_a_stale_pdt_flag_as_a_blocker(monkeypatch, live):
-    """The designation was eliminated effective 2026-06-04, but brokers have until
-    2027-10-20 to implement. If Alpaca still flags the account, day-trade counting
-    may still bind it — report that rather than assuming the rule change reached us."""
-    class _Acct:
-        equity = 20_000.0; cash = 0.0; buying_power = 0.0
-        daytrading_buying_power = 0.0; regt_buying_power = 0.0; last_equity = 0.0
+def test_a_stale_pdt_flag_is_never_treated_as_a_blocker(monkeypatch, live):
+    """Superseded on purpose. This used to assert the OPPOSITE — that a
+    pattern_day_trader flag blocks arming — which held only while the rule existed.
+    FINRA retired it effective 2026-06-04 and Alpaca removed the field on
+    2026-07-06, so anything still setting it is stale data, not a restriction.
+    Blocking on it would ground the book over a field that no longer means anything."""
+    class _A:
+        equity = 20_000.0; cash = 20_000.0; buying_power = 80_000.0
+        daytrading_buying_power = 0.0; regt_buying_power = 0.0; last_equity = 20_000.0
         pattern_day_trader = True; trading_blocked = False; account_blocked = False
         transfers_blocked = False; shorting_enabled = True
         daytrade_count = 7; status = "ACTIVE"
 
     class _T:
-        def get_account(self): return _Acct()
+        def get_account(self): return _A()
     a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
 
     d = a._live_account_preflight("alpaca6")
-    assert d["pattern_day_trader"] is True
-    assert any("pattern_day_trader" in b for b in d["blockers"])
-    assert d["will_trade"] is False
+    assert not any("pattern_day_trader" in b for b in d["blockers"])
+    assert d["_retired_fields"]["pattern_day_trader"] is True   # reported, not acted on
+    assert d["margin_extended"] is True                         # 4x BP is what counts
 
 
 def test_preflight_surfaces_a_broker_side_block(monkeypatch, live):
@@ -284,14 +286,14 @@ def test_shorts_pass_when_the_account_permits_them(live):
     assert a._live_entry_allowed("alpaca6", notional=1_000, side="SHORT")[0] is True
 
 
-def test_an_entry_beyond_settled_buying_power_is_refused(live):
-    """On a CASH account buying_power tracks SETTLED funds. Equity still counts
-    same-day proceeds that are unsettled until T+1, so equity alone would wave
-    through the buy that causes a good-faith violation."""
+def test_an_entry_beyond_available_buying_power_is_refused(live):
+    """Equity counts money that may not be spendable — deposits under a hold, or
+    margin the broker has not extended — so equity alone would pass orders the
+    broker then rejects."""
     a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(7_000.0, buying_power=500.0)
     ok, why = a._live_entry_allowed("alpaca6", notional=1_000, side="LONG")
-    assert ok is False and "buying power" in why and "unsettled" in why
+    assert ok is False and "available buying power" in why
 
 
 def test_the_snapshot_is_cached_but_not_indefinitely(live):
@@ -316,10 +318,13 @@ def test_the_snapshot_is_cached_but_not_indefinitely(live):
     assert calls["n"] == 2, "and re-read once the entry expires"
 
 
-def test_preflight_infers_a_cash_account_from_buying_power(live):
-    """Alpaca does not label cash vs margin, but a margin account has RegT BP above
-    equity and non-zero day-trading BP. BP == equity with DTBP 0 is the cash
-    signature, and it decides whether T+1 settlement limits round-trips."""
+def test_preflight_reports_leverage_not_enabled(live):
+    """The funded account came back with buying power at 1x equity and shorting off.
+
+    Read from `buying_power` ALONE. Alpaca removed pattern_day_trader,
+    daytrade_count and daytrading_buying_power on 2026-07-06 with the PDT rule, so
+    those now read false/None/0 for every account — diagnosing from them produced a
+    confident wrong answer once, and this test exists so it cannot again."""
     class _A:
         equity = 7_000.0; cash = 7_000.0; buying_power = 7_000.0
         daytrading_buying_power = 0.0; regt_buying_power = 7_000.0
@@ -334,12 +339,36 @@ def test_preflight_infers_a_cash_account_from_buying_power(live):
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
 
     d = a._live_account_preflight("alpaca6")
-    assert d["likely_cash_account"] is True
-    assert "T+1" in d["settlement_note"]
+    assert d["margin_extended"] is False
+    assert d["buying_power_ratio"] == 1.0
+    assert "LEVERAGE-ENABLED" in d["margin_note"]
     assert any("shorting is not enabled" in b for b in d["blockers"])
+    # The retired fields must never produce a blocker of their own.
+    assert not any("pattern_day_trader" in b for b in d["blockers"])
+    assert d["_retired_fields"]["note"].startswith("removed from Alpaca")
 
 
-def test_preflight_does_not_call_a_margin_account_cash(live):
+def test_a_zero_daytrading_buying_power_is_not_evidence_of_anything(live):
+    """DTBP reads 0 for every account since 2026-07-06. A leverage-enabled account
+    must still read as leveraged despite it."""
+    class _A:
+        equity = 7_000.0; cash = 7_000.0; buying_power = 28_000.0
+        daytrading_buying_power = 0.0; regt_buying_power = 0.0
+        last_equity = 7_000.0; pattern_day_trader = False
+        trading_blocked = False; account_blocked = False
+        transfers_blocked = False; shorting_enabled = True
+        daytrade_count = None; status = "ACTIVE"
+
+    class _T:
+        def get_account(self): return _A()
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
+    d = a._live_account_preflight("alpaca6")
+    assert d["margin_extended"] is True and d["buying_power_ratio"] == 4.0
+    assert "margin_note" not in d
+
+
+def test_preflight_sees_margin_when_it_is_extended(live):
     """4x day-trading buying power is unambiguous."""
     class _A:
         equity = 7_000.0; cash = 7_000.0; buying_power = 28_000.0
@@ -353,4 +382,7 @@ def test_preflight_does_not_call_a_margin_account_cash(live):
         def get_account(self): return _A()
     a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
-    assert a._live_account_preflight("alpaca6")["likely_cash_account"] is False
+    d = a._live_account_preflight("alpaca6")
+    assert d["margin_extended"] is True
+    assert "margin_note" not in d
+    assert d["buying_power_fields"], "must surface whatever BP fields Alpaca returns"
