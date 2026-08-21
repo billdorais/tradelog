@@ -1126,7 +1126,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     # account is inert until armed and correctly sized; nothing
                     # downstream distinguishes real money from paper.
                     if is_entry and action in ("BUY", "SELL"):
-                        _lv_ok, _lv_why = app._live_entry_allowed(broker_tag)
+                        _lv_ok, _lv_why = app._live_entry_allowed(
+                            broker_tag, side="LONG" if action == "BUY" else "SHORT")
                         if not _lv_ok:
                             app.log.warning("LIVE GUARD: %s %s [%s] blocked — %s",
                                             action, ticker, broker_tag, _lv_why)

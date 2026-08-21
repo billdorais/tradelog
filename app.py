@@ -1605,7 +1605,31 @@ def _is_live_account(tag):
     return bool(rec) and not rec.get("paper", True)
 
 
-def _live_entry_allowed(tag, notional=None):
+_live_snap_cache = {}            # tag -> (expires_at, snapshot)
+
+
+def _live_account_snapshot(tag, ttl=30):
+    """Cached (equity, buying_power, shorting_enabled) for a live book.
+
+    Cached briefly because it is read on every entry; short enough that a
+    same-session deposit, drawdown or settlement shows up. Raises on failure —
+    callers treat that as a refusal, never as a default.
+    """
+    import time as _t
+    now = _t.time()
+    hit = _live_snap_cache.get(tag)
+    if hit and hit[0] > now:
+        return hit[1]
+    rec  = ACCOUNTS_BY_TAG.get(tag) or {}
+    acct = rec["broker"]._trading.get_account()
+    snap = {"equity":       float(getattr(acct, "equity", 0) or 0),
+            "buying_power": float(getattr(acct, "buying_power", 0) or 0),
+            "shorting_enabled": bool(getattr(acct, "shorting_enabled", False))}
+    _live_snap_cache[tag] = (now + ttl, snap)
+    return snap
+
+
+def _live_entry_allowed(tag, notional=None, side=None):
     """(ok, reason) for a LIVE entry on `tag`. Paper books always pass untouched.
 
     Order matters: the cheap config checks run before the equity fetch so a
@@ -1629,19 +1653,36 @@ def _live_entry_allowed(tag, notional=None):
 
     want = float(notional if notional is not None else LIVE_SIZE_DOLLARS)
     try:
-        broker = (ACCOUNTS_BY_TAG.get(tag) or {}).get("broker")
-        equity = float(broker.account_equity())
+        snap = _live_account_snapshot(tag)
     except Exception as e:
         # FAILS CLOSED, unlike every gate above it. Those gates protect an edge and
         # a data glitch costs one trade; this one protects the account balance, and
         # an unverifiable balance is not permission to spend it.
-        return False, f"could not read live equity ({e}) — refusing the entry"
+        return False, f"could not read the live account ({e}) — refusing the entry"
+
+    equity = float(snap.get("equity") or 0)
     if equity <= 0:
         return False, f"live equity reads {equity:.2f} — refusing the entry"
+
+    # Shorting is a per-account permission, not a strategy choice. A cash account
+    # cannot short at all, and submitting one just errors at the broker — so refuse
+    # it here where it is recorded as a block instead of as an order failure.
+    if (side or "").upper() in ("SHORT", "SELL") and not snap.get("shorting_enabled", True):
+        return False, "shorting is not enabled on this account — long entries only"
+
     cap = equity * (LIVE_MAX_POSITION_PCT / 100.0)
     if want > cap:
         return False, (f"position ${want:,.0f} exceeds {LIVE_MAX_POSITION_PCT:g}% of "
                        f"${equity:,.0f} equity (cap ${cap:,.0f})")
+
+    # Buying power, not just equity. On a CASH account Alpaca's buying_power tracks
+    # SETTLED funds, so this is what keeps same-day proceeds (unsettled until T+1)
+    # from being spent again — the good-faith-violation trap that equity alone
+    # cannot see, since equity counts money that is not yet available.
+    bp = float(snap.get("buying_power") or 0)
+    if bp > 0 and want > bp:
+        return False, (f"position ${want:,.0f} exceeds ${bp:,.0f} buying power "
+                       f"(unsettled funds?) — refusing the entry")
     return True, ""
 
 
@@ -1699,6 +1740,25 @@ def _live_account_preflight(tag):
     if out.get("pattern_day_trader"):
         blockers.append("broker still flags pattern_day_trader — day-trade counting "
                         "may still apply on this account")
+
+    # Cash vs margin, inferred rather than asserted: Alpaca does not label it on the
+    # account object, but a margin account carries RegT buying power ABOVE equity
+    # (2x) and non-zero day-trading buying power (4x). Equal-to-equity BP with zero
+    # DTBP is the cash-account signature, and the difference decides whether T+1
+    # settlement limits how many round-trips a day the book can take.
+    _eq  = out.get("equity") or 0
+    _regt, _dtbp = out.get("regt_buying_power") or 0, out.get("daytrading_buying_power") or 0
+    out["likely_cash_account"] = bool(_eq > 0 and _dtbp == 0 and _regt <= _eq * 1.05)
+    if out["likely_cash_account"]:
+        out["settlement_note"] = (
+            "Buying power equals equity and day-trading buying power is zero — the "
+            "signature of a CASH account. If so, sale proceeds are unsettled until "
+            "T+1, so total BUYS per day are capped by settled cash; spending "
+            "unsettled proceeds causes good-faith violations. Confirm the account "
+            "type in Alpaca rather than relying on this inference.")
+    if not out["paper"] and not out.get("shorting_enabled", True):
+        blockers.append("shorting is not enabled — every SHORT pick in the roster "
+                        "will be refused; this book can only trade the long side")
     out["blockers"]  = blockers
     out["will_trade"] = not blockers
     return out
@@ -19041,7 +19101,7 @@ def _engine_pilot_tick(now_et, today):
             # Live-money guard — a non-paper book is inert until armed and sized.
             # Checked here, after qty is known, so the equity cap prices the ACTUAL
             # order rather than the configured default.
-            _lv_ok, _lv_why = _live_entry_allowed(broker_tag, notional=(qty * cur) if cur else None)
+            _lv_ok, _lv_why = _live_entry_allowed(broker_tag, notional=(qty * cur) if cur else None, side=side)
             if not _lv_ok:
                 log.warning("LIVE GUARD: %s %s [%s] blocked — %s", act, tk, broker_tag, _lv_why)
                 _record_block(broker_tag, tk, strat, side, "live-guard", _lv_why,

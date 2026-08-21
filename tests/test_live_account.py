@@ -22,15 +22,34 @@ import pytest
 import app as a
 
 
+class _Acct:
+    def __init__(self, equity, buying_power=None, shorting_enabled=True, **extra):
+        self.equity = equity
+        self.buying_power = equity if buying_power is None else buying_power
+        self.shorting_enabled = shorting_enabled
+        for k, v in extra.items():
+            setattr(self, k, v)
+
+
+class _Trading:
+    def __init__(self, acct):
+        self._acct = acct
+
+    def get_account(self):
+        if isinstance(self._acct, Exception):
+            raise self._acct
+        return self._acct
+
+
 class _Broker:
-    """Minimal stand-in. `equity` may be an Exception to simulate a broker outage."""
-    def __init__(self, equity=50_000.0):
-        self._equity = equity
+    """Minimal stand-in. Pass an Exception to simulate a broker outage."""
+    def __init__(self, equity=50_000.0, buying_power=None, shorting_enabled=True):
+        self._trading = _Trading(
+            equity if isinstance(equity, Exception)
+            else _Acct(equity, buying_power, shorting_enabled))
 
     def account_equity(self):
-        if isinstance(self._equity, Exception):
-            raise self._equity
-        return self._equity
+        return float(self._trading.get_account().equity)
 
 
 @pytest.fixture
@@ -47,6 +66,7 @@ def live(monkeypatch):
     monkeypatch.setattr(a, "LIVE_MAX_POSITION_PCT", 20.0)
     monkeypatch.setattr(a, "LIVE_MAX_ENTRIES_PER_DAY", 0)
     a._live_entry_counts.clear()
+    a._live_snap_cache.clear()      # the snapshot is cached; tests swap brokers freely
 
 
 # ── the account itself ──────────────────────────────────────────────────────
@@ -101,6 +121,7 @@ def test_a_position_over_the_equity_cap_is_refused(monkeypatch, live):
 def test_the_cap_follows_equity_down(monkeypatch, live):
     """The size was chosen once; equity moves. A drawdown has to shrink the cap,
     which is the whole reason the check reads equity at order time."""
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(8_000.0)
     ok, why = a._live_entry_allowed("alpaca6", notional=2_000)
     assert ok is False and "$8,000 equity" in why
@@ -108,13 +129,15 @@ def test_the_cap_follows_equity_down(monkeypatch, live):
 
 def test_an_unreadable_balance_refuses_the_entry(live):
     """FAILS CLOSED — the property that separates this from every other gate."""
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(RuntimeError("api down"))
     ok, why = a._live_entry_allowed("alpaca6", notional=100)
     assert ok is False
-    assert "could not read live equity" in why and "api down" in why
+    assert "could not read the live account" in why and "api down" in why
 
 
 def test_zero_or_negative_equity_refuses(live):
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(0.0)
     assert a._live_entry_allowed("alpaca6", notional=1)[0] is False
 
@@ -141,6 +164,7 @@ def test_checks_run_before_any_network_call(monkeypatch, live):
     """A disarmed book must not reach the broker at all — both so it costs nothing
     and so a broker outage can never be the reason a size check was skipped."""
     monkeypatch.setattr(a, "LIVE_TRADING_ARMED", False)
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(RuntimeError("must not be called"))
     ok, why = a._live_entry_allowed("alpaca6")
     assert ok is False and "not armed" in why      # not the broker error
@@ -169,6 +193,7 @@ def test_preflight_names_every_blocker_at_once(monkeypatch, live):
 
     class _T:
         def get_account(self): return _Acct()
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
 
     d = a._live_account_preflight("alpaca6")
@@ -191,6 +216,7 @@ def test_preflight_reports_a_stale_pdt_flag_as_a_blocker(monkeypatch, live):
 
     class _T:
         def get_account(self): return _Acct()
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
 
     d = a._live_account_preflight("alpaca6")
@@ -209,6 +235,7 @@ def test_preflight_surfaces_a_broker_side_block(monkeypatch, live):
 
     class _T:
         def get_account(self): return _Acct()
+    a._live_snap_cache.clear()
     a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
     assert "trading_blocked" in a._live_account_preflight("alpaca6")["blockers"]
 
@@ -237,3 +264,93 @@ def test_a_disarmed_live_book_says_so_in_its_modal(monkeypatch, live):
 def test_the_guard_reads_as_inert_on_paper(live):
     d = a._gate_docs("alpaca4")["live-guard"]
     assert d["on"] is False and "paper book" in d["setting"]
+
+
+# ── permissions and settled cash (found by the first real preflight) ─────────
+
+def test_a_short_entry_is_refused_when_shorting_is_disabled(live):
+    """The funded account came back shorting_enabled=false. Crew picks carry sides,
+    so without this every SHORT pick becomes a broker order rejection instead of a
+    recorded, explainable block."""
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(20_000.0, shorting_enabled=False)
+    ok, why = a._live_entry_allowed("alpaca6", notional=1_000, side="SHORT")
+    assert ok is False and "shorting is not enabled" in why
+    # ...and the long side of the same roster still trades.
+    assert a._live_entry_allowed("alpaca6", notional=1_000, side="LONG")[0] is True
+
+
+def test_shorts_pass_when_the_account_permits_them(live):
+    assert a._live_entry_allowed("alpaca6", notional=1_000, side="SHORT")[0] is True
+
+
+def test_an_entry_beyond_settled_buying_power_is_refused(live):
+    """On a CASH account buying_power tracks SETTLED funds. Equity still counts
+    same-day proceeds that are unsettled until T+1, so equity alone would wave
+    through the buy that causes a good-faith violation."""
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(7_000.0, buying_power=500.0)
+    ok, why = a._live_entry_allowed("alpaca6", notional=1_000, side="LONG")
+    assert ok is False and "buying power" in why and "unsettled" in why
+
+
+def test_the_snapshot_is_cached_but_not_indefinitely(live):
+    """Read on every entry, so it is cached — but a stale balance is exactly what
+    this guard must not act on."""
+    calls = {"n": 0}
+
+    class _Counting(_Trading):
+        def get_account(self):
+            calls["n"] += 1
+            return super().get_account()
+
+    a._live_snap_cache.clear()
+    br = _Broker(20_000.0)
+    br._trading = _Counting(_Acct(20_000.0))
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = br
+    for _ in range(5):
+        a._live_entry_allowed("alpaca6", notional=100, side="LONG")
+    assert calls["n"] == 1, "should hit the broker once inside the TTL"
+    a._live_snap_cache.clear()
+    a._live_entry_allowed("alpaca6", notional=100, side="LONG")
+    assert calls["n"] == 2, "and re-read once the entry expires"
+
+
+def test_preflight_infers_a_cash_account_from_buying_power(live):
+    """Alpaca does not label cash vs margin, but a margin account has RegT BP above
+    equity and non-zero day-trading BP. BP == equity with DTBP 0 is the cash
+    signature, and it decides whether T+1 settlement limits round-trips."""
+    class _A:
+        equity = 7_000.0; cash = 7_000.0; buying_power = 7_000.0
+        daytrading_buying_power = 0.0; regt_buying_power = 7_000.0
+        last_equity = 1_000.0; pattern_day_trader = False
+        trading_blocked = False; account_blocked = False
+        transfers_blocked = False; shorting_enabled = False
+        daytrade_count = None; status = "ACTIVE"
+
+    class _T:
+        def get_account(self): return _A()
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
+
+    d = a._live_account_preflight("alpaca6")
+    assert d["likely_cash_account"] is True
+    assert "T+1" in d["settlement_note"]
+    assert any("shorting is not enabled" in b for b in d["blockers"])
+
+
+def test_preflight_does_not_call_a_margin_account_cash(live):
+    """4x day-trading buying power is unambiguous."""
+    class _A:
+        equity = 7_000.0; cash = 7_000.0; buying_power = 28_000.0
+        daytrading_buying_power = 28_000.0; regt_buying_power = 14_000.0
+        last_equity = 7_000.0; pattern_day_trader = False
+        trading_blocked = False; account_blocked = False
+        transfers_blocked = False; shorting_enabled = True
+        daytrade_count = 0; status = "ACTIVE"
+
+    class _T:
+        def get_account(self): return _A()
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"]._trading = _T()
+    assert a._live_account_preflight("alpaca6")["likely_cash_account"] is False
