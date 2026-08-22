@@ -238,6 +238,11 @@
         title="Append the latest crew report's 'Next Month — Crew Paper' picks as routing rules targeting the Crew Paper account (alpaca-paper-4). Existing Crew Paper rules are kept; only new strategies are added.">
         ⚡ Wire Crew Picks → Crew Paper
       </button>
+      <button class="btn" onclick="mirrorCrewLive()"
+        style="background:transparent;border:1px solid #E8A0BF;color:#E8A0BF;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
+        title="Give every Crew Paper rule a Crew Live (alpaca-live-6) twin — same strategy, side, entry source and exits, sized from LIVE_SIZE_DOLLARS instead of the paper band. Idempotent: re-run to re-sync. Creating rules does NOT arm live trading.">
+        ● Mirror → Crew Live
+      </button>
       <span id="crewStatus" style="font-size:0.78rem;color:#666;align-self:center"></span>
       <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
     </div>
@@ -318,10 +323,10 @@
     <!-- Row 2: Account-scoped + trailing stop cards -->
     <div class="rg-cards">
 
-      <!-- Curated Books (TV Refined · Kairos Refined · Crew Paper) -->
+      <!-- Curated Books (TV Refined · Kairos Refined · Crew Paper · Crew Live) -->
       <div class="rg-card rg-card-refined">
         <div class="rg-card-title" style="color:#a78bfa">&#9670; Curated Books
-          <span style="color:#666;font-size:0.68rem;font-weight:400">TV Refined · Kairos Refined · Crew Paper — same settings, all three. Farms run ungated.</span></div>
+          <span style="color:#666;font-size:0.68rem;font-weight:400">TV Refined · Kairos Refined · Crew Paper · <b style="color:#E8A0BF">Crew Live</b> — same settings, all four. Farms run ungated.</span></div>
 
         <div class="risk-section" style="margin-bottom:10px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -370,7 +375,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
           </div>
-          <div class="risk-hint">New entries are blocked outside these windows (ET) on all three curated books. Exits always go through. No windows = all day. Add multiple windows to trade the open and the afternoon but pause midday (e.g. 09:35–10:00 and 12:00–15:55). The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper can override these windows in its own section below.</b></div>
+          <div class="risk-hint">New entries are blocked outside these windows (ET) on all four curated books. Exits always go through. No windows = all day. Add multiple windows to trade the open and the afternoon but pause midday (e.g. 09:35–10:00 and 12:00–15:55). The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper &amp; Crew Live can override these windows in the Crew section below.</b></div>
         </div>
       </div>
     </div>
@@ -459,7 +464,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveStrikes()">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearStrikes()">Off</button>
         </div>
-        <div class="risk-hint">After this many losing round-trips on the same ticker+level in a day, new entries on that level are blocked until the next session. Applies to both accounts. Exits are never blocked. <b style="color:#7FE098">Crew Paper can override this in its own section below.</b></div>
+        <div class="risk-hint">After this many losing round-trips on the same ticker+level in a day, new entries on that level are blocked until the next session. Applies to both accounts. Exits are never blocked. <b style="color:#7FE098">Crew Paper &amp; Crew Live can override this in the Crew section below.</b></div>
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d3e">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
             Short re-fade cap
@@ -526,7 +531,7 @@
             </div>
           </div>
         </div>
-        <div class="risk-hint">From the RVOL sweep (Jun–Jul '26): the breakout edge lives in the 1.5–3.0× band. Sub-1.5× bled on both refined books (TV Refined −$70→+$484, Kairos −$711→+$456 at ≥1.5×); shorts get run over ≥3×. Computed live from SIP bars at signal time — <b>fails open</b> if it can't read volume (never mutes the book on a data glitch). Reversals and exits always pass. Applies to TV Refined + Kairos Refined only; both farms stay ungated. <b style="color:#7FE098">Crew Paper can opt in with its own thresholds in its section below.</b></div>
+        <div class="risk-hint">From the RVOL sweep (Jun–Jul '26): the breakout edge lives in the 1.5–3.0× band. Sub-1.5× bled on both refined books (TV Refined −$70→+$484, Kairos −$711→+$456 at ≥1.5×); shorts get run over ≥3×. Computed live from SIP bars at signal time — <b>fails open</b> if it can't read volume (never mutes the book on a data glitch). Reversals and exits always pass. Applies to TV Refined + Kairos Refined only; both farms stay ungated. <b style="color:#7FE098">Crew Paper &amp; Crew Live can opt in with their own thresholds in the Crew section below.</b></div>
       </div>
     </div>
 
@@ -567,7 +572,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(true)">Enable</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setDayTypeGate(false)">Off</button>
         </div>
-        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all gated books. Reversals are gated separately below. Fails open if a ticker can't be classified. <b style="color:#7FE098">Crew Paper can override this in its own section below.</b></div>
+        <div class="risk-hint">From the inside/outside-day test: breakouts only pay on "Outside" days (narrow prior-day CPR → expansion). When on, breakout entries are skipped on Inside/Neutral days for all gated books. Reversals are gated separately below. Fails open if a ticker can't be classified. <b style="color:#7FE098">Crew Paper &amp; Crew Live can override this in the Crew section below.</b></div>
 
         <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -625,7 +630,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpDollar()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpDollar()">Off</button>
         </div>
-        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount. Applies to the three curated books (TV Refined · Kairos Refined · Crew Paper); farms run ungated.</div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount. Applies to the four curated books (TV Refined · Kairos Refined · Crew Paper · Crew Live); farms run ungated.</div>
       </div>
       <div class="risk-section" style="margin-top:10px">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -641,7 +646,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpPct()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpPct()">Off</button>
         </div>
-        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to all three curated books (TV Refined · Kairos Refined · Crew Paper), farms ungated.</div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to all four curated books (TV Refined · Kairos Refined · Crew Paper · Crew Live), farms ungated.</div>
       </div>
       <div class="risk-section" style="margin-top:10px" id="tpByAccountSection">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -655,11 +660,11 @@
 
     <!-- Crew Paper — independent entry-gate overrides (day-type / strikes / hours) -->
     <div class="rg-card" style="margin-top:10px;border-color:#3a7a4e">
-      <div class="rg-card-title" style="color:#7FE098">&#9670; Crew Paper — Entry Gates
+      <div class="rg-card-title" style="color:#7FE098">&#9670; Crew — Entry Gates <span style="color:#E8A0BF;font-size:0.7rem">(Paper + Live)</span>
         <span style="color:#666;font-size:0.68rem;font-weight:400">acct4 only · overrides the shared settings above · blank = inherit</span></div>
       <div class="risk-section">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">Day-type gate (breakouts)
-          <span style="color:#666;font-size:0.68rem">inherit the shared gate, or force on/off for Crew only</span></div>
+          <span style="color:#666;font-size:0.68rem">inherit the shared gate, or force on/off for both Crew books</span></div>
         <div class="risk-input-row">
           <select class="risk-input" id="crewDaytypeSel" style="width:170px" onchange="_crewGatesDirty=true">
             <option value="inherit">Inherit (shared)</option>
@@ -694,10 +699,10 @@
           </div>
         </div>
         <div class="risk-input-row" style="margin-top:12px">
-          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveCrewGates()">Save Crew gates</button>
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveCrewGates()">Save Crew gates (Paper + Live)</button>
           <span id="crewGatesStatus" style="color:#7FE098;font-size:0.76rem"></span>
         </div>
-        <div class="risk-hint">Crew Paper (acct4) controls just these three entry gates on its own. Any field left blank / "inherit" uses the shared curated setting above — so this is non-destructive (Crew behaves exactly as today until you change something). RVOL already excludes Crew; exit/risk gates stay shared.</div>
+        <div class="risk-hint">Saved against Crew Paper (acct4). <b style="color:#E8A0BF">Crew Live (acct6) inherits these automatically</b> — the two books mirror the same roster, so they must gate identically or a live-vs-paper comparison measures the gate gap instead of fills. Any field left blank / "inherit" uses the shared curated setting above, so this is non-destructive. RVOL already excludes Crew by default; exit/risk gates stay shared across all four curated books.</div>
       </div>
     </div>
 
@@ -1822,6 +1827,33 @@
   }
 
   // Crew Paper (acct4) entry-gate overrides — day-type / strikes / hours.
+  // Twin RULES, not a second broker node on one rule: the two books cannot share a
+  // quantity (paper trades the $25k Refined band, live trades LIVE_SIZE_DOLLARS).
+  async function mirrorCrewLive() {
+    const st = document.getElementById('crewStatus');
+    const _msg = 'Create/refresh a Crew Live (REAL MONEY, account 6) twin of every '
+              + 'Crew Paper rule? This writes routing rules only - live entries still '
+              + 'require LIVE_TRADING_ARMED=1.';
+    if (!confirm(_msg)) return;
+    if (st) { st.style.color = '#888'; st.textContent = 'Mirroring to Crew Live…'; }
+    try {
+      const r = await fetch('/api/crew/mirror_live', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'mirror failed');
+      const bits = [`${d.created.length} created`, `${d.updated.length} re-synced`];
+      if (d.deleted.length)          bits.push(`${d.deleted.length} pruned`);
+      if (d.skipped_no_price.length) bits.push(`${d.skipped_no_price.length} skipped (no price)`);
+      if (st) {
+        st.style.color = '#E8A0BF';
+        st.textContent = `Crew Live: ${bits.join(' · ')} @ $${Math.round(d.size_dollars).toLocaleString()}/position`
+                       + (d.armed ? ' · ARMED' : ' · not armed');
+      }
+      await load();
+    } catch (e) {
+      if (st) { st.style.color = '#e08a8a'; st.textContent = 'Mirror failed: ' + e.message; }
+    }
+  }
+
   async function saveCrewGates() {
     const st = document.getElementById('crewGatesStatus');
     const body = {

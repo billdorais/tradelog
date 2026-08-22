@@ -491,3 +491,60 @@ def test_a_missing_price_falls_back_to_the_configured_size(live):
         assert ok is False and "exceeds 20%" in why   # fell back to $5,000, still capped
     finally:
         _a.LIVE_SIZE_DOLLARS = _prev
+
+
+# ── Crew Live mirrors Crew Paper's GATE OVERRIDES, not just its policy ──────
+
+def test_crew_live_inherits_crew_papers_gate_overrides(monkeypatch, live):
+    """The Risk Guard's Crew panel writes GATES_BY_ACCOUNT for ONE tag (alpaca4).
+    Without mirroring, Crew Live would run the SHARED curated settings while its
+    paper twin ran an override — so a live-vs-paper comparison would measure the
+    gate gap instead of fills. This is not hypothetical: acct4 carries an RVOL
+    override today, and acct6 is not in RVOL_GATE_ACCOUNTS."""
+    monkeypatch.setattr(a, "RVOL_GATE_ENABLED", False)
+    monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", {"alpaca2", "alpaca3"})
+    monkeypatch.setattr(a, "_gates_acct_cache",
+                        {"alpaca4": {"rvol": {"enabled": True, "min": 1.2}}})
+    monkeypatch.setattr(a, "_gates_acct_ts", float("inf"))
+
+    paper = a._gate_docs("alpaca4")["rvol"]
+    liveg = a._gate_docs("alpaca6")["rvol"]
+    assert paper["on"] is True and liveg["on"] is True, "the books must gate alike"
+    assert paper["setting"] == liveg["setting"]
+
+
+def test_an_explicit_override_on_the_live_book_still_wins(monkeypatch, live):
+    """Mirroring is the default, not a cage — the books can be split deliberately."""
+    monkeypatch.setattr(a, "_gates_acct_cache", {
+        "alpaca4": {"rvol": {"enabled": True,  "min": 1.2}},
+        "alpaca6": {"rvol": {"enabled": False}}})
+    monkeypatch.setattr(a, "_gates_acct_ts", float("inf"))
+    assert a._gate_docs("alpaca4")["rvol"]["on"] is True
+    assert a._gate_docs("alpaca6")["rvol"]["on"] is False
+
+
+def test_mirroring_does_not_leak_the_other_way(monkeypatch, live):
+    """Crew Paper must never pick up an override written against Crew Live."""
+    monkeypatch.setattr(a, "_gates_acct_cache", {"alpaca6": {"rvol": {"enabled": True}}})
+    monkeypatch.setattr(a, "_gates_acct_ts", float("inf"))
+    monkeypatch.setattr(a, "RVOL_GATE_ENABLED", False)
+    monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", set())
+    assert a._gate_docs("alpaca4")["rvol"]["on"] is False
+
+
+def test_only_crew_live_mirrors(monkeypatch):
+    """A blanket fallback would silently couple unrelated books."""
+    assert a._GATE_MIRROR == {"alpaca6": "alpaca4"}
+    monkeypatch.setattr(a, "_gates_acct_cache", {"alpaca4": {"strikes": {"base": 1}}})
+    monkeypatch.setattr(a, "_gates_acct_ts", float("inf"))
+    for tag in ("alpaca", "alpaca2", "alpaca3", "alpaca5"):
+        assert a._account_gate_overrides(tag) == {}, f"{tag} must not inherit acct4"
+
+
+def test_the_mirror_endpoint_refuses_an_unsized_live_book(monkeypatch, live):
+    """Rules carry a share count. Writing them with no configured size would bake
+    a guessed notional into every live rule."""
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 0.0)
+    a.app.config["TESTING"] = True
+    r = a.app.test_client().post("/api/crew/mirror_live", json={})
+    assert r.status_code == 400 and "LIVE_SIZE_DOLLARS" in r.get_json()["error"]

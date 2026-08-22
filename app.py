@@ -584,6 +584,11 @@ def _account_tp_map():
 _gates_acct_cache = {}
 _gates_acct_ts    = 0.0
 
+# Books that follow another book's per-account gate overrides. Keyed mirrored-tag
+# -> source-tag. Crew Live mirrors Crew Paper's roster, so it must mirror its gates.
+_GATE_MIRROR = {"alpaca6": "alpaca4"}
+
+
 def _account_gate_overrides(account_tag=None):
     """The GATES_BY_ACCOUNT override map, or one account's dict when `account_tag`
     is given (empty dict if none). Sub-keys absent ⇒ inherit the shared gate."""
@@ -598,7 +603,18 @@ def _account_gate_overrides(account_tag=None):
             _gates_acct_cache = {}
         _gates_acct_ts = now
     if account_tag is not None:
-        return _gates_acct_cache.get(account_tag) or {}
+        own = _gates_acct_cache.get(account_tag) or {}
+        if own:
+            return own
+        # Mirrored books inherit their twin's overrides. Crew Live exists to be
+        # compared against Crew Paper, so the two must gate identically — and the
+        # Risk Guard's "Crew — Entry Gates" panel writes one tag only. Without this
+        # the live book would silently run the SHARED settings while its paper twin
+        # ran an override, and the comparison would measure the gate difference.
+        # An explicit entry for the mirrored tag still wins, so it can be split
+        # deliberately.
+        src = _GATE_MIRROR.get(account_tag)
+        return (_gates_acct_cache.get(src) or {}) if src else {}
     return _gates_acct_cache
 
 def _strategy_band(strategy: str):

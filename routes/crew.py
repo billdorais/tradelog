@@ -2790,3 +2790,118 @@ def api_crew_run():
         mimetype="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+
+@crew_bp.route("/api/crew/mirror_live", methods=["POST"])
+def api_crew_mirror_live():
+    """Give every Crew Paper (acct4) rule a Crew Live (acct6) twin, and re-sync
+    the twins that already exist.
+
+    A TWIN RULE rather than a second broker node on the same rule, because the two
+    books cannot share a quantity: Crew Paper trades the top Refined band ($25k)
+    while Crew Live trades LIVE_SIZE_DOLLARS. One rule carrying both brokers would
+    either send $25k to the live account or shrink the paper book to match.
+
+    Everything else is copied verbatim — strategy, entry source, side gate, hours,
+    tuned exit params — so the only differences between the books are the broker
+    and the size. Idempotent: re-running re-syncs rather than duplicating, and it
+    prunes twins whose paper rule is gone.
+
+    Writing these rules arms nothing. Live entries still have to clear
+    _live_entry_allowed at order time.
+    """
+    import copy as _copy
+    import json as _json
+
+    import app as _kairos
+
+    _live_tag = "alpaca6"
+    if _live_tag not in getattr(_kairos, "ACCOUNTS_BY_TAG", {}):
+        return jsonify({"error": "Crew Live (acct6) is not configured — set "
+                                 "ALPACA_KEY6/SECRET6 and ALPACA_PAPER6=false"}), 400
+    size = float(getattr(_kairos, "LIVE_SIZE_DOLLARS", 0) or 0)
+    if size <= 0:
+        return jsonify({"error": "LIVE_SIZE_DOLLARS is unset — refusing to size "
+                                 "live rules"}), 400
+
+    conn = _kairos.get_db()
+    cur  = conn.cursor()
+    p    = _kairos.placeholder()
+    cur.execute("SELECT id, name, nodes FROM routing_rules")
+    paper, live = {}, {}          # strategy -> (rule_id, nodes) / rule_id
+    for r in cur.fetchall():
+        rid  = r[0] if _kairos.DATABASE_URL else r["id"]
+        name = r[1] if _kairos.DATABASE_URL else r["name"]
+        raw  = r[2] if _kairos.DATABASE_URL else r["nodes"]
+        try:    nodes = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception: continue
+        brokers = [(n.get("value") or "").lower() for n in nodes if n.get("type") == "broker"]
+        strats  = [(n.get("value") or "").strip().upper()
+                   for n in nodes if n.get("type") == "strategy" and n.get("value")]
+        if any(b in ("alpaca-live-6", "alpaca-paper-6") for b in brokers):
+            for st in strats:
+                live[st] = rid
+        elif any(b in ("alpaca-paper-4", "alpaca-live-4") for b in brokers):
+            for st in strats:
+                paper[st] = (rid, nodes, name)
+
+    tickers = [st.split("_", 1)[0].upper() for st in paper]
+    prices  = {}
+    if tickers:
+        try:    prices = _kairos._fetch_alpaca_last_prices(tickers) or {}
+        except Exception as e:
+            _kairos.log.warning("crew mirror: price fetch failed: %s", e)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    created, updated, skipped, deleted = [], [], [], []
+    for strat, (_rid, nodes, _name) in sorted(paper.items()):
+        tk = strat.split("_", 1)[0].upper()
+        if not prices.get(tk):
+            skipped.append(strat)          # never guess a live size
+            continue
+        qty = max(1, round(size / prices[tk]))
+        out, seen_broker = [], False
+        for n in _copy.deepcopy(nodes):
+            t = n.get("type")
+            if t == "broker":
+                if seen_broker:
+                    continue
+                out.append({"type": "broker", "value": "alpaca-live-6"})
+                seen_broker = True
+            elif t == "quantity":
+                out.append({"type": "quantity", "amount": qty, "unit": "shares"})
+            else:
+                out.append(n)
+        if not seen_broker:
+            out.append({"type": "broker", "value": "alpaca-live-6"})
+        if not any(n.get("type") == "quantity" for n in out):
+            out.append({"type": "quantity", "amount": qty, "unit": "shares"})
+
+        nodes_json = _json.dumps(out)
+        rid = live.get(strat)
+        if rid is not None:
+            cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (nodes_json, rid))
+            updated.append(strat)
+        else:
+            cur.execute(
+                f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                f"VALUES ({p},{p},{p},{p},{p})",
+                (f"{strat} · Crew Live", 1, nodes_json, ts, 0))
+            created.append(strat)
+
+    # Prune twins whose paper rule no longer exists — a live rule with no paper
+    # counterpart is not a mirror of anything.
+    by_rid = {}
+    for st, rid in live.items():
+        by_rid.setdefault(rid, set()).add(st)
+    for rid, strs in by_rid.items():
+        if not (strs & set(paper)):
+            cur.execute(f"DELETE FROM routing_rules WHERE id={p}", (rid,))
+            deleted.extend(sorted(strs))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"created": created, "updated": updated, "deleted": deleted,
+                    "skipped_no_price": skipped, "size_dollars": size,
+                    "armed": bool(getattr(_kairos, "LIVE_TRADING_ARMED", False)),
+                    "paper_rules": len(paper)})
