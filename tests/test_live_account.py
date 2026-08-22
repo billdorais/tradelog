@@ -439,3 +439,55 @@ def test_a_deposit_into_an_already_leveraged_account_says_nothing(live):
     d = _preflight_with(buying_power=28_000.0, last_equity=1_000.0)
     assert d["margin_extended"] is True
     assert "margin_note" not in d
+
+
+# ── both order paths price the REAL order ───────────────────────────────────
+
+def test_both_order_paths_price_the_actual_order_not_the_configured_size():
+    """Crew rules store a SHARE count converted from dollars at wire time, so after
+    a move the real notional and LIVE_SIZE_DOLLARS diverge — and the real one is
+    what can overspend. The webhook path originally passed no notional at all,
+    checking a number the order no longer matched."""
+    import inspect
+    from routes import webhook as w
+
+    wh = inspect.getsource(w.handle_webhook) if hasattr(w, "handle_webhook") else          inspect.getsource(w)
+    i = wh.index("_live_entry_allowed")
+    call = wh[i - 400:i + 300]
+    assert "notional=_lv_notional" in call, "webhook must price the actual order"
+    assert "float(qty) * float(price)" in call
+
+    eng = inspect.getsource(a)
+    j = eng.index("_live_entry_allowed(broker_tag, notional=")
+    assert "qty * cur" in eng[j:j + 160], "engine path must price the actual order"
+
+
+def test_a_grown_position_is_refused_even_when_the_configured_size_fits(live):
+    """The exact failure this closes: size configured at $1,000 and within every
+    cap, but the wired share count now prices at $3,000 after a rally."""
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(7_000.0, buying_power=7_000.0)
+    monkey_size = 1_000.0
+    import app as _a
+    _prev, _a.LIVE_SIZE_DOLLARS = _a.LIVE_SIZE_DOLLARS, monkey_size
+    try:
+        # Checking the configured size alone would allow this.
+        assert a._live_entry_allowed("alpaca6", side="LONG")[0] is True
+        # Pricing the real order refuses it: $3,000 is 43% of $7,000.
+        ok, why = a._live_entry_allowed("alpaca6", notional=3_000.0, side="LONG")
+        assert ok is False and "exceeds 20%" in why
+    finally:
+        _a.LIVE_SIZE_DOLLARS = _prev
+
+
+def test_a_missing_price_falls_back_to_the_configured_size(live):
+    """A market alert with no price must not silently skip the size check."""
+    a._live_snap_cache.clear()
+    a.ACCOUNTS_BY_TAG["alpaca6"]["broker"] = _Broker(7_000.0, buying_power=7_000.0)
+    import app as _a
+    _prev, _a.LIVE_SIZE_DOLLARS = _a.LIVE_SIZE_DOLLARS, 5_000.0
+    try:
+        ok, why = a._live_entry_allowed("alpaca6", notional=None, side="LONG")
+        assert ok is False and "exceeds 20%" in why   # fell back to $5,000, still capped
+    finally:
+        _a.LIVE_SIZE_DOLLARS = _prev

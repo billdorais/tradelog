@@ -1126,8 +1126,17 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     # account is inert until armed and correctly sized; nothing
                     # downstream distinguishes real money from paper.
                     if is_entry and action in ("BUY", "SELL"):
+                        # Price the ACTUAL order, not the configured size. Crew rules
+                        # store a SHARE count converted from dollars at wire time, so
+                        # after a big move the real notional and LIVE_SIZE_DOLLARS are
+                        # different numbers — and the one that can overspend is this
+                        # one. Falls back to the configured size when the alert
+                        # carries no price.
+                        try:    _lv_notional = (float(qty) * float(price)) if (qty and price) else None
+                        except (TypeError, ValueError): _lv_notional = None
                         _lv_ok, _lv_why = app._live_entry_allowed(
-                            broker_tag, side="LONG" if action == "BUY" else "SHORT")
+                            broker_tag, notional=_lv_notional,
+                            side="LONG" if action == "BUY" else "SHORT")
                         if not _lv_ok:
                             app.log.warning("LIVE GUARD: %s %s [%s] blocked — %s",
                                             action, ticker, broker_tag, _lv_why)
