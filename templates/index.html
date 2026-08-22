@@ -1422,10 +1422,20 @@
         alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
         return;
       }
-      // Select ALL wired Crew Paper strategies (the crew's current Top-N), including
-      // picks that haven't traded yet — so the filter reflects the full crew set, not
-      // just the ones that have already fired. Surface any missing names in the picker.
-      const crew = [..._crewStrategies];
+      // Scope to what is actually wired for the book being viewed. Kairos Refined
+      // enters via the engine, so only the [Kairos]-wired picks can ever appear
+      // there; TV Refined only sees the [TV]-wired ones. Selecting all 18 on those
+      // tabs implied a roster the account cannot trade. Crew Paper / Crew Live take
+      // both, and the farms are ungated audition pools, so they take both too.
+      const _crewSet = activeTab === 'kairos'  ? _crewStrategiesKairos
+                     : activeTab === 'refined' ? _crewStrategiesTv
+                     : _crewStrategies;
+      if (!_crewSet.size) {
+        alert('No Crew picks are wired to enter on this book yet. '
+            + 'Check the entry source on each pick in the Signal Router.');
+        return;
+      }
+      const crew = [..._crewSet];
       for (const s of crew) if (!_allStrategyNames.includes(s)) _allStrategyNames.push(s);
       _allStrategyNames.sort();
       selectedStrategies = new Set(crew);
@@ -3778,6 +3788,8 @@
     let _routedTickers     = new Set();   // ticker has any routing rule
     let _refinedStrategies = new Set();   // upper-case strategy names with alpaca-paper-2/-live-2 broker
     let _crewStrategies    = new Set();   // upper-case strategy names wired to Crew Paper (alpaca-paper-4/-live-4)
+    let _crewStrategiesTv     = new Set();   // ...of those, the ones that enter on TV alerts
+    let _crewStrategiesKairos = new Set();   // ...and the ones that enter via the Kairos engine
     let _refinedRank       = {};          // upper-case strategy name → Refined leaderboard rank (1-based)
     let _refinedRankNames  = [];          // original-case strategy names in rank order (snapshot top→on-deck)
 
@@ -4001,6 +4013,8 @@
           const routedS  = new Set();
           const refinedS = new Set();
           const crewS    = new Set();
+          const crewTvS     = new Set();   // crew picks wired to enter on TV alerts
+          const crewKairosS = new Set();   // crew picks wired to enter via the engine
           for (const r of rules) {
             if (!r.enabled) continue;
             const stratNode = (r.nodes || []).find(n => n.type === 'strategy');
@@ -4020,13 +4034,24 @@
             const hasCrewBroker = (r.nodes || []).some(n =>
               n.type === 'broker' && (n.value === 'alpaca-paper-4' || n.value === 'alpaca-live-4')
             );
-            if (hasCrewBroker) crewS.add(stratUpper);
+            if (hasCrewBroker) {
+              crewS.add(stratUpper);
+              // Split by how the pick is wired to ENTER. Viewing Kairos Refined,
+              // "Crew" should mean the picks that enter via the engine — not all 18,
+              // half of which only ever fire on TV alerts. A rule with no
+              // entry_source node fires on TV alerts.
+              const esNode = (r.nodes || []).find(n => n.type === 'entry_source');
+              const es = (esNode && String(esNode.value || '').toLowerCase()) || 'tv';
+              (es === 'kairos' ? crewKairosS : crewTvS).add(stratUpper);
+            }
           }
           _routedTickers     = routedT;
           _refinedTickers    = refinedT;
           _routedStrategies  = routedS;
           _refinedStrategies = refinedS;
           _crewStrategies    = crewS;
+          _crewStrategiesTv     = crewTvS;
+          _crewStrategiesKairos = crewKairosS;
         }
         if (d.error) return;
         document.getElementById('accountSection').style.display = '';
