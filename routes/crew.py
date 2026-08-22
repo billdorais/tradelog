@@ -2957,3 +2957,173 @@ def api_crew_mirror_live():
                     "skipped_no_price": skipped, "size_dollars": size,
                     "armed": bool(getattr(_kairos, "LIVE_TRADING_ARMED", False)),
                     "paper_rules": len(paper)})
+
+
+# ── Selection replay ────────────────────────────────────────────────────────────
+# "How would the picks the crew just made have done over the past N days?"
+#
+# Sourced from the FARMS (acct1 for [TV] picks, acct5 for [Kairos] picks), not the
+# Refined books. A freshly promoted pick has no acct2/acct3 history — it was never
+# wired there — so the curated books would show an empty chart for exactly the names
+# the user most wants to see. The farms are the ungated full-sample pools where every
+# strategy trades on both entry mechanisms, which is what makes the replay possible.
+#
+# The farms are also ALL-DAY, so by default this filters to the curated trading
+# windows: a curve built on 07:10 farm fills is not reachable by the book that would
+# actually trade these picks.
+
+_SELECTION_CURVE_SOURCES = {"tv": "1", "kairos": "5"}
+
+
+def _selection_picks(report_text, default_entry="tv"):
+    """[{strategy, side, entry}] for a report, entry resolved to 'tv' or 'kairos'."""
+    parsed = _parse_next_month_card(report_text or "")
+    picks  = parsed.get("picks") or []
+    fallback = (parsed.get("entry_source") or default_entry or "tv").lower()
+    fallback = "kairos" if ("kairos" in fallback or "engine" in fallback) else "tv"
+    out = []
+    for p in picks:
+        strat = (p.get("strategy") or "").strip().upper()
+        if not strat:
+            continue
+        entry = (p.get("entry") or "").lower() or fallback
+        out.append({"strategy": strat,
+                    "side":     (p.get("side") or "both").lower(),
+                    "entry":    "kairos" if entry == "kairos" else "tv"})
+    return out
+
+
+def _curated_windows():
+    import app as _kairos
+    try:
+        return _kairos._shared_hours_windows("refined") or []
+    except Exception:
+        return []
+
+
+def _entry_hhmm_et(iso_ts):
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    try:
+        return _dt.fromisoformat((iso_ts or "").replace("Z", "+00:00")) \
+                  .astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
+    except Exception:
+        return None
+
+
+@crew_bp.route("/api/crew/selection_curve")
+def api_crew_selection_curve():
+    """Replay a crew report's picks over a past window and return an equity curve.
+
+    Query: week (default latest report), from_date, to_date, hours=curated|all.
+    """
+    import app as _kairos
+    week      = (request.args.get("week") or "").strip()
+    from_date = (request.args.get("from_date") or "").strip()
+    to_date   = (request.args.get("to_date") or "").strip()
+    hours     = (request.args.get("hours") or "curated").strip().lower()
+
+    try:
+        conn = _kairos.get_db(); cur = conn.cursor()
+        if week:
+            cur.execute("SELECT week, created_at, report FROM crew_reports WHERE week="
+                        + _kairos.placeholder(), (week,))
+        else:
+            cur.execute("SELECT week, created_at, report FROM crew_reports "
+                        "ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": f"could not load crew report: {e}"}), 500
+    if not row:
+        return jsonify({"error": "No crew report found yet — run the crew first."}), 404
+
+    _week    = row[0] if _kairos.DATABASE_URL else row["week"]
+    _created = row[1] if _kairos.DATABASE_URL else row["created_at"]
+    _report  = row[2] if _kairos.DATABASE_URL else row["report"]
+
+    picks = _selection_picks(_report)
+    if not picks:
+        return jsonify({"error": "That crew report has no parseable picks.",
+                        "week": _week}), 422
+
+    by_entry = {"tv": {}, "kairos": {}}
+    for p in picks:
+        by_entry[p["entry"]][p["strategy"]] = p["side"]
+
+    windows   = _curated_windows() if hours != "all" else []
+    kept      = []
+    unavail   = []
+    per_src   = {}
+    for entry, acct in _SELECTION_CURVE_SOURCES.items():
+        wanted = by_entry[entry]
+        per_src[entry] = {"account": acct, "picks": len(wanted), "trades": 0, "pnl": 0.0}
+        if not wanted:
+            continue
+        try:
+            _b, _tag, _label, _fills_fn = _kairos._alpaca_account_ctx(acct)
+            per_src[entry]["label"] = _label
+            fills = _fills_fn()
+        except Exception:
+            fills = None
+        # An empty list from a FAILED fetch must not render as a flat line — that is
+        # how an Alpaca outage once read as every book being flat, everywhere.
+        if not fills:
+            if _kairos._fills_error(acct):
+                unavail.append(per_src[entry].get("label") or f"account {acct}")
+            continue
+        try:
+            paired = _kairos._pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+        except Exception:
+            unavail.append(per_src[entry].get("label") or f"account {acct}")
+            continue
+        for c in (paired.get("closed_clean") or []):
+            strat = (c.get("strategy") or "").strip().upper()
+            want  = wanted.get(strat)
+            if want is None:
+                continue
+            side = (c.get("side") or "").strip().upper()
+            if want in ("long", "short") and side != want.upper():
+                continue
+            if windows:
+                hhmm = _entry_hhmm_et(c.get("entry_time"))
+                if hhmm is None or not _kairos._hhmm_in_windows(hhmm, windows):
+                    continue
+            kept.append({"time": c.get("exit_time"), "pnl": round(c.get("pnl") or 0, 2),
+                         "ticker": c.get("ticker"), "strategy": strat,
+                         "side": side.lower(), "entry": entry})
+
+    kept.sort(key=lambda t: t["time"] or "")
+    curve, cum = [], 0.0
+    for t in kept:
+        cum = round(cum + t["pnl"], 2)
+        curve.append({**t, "value": cum})
+
+    per_strategy = {}
+    for t in kept:
+        st = per_strategy.setdefault(t["strategy"], {"trades": 0, "pnl": 0.0,
+                                                     "wins": 0, "entry": t["entry"]})
+        st["trades"] += 1
+        st["pnl"] = round(st["pnl"] + t["pnl"], 2)
+        st["wins"] += 1 if t["pnl"] > 0 else 0
+        per_src[t["entry"]]["trades"] += 1
+        per_src[t["entry"]]["pnl"] = round(per_src[t["entry"]]["pnl"] + t["pnl"], 2)
+
+    wins = sum(1 for t in kept if t["pnl"] > 0)
+    return jsonify({
+        "week": _week, "created_at": _created,
+        "from_date": from_date, "to_date": to_date,
+        "hours": "curated" if windows else "all",
+        "hours_windows": ["%s-%s" % (a, b) for a, b in windows] if windows else [],
+        "picks": picks, "pick_count": len(picks),
+        "curve": curve, "per_strategy": per_strategy, "by_entry": per_src,
+        "trades": len(kept), "wins": wins,
+        "win_rate": round(wins / len(kept) * 100, 1) if kept else None,
+        "total_pnl": round(cum, 2) if kept else 0.0,
+        "fills_unavailable": unavail,
+        "in_sample": True,
+        "caveat": ("BACKWARD-LOOKING and IN-SAMPLE: these picks were selected using data "
+                   "from this same window, so a rising curve is partly built in. Read the "
+                   "SHAPE (steady vs one spike, and how many names carry it), not the total. "
+                   "The forward, out-of-sample test is the pick scorecard on Crew Paper."),
+    })

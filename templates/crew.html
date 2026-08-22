@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Crew — Kairos Automata</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -88,6 +89,10 @@
     .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid #333; border-top-color: #7FE098; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
 
     .range-btn { padding:5px 13px;border-radius:6px;font-size:0.78rem;font-family:inherit;cursor:pointer;font-weight:600;border:1px solid #2a2d3e;background:transparent;color:#666;transition:all 0.15s; }
+    .sel-days, .sel-hours { padding:3px 10px;border-radius:6px;font-size:0.72rem;font-family:inherit;
+      cursor:pointer;font-weight:600;border:1px solid #2a2d3e;background:transparent;color:#666; }
+    .sel-days:hover, .sel-hours:hover { border-color:#7FE098;color:#7FE098; }
+    .sel-days.active, .sel-hours.active { border-color:#7FE098;background:rgba(127,224,152,0.12);color:#7FE098; }
     .range-btn:hover { border-color:#7FE098;color:#7FE098; }
     .range-btn.active { border-color:#7FE098;background:rgba(127,224,152,0.12);color:#7FE098; }
 
@@ -303,6 +308,28 @@
     <div style="font-size:0.68rem;color:#444;margin-top:4px">Loaded into every crew run. Add your validated observations under "Your Validated Observations".</div>
   </div>
 
+  <!-- Selection Replay — how the crew's current picks would have run over a past window -->
+  <div id="selReplaySection" style="margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <span class="section-label" style="margin:0">📈 Selection Replay</span>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="sel-days active" data-days="45" onclick="setSelDays(45)">45d</button>
+        <button class="sel-days" data-days="30" onclick="setSelDays(30)">30d</button>
+        <button class="sel-days" data-days="60" onclick="setSelDays(60)">60d</button>
+        <button class="sel-days" data-days="90" onclick="setSelDays(90)">90d</button>
+        <span style="width:1px;height:16px;background:#2a2d3e;margin:0 4px"></span>
+        <button class="sel-hours active" data-hours="curated" onclick="setSelHours('curated')"
+                title="Only fills inside the curated trading windows — the farms trade all day, the book that runs these picks does not">Curated hours</button>
+        <button class="sel-hours" data-hours="all" onclick="setSelHours('all')">All day</button>
+        <button onclick="loadSelectionCurve()"
+          style="background:transparent;border:1px solid #2a2d3e;color:#666;border-radius:6px;padding:4px 14px;font-size:0.75rem;cursor:pointer;font-family:inherit">↻ Refresh</button>
+      </div>
+    </div>
+    <div id="selReplayBody" style="border:1px solid #1e2130;border-radius:8px;background:#0d0f1a;padding:14px">
+      <div style="font-size:0.8rem;color:#555">Loading…</div>
+    </div>
+  </div>
+
   <!-- Past reports — browse/read saved advisory reports -->
   <div id="reportsSection" style="margin-top:20px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -315,6 +342,167 @@
 </div>
 
 <script>
+
+  // ── Selection Replay ──────────────────────────────────────────────────────
+  // Replays the latest crew report's picks over a past window, split by the entry
+  // mechanism each pick is wired to. Backward-looking and IN-SAMPLE by construction
+  // — the picks were chosen using this data — so the UI leads with that, and the
+  // chart is here to show SHAPE (steady vs one spike) rather than to prove an edge.
+  let _selDays  = 45;
+  let _selHours = 'curated';
+  let _selChart = null;
+
+  function setSelDays(d) {
+    _selDays = d;
+    document.querySelectorAll('.sel-days').forEach(b =>
+      b.classList.toggle('active', Number(b.dataset.days) === d));
+    loadSelectionCurve();
+  }
+  function setSelHours(h) {
+    _selHours = h;
+    document.querySelectorAll('.sel-hours').forEach(b =>
+      b.classList.toggle('active', b.dataset.hours === h));
+    loadSelectionCurve();
+  }
+
+  function _money(v) {
+    return (v >= 0 ? '+' : '-') + '$' + Math.abs(v).toFixed(2);
+  }
+
+  async function loadSelectionCurve() {
+    const body = document.getElementById('selReplayBody');
+    if (!body) return;
+    if (_selChart) { _selChart.destroy(); _selChart = null; }
+    body.innerHTML = '<div style="font-size:0.8rem;color:#555">Loading…</div>';
+    const to   = new Date();
+    const from = new Date(); from.setDate(to.getDate() - _selDays);
+    const qs = '?from_date=' + _fmt(from) + '&to_date=' + _fmt(to) + '&hours=' + _selHours;
+    let d;
+    try {
+      const r = await fetch('/api/crew/selection_curve' + qs);
+      d = await r.json();
+    } catch (e) {
+      body.innerHTML = '<div style="font-size:0.8rem;color:#ef5350">Could not load: ' + e + '</div>';
+      return;
+    }
+    if (d.error) {
+      body.innerHTML = '<div style="font-size:0.8rem;color:#888">' + d.error + '</div>';
+      return;
+    }
+    _renderSelectionReplay(d);
+  }
+
+  function _renderSelectionReplay(d) {
+    const body = document.getElementById('selReplayBody');
+    // A failed fills fetch must be named, not quietly drawn as a flat line.
+    const warn = (d.fills_unavailable && d.fills_unavailable.length)
+      ? '<div style="font-size:0.72rem;color:#ef5350;margin-bottom:8px">&#9888; Could not load fills for: '
+        + d.fills_unavailable.join(', ') + ' — this curve is incomplete.</div>'
+      : '';
+    if (!d.curve || !d.curve.length) {
+      body.innerHTML = warn + '<div style="font-size:0.8rem;color:#888">No trades for these '
+        + d.pick_count + ' picks in this window'
+        + (d.hours === 'curated' ? ' inside the curated hours — try "All day"' : '') + '.</div>';
+      return;
+    }
+
+    // Align three cumulative series on one axis: each point carries forward the last
+    // value of the series it does not belong to, so the lines stay comparable.
+    const labels = [], all = [], tv = [], ka = [];
+    let cTv = 0, cKa = 0;
+    for (const p of d.curve) {
+      if (p.entry === 'kairos') cKa = Math.round((cKa + p.pnl) * 100) / 100;
+      else                      cTv = Math.round((cTv + p.pnl) * 100) / 100;
+      const t = new Date(p.time);
+      labels.push(isNaN(t) ? '' : (t.getMonth() + 1) + '/' + t.getDate());
+      all.push(p.value); tv.push(cTv); ka.push(cKa);
+    }
+
+    const be    = d.by_entry || {};
+    const tvB   = be.tv || {}, kaB = be.kairos || {};
+    const tvPnl = tvB.pnl || 0, kaPnl = kaB.pnl || 0;
+    const tile  = function (label, val, sub, color) {
+      return '<div style="flex:1;min-width:110px;border:1px solid #1e2130;border-radius:6px;'
+           + 'padding:8px 10px;background:#0b0d14">'
+           + '<div style="font-size:0.62rem;color:#555;text-transform:uppercase;letter-spacing:0.04em">'
+           + label + '</div>'
+           + '<div style="font-size:1.05rem;font-weight:700;font-variant-numeric:tabular-nums;color:'
+           + color + '">' + val + '</div>'
+           + '<div style="font-size:0.62rem;color:#555">' + sub + '</div></div>';
+    };
+
+    body.innerHTML = warn
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+      + tile('Selection', _money(d.total_pnl), d.trades + ' trades · ' + d.pick_count + ' picks',
+             d.total_pnl >= 0 ? '#7FE098' : '#ef5350')
+      + tile('TV entries', _money(tvPnl), (tvB.trades || 0) + ' trades · ' + (tvB.picks || 0) + ' picks',
+             tvPnl >= 0 ? '#7FE098' : '#ef5350')
+      + tile('Kairos entries', _money(kaPnl), (kaB.trades || 0) + ' trades · ' + (kaB.picks || 0) + ' picks',
+             kaPnl >= 0 ? '#7FE098' : '#ef5350')
+      + tile('Win rate', (d.win_rate === null ? '—' : d.win_rate + '%'), d.wins + ' winners', '#c4b5fd')
+      + '</div>'
+      + '<div style="height:260px;position:relative"><canvas id="selReplayChart"></canvas></div>'
+      + '<div style="font-size:0.66rem;color:#8a7c52;background:rgba(242,231,172,0.06);'
+      + 'border:1px solid #3a3520;border-radius:6px;padding:7px 10px;margin-top:10px;line-height:1.5">'
+      + '<strong style="color:#F2E7AC">In-sample.</strong> ' + d.caveat + '</div>'
+      + '<div id="selReplayTable" style="margin-top:10px"></div>';
+
+    const ds = function (label, data, color, width) {
+      return { label: label, data: data, borderColor: color, backgroundColor: color + '22',
+               borderWidth: width, pointRadius: 0, tension: 0.15, fill: false };
+    };
+    _selChart = new Chart(document.getElementById('selReplayChart').getContext('2d'), {
+      type: 'line',
+      data: { labels: labels, datasets: [
+        ds('Selection',      all, '#7FE098', 2.2),
+        ds('TV entries',     tv,  '#70a8f5', 1.3),
+        ds('Kairos entries', ka,  '#5FC8D4', 1.3),
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#888', boxWidth: 12, font: { size: 10 } } },
+          tooltip: { callbacks: { afterBody: function (items) {
+            const p = d.curve[items[0].dataIndex];
+            return p ? p.strategy + '  ' + p.side + '  ' + _money(p.pnl) + '  [' + p.entry + ']' : '';
+          } } },
+        },
+        scales: {
+          x: { ticks: { color: '#555', font: { size: 9 }, maxTicksLimit: 12 },
+               grid: { color: 'rgba(255,255,255,0.03)' } },
+          y: { ticks: { color: '#555', font: { size: 9 }, callback: function (v) { return '$' + v; } },
+               grid: { color: 'rgba(255,255,255,0.03)' } },
+        },
+      },
+    });
+
+    // Per-strategy contribution — the curve's shape only means something once you
+    // can see whether a single name is carrying it.
+    const rows = Object.entries(d.per_strategy || {}).sort(function (a, b) { return b[1].pnl - a[1].pnl; });
+    if (rows.length) {
+      document.getElementById('selReplayTable').innerHTML =
+        '<div style="font-size:0.62rem;color:#555;text-transform:uppercase;letter-spacing:0.04em;'
+        + 'margin-bottom:5px">Contribution by pick</div>'
+        + '<div style="display:flex;flex-direction:column;gap:2px">'
+        + rows.map(function (r) {
+            const name = r[0], st = r[1];
+            const wr = st.trades ? Math.round(st.wins / st.trades * 100) : 0;
+            return '<div style="display:flex;align-items:center;gap:8px;font-size:0.72rem;padding:2px 0">'
+              + '<span style="font-size:0.6rem;min-width:46px;color:'
+              + (st.entry === 'kairos' ? '#5FC8D4' : '#70a8f5') + '">'
+              + (st.entry === 'kairos' ? 'KAIROS' : 'TV') + '</span>'
+              + '<span style="color:#b0b0c0;flex:1;overflow:hidden;text-overflow:ellipsis;'
+              + 'white-space:nowrap">' + name + '</span>'
+              + '<span style="color:#555;font-size:0.66rem;min-width:70px;text-align:right">'
+              + st.trades + 't · ' + wr + '%</span>'
+              + '<span style="min-width:74px;text-align:right;font-variant-numeric:tabular-nums;color:'
+              + (st.pnl >= 0 ? '#7FE098' : '#ef5350') + '">' + _money(st.pnl) + '</span></div>';
+          }).join('')
+        + '</div>';
+    }
+  }
+
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
     m.style.display = m.style.display === 'none' ? 'block' : 'none';
@@ -975,6 +1163,7 @@
       if (e.key === 'Enter') runCrew();
     });
     loadReports();
+    loadSelectionCurve();
   });
 </script>
 </body>

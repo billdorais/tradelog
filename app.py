@@ -10369,7 +10369,7 @@ def _save_excluded_strategies(excl_set):
 
 
 def _band_of(strategy: str):
-    """'AAPL_CAM_BREAKOUT_R4S4_VO2_5MIN' → 'BREAKOUT R4S4', else ''."""
+    """'AAPL_CAM_BREAKOUT_R4S4_V02_5MIN' → 'BREAKOUT R4S4', else ''."""
     s = (strategy or "").upper(); i = s.find("_CAM_")
     if i >= 0:
         p = s[i + 5:].split("_")
