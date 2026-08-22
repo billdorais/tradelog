@@ -1008,7 +1008,7 @@
     let _cachedToDate      = null;
     let _allGroups     = [];
     let _feedFilter    = { tv: false, alpaca: true };  // Alpaca default
-    let feedTab        = activeTab;  // matches activeTab default so chart + feed start in sync
+    let feedTab;       // set from activeTab below, once that is declared (TDZ)
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
     // One row per account tab — the single place the dashboard learns about a book.
@@ -1038,6 +1038,7 @@
     // deploy without ALPACA_KEY6 opens on a real book rather than an empty one.
     for (const k of Object.keys(_ACCT_TABS)) if (!_CONFIGURED.has(k)) delete _ACCT_TABS[k];
     let activeTab = (window.__ACCT6_ON__ ? 'live' : 'crew');
+    feedTab = activeTab;   // chart + feed start on the same book
     // Map a chart tab to its Alpaca ?account= value ('' = Paper All, 2 = Refined, 3 = Kairos engine, 4 = Crew Paper).
     // Reads the same table the tabs do, so it cannot drift from them.
     function _acctForTab(tab) { return (_ACCT_TABS[tab] || {}).account || ''; }
