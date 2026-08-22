@@ -180,3 +180,13 @@ def test_signals_and_ib_tabs_skip_the_server_filter():
     i = html.index("function toggleHoursWindow")
     block = html[i:i + 900]
     assert "activeTab === 'signals'" in block and "activeTab === 'ib'" in block
+
+
+def test_top_n_ranks_on_the_same_trades_the_chart_draws():
+    """With the clock on, ranking on unfiltered P&L would surface names whose edge
+    sits entirely in hours the book cannot trade — the exact confusion the filter
+    exists to remove."""
+    html = _index()
+    i = html.index("async function selectTopN")
+    block = html[i:i + 2000]
+    assert "params.set('hours', 'curated')" in block

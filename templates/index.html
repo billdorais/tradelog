@@ -1487,6 +1487,11 @@
         if (acct)     params.set('account',   acct);
         if (fromDate) params.set('from_date', fromDate);
         if (toDate)   params.set('to_date',   toDate);
+        // Rank on the SAME trades the chart is drawing. Without this the clock
+        // filter would show a curated-hours curve while Top-N ranked on all-day
+        // P&L — surfacing names whose edge sits in hours the book cannot trade,
+        // which is the exact confusion the clock exists to remove.
+        if (_hoursWindow) params.set('hours', 'curated');
         const data = await fetch('/api/alpaca/analysis?' + params).then(r => r.json()).catch(() => ({}));
         for (const [strat, s] of Object.entries(data.per_strategy || {})) {
           if (s.total_pnl != null) pnlByStrat[strat] = s.total_pnl;
