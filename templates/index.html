@@ -1297,11 +1297,22 @@
         // breakeven" are different, and a column of zeros reads as the latter.
         const st  = _pnlByStrategy[s.toUpperCase()];
         const pnl = st && typeof st.pnl === 'number' ? st.pnl : null;
+        // Total P&L alone is TENURE-BIASED on the Refined books: they are top-20
+        // rosters rewired daily at 4:15 PM ET, so a name that held a slot for six
+        // weeks outranks an equally good name that held one for four days. The
+        // per-trade figure beside it is the number that compares like with like.
+        const n   = st && typeof st.trades === 'number' ? st.trades : 0;
+        const avg = pnl !== null && n > 0 ? pnl / n : null;
         const pnlTxt = pnl === null ? '' :
           `<span style="margin-left:auto;font-variant-numeric:tabular-nums;font-size:0.76rem;
                  color:${visible ? (pnl >= 0 ? '#7FE098' : '#ef5350') : '#444'}"
-                 title="${st.trades} trade${st.trades === 1 ? '' : 's'} in this range">
-             ${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}</span>`;
+                 title="Total over this range">
+             ${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}</span>` +
+          `<span style="font-variant-numeric:tabular-nums;font-size:0.66rem;min-width:64px;
+                 text-align:right;color:${visible ? '#6b7280' : '#333'}"
+                 title="${n} trade${n === 1 ? '' : 's'} in this range${avg === null ? '' :
+                   `, averaging ${avg >= 0 ? '+' : '-'}$${Math.abs(avg).toFixed(2)} each`}">
+             ${n}t${avg === null ? '' : ` · ${avg >= 0 ? '+' : '-'}${Math.abs(avg).toFixed(2)}`}</span>`;
         return `<div class="strat-picker-row" onclick="toggleStratVis('${esc}', event)">
           <span class="strat-eye${visible ? '' : ' off'}">👁</span>
           ${star}<span style="color:${visible ? '#e0e0e0' : '#444'}">${s}</span>

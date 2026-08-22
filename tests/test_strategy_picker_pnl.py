@@ -40,9 +40,22 @@ def test_amount_is_coloured_by_sign_and_right_aligned():
     assert "tabular-nums" in block, "digits should align down the column"
 
 
-def test_trade_count_is_available_on_hover():
-    """Sample size decides whether a number means anything — it belongs next to it."""
+def test_trade_count_is_shown_not_just_hinted():
+    """Sample size decides whether a number means anything, so it is painted in the
+    row rather than hidden behind a tooltip."""
     html = _index()
     i = html.index("function _populateStratPicker")
-    block = html[i:i + 2200]
-    assert "st.trades" in block and "trade${st.trades === 1 ? '' : 's'}" in block
+    block = html[i:i + 3200]
+    assert "st.trades" in block
+    assert "${n}t" in block, "trade count should be visible in the row"
+
+
+def test_per_trade_average_is_shown_beside_the_total():
+    """Total P&L is tenure-biased on the Refined books — they are top-20 rosters
+    rewired daily, so a longer-tenured name wins on total without being better per
+    trade. The average is the figure that compares like with like."""
+    html = _index()
+    i = html.index("function _populateStratPicker")
+    block = html[i:i + 3200]
+    assert "pnl / n" in block
+    assert "avg === null" in block, "no average for a strategy with zero trades"

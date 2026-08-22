@@ -205,7 +205,7 @@ def _run_crew(topic: str, q: queue.Queue) -> None:
 
 # Module-level so it is unit-testable: the farm blocks rank on the curated-hours
 # reachability split, which is easy to regress silently inside a closure.
-def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATEGY LEADERBOARD (last ~20 days)",
+def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATEGY LEADERBOARD",
                     empty_msg: str = "No strategy data available (Alpaca may not be configured).",
                     show_reach: bool = False) -> str:
     overall   = (data or {}).get("overall", {})
@@ -256,7 +256,7 @@ def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATE
     return "\n".join(lines)
 
 
-def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "9", tv_snap_rank: dict = None, kairos_snap_rank: dict = None) -> None:
+def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "9", tv_snap_rank: dict = None, kairos_snap_rank: dict = None, windows: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
 
@@ -853,10 +853,43 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
         # ── Single task — all data embedded directly ──────────────────────────
 
+        # Every block below carries its OWN window, and they are NOT all the same:
+        # the farms are pinned to a fixed trailing window and the engine compare to a
+        # fixed day count, while the Refined books follow the report's range. Stating
+        # them up front is the only thing stopping the crew from reading a 1-day book
+        # and a 45-day farm as though they covered the same ground.
+        _w = windows or {}
+        windows_block = ""
+        if _w:
+            _rows = [
+                ("TV Refined (acct2) leaderboard + long/short",     _w.get("analysis")),
+                ("Kairos Refined (acct3) leaderboard + long/short", _w.get("analysis")),
+                ("Crew Paper (acct4) long/short",                   _w.get("analysis")),
+                ("TV Farm (acct1) leaderboard",                     _w.get("farm")),
+                ("Kairos Farm (acct5) leaderboard",                 _w.get("farm")),
+                ("Engine-vs-TV compare",                            _w.get("engine")),
+                ("Pick scorecard (forward, out-of-sample)",         _w.get("scorecard")),
+            ]
+            _lines = ["=== WINDOWS COVERED BY EACH BLOCK (READ FIRST) ==="]
+            for _label, _val in _rows:
+                if _val:
+                    _lines.append("- %s: %s" % (_label, _val))
+            _lines.append(
+                "These windows DIFFER. Do not compare a P&L total from one block against a total "
+                "from another without saying so - a bigger number may just be a longer window. "
+                "When a block's window is short, say the sample is short instead of treating it "
+                "as a verdict.")
+            _lines.append(
+                "The Refined books are TOP-20 rosters REWIRED DAILY at 4:15 PM ET, so a strategy's "
+                "total P&L over a multi-week window also reflects how many days it held a slot. "
+                "Judge those names on per-trade result and trade count, not the total alone.")
+            windows_block = "\n".join(_lines)
+
         analysis_task = Task(
             description=(
                 f"Here is the Kairos account data"
                 + (f" for: {period}" if period else "") + ":\n\n"
+                + (f"{windows_block}\n\n" if windows_block else "")
                 + (f"{gate_block}\n\n" if gate_block else "")
                 + (f"{scorecard_block}\n\n" if scorecard_block else "")
                 + (f"{book_block}\n\n" if book_block else "")
@@ -2647,6 +2680,7 @@ def _prep_and_run_kairos(q, app_obj, from_date, to_date, range_label, kairos_tar
     card_data    = {}
     _pa          = {}   # TV Farm (acct1) full-sample leaderboard
     _pa5         = {}   # Kairos Farm (acct5) full-sample leaderboard
+    _win         = {}   # block name -> the window it actually covers
     try:
         _dr  = (f"&from_date={from_date}" if from_date else "") + (f"&to_date={to_date}" if to_date else "")
         # Farms are the FULL-SAMPLE audition pools — always a fixed 45d trailing window
@@ -2656,6 +2690,14 @@ def _prep_and_run_kairos(q, app_obj, from_date, to_date, range_label, kairos_tar
         except Exception: _farm_anchor = datetime.now(timezone.utc).date()
         _farm_dr = (f"&from_date={(_farm_anchor - timedelta(days=_FARM_WINDOW_DAYS)).isoformat()}"
                     f"&to_date={_farm_anchor.isoformat()}")
+        _win = {
+            "analysis": (f"{from_date} to {to_date}" if (from_date and to_date)
+                         else (range_label or "all available fills, up to the 90-day Alpaca limit")),
+            "farm":     (f"{(_farm_anchor - timedelta(days=_FARM_WINDOW_DAYS)).isoformat()} to "
+                         f"{_farm_anchor.isoformat()} (FIXED {_FARM_WINDOW_DAYS}d trailing window, "
+                         f"NOT the report range)"),
+            "engine":   "last 30 days (FIXED, NOT the report range)",
+        }
         _qs  = "account=2" + _dr
         _qs3 = "account=3" + _dr
         with app_obj.test_client() as _c:
@@ -2713,6 +2755,9 @@ def _prep_and_run_kairos(q, app_obj, from_date, to_date, range_label, kairos_tar
     try:
         if prev_reports:
             scorecard_data = _pick_scorecard(prev_reports[0])
+            _since = (prev_reports[0].get("created_at") or "")[:10]
+            if _since:
+                _win["scorecard"] = f"{_since} to now (since the last report was written)"
     except Exception:
         pass
     book_data = {}
@@ -2739,7 +2784,8 @@ def _prep_and_run_kairos(q, app_obj, from_date, to_date, range_label, kairos_tar
     try:
         _run_kairos_crew(q, strat_data, journal_data, prev_reports, range_label or "custom range",
                          rules_data, engine_data, engine_strat_data, card_data, scorecard_data,
-                         book_data, _pa, _pa5, kairos_target, tv_snap_rank, kairos_snap_rank)
+                         book_data, _pa, _pa5, kairos_target, tv_snap_rank, kairos_snap_rank,
+                         windows=_win)
     except Exception as _e:
         q.put({"type": "error", "error": f"crew prep/run failed: {_e}", "ts": _ts()})
 
