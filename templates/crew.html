@@ -627,8 +627,112 @@
       .replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>')
       .replace(/`([^`]+?)`/g, '<code>$1</code>');
   }
+  // Regroup the "Changes vs the Current Book" table: primary group = entry
+  // mechanism ([TV] / [Kairos]), secondary = action (KEEP, then ADD, then DROP).
+  //
+  // Done as a deterministic post-process rather than a prompt instruction, for two
+  // reasons: it also reorders reports that are ALREADY saved, and an ordering rule
+  // in the prompt is something the model can follow halfway. Any parse failure
+  // returns the markdown untouched — an ungrouped table beats a mangled report.
+  const _CHG_ACTIONS = ['KEEP', 'ADD', 'DROP'];
+
+  function _groupChangesTable(md) {
+    const src = (md || '').replace(/\r/g, '');
+    const lines = src.split('\n');
+    const h = lines.findIndex(l => /^#{1,6}\s.*Changes vs the Current Book/i.test(l));
+    if (h < 0) return md;
+
+    // The section runs to the next heading or the start of the wire block.
+    let end = lines.length;
+    for (let i = h + 1; i < lines.length; i++) {
+      if (/^#{1,6}\s/.test(lines[i]) || /^\s*```/.test(lines[i])) { end = i; break; }
+    }
+
+    const isRow = l => /\|/.test(l) && l.trim().startsWith('|');
+    const isSep = l => /^\s*\|?[\s:\-|]+\|?\s*$/.test(l) && /-/.test(l);
+    const cells = l => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+
+    // Collect every data row across however many tables the model emitted, and keep
+    // the surrounding prose (the KEEP/ADD/DROP tally) to re-emit underneath.
+    let header = null, rows = [], tail = [];
+    for (let i = h + 1; i < end; i++) {
+      const l = lines[i];
+      if (isRow(l) && i + 1 < end && isSep(lines[i + 1])) {
+        if (!header) header = cells(l);
+        i++;
+        continue;
+      }
+      if (isSep(l)) continue;
+      if (isRow(l)) { rows.push(cells(l)); continue; }
+      if (l.trim()) tail.push(l);
+    }
+    if (!header || rows.length < 2) return md;
+
+    const findCol = (re, dflt) => {
+      const i = header.findIndex(c => re.test(c));
+      return i < 0 ? dflt : i;
+    };
+    const entryCol  = findCol(/entry|book|tv.*kairos/i, -1);
+    const actionCol = findCol(/action|change|keep/i, header.length - 1);
+    if (entryCol < 0) return md;
+
+    const entryOf = r => {
+      const v = (r[entryCol] || '').toLowerCase();
+      if (/kairos|engine/.test(v)) return 'kairos';
+      if (/\btv\b/.test(v)) return 'tv';
+      return 'other';
+    };
+    const actionOf = r => {
+      const m = (r[actionCol] || '').toUpperCase().match(/\b(KEEP|ADD|DROP)\b/);
+      return m ? m[1] : '';
+    };
+
+    const groups = { tv: [], kairos: [], other: [] };
+    for (const r of rows) groups[entryOf(r)].push(r);
+
+    // Never lose a row to a classification miss.
+    const kept = groups.tv.length + groups.kairos.length + groups.other.length;
+    if (kept !== rows.length) return md;
+
+    const titles = { tv: '[TV] entries', kairos: '[Kairos] entries',
+                     other: 'Unclassified entry' };
+    const out = [lines[h], ''];
+    let wroteAny = false;
+
+    for (const key of ['tv', 'kairos', 'other']) {
+      const g = groups[key];
+      if (!g.length) continue;
+      wroteAny = true;
+      const counts = _CHG_ACTIONS
+        .map(a => [a, g.filter(r => actionOf(r) === a).length])
+        .filter(p => p[1] > 0)
+        .map(p => p[0] + ' ' + p[1]).join(' · ');
+      out.push('**' + titles[key] + '**' + (counts ? ' — ' + counts : ''), '');
+
+      // The entry column is redundant once it IS the heading, but an unclassified
+      // group still needs to show whatever it said.
+      const drop = key !== 'other' ? entryCol : -1;
+      const trim = r => r.filter((_, i) => i !== drop);
+      const hdr  = trim(header);
+      out.push('| ' + hdr.join(' | ') + ' |');
+      out.push('|' + hdr.map(() => '---').join('|') + '|');
+
+      const rank = r => {
+        const i = _CHG_ACTIONS.indexOf(actionOf(r));
+        return i < 0 ? _CHG_ACTIONS.length : i;
+      };
+      g.slice().sort((a, b) => rank(a) - rank(b))
+       .forEach(r => out.push('| ' + trim(r).join(' | ') + ' |'));
+      out.push('');
+    }
+    if (!wroteAny) return md;
+    if (tail.length) out.push(tail.join('\n'), '');
+
+    return lines.slice(0, h).concat(out, lines.slice(end)).join('\n');
+  }
+
   function _mdToHtml(md) {
-    const lines = (md || '').replace(/\r/g, '').split('\n');
+    const lines = _groupChangesTable(md || '').replace(/\r/g, '').split('\n');
     let html = '', i = 0, para = [];
     const flushP = () => { if (para.length) { html += '<p>' + para.map(_mdInline).join('<br>') + '</p>'; para = []; } };
     const row = r => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
