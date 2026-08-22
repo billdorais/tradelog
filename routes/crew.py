@@ -2974,6 +2974,9 @@ def api_crew_mirror_live():
 
 _SELECTION_CURVE_SOURCES = {"tv": "1", "kairos": "5"}
 
+# Books the crew's picks are actually wired to (Crew Paper, Crew Live).
+_CREW_BOOKS = {"4", "6"}
+
 
 def _selection_picks(report_text, default_entry="tv"):
     """[{strategy, side, entry}] for a report, entry resolved to 'tv' or 'kairos'."""
@@ -3015,13 +3018,24 @@ def _entry_hhmm_et(iso_ts):
 def api_crew_selection_curve():
     """Replay a crew report's picks over a past window and return an equity curve.
 
-    Query: week (default latest report), from_date, to_date, hours=curated|all.
+    Query: week (default latest report), from_date, to_date, hours=curated|all,
+           source=farm|actual, account (crew book to read when source=actual).
+
+    source=farm    what the picks WOULD have done, drawn from the audition pools.
+    source=actual  what they DID do — real fills from the crew book they are wired
+                   to. Not a replay: no substitution, no hours filter (the book is
+                   already gated), and a pick only has fills from its wire date on.
     """
     import app as _kairos
     week      = (request.args.get("week") or "").strip()
     from_date = (request.args.get("from_date") or "").strip()
     to_date   = (request.args.get("to_date") or "").strip()
     hours     = (request.args.get("hours") or "curated").strip().lower()
+    source    = (request.args.get("source") or "farm").strip().lower()
+    actual    = source == "actual"
+    book      = (request.args.get("account") or "4").strip()
+    if actual and book not in _CREW_BOOKS:
+        return jsonify({"error": f"Account {book} is not a crew book."}), 400
 
     try:
         conn = _kairos.get_db(); cur = conn.cursor()
@@ -3047,35 +3061,48 @@ def api_crew_selection_curve():
         return jsonify({"error": "That crew report has no parseable picks.",
                         "week": _week}), 422
 
-    by_entry = {"tv": {}, "kairos": {}}
+    by_entry   = {"tv": {}, "kairos": {}}
+    entry_of_pick = {}
     for p in picks:
         by_entry[p["entry"]][p["strategy"]] = p["side"]
+        entry_of_pick[p["strategy"]] = p["entry"]
 
-    windows   = _curated_windows() if hours != "all" else []
+    # farm: one audition pool per mechanism, each holding only its own picks.
+    # actual: ONE book holding every pick; the mechanism comes from the pick's tag.
+    plan = [(None, book)] if actual else sorted(_SELECTION_CURVE_SOURCES.items())
+
+    # The crew book already trades inside its gates, so filtering its real fills by
+    # curated hours would drop nothing and imply a filter that is not doing work.
+    windows   = [] if actual else (_curated_windows() if hours != "all" else [])
     kept      = []
     unavail   = []
-    per_src   = {}
-    for entry, acct in _SELECTION_CURVE_SOURCES.items():
-        wanted = by_entry[entry]
-        per_src[entry] = {"account": acct, "picks": len(wanted), "trades": 0, "pnl": 0.0}
+    per_src   = {"tv":     {"picks": len(by_entry["tv"]),     "trades": 0, "pnl": 0.0},
+                 "kairos": {"picks": len(by_entry["kairos"]), "trades": 0, "pnl": 0.0}}
+    for entry, acct in plan:
+        wanted = dict(by_entry[entry]) if entry else {
+            **by_entry["tv"], **by_entry["kairos"]}
+        for _k in (["tv", "kairos"] if entry is None else [entry]):
+            per_src[_k]["account"] = acct
         if not wanted:
             continue
         try:
             _b, _tag, _label, _fills_fn = _kairos._alpaca_account_ctx(acct)
-            per_src[entry]["label"] = _label
+            for _k in (["tv", "kairos"] if entry is None else [entry]):
+                per_src[_k]["label"] = _label
             fills = _fills_fn()
         except Exception:
             fills = None
         # An empty list from a FAILED fetch must not render as a flat line — that is
         # how an Alpaca outage once read as every book being flat, everywhere.
+        _who = (per_src[entry] if entry else per_src["tv"]).get("label") or f"account {acct}"
         if not fills:
             if _kairos._fills_error(acct):
-                unavail.append(per_src[entry].get("label") or f"account {acct}")
+                unavail.append(_who)
             continue
         try:
             paired = _kairos._pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
         except Exception:
-            unavail.append(per_src[entry].get("label") or f"account {acct}")
+            unavail.append(_who)
             continue
         for c in (paired.get("closed_clean") or []):
             strat = (c.get("strategy") or "").strip().upper()
@@ -3091,7 +3118,8 @@ def api_crew_selection_curve():
                     continue
             kept.append({"time": c.get("exit_time"), "pnl": round(c.get("pnl") or 0, 2),
                          "ticker": c.get("ticker"), "strategy": strat,
-                         "side": side.lower(), "entry": entry})
+                         "side": side.lower(),
+                         "entry": entry or entry_of_pick.get(strat, "tv")})
 
     kept.sort(key=lambda t: t["time"] or "")
     curve, cum = [], 0.0
@@ -3121,9 +3149,16 @@ def api_crew_selection_curve():
         "win_rate": round(wins / len(kept) * 100, 1) if kept else None,
         "total_pnl": round(cum, 2) if kept else 0.0,
         "fills_unavailable": unavail,
-        "in_sample": True,
-        "caveat": ("BACKWARD-LOOKING and IN-SAMPLE: these picks were selected using data "
-                   "from this same window, so a rising curve is partly built in. Read the "
-                   "SHAPE (steady vs one spike, and how many names carry it), not the total. "
-                   "The forward, out-of-sample test is the pick scorecard on Crew Paper."),
+        "source": "actual" if actual else "farm",
+        "account": book if actual else None,
+        "in_sample": not actual,
+        "caveat": (
+            ("REAL FILLS from the crew book — not a simulation. Each pick only has trades "
+             "from its own wire date onward, so a name with few or no trades is usually "
+             "recently wired rather than idle.")
+            if actual else
+            ("BACKWARD-LOOKING and IN-SAMPLE: these picks were selected using data "
+             "from this same window, so a rising curve is partly built in. Read the "
+             "SHAPE (steady vs one spike, and how many names carry it), not the total. "
+             "The forward, out-of-sample test is the pick scorecard on Crew Paper.")),
     })

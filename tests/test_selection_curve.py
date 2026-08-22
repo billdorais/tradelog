@@ -191,3 +191,89 @@ def test_per_pick_contribution_is_listed():
     """A curve carried by one name reads the same as a broad one until you break it out."""
     html = _crewhtml()
     assert "Contribution by pick" in html and "d.per_strategy" in html
+
+
+# ── source=actual: real fills from the crew book ────────────────────────────────
+
+@pytest.fixture
+def seeded_actual(monkeypatch, seeded):
+    """Crew Paper (acct4) holding real fills for picks of BOTH mechanisms."""
+    acct4 = [_fill("AAPL_CAM_BREAKOUT_R4S4_V02_5MIN", "LONG",   60.0, 3, "09:40", "10:05"),
+             _fill("MSFT_CAM_BREAKOUT_R3S3_V02_5MIN", "LONG",  -25.0, 4, "09:40", "10:05"),
+             _fill("NVDA_CAM_REVERSAL_R3S3_V02_5MIN", "SHORT",  15.0, 5, "07:10", "07:30"),
+             _fill("UNPICKED_CAM_BREAKOUT_R3S3_V02_5MIN", "LONG", 900.0, 6, "09:40", "10:05")]
+    monkeypatch.setattr(kairos, "_alpaca_account_ctx",
+                        lambda a: (object(), f"alpaca{a}", f"Book {a}",
+                                   lambda: acct4 if str(a) in ("4", "6") else []))
+    return seeded
+
+
+def test_actual_reads_the_crew_book_not_the_farms(seeded_actual):
+    _, d = _get(seeded_actual, "?source=actual")
+    assert d["source"] == "actual" and d["account"] == "4"
+    assert d["by_entry"]["tv"]["account"] == "4"
+    assert d["by_entry"]["kairos"]["account"] == "4"
+
+
+def test_actual_attributes_each_trade_to_its_picks_mechanism(seeded_actual):
+    """One book holds both mechanisms, so the split comes from the pick's [TV] /
+    [Kairos] tag rather than from which account the fill came off."""
+    _, d = _get(seeded_actual, "?source=actual")
+    by = {t["strategy"]: t["entry"] for t in d["curve"]}
+    assert by["AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"] == "tv"
+    assert by["MSFT_CAM_BREAKOUT_R3S3_V02_5MIN"] == "kairos"
+    assert d["by_entry"]["kairos"]["pnl"] == -25.0
+    assert d["by_entry"]["tv"]["pnl"] == 75.0
+
+
+def test_actual_still_excludes_strategies_that_are_not_picks(seeded_actual):
+    _, d = _get(seeded_actual, "?source=actual")
+    assert not any("UNPICKED" in t["strategy"] for t in d["curve"])
+    assert d["total_pnl"] == 50.0
+
+
+def test_actual_does_not_filter_by_curated_hours(seeded_actual):
+    """The book already trades inside its gates; filtering its own fills would drop
+    nothing and imply a filter that is not doing work."""
+    _, d = _get(seeded_actual, "?source=actual")
+    assert d["hours"] == "all"
+    assert any(t["pnl"] == 15.0 for t in d["curve"]), "07:10 book fill was dropped"
+
+
+def test_actual_is_not_labelled_in_sample(seeded_actual):
+    """These are real forward fills, not a replay of the selection window."""
+    _, d = _get(seeded_actual, "?source=actual")
+    assert d["in_sample"] is False
+    assert "REAL FILLS" in d["caveat"]
+    assert "wire date" in d["caveat"], "must explain why a pick can show no trades"
+
+
+def test_farm_mode_is_unchanged_by_the_new_parameter(seeded_actual):
+    _, d = _get(seeded_actual, "?hours=all")
+    assert d["source"] == "farm" and d["in_sample"] is True
+
+
+def test_only_a_real_crew_book_can_be_read(seeded_actual):
+    """Pointing this at a farm would quietly relabel simulated fills as real."""
+    code, d = _get(seeded_actual, "?source=actual&account=1")
+    assert code == 400 and "crew book" in d["error"]
+
+
+def test_crew_live_is_selectable(seeded_actual):
+    _, d = _get(seeded_actual, "?source=actual&account=6")
+    assert d["account"] == "6"
+
+
+def test_both_charts_share_one_window():
+    """Two charts on different periods would invite a false comparison."""
+    html = _crewhtml()
+    i = html.index("function setSelDays")
+    block = html[i:i + 400]
+    assert "loadSelectionCurve();" in block and "loadBookCurve();" in block
+
+
+def test_book_chart_is_present_and_defaults_to_crew_paper():
+    html = _crewhtml()
+    assert 'id="bookPerfSection"' in html
+    assert "let _bookAcct  = '4';" in html
+    assert "source=actual" in html

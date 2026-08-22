@@ -89,10 +89,10 @@
     .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid #333; border-top-color: #7FE098; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
 
     .range-btn { padding:5px 13px;border-radius:6px;font-size:0.78rem;font-family:inherit;cursor:pointer;font-weight:600;border:1px solid #2a2d3e;background:transparent;color:#666;transition:all 0.15s; }
-    .sel-days, .sel-hours { padding:3px 10px;border-radius:6px;font-size:0.72rem;font-family:inherit;
+    .sel-days, .sel-hours, .sel-book { padding:3px 10px;border-radius:6px;font-size:0.72rem;font-family:inherit;
       cursor:pointer;font-weight:600;border:1px solid #2a2d3e;background:transparent;color:#666; }
-    .sel-days:hover, .sel-hours:hover { border-color:#7FE098;color:#7FE098; }
-    .sel-days.active, .sel-hours.active { border-color:#7FE098;background:rgba(127,224,152,0.12);color:#7FE098; }
+    .sel-days:hover, .sel-hours:hover, .sel-book:hover { border-color:#7FE098;color:#7FE098; }
+    .sel-days.active, .sel-hours.active, .sel-book.active { border-color:#7FE098;background:rgba(127,224,152,0.12);color:#7FE098; }
     .range-btn:hover { border-color:#7FE098;color:#7FE098; }
     .range-btn.active { border-color:#7FE098;background:rgba(127,224,152,0.12);color:#7FE098; }
 
@@ -330,6 +330,24 @@
     </div>
   </div>
 
+  <!-- Crew book performance — the real fills behind the picks, same window as the replay -->
+  <div id="bookPerfSection" style="margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <span class="section-label" style="margin:0">💵 Crew Book — Actual Trades</span>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="sel-book active" data-acct="4" onclick="setBookAcct(4)">Crew Paper</button>
+        <button class="sel-book" data-acct="6" onclick="setBookAcct(6)">Crew Live</button>
+        <button onclick="loadBookCurve()"
+          style="background:transparent;border:1px solid #2a2d3e;color:#666;border-radius:6px;padding:4px 14px;font-size:0.75rem;cursor:pointer;font-family:inherit">↻ Refresh</button>
+      </div>
+    </div>
+    <div id="bookPerfBody" style="border:1px solid #1e2130;border-radius:8px;background:#0d0f1a;padding:14px">
+      <div style="font-size:0.8rem;color:#555">Loading…</div>
+    </div>
+    <div style="font-size:0.64rem;color:#444;margin-top:4px">
+      Uses the window selected on Selection Replay above.</div>
+  </div>
+
   <!-- Past reports — browse/read saved advisory reports -->
   <div id="reportsSection" style="margin-top:20px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -357,6 +375,7 @@
     document.querySelectorAll('.sel-days').forEach(b =>
       b.classList.toggle('active', Number(b.dataset.days) === d));
     loadSelectionCurve();
+    loadBookCurve();          // both charts must describe the same period
   }
   function setSelHours(h) {
     _selHours = h;
@@ -482,6 +501,149 @@
     const rows = Object.entries(d.per_strategy || {}).sort(function (a, b) { return b[1].pnl - a[1].pnl; });
     if (rows.length) {
       document.getElementById('selReplayTable').innerHTML =
+        '<div style="font-size:0.62rem;color:#555;text-transform:uppercase;letter-spacing:0.04em;'
+        + 'margin-bottom:5px">Contribution by pick</div>'
+        + '<div style="display:flex;flex-direction:column;gap:2px">'
+        + rows.map(function (r) {
+            const name = r[0], st = r[1];
+            const wr = st.trades ? Math.round(st.wins / st.trades * 100) : 0;
+            return '<div style="display:flex;align-items:center;gap:8px;font-size:0.72rem;padding:2px 0">'
+              + '<span style="font-size:0.6rem;min-width:46px;color:'
+              + (st.entry === 'kairos' ? '#5FC8D4' : '#70a8f5') + '">'
+              + (st.entry === 'kairos' ? 'KAIROS' : 'TV') + '</span>'
+              + '<span style="color:#b0b0c0;flex:1;overflow:hidden;text-overflow:ellipsis;'
+              + 'white-space:nowrap">' + name + '</span>'
+              + '<span style="color:#555;font-size:0.66rem;min-width:70px;text-align:right">'
+              + st.trades + 't · ' + wr + '%</span>'
+              + '<span style="min-width:74px;text-align:right;font-variant-numeric:tabular-nums;color:'
+              + (st.pnl >= 0 ? '#7FE098' : '#ef5350') + '">' + _money(st.pnl) + '</span></div>';
+          }).join('')
+        + '</div>';
+    }
+  }
+
+
+  // ── Crew book performance (real fills) ────────────────────────────────────
+  // The companion to the replay: same picks, same window, but the trades the crew
+  // book ACTUALLY took rather than what the farms say it would have. Shares the
+  // window buttons with the replay so the two charts always describe one period.
+  let _bookAcct  = '4';
+  let _bookChart = null;
+
+  function setBookAcct(n) {
+    _bookAcct = String(n);
+    document.querySelectorAll('.sel-book').forEach(b =>
+      b.classList.toggle('active', b.dataset.acct === _bookAcct));
+    loadBookCurve();
+  }
+
+  async function loadBookCurve() {
+    const body = document.getElementById('bookPerfBody');
+    if (!body) return;
+    if (_bookChart) { _bookChart.destroy(); _bookChart = null; }
+    body.innerHTML = '<div style="font-size:0.8rem;color:#555">Loading…</div>';
+    const to   = new Date();
+    const from = new Date(); from.setDate(to.getDate() - _selDays);
+    const qs = '?source=actual&account=' + _bookAcct
+             + '&from_date=' + _fmt(from) + '&to_date=' + _fmt(to);
+    let d;
+    try {
+      const r = await fetch('/api/crew/selection_curve' + qs);
+      d = await r.json();
+    } catch (e) {
+      body.innerHTML = '<div style="font-size:0.8rem;color:#ef5350">Could not load: ' + e + '</div>';
+      return;
+    }
+    if (d.error) {
+      body.innerHTML = '<div style="font-size:0.8rem;color:#888">' + d.error + '</div>';
+      return;
+    }
+    _renderBookPerf(d);
+  }
+
+  function _renderBookPerf(d) {
+    const body = document.getElementById('bookPerfBody');
+    const warn = (d.fills_unavailable && d.fills_unavailable.length)
+      ? '<div style="font-size:0.72rem;color:#ef5350;margin-bottom:8px">&#9888; Could not load fills for: '
+        + d.fills_unavailable.join(', ') + ' — this curve is incomplete.</div>'
+      : '';
+    if (!d.curve || !d.curve.length) {
+      body.innerHTML = warn + '<div style="font-size:0.8rem;color:#888">'
+        + 'No trades on this book for the ' + d.pick_count + ' wired picks in this window. '
+        + 'Picks only have fills from their wire date onward.</div>';
+      return;
+    }
+
+    const labels = [], all = [], tv = [], ka = [];
+    let cTv = 0, cKa = 0;
+    for (const p of d.curve) {
+      if (p.entry === 'kairos') cKa = Math.round((cKa + p.pnl) * 100) / 100;
+      else                      cTv = Math.round((cTv + p.pnl) * 100) / 100;
+      const t = new Date(p.time);
+      labels.push(isNaN(t) ? '' : (t.getMonth() + 1) + '/' + t.getDate());
+      all.push(p.value); tv.push(cTv); ka.push(cKa);
+    }
+
+    const be  = d.by_entry || {};
+    const tvB = be.tv || {}, kaB = be.kairos || {};
+    const tvPnl = tvB.pnl || 0, kaPnl = kaB.pnl || 0;
+    const tile = function (label, val, sub, color) {
+      return '<div style="flex:1;min-width:110px;border:1px solid #1e2130;border-radius:6px;'
+           + 'padding:8px 10px;background:#0b0d14">'
+           + '<div style="font-size:0.62rem;color:#555;text-transform:uppercase;letter-spacing:0.04em">'
+           + label + '</div>'
+           + '<div style="font-size:1.05rem;font-weight:700;font-variant-numeric:tabular-nums;color:'
+           + color + '">' + val + '</div>'
+           + '<div style="font-size:0.62rem;color:#555">' + sub + '</div></div>';
+    };
+
+    body.innerHTML = warn
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+      + tile('Book total', _money(d.total_pnl), d.trades + ' trades · ' + d.pick_count + ' picks wired',
+             d.total_pnl >= 0 ? '#7FE098' : '#ef5350')
+      + tile('TV entries', _money(tvPnl), (tvB.trades || 0) + ' trades', tvPnl >= 0 ? '#7FE098' : '#ef5350')
+      + tile('Kairos entries', _money(kaPnl), (kaB.trades || 0) + ' trades', kaPnl >= 0 ? '#7FE098' : '#ef5350')
+      + tile('Win rate', (d.win_rate === null ? '—' : d.win_rate + '%'), d.wins + ' winners', '#c4b5fd')
+      + '</div>'
+      + '<div style="height:240px;position:relative"><canvas id="bookPerfChart"></canvas></div>'
+      + '<div style="font-size:0.66rem;color:#5d7a63;background:rgba(127,224,152,0.05);'
+      + 'border:1px solid #23402c;border-radius:6px;padding:7px 10px;margin-top:10px;line-height:1.5">'
+      + '<strong style="color:#7FE098">Real fills.</strong> ' + d.caveat + '</div>'
+      + '<div id="bookPerfTable" style="margin-top:10px"></div>';
+
+    const ds = function (label, data, color, width) {
+      return { label: label, data: data, borderColor: color, backgroundColor: color + '22',
+               borderWidth: width, pointRadius: 0, tension: 0.15, fill: false };
+    };
+    _bookChart = new Chart(document.getElementById('bookPerfChart').getContext('2d'), {
+      type: 'line',
+      data: { labels: labels, datasets: [
+        ds('Book',           all, '#7FE098', 2.2),
+        ds('TV entries',     tv,  '#70a8f5', 1.3),
+        ds('Kairos entries', ka,  '#5FC8D4', 1.3),
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#888', boxWidth: 12, font: { size: 10 } } },
+          tooltip: { callbacks: { afterBody: function (items) {
+            const p = d.curve[items[0].dataIndex];
+            return p ? p.strategy + '  ' + p.side + '  ' + _money(p.pnl) + '  [' + p.entry + ']' : '';
+          } } },
+        },
+        scales: {
+          x: { ticks: { color: '#555', font: { size: 9 }, maxTicksLimit: 12 },
+               grid: { color: 'rgba(255,255,255,0.03)' } },
+          y: { ticks: { color: '#555', font: { size: 9 }, callback: function (v) { return '$' + v; } },
+               grid: { color: 'rgba(255,255,255,0.03)' } },
+        },
+      },
+    });
+
+    const rows = Object.entries(d.per_strategy || {}).sort(function (a, b) { return b[1].pnl - a[1].pnl; });
+    if (rows.length) {
+      document.getElementById('bookPerfTable').innerHTML =
         '<div style="font-size:0.62rem;color:#555;text-transform:uppercase;letter-spacing:0.04em;'
         + 'margin-bottom:5px">Contribution by pick</div>'
         + '<div style="display:flex;flex-direction:column;gap:2px">'
@@ -1268,6 +1430,7 @@
     });
     loadReports();
     loadSelectionCurve();
+    loadBookCurve();
   });
 </script>
 </body>
