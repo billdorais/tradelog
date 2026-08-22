@@ -2702,9 +2702,20 @@ def api_crew_wire_to_router():
     conn.commit()
     conn.close()
 
+    # Checked against the books, not the report's prose — see _entry_tag_conflicts.
+    try:
+        from flask import current_app as _ca_chk
+        _entry_chk = _entry_tag_conflicts(_ca_chk._get_current_object(), picks)
+    except Exception as _chk_err:
+        _entry_chk = {"conflicts": [], "unreadable": [], "checked": 0,
+                      "error": str(_chk_err)}
+
     return jsonify({
         "created": created, "updated": updated,
         "deleted": deleted, "deferred_open_position": deferred,
+        "entry_conflicts": _entry_chk.get("conflicts") or [],
+        "entry_check": {k: v for k, v in _entry_chk.items() if k != "conflicts"},
+        "sizing_conflict": parsed.get("sizing_conflict"),
         "live_mirror": {"enabled": _mirror_on and _live_size > 0,
                         "armed": bool(getattr(_kairos, "LIVE_TRADING_ARMED", False)),
                         "size_dollars": _live_size or None,
@@ -2718,6 +2729,84 @@ def api_crew_wire_to_router():
         "entries": {pk["strategy"]: pk.get("entry") for pk in picks},
     })
 
+
+
+# ── Entry-tag conflicts ─────────────────────────────────────────────────────────
+# A pick carries a [TV] or [Kairos] tag that decides which mechanism enters it. The
+# report argues each tag in prose, and the prose can contradict the measured record:
+# one card routed six breakouts through the Kairos engine in the same document that
+# concluded the engine was losing $728 over 30 days on breakouts.
+#
+# So this checks the tag against the BOOKS, not against the narrative — TV Refined
+# (acct2) is the TV mechanism's record, Kairos Refined (acct3) is the engine's, on
+# the same strategy over the same window. Prose cannot talk its way past a
+# head-to-head.
+#
+# It WARNS rather than blocks. A truncated picks block is corruption; a contrarian
+# entry tag can be a deliberate call, and the operator is entitled to make it.
+
+_ENTRY_CONFLICT_MIN_TRADES = 3     # below this a book has no opinion worth citing
+_ENTRY_BOOKS = {"tv": "2", "kairos": "3"}
+
+
+def _per_strategy_pnl(app_obj, account, from_date, to_date):
+    """{STRATEGY: {pnl, trades}} for one book, or None if the book could not be read."""
+    try:
+        qs = f"account={account}"
+        if from_date:
+            qs += f"&from_date={from_date}"
+        if to_date:
+            qs += f"&to_date={to_date}"
+        with app_obj.test_client() as c:
+            d = c.get(f"/api/alpaca/analysis?{qs}").get_json() or {}
+        if d.get("fills_unavailable"):
+            return None
+        return {k.upper(): {"pnl": round(v.get("total_pnl", 0) or 0, 2),
+                            "trades": int(v.get("trades", 0) or 0)}
+                for k, v in (d.get("per_strategy") or {}).items()}
+    except Exception:
+        return None
+
+
+def _entry_tag_conflicts(app_obj, picks, from_date="", to_date=""):
+    """Picks whose entry tag is contradicted by the two Refined books' head-to-head.
+
+    A conflict needs BOTH mechanisms to have traded the strategy enough to have an
+    opinion, the tagged one to be losing, and the untagged one to be winning. That
+    is deliberately narrow: it fires on a real reversal of evidence, not on a thin
+    sample or on a name that simply loses everywhere.
+    """
+    books = {k: _per_strategy_pnl(app_obj, acct, from_date, to_date)
+             for k, acct in _ENTRY_BOOKS.items()}
+    unreadable = sorted(k for k, v in books.items() if v is None)
+    if any(v is None for v in books.values()):
+        return {"conflicts": [], "unreadable": unreadable, "checked": 0}
+
+    out = []
+    for p in picks:
+        slug  = p["strategy"]
+        tag   = p.get("entry") or "tv"
+        other = "kairos" if tag == "tv" else "tv"
+        mine  = books[tag].get(slug)
+        thrs  = books[other].get(slug)
+        if not mine or not thrs:
+            continue
+        if (mine["trades"] < _ENTRY_CONFLICT_MIN_TRADES
+                or thrs["trades"] < _ENTRY_CONFLICT_MIN_TRADES):
+            continue
+        if mine["pnl"] < 0 and thrs["pnl"] > 0:
+            out.append({
+                "strategy": slug, "tagged": tag, "better": other,
+                "tagged_pnl": mine["pnl"],   "tagged_trades": mine["trades"],
+                "other_pnl":  thrs["pnl"],   "other_trades":  thrs["trades"],
+                "swing": round(thrs["pnl"] - mine["pnl"], 2),
+                "note": (f"tagged [{tag.upper()}] but the {tag.upper()} book lost "
+                         f"${abs(mine['pnl']):.2f} over {mine['trades']}t while the "
+                         f"{other.upper()} book made ${thrs['pnl']:.2f} over "
+                         f"{thrs['trades']}t on the same name"),
+            })
+    out.sort(key=lambda c: -c["swing"])
+    return {"conflicts": out, "unreadable": unreadable, "checked": len(picks)}
 
 @crew_bp.route("/api/crew/knowledge", methods=["GET"])
 def api_crew_knowledge_get():
