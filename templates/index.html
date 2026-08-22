@@ -4150,9 +4150,17 @@
         if (!el) return;
         try {
           const d = await fetch('/api/alpaca/account?account=' + n).then(r => r.json());
-          if (d.error || d.daily_pnl == null) {
+          // "no P&L today" is NOT "not configured". Conflating them made a normal
+          // Saturday — market shut, no fills, daily_pnl null — read as three broken
+          // accounts. Only an actual error means unconfigured.
+          if (d.error) {
             el.textContent = '—'; el.style.color = '#666';
             if (sub) sub.textContent = 'not configured';
+            return;
+          }
+          if (d.daily_pnl == null) {
+            el.textContent = '—'; el.style.color = '#666';
+            if (sub) sub.textContent = 'no closed trades today';
             return;
           }
           el.textContent = money(d.daily_pnl);
