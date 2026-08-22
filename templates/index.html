@@ -108,6 +108,11 @@
       border-radius: 5px; cursor: pointer; font-size: 0.82rem; user-select: none;
     }
     .strat-picker-row:hover { background: rgba(255,255,255,0.04); }
+    /* The solo control stays out of the way until you are on the row — 200+
+       always-visible buttons would compete with the P&L column for the eye. */
+    .strat-solo { opacity: 0; color: #70a8f5; font-size: 0.8rem; padding: 0 2px; }
+    .strat-picker-row:hover .strat-solo { opacity: 0.75; }
+    .strat-solo:hover { opacity: 1 !important; }
     .strat-eye { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
     .strat-eye.off { opacity: 0.25; }
 
@@ -768,6 +773,8 @@
               <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">None</span>
               <span onclick="selectIndices(event)" title="Select index/ETF strategies (SPY, QQQ, IWM, SMH)" style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Indices</span>
               <span onclick="selectCrew(event)" title="Select the strategies wired to Crew Paper (alpaca-paper-4)" style="font-size:0.75rem;color:#7FE098;cursor:pointer;font-weight:600">Crew</span>
+              <span onclick="narrowByPnl(1,event)" title="Narrow the CURRENT selection to strategies in profit over this range" style="font-size:0.75rem;color:#7FE098;cursor:pointer">Winners</span>
+              <span onclick="narrowByPnl(-1,event)" title="Narrow the CURRENT selection to strategies losing money over this range" style="font-size:0.75rem;color:#ef5350;cursor:pointer">Losers</span>
               <span onclick="selectTopN(3,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 3</span>
               <span onclick="selectTopN(5,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 5</span>
               <span onclick="selectTopN(10,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 10</span>
@@ -1299,6 +1306,8 @@
           <span class="strat-eye${visible ? '' : ' off'}">👁</span>
           ${star}<span style="color:${visible ? '#e0e0e0' : '#444'}">${s}</span>
           ${pnlTxt}
+          <span class="strat-solo" onclick="isolateStrat('${esc}', event)"
+                title="Isolate — show only this strategy">⦿</span>
         </div>`;
       }).join('');
     }
@@ -1427,6 +1436,45 @@
 
     // Select exactly the strategies wired to Crew Paper (rules carrying the
     // alpaca-paper-4/-live-4 broker), so you can isolate the crew book's picks.
+    // Narrow WITHIN the current selection rather than reselecting from scratch, so
+    // "Crew" then "Winners" gives the crew's winners — the sub-filter the picker was
+    // missing. With nothing selected the whole list is the base.
+    async function narrowByPnl(sign, e) {
+      if (e) e.stopPropagation();
+      const base = selectedStrategies.size ? [...selectedStrategies] : [..._allStrategyNames];
+      const keep = base.filter(s => {
+        const st = _pnlByStrategy[s.toUpperCase()];
+        // Untraded is neither a winner nor a loser — it never took the trade.
+        if (!st || typeof st.pnl !== 'number') return false;
+        return sign > 0 ? st.pnl > 0 : st.pnl < 0;
+      });
+      // An EMPTY selection means "show everything" in this picker, so narrowing to
+      // nothing would silently invert the filter and display the whole book.
+      if (!keep.length) {
+        alert(sign > 0 ? 'Nothing in the current selection is profitable over this range.'
+                       : 'Nothing in the current selection is losing over this range.');
+        return;
+      }
+      selectedStrategies = new Set(keep);
+      _tabSelections[activeTab] = selectedStrategies;
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
+    // Solo one strategy. Same guard: never leave the selection empty.
+    async function isolateStrat(name, e) {
+      if (e) e.stopPropagation();
+      if (!name) return;
+      selectedStrategies = new Set([name]);
+      _tabSelections[activeTab] = selectedStrategies;
+      _populateStratPicker();
+      _updateStratPickerBtn();
+      _cachedFullStats = null;
+      await applyEquityFilter();
+    }
+
     async function selectCrew(e) {
       if (e) e.stopPropagation();
       if (!_crewStrategies || _crewStrategies.size === 0) {
