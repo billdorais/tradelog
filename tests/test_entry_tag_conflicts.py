@@ -136,3 +136,73 @@ def test_the_wire_reports_conflicts_without_refusing():
     assert "_entry_tag_conflicts" in src
     i = src.index("_entry_tag_conflicts")
     assert "409" not in src[i:], "the entry check must warn, not block"
+
+
+# ── UI: warnings that survive a successful wire ─────────────────────────────────
+
+def _crewhtml():
+    return open("templates/crew.html", encoding="utf-8").read()
+
+
+def _warn_fn():
+    html = _crewhtml()
+    i = html.index("function _wireWarnings(d)")
+    return html[i:html.index("\n  async function confirmWire", i)]
+
+
+def test_warnings_render_on_the_success_path_not_only_on_failure():
+    """The wire SUCCEEDS with conflicts — the rules are written. If the warning only
+    appeared on an error branch it would never be seen."""
+    html = _crewhtml()
+    i = html.index("open Signal Router")
+    assert "_wireWarnings(d)" in html[i:i + 200]
+
+
+def test_conflicts_are_visually_separate_from_the_green_confirmation():
+    """The success line sets colour green for the whole message; an amber warning
+    inside it would read as part of the confirmation."""
+    src = _warn_fn()
+    assert "#F2C76B" in src, "warning colour missing"
+    assert "border:1px solid #4a3d1c" in src, "warning needs its own block"
+
+
+def test_each_conflict_shows_both_sides_of_the_head_to_head():
+    """A flag without the numbers behind it is an instruction to trust the tool."""
+    src = _warn_fn()
+    for field in ("c.tagged_pnl", "c.tagged_trades", "c.other_pnl", "c.other_trades",
+                  "c.swing", "c.strategy"):
+        assert field in src, field
+
+
+def test_the_warning_says_the_picks_were_still_wired():
+    """Ambiguity here is dangerous: the user must not think the wire was refused."""
+    src = _warn_fn()
+    assert "These were wired as tagged" in src
+
+
+def test_an_unreadable_book_is_reported_in_the_ui_too():
+    src = _warn_fn()
+    assert "entry_check" in src and "unreadable" in src
+    assert "Could not read the" in src
+
+
+def test_a_sizing_conflict_says_which_scheme_won():
+    src = _warn_fn()
+    assert "sizing_conflict" in src
+    assert "equal risk</strong>" in src
+
+
+def test_the_live_mirror_states_whether_it_can_actually_fire():
+    """Crew Live is real money. "Rules written" and "rules that can trade" are
+    different facts and the difference is one env var."""
+    src = _warn_fn()
+    assert "lm.armed" in src
+    assert "real money" in src
+    assert "LIVE_TRADING_ARMED=1" in src
+
+
+def test_a_clean_wire_renders_no_warning_block():
+    """Warning furniture on a clean wire trains the eye to skip it."""
+    src = _warn_fn()
+    assert "let html = '';" in src
+    assert "return html;" in src

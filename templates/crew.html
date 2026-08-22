@@ -1346,6 +1346,77 @@
     }
   }
 
+  // Warnings that survive a SUCCESSFUL wire. The success line is green top to
+  // bottom, so anything amber has to sit in its own block or it reads as part of
+  // the confirmation. These do not mean the wire failed — the rules are written.
+  // They mean something about the roster deserves a second look before the open.
+  function _wireWarnings(d) {
+    let html = '';
+
+    const conflicts = d.entry_conflicts || [];
+    if (conflicts.length) {
+      const rows = conflicts.map(function (c) {
+        const worse = (c.tagged_pnl >= 0 ? '+' : '-') + '$' + Math.abs(c.tagged_pnl).toFixed(2);
+        const better = (c.other_pnl >= 0 ? '+' : '-') + '$' + Math.abs(c.other_pnl).toFixed(2);
+        return '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;padding:3px 0;'
+             + 'border-top:1px solid rgba(242,199,107,0.12)">'
+             + '<span style="color:#e0e0e0;font-size:0.74rem">' + c.strategy + '</span>'
+             + '<span style="font-size:0.66rem;color:#F2C76B">wired [' + c.tagged.toUpperCase() + ']</span>'
+             + '<span style="font-size:0.66rem;color:#666">'
+             +   worse + ' / ' + c.tagged_trades + 't'
+             + '</span>'
+             + '<span style="font-size:0.66rem;color:#555">vs</span>'
+             + '<span style="font-size:0.66rem;color:#7FE098">[' + c.better.toUpperCase() + '] '
+             +   better + ' / ' + c.other_trades + 't</span>'
+             + '<span style="margin-left:auto;font-size:0.66rem;color:#F2C76B;'
+             + 'font-variant-numeric:tabular-nums">swing $' + Math.abs(c.swing).toFixed(2) + '</span>'
+             + '</div>';
+      }).join('');
+      html += '<div style="margin-top:10px;border:1px solid #4a3d1c;border-radius:6px;'
+           + 'background:rgba(242,199,107,0.06);padding:9px 11px">'
+           + '<div style="color:#F2C76B;font-size:0.74rem;font-weight:600;margin-bottom:4px">'
+           + '&#9888; ' + conflicts.length + ' pick' + (conflicts.length === 1 ? '' : 's')
+           + ' tagged against ' + (conflicts.length === 1 ? 'its' : 'their') + ' own head-to-head</div>'
+           + '<div style="color:#8a7c52;font-size:0.66rem;line-height:1.5;margin-bottom:4px">'
+           + 'The other entry mechanism made money on the same name over the same window, '
+           + 'with at least 3 trades on both sides. These were wired as tagged &mdash; '
+           + 'change the tag in the report and re-wire if that is not what you intended.</div>'
+           + rows + '</div>';
+    }
+
+    // An unreadable book is not a clean bill of health.
+    const un = (d.entry_check && d.entry_check.unreadable) || [];
+    if (un.length) {
+      html += '<div style="margin-top:8px;font-size:0.68rem;color:#c98b8b">'
+           + '&#9888; Could not read the ' + un.join(' and ').toUpperCase()
+           + ' book, so entry tags were not checked against it.</div>';
+    }
+
+    if (d.sizing_conflict) {
+      html += '<div style="margin-top:8px;font-size:0.68rem;color:#F2C76B">'
+           + '&#9888; The report\'s Sizing row named both equal risk and score scaling &mdash; '
+           + 'wired as <strong>equal risk</strong>. Row read: <span style="color:#8a7c52">'
+           + esc(String(d.sizing_conflict).slice(0, 120)) + '</span></div>';
+    }
+
+    // Real money: say plainly whether the mirror was written and whether it can fire.
+    const lm = d.live_mirror || {};
+    if (lm.enabled) {
+      const n = (lm.created || []).length + (lm.updated || []).length;
+      html += '<div style="margin-top:8px;font-size:0.68rem;color:'
+           + (lm.armed ? '#ef5350' : '#7a8fa6') + '">'
+           + (lm.armed ? '&#9679; LIVE ' : '&#9675; ')
+           + 'Crew Live mirror: ' + n + ' rule' + (n === 1 ? '' : 's') + ' written'
+           + (lm.size_dollars ? ' at ~$' + Math.round(lm.size_dollars).toLocaleString() + '/trade' : '')
+           + (lm.armed
+               ? ' &mdash; LIVE TRADING IS ARMED, these can fire with real money.'
+               : ' &mdash; not armed, so they are inert until LIVE_TRADING_ARMED=1.')
+           + '</div>';
+    }
+
+    return html;
+  }
+
   async function confirmWire(confirmBtn, source) {
     source = source || 'report';
     const btn = document.getElementById(_WIRE_BTN[source] || 'wireBtn');
@@ -1374,7 +1445,8 @@
           + (all.length ? `<br><span style="color:#666">kept: ${all.join(', ')}</span>` : '')
           + (del.length ? `<br><span style="color:#c98b8b">removed (dropped from this report): ${del.join(', ')}</span>` : '')
           + (defd.length ? `<br><span style="color:#F2C76B">kept for now (open position — will remove next wire): ${defd.join(', ')}</span>` : '')
-          + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`;
+          + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`
+          + _wireWarnings(d);
       }
     } catch (e) {
       out.style.color = '#ef5350'; out.textContent = '⚠ ' + e;
