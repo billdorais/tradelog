@@ -1085,11 +1085,18 @@
           const toEl = document.getElementById('equityToDate');
           if (toEl) toEl.style.display = '';
           await new Promise(r => requestAnimationFrame(r));
-          renderAlpacaStats(
-            document.getElementById('equityFromDate')?.value || '',
-            document.getElementById('equityToDate')?.value   || '',
-            _t.account || undefined          // acct 1 sends no ?account, as before
-          );
+          // Isolated: if the chart render fails, the account card must STILL move to
+          // the selected book. Crew Live is real money and sorts first, so a throw
+          // here used to strand its buying power on screen under another book's tab.
+          try {
+            await renderAlpacaStats(
+              document.getElementById('equityFromDate')?.value || '',
+              document.getElementById('equityToDate')?.value   || '',
+              _t.account || undefined        // acct 1 sends no ?account, as before
+            );
+          } catch (e) {
+            console.error('renderAlpacaStats failed for tab', tab, e);
+          }
           loadAccount();
           feedTab = tab; _feedFilter.tv = false; _feedFilter.alpaca = true;
           _syncFeedTabButtons(tab);
@@ -1533,6 +1540,12 @@
       } else {
         execs = allAlpacaExecs;
       }
+      // .catch() only fires on a network/parse failure — an endpoint that answers
+      // with a JSON error OBJECT parses fine and lands here as a non-array, and
+      // execs.filter then throws. loadTrades already guards every one of these the
+      // same way; this call site did not, and the throw took out the rest of the
+      // tab switch with it. Coerce rather than trust the shape.
+      if (!Array.isArray(execs)) execs = [];
       if (fromDate || toDate) {
         execs = execs.filter(e => {
           const d = e.time && e.time.slice(0, 10);
