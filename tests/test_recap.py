@@ -57,7 +57,16 @@ def _with(monkeypatch, rts):
 def test_unconfigured_book_is_refused_not_silently_empty():
     r = _client().get("/api/recap")
     assert r.status_code == 400
-    assert "acct4" in r.get_json()["error"]
+    # Recap now takes ?account= (the journal snapshots one per book), so the error
+    # names whichever book was asked for rather than always saying "acct4".
+    err = r.get_json()["error"]
+    assert "not configured" in err and "4" in err
+
+
+def test_recap_defaults_to_crew_paper():
+    """Back-compat: /api/recap with no args is still the Crew Paper recap."""
+    r = _client().get("/api/recap")
+    assert "4" in r.get_json()["error"]      # asked for acct4 without being told to
 
 
 def test_defaults_to_the_last_completed_week(monkeypatch, crew):

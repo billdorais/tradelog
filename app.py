@@ -2555,6 +2555,16 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # recap: the weekly recap payload FROZEN at generation. A journal is a record —
+    # recomputing on view means an old entry silently rewrites its own history as
+    # fills get re-paired, gates change and windows move, leaving written notes
+    # describing figures that no longer appear next to them.
+    try:
+        cur.execute("ALTER TABLE journal_entries ADD COLUMN recap TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Crew advisory reports — one row per run, used as historical context
     if DATABASE_URL:
         cur.execute("""
@@ -5673,7 +5683,7 @@ def api_journal_entries():
     entries = []
     for r in rows:
         e = dict(zip(cols, r)) if DATABASE_URL else dict(r)
-        for f in ("trade_stats", "market_data", "tags", "sweep_results"):
+        for f in ("trade_stats", "market_data", "tags", "sweep_results", "recap"):
             try:
                 e[f] = json.loads(e[f]) if e[f] else {}
             except Exception:
@@ -6105,13 +6115,30 @@ def api_journal_generate():
     # now so it shows immediately even if the stream's label UPDATE fails later.
     # Both backends use ON CONFLICT DO UPDATE: it leaves user_notes/sweep_results
     # intact (SQLite's INSERT OR REPLACE would delete the row and wipe them).
+    # Freeze the recap for this book and week INTO the entry. A journal is a record:
+    # recomputing on view would let an old entry rewrite its own history as fills get
+    # re-paired, gates change and windows move — leaving the notes you wrote sitting
+    # beside numbers that no longer say the same thing. Uses the journal's own
+    # Mon-Fri window rather than recap's Mon-Sun so the entry is internally
+    # consistent. Best-effort: a recap failure must not cost you the journal entry.
+    _recap_json = None
+    try:
+        _r = _build_recap(account=account, frm=from_date, to=to_date)
+        if _r.get("error"):
+            log.warning("journal recap snapshot for %s/%s: %s", week, account, _r["error"])
+        else:
+            _recap_json = json.dumps(_r)
+    except Exception as _re:
+        log.warning("journal recap snapshot failed for %s/%s: %s", week, account, _re)
+
     cur.execute(
-        f"INSERT INTO journal_entries (week, account, generated_at, trade_stats, market_data, ai_summary, user_notes, tags) "
-        f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p}) "
+        f"INSERT INTO journal_entries (week, account, generated_at, trade_stats, market_data, ai_summary, user_notes, tags, recap) "
+        f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p}) "
         f"ON CONFLICT (week, account) DO UPDATE SET generated_at={p}, trade_stats={p}, "
-        f"market_data={p}, ai_summary='', tags={p}",
+        f"market_data={p}, ai_summary='', tags={p}, recap={p}",
         (week, account, now_str, json.dumps(trade_stats), json.dumps(market_data), "", "", _init_tags_json,
-         now_str, json.dumps(trade_stats), json.dumps(market_data), _init_tags_json),
+         _recap_json,
+         now_str, json.dumps(trade_stats), json.dumps(market_data), _init_tags_json, _recap_json),
     )
     conn.commit()
     conn.close()
@@ -15604,11 +15631,12 @@ def _recap_prose(week_label, book, winners, losers, best, gates, scorecard):
     return paras
 
 
-@app.route("/api/recap")
-def api_recap():
-    """Everything a Crew Paper recap episode needs, in one call.
+def _build_recap(account="4", frm="", to="", period=""):
+    """Everything a recap episode needs for ONE book, as a plain dict.
 
-    Scoped to Crew Paper (acct4) on purpose: one book is one narrative. Assembles
+    Split out of the /api/recap route so the weekly JOURNAL can snapshot the same
+    payload per account. Still one book per call — one book is one narrative — but
+    the book is now a parameter rather than hardcoded to Crew Paper. Assembles
     what is cheap server-side — window, book totals, winners/losers, the trade of
     the week, which gates are actually live, the crew's out-of-sample scorecard,
     and pre-written talking points. The page fetches the two expensive pieces
@@ -15622,21 +15650,18 @@ def api_recap():
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZI
 
-    ACCT = "4"
+    ACCT = str(account or "4")
     rec  = ACCOUNTS_BY_NUM.get(ACCT)
     if not rec or rec.get("broker") is None:
-        return jsonify({"error": "Crew Paper (acct4) is not configured"}), 400
+        return {"error": f"Account {ACCT} is not configured"}
 
     try:    et = _ZI("America/New_York")
     except Exception: et = _dt.timezone.utc
     today_et = _dt.datetime.now(et).date()
 
-    frm = (request.args.get("from") or "").strip()
-    to  = (request.args.get("to") or "").strip()
-    period = (request.args.get("period") or "").strip().lower()
-    if not period:
-        # Back-compat with the original ?week=this|last.
-        period = "this_week" if (request.args.get("week") or "").lower() == "this" else "last_week"
+    frm    = (frm or "").strip()
+    to     = (to or "").strip()
+    period = (period or "").strip().lower() or "last_week"
 
     if frm and to:
         week_label = f"{frm} -> {to}"
@@ -15667,7 +15692,7 @@ def api_recap():
         rts    = paired.get("closed_clean") or []
     except Exception as e:
         log.warning("recap pairing failed: %s", e)
-        return jsonify({"error": str(e)[:200]}), 500
+        return {"error": str(e)[:200]}
 
     strategies = _strategy_breakdown(rts) if rts else []
     pnls = [float(t.get("pnl") or 0) for t in rts]
@@ -15768,12 +15793,16 @@ def api_recap():
                             ("rvol", "RVOL"), ("strikes", "Strikes"),
                             ("profit-lock", "Profit lock"), ("daily-loss", "Daily loss"))]
 
+    # Crew-only: the scorecard grades the crew's picks against acct4 results. On any
+    # other book it would be an unrelated table sitting in that book's recap, so it
+    # is left empty rather than shown as if it applied.
     scorecard = {}
-    try:
-        from routes.crew import _pick_scorecard
-        scorecard = _pick_scorecard() or {}
-    except Exception as e:
-        log.debug("recap scorecard failed: %s", e)
+    if ACCT == "4":
+        try:
+            from routes.crew import _pick_scorecard
+            scorecard = _pick_scorecard() or {}
+        except Exception as e:
+            log.debug("recap scorecard failed: %s", e)
 
     # Headline cards for the scorecard table. Two of these are the ones the table
     # itself hides: how many picks NEVER fired (a pick that cannot trade is a
@@ -15848,14 +15877,33 @@ def api_recap():
     script.append({"segment": "5 - The claim",
                    "line": "State one testable claim here, then grade it next episode."})
 
-    return jsonify({
+    return {
         "account": ACCT, "label": rec.get("label"), "from": frm, "to": to,
         "period": period, "week_label": week_label, "book": book,
         "winners": winners, "losers": losers,
         "best_trade": best, "worst_trade": worst,
         "gates": gates, "scorecard": scorecard, "script": script,
         "script_prose": _recap_prose(week_label, book, winners, losers, best, gates, scorecard),
-    })
+    }
+
+
+@app.route("/api/recap")
+def api_recap():
+    """Recap payload for one book. Defaults to Crew Paper for back-compat.
+
+      ?account=4   which book (default 4)
+      ?from=&to=   explicit ET dates
+      ?period=this_week|last_week|this_month|last_month
+      ?week=this   legacy alias for period=this_week
+    """
+    period = (request.args.get("period") or "").strip().lower()
+    if not period:
+        period = "this_week" if (request.args.get("week") or "").lower() == "this" else "last_week"
+    out = _build_recap(account=(request.args.get("account") or "4"),
+                       frm=request.args.get("from") or "",
+                       to=request.args.get("to") or "",
+                       period=period)
+    return (jsonify(out), 400) if out.get("error") else jsonify(out)
 
 
 @app.route("/api/signals/gate_opportunity")
