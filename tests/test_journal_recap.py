@@ -128,3 +128,52 @@ def test_migration_is_idempotent(monkeypatch, tmp_path):
     c = sqlite3.connect(db)
     assert "recap" in [r[1] for r in c.execute("PRAGMA table_info(journal_entries)")]
     c.close()
+
+
+# ── Rendering: evidence yes, narration no ────────────────────────────────────
+
+def _journal_html():
+    return open("templates/journal.html", encoding="utf-8").read()
+
+
+def test_journal_renders_the_recap_block():
+    html = _journal_html()
+    assert "function renderRecap(e)" in html
+    assert "${renderRecap(e)}" in html, "renderRecap defined but never called"
+
+
+def test_recap_block_sits_above_the_ai_summary():
+    """Evidence, then interpretation, then your notes. The AI summary is doing the
+    interpreting, so the facts should be in view before you read its take."""
+    html = _journal_html()
+    i_recap = html.index("${renderRecap(e)}")
+    i_ai    = html.index("Weekly Analysis", i_recap - 4000)
+    i_notes = html.index('class="notes-section"')
+    assert i_recap < i_ai < i_notes
+
+
+def test_narration_is_not_rendered_even_though_it_is_stored():
+    """script/script_prose are a show outline. They stay in the stored snapshot so
+    the record is faithful and the choice is reversible, but the journal shows what
+    happened rather than what to say about it."""
+    html = _journal_html()
+    start = html.index("function renderRecap(e)")
+    end   = html.index("function renderEntry(e)")
+    block = html[start:end]
+    assert "script_prose" not in block
+    # `r.script` must not be read either (the word appears in prose/comments only).
+    import re
+    assert not re.search(r"\br\.script\b", block)
+
+
+def test_snapshot_still_stores_the_narration(monkeypatch):
+    """Not displaying it is an editorial choice, not a data loss — turning it back
+    on later must not require regenerating old entries."""
+    class _B: _paper = True
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {
+        "4": {"tag": "alpaca4", "num": "4", "label": "Crew Paper",
+              "broker": _B(), "fills_fn": lambda: ["x"]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo",
+                        lambda *A, **K: {"closed_clean": [_rt("AAPL_CAM_BREAKOUT_R3S3", 25)]})
+    out = a._build_recap(account="4", frm="2026-08-17", to="2026-08-21")
+    assert "script" in out and "script_prose" in out
