@@ -775,12 +775,17 @@
               <span onclick="selectCrew(event)" title="Select the strategies wired to Crew Paper (alpaca-paper-4)" style="font-size:0.75rem;color:#7FE098;cursor:pointer;font-weight:600">Crew</span>
               <span onclick="narrowByPnl(1,event)" title="Narrow the CURRENT selection to strategies in profit over this range" style="font-size:0.75rem;color:#7FE098;cursor:pointer">Winners</span>
               <span onclick="narrowByPnl(-1,event)" title="Narrow the CURRENT selection to strategies losing money over this range" style="font-size:0.75rem;color:#ef5350;cursor:pointer">Losers</span>
+              <span id="topNOosChip" onclick="toggleTopNOOS(event)"
+                    title="Rank Top-N on the period BEFORE the visible range, then chart the visible range. The plain Top-N ranks on the range it draws, so it always looks good."
+                    style="font-size:0.68rem;font-weight:700;letter-spacing:0.03em;cursor:pointer;
+                           border:1px solid #3a3520;border-radius:4px;padding:1px 6px;color:#8a7c52">OOS</span>
               <span onclick="selectTopN(3,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 3</span>
               <span onclick="selectTopN(5,event)"  style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 5</span>
               <span onclick="selectTopN(10,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 10</span>
               <span onclick="selectTopN(15,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 15</span>
               <span onclick="selectTopN(20,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 20</span>
               <span onclick="selectTopN(25,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 25</span>
+              <span id="topNOosHint" style="font-size:0.66rem;color:#8a7c52;font-style:italic"></span>
               <span onclick="selectRefinedTopN(5,event)"  title="Refined leaderboard RANK — top 5 by composite score (not recent P&L)"  style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;margin-left:auto;font-weight:600">★5</span>
               <span onclick="selectRefinedTopN(10,event)" title="Refined leaderboard RANK — top 10 by composite score (not recent P&L)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;font-weight:600">★10</span>
               <span onclick="selectRefined(event)" title="Select all Refined leaderboard strategies (★ top-20 band)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;font-weight:600">★ all</span>
@@ -1378,11 +1383,92 @@
       await applyEquityFilter();
     }
 
+    // Out-of-sample Top-N.
+    //
+    // The plain Top-N ranks by P&L over the range ON SCREEN and then charts that
+    // same range, so every name it picks is positive by construction and the curve
+    // it draws cannot slope down. That is a description of the past, not evidence.
+    // With this on, Top-N ranks over the EQUAL-LENGTH PERIOD IMMEDIATELY BEFORE the
+    // visible range and charts the visible one — the selection never sees the data
+    // it is judged on. A basket that only works in-sample goes flat here.
+    let _topNOutOfSample = false;
+
+    // Window the last OOS ranking was drawn from, for the hint line.
+    let _topNRankWindow = null;
+
+    function _rangeInputs() {
+      return {
+        from: document.getElementById('equityFromDate')?.value || '',
+        to:   document.getElementById('equityToDate')?.value   || '',
+      };
+    }
+
+    // The equal-length period ending the day before `from`. Null when the visible
+    // range is open-ended — "before all time" is not a window.
+    function _priorWindow(from, to) {
+      if (!from || !to) return null;
+      const f = new Date(from + 'T00:00:00'), t = new Date(to + 'T00:00:00');
+      if (isNaN(f) || isNaN(t) || t < f) return null;
+      const days = Math.round((t - f) / 86400000);
+      const rankTo = new Date(f); rankTo.setDate(f.getDate() - 1);
+      const rankFrom = new Date(rankTo); rankFrom.setDate(rankTo.getDate() - days);
+      return { from: _isoDay(rankFrom), to: _isoDay(rankTo), days: days + 1 };
+    }
+
+    function _isoDay(d) {
+      const p = (n) => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+
+    async function toggleTopNOOS(e) {
+      if (e) e.stopPropagation();
+      const r = _rangeInputs();
+      if (!_topNOutOfSample && !_priorWindow(r.from, r.to)) {
+        alert('Out-of-sample Top-N needs an explicit date range — it ranks on the '
+            + 'period before the one you are viewing. Pick a range first.');
+        return;
+      }
+      _topNOutOfSample = !_topNOutOfSample;
+      _topNRankWindow  = null;
+      _paintOOSChip();
+    }
+
+    function _paintOOSChip() {
+      const chip = document.getElementById('topNOosChip');
+      if (chip) {
+        chip.style.color       = _topNOutOfSample ? '#0b0d14' : '#8a7c52';
+        chip.style.background  = _topNOutOfSample ? '#F2E7AC' : 'transparent';
+        chip.style.borderColor = _topNOutOfSample ? '#F2E7AC' : '#3a3520';
+      }
+      const hint = document.getElementById('topNOosHint');
+      if (hint) {
+        hint.textContent = !_topNOutOfSample ? ''
+          : (_topNRankWindow
+              ? 'ranked on ' + _topNRankWindow.from + ' → ' + _topNRankWindow.to
+              : 'Top-N will rank on the period before this one');
+      }
+    }
+
     async function selectTopN(n, e) {
       if (e) e.stopPropagation();
       const pnlByStrat = {};
-      const fromDate = document.getElementById('equityFromDate')?.value || '';
-      const toDate   = document.getElementById('equityToDate')?.value   || '';
+      let fromDate = document.getElementById('equityFromDate')?.value || '';
+      let toDate   = document.getElementById('equityToDate')?.value   || '';
+
+      // Out-of-sample: rank on the period BEFORE the visible one. Only the RANKING
+      // query moves — the chart still draws the range on screen, so the selection
+      // is being judged on data it never saw.
+      _topNRankWindow = null;
+      if (_topNOutOfSample) {
+        const prior = _priorWindow(fromDate, toDate);
+        if (!prior) {
+          alert('Out-of-sample Top-N needs an explicit date range. Pick one, or switch OOS off.');
+          return;
+        }
+        _topNRankWindow = prior;
+        fromDate = prior.from;
+        toDate   = prior.to;
+      }
 
       if (_ACCT_TABS[activeTab]) {
         // Rank by Alpaca P&L within the active date range — the picker should
@@ -1417,10 +1503,22 @@
         .sort((a, b) => b[1] - a[1])
         .slice(0, n)
         .map(([s]) => s);
+      // Nothing traded in the ranking window. Selecting nothing would mean "show
+      // all" here, which would silently answer a different question.
+      if (!top.length) {
+        alert(_topNOutOfSample
+          ? 'No strategies traded in the ranking window ('
+            + _topNRankWindow.from + ' to ' + _topNRankWindow.to + '), so there is '
+            + 'nothing to carry forward. Try a longer range.'
+          : 'No strategies traded in this range.');
+        return;
+      }
       selectedStrategies = new Set(top);
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
+      _paintOOSChip();
+      _cachedFullStats = null;
       await applyEquityFilter();
     }
 
@@ -3261,7 +3359,10 @@
         document.getElementById('brokerPills').innerHTML = pillsHtml;
         const refinedPill = document.getElementById('refinedPill');
         if (refinedPill) refinedPill.style.display = (brokers.Alpaca?.connected) ? '' : 'none';
-        allTrades = trades;
+        // Coerced for the same reason `execs` is: a non-array reaching one of the
+        // many allTrades.filter(...) calls throws inside a render and blanks the
+        // whole dashboard, which is far worse than showing no trades.
+        allTrades = Array.isArray(trades) ? trades : [];
 
 
         // --- Populate strategy filter (table select + visibility picker) ---
