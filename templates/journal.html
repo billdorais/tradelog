@@ -562,6 +562,26 @@
           <div><div style="font-size:0.64rem;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:3px">Losers</div>
             ${(r.losers || []).map(x => stratRow(x, 'neg')).join('') || '<div style="color:#555;font-size:0.72rem">none</div>'}</div>
         </div>
+        ${(() => {
+          // TV-wired picks vs Kairos-wired picks. Expectancy per trade is the
+          // comparison that holds when the two mechanisms trade different counts.
+          const es = r.entry_split; if (!es) return '';
+          const rows = [['tv','TV alerts','#c4b5fd'],['kairos','Kairos engine','#F2E7AC'],
+                        ['unknown','Not wired','#666']].filter(([k]) => (es[k]||{}).trades);
+          if (!rows.length) return '';
+          return `<div style="margin-top:12px">
+            <div style="font-size:0.64rem;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:3px"
+                 title="Grouped per strategy from current rule wiring — a fill carries no mechanism of its own.">Entry mechanism</div>
+            ${rows.map(([k,lbl,col]) => { const v = es[k]; return `
+              <div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:0.74rem">
+                <span style="color:${col};flex:1">${lbl}</span>
+                <span style="color:#666">${v.trades}t · ${v.win_rate.toFixed(0)}%</span>
+                <span style="color:#888;min-width:70px;text-align:right"
+                      title="expectancy per trade">${m(v.expectancy)}/tr</span>
+                <span class="${cl(v.pnl)}" style="font-weight:600;min-width:64px;text-align:right">${m(v.pnl)}</span>
+              </div>`; }).join('')}
+          </div>`;
+        })()}
         ${gates ? `<div style="margin-top:10px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">
           <span style="font-size:0.64rem;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-right:2px">Gates live</span>
           ${gates}</div>` : ''}

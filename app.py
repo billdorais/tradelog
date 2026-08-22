@@ -15631,6 +15631,55 @@ def _recap_prose(week_label, book, winners, losers, best, gates, scorecard):
     return paras
 
 
+def _entry_source_by_strategy(account_tag=None):
+    """{STRATEGY: "tv"|"kairos"} from the enabled routing rules.
+
+    A fill cannot be attributed by client_order_id — every order this app places is
+    tagged "kairos-{slug}-{ts}", TV-triggered or engine-triggered alike, because
+    that prefix is the app's name, not the mechanism's. What DOES determine the
+    mechanism is how the rule is wired: the crew gives each pick an entry_source
+    node of "tv" or "kairos", so the mapping is per strategy.
+
+    Caveat this cannot fix: the mapping is CURRENT wiring. A pick rewired from [TV]
+    to [Kairos] mid-window has its earlier trades attributed to the new source.
+    Callers should say so rather than imply per-trade provenance.
+    """
+    out = {}
+    _acct_targets = set()
+    if account_tag:
+        for _a in (ALPACA_ACCOUNTS or []):
+            if _a.get("tag") == account_tag:
+                _acct_targets |= {str(_a.get("target_paper") or ""),
+                                  str(_a.get("target_live") or "")} - {""}
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        log.debug("_entry_source_by_strategy failed: %s", e)
+        return out
+    for (nodes,) in rows:
+        try:
+            nl = json.loads(nodes or "[]")
+        except Exception:
+            continue
+        if account_tag:
+            # Resolve broker-node values via the registry rather than importing
+            # routes.webhook._alpaca_broker_name — webhook imports app, so reaching
+            # back the other way would invert the dependency.
+            targets = {str(n.get("value") or "") for n in nl if n.get("type") == "broker"}
+            if targets and not (targets & _acct_targets):
+                continue
+        src = next((str(n.get("value") or "").lower() for n in nl
+                    if n.get("type") == "entry_source"), None)
+        for n in nl:
+            if n.get("type") == "strategy" and n.get("value"):
+                # No entry_source node means the rule fires on TV alerts.
+                out[str(n["value"]).strip().upper()] = src if src in ("tv", "kairos") else "tv"
+    return out
+
+
 def _build_recap(account="4", frm="", to="", period=""):
     """Everything a recap episode needs for ONE book, as a plain dict.
 
@@ -15767,6 +15816,32 @@ def _build_recap(account="4", frm="", to="", period=""):
     winners = [_slim(s) for s in ranked if s["net_pnl"] > 0][:3]
     losers  = [_slim(s) for s in reversed(ranked) if s["net_pnl"] < 0][:3]
 
+    # Entry-mechanism split: how are the [TV]-wired picks doing versus the
+    # [Kairos]-wired ones? Per STRATEGY, because a fill carries no mechanism of its
+    # own (see _entry_source_by_strategy).
+    _src_map = _entry_source_by_strategy(rec["tag"])
+    _by_src = {"tv": [], "kairos": [], "unknown": []}
+    for _t in rts:
+        _src = _src_map.get((_t.get("strategy") or "").strip().upper())
+        _by_src[_src if _src in ("tv", "kairos") else "unknown"].append(
+            float(_t.get("pnl") or 0))
+    def _src_stats(vals, names):
+        n = len(vals)
+        w = [v for v in vals if v > 0]
+        gl = abs(sum(v for v in vals if v <= 0))
+        return {"trades": n, "strategies": names,
+                "pnl": round(sum(vals), 2),
+                "win_rate": round(len(w) / n * 100, 1) if n else 0.0,
+                "expectancy": round(sum(vals) / n, 2) if n else 0.0,
+                "profit_factor": round(sum(w) / gl, 2) if gl > 0 else None}
+    _names = {"tv": set(), "kairos": set(), "unknown": set()}
+    for _t in rts:
+        _s = (_t.get("strategy") or "").strip().upper()
+        _src = _src_map.get(_s)
+        _names[_src if _src in ("tv", "kairos") else "unknown"].add(_s)
+    entry_split = {k: _src_stats(v, len(_names[k])) for k, v in _by_src.items()}
+    entry_split["basis"] = "current rule wiring — a pick rewired mid-window is counted under its source today"
+
     def _trade(t):
         return {"strategy": t.get("strategy"), "ticker": t.get("ticker"),
                 "side": t.get("side"), "qty": t.get("qty"),
@@ -15882,7 +15957,8 @@ def _build_recap(account="4", frm="", to="", period=""):
         "period": period, "week_label": week_label, "book": book,
         "winners": winners, "losers": losers,
         "best_trade": best, "worst_trade": worst,
-        "gates": gates, "scorecard": scorecard, "script": script,
+        "gates": gates, "scorecard": scorecard, "entry_split": entry_split,
+        "script": script,
         "script_prose": _recap_prose(week_label, book, winners, losers, best, gates, scorecard),
     }
 

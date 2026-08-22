@@ -177,3 +177,102 @@ def test_snapshot_still_stores_the_narration(monkeypatch):
                         lambda *A, **K: {"closed_clean": [_rt("AAPL_CAM_BREAKOUT_R3S3", 25)]})
     out = a._build_recap(account="4", frm="2026-08-17", to="2026-08-21")
     assert "script" in out and "script_prose" in out
+
+
+# ── Entry-mechanism split: TV-wired picks vs Kairos-wired picks ──────────────
+
+def _rules_db(monkeypatch, tmp_path, rules):
+    db = tmp_path / "r.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE routing_rules (name TEXT, enabled INT, nodes TEXT)")
+    for name, enabled, nodes in rules:
+        c.execute("INSERT INTO routing_rules VALUES (?,?,?)", (name, enabled, json.dumps(nodes)))
+    c.commit(); c.close()
+    monkeypatch.setattr(a, "get_db", lambda: sqlite3.connect(db))
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"tag": "alpaca4", "num": "4", "label": "Crew Paper",
+         "target_paper": "alpaca-paper-4", "target_live": "alpaca-live-4"}])
+    return db
+
+
+def test_entry_source_comes_from_rule_wiring_not_the_order_id(monkeypatch, tmp_path):
+    """Every order this app places is tagged "kairos-{slug}-{ts}" regardless of
+    mechanism — that prefix is the app's name. The rule's entry_source node is what
+    actually says TV or engine."""
+    _rules_db(monkeypatch, tmp_path, [
+        ("A · Crew", 1, [{"type": "strategy", "value": "AAA_CAM_BREAKOUT_R3S3"},
+                         {"type": "entry_source", "value": "kairos"},
+                         {"type": "broker", "value": "alpaca-paper-4"}]),
+        ("B · Crew", 1, [{"type": "strategy", "value": "BBB_CAM_BREAKOUT_R3S3"},
+                         {"type": "entry_source", "value": "tv"},
+                         {"type": "broker", "value": "alpaca-paper-4"}]),
+        # No entry_source node at all -> fires on TV alerts.
+        ("C · Crew", 1, [{"type": "strategy", "value": "CCC_CAM_BREAKOUT_R3S3"},
+                         {"type": "broker", "value": "alpaca-paper-4"}]),
+        ("off", 0, [{"type": "strategy", "value": "OFF_X"},
+                    {"type": "entry_source", "value": "kairos"}]),
+    ])
+    m = a._entry_source_by_strategy("alpaca4")
+    assert m["AAA_CAM_BREAKOUT_R3S3"] == "kairos"
+    assert m["BBB_CAM_BREAKOUT_R3S3"] == "tv"
+    assert m["CCC_CAM_BREAKOUT_R3S3"] == "tv", "no node should default to TV"
+    assert "OFF_X" not in m, "disabled rules must not contribute"
+
+
+def test_split_reports_each_mechanism_separately(monkeypatch, tmp_path):
+    _rules_db(monkeypatch, tmp_path, [
+        ("K", 1, [{"type": "strategy", "value": "KKK_CAM_BREAKOUT_R3S3"},
+                  {"type": "entry_source", "value": "kairos"},
+                  {"type": "broker", "value": "alpaca-paper-4"}]),
+        ("T", 1, [{"type": "strategy", "value": "TTT_CAM_BREAKOUT_R3S3"},
+                  {"type": "entry_source", "value": "tv"},
+                  {"type": "broker", "value": "alpaca-paper-4"}]),
+    ])
+    class _B: _paper = True
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {
+        "4": {"tag": "alpaca4", "num": "4", "label": "Crew Paper",
+              "broker": _B(), "fills_fn": lambda: ["x"]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", lambda *A, **K: {"closed_clean": [
+        _rt("KKK_CAM_BREAKOUT_R3S3", 60), _rt("KKK_CAM_BREAKOUT_R3S3", -20),
+        _rt("TTT_CAM_BREAKOUT_R3S3", 10),
+        _rt("ZZZ_NOT_WIRED", 99),                      # no rule -> unknown
+    ]})
+    es = a._build_recap(account="4", frm="2026-08-17", to="2026-08-21")["entry_split"]
+    assert es["kairos"]["trades"] == 2 and es["kairos"]["pnl"] == 40.0
+    assert es["kairos"]["win_rate"] == 50.0 and es["kairos"]["profit_factor"] == 3.0
+    assert es["tv"]["trades"] == 1 and es["tv"]["pnl"] == 10.0
+    # An unwired strategy is its own bucket, not silently folded into TV.
+    assert es["unknown"]["trades"] == 1 and es["unknown"]["pnl"] == 99.0
+    assert es["kairos"]["strategies"] == 1 and es["tv"]["strategies"] == 1
+
+
+def test_split_states_that_it_reflects_current_wiring(monkeypatch, tmp_path):
+    """A pick rewired mid-window has its earlier trades counted under today's
+    source. The payload has to say so rather than imply per-trade provenance."""
+    _rules_db(monkeypatch, tmp_path, [])
+    class _B: _paper = True
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {
+        "4": {"tag": "alpaca4", "num": "4", "label": "Crew Paper",
+              "broker": _B(), "fills_fn": lambda: ["x"]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo",
+                        lambda *A, **K: {"closed_clean": [_rt("X_CAM_BREAKOUT_R3S3", 5)]})
+    es = a._build_recap(account="4", frm="2026-08-17", to="2026-08-21")["entry_split"]
+    assert "current rule wiring" in es["basis"]
+
+
+def test_entry_split_is_rendered_on_both_surfaces():
+    """Same question, both places it gets asked."""
+    recap = open("templates/recap.html", encoding="utf-8").read()
+    assert "renderEntrySplit" in recap and "${renderEntrySplit(d.entry_split)}" in recap
+    journal = open("templates/journal.html", encoding="utf-8").read()
+    start = journal.index("function renderRecap(e)")
+    end   = journal.index("function renderEntry(e)")
+    assert "entry_split" in journal[start:end], "journal recap block omits the split"
+
+
+def test_split_surfaces_expectancy_not_just_total_pnl():
+    """TV and Kairos rarely trade the same number of times, so a raw P&L column
+    alone would rank by activity. Per-trade expectancy is the honest comparison."""
+    for f in ("templates/recap.html", "templates/journal.html"):
+        html = open(f, encoding="utf-8").read()
+        assert "expectancy" in html, f"{f} shows no per-trade expectancy"
