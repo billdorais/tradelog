@@ -1121,7 +1121,12 @@ def _pick_scorecard(prev_report=None):
         s = per_strat.get((p.get("strategy") or "").upper())
         if s and (s.get("trades") or 0) > 0:
             pnl = round(s.get("total_pnl", 0) or 0, 2)
+            # `entry` is the [TV]/[Kairos] tag the crew wrote in THIS report. Carry
+            # it through so the scorecard can be bucketed by entry mechanism —
+            # better than looking up current rule wiring, which would misattribute
+            # any pick rewired since the report was written.
             rows.append({"strategy": p["strategy"], "side": p.get("side", "both"),
+                         "entry": (p.get("entry") or "tv"),
                          "trades": s.get("trades", 0), "pnl": pnl,
                          "win_rate": s.get("win_rate", 0)})
             traded   += 1
@@ -1129,6 +1134,7 @@ def _pick_scorecard(prev_report=None):
             total    += pnl
         else:
             rows.append({"strategy": p["strategy"], "side": p.get("side", "both"),
+                         "entry": (p.get("entry") or "tv"),
                          "trades": 0, "pnl": None, "win_rate": None})
     return {"report_week": prev_report.get("week"), "since": since,
             "n_picks": len(picks), "n_traded": traded, "n_positive": positive,

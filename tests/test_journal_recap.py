@@ -276,3 +276,46 @@ def test_split_surfaces_expectancy_not_just_total_pnl():
     for f in ("templates/recap.html", "templates/journal.html"):
         html = open(f, encoding="utf-8").read()
         assert "expectancy" in html, f"{f} shows no per-trade expectancy"
+
+
+# ── Crew scorecard bucketed by entry mechanism ───────────────────────────────
+
+def test_scorecard_rows_carry_the_reports_entry_tag(monkeypatch):
+    """The crew tags each pick [TV] or [Kairos] and the parser already keeps it —
+    _pick_scorecard was dropping it on the floor. Grading a report's picks should
+    use the tag from THAT report, not current rule wiring, or a pick rewired since
+    would be graded under a decision nobody made."""
+    import routes.crew as crew
+    picks = [{"strategy": "AAA_CAM_BREAKOUT_R3S3", "side": "both", "entry": "kairos"},
+             {"strategy": "BBB_CAM_BREAKOUT_R3S3", "side": "long", "entry": "tv"},
+             {"strategy": "CCC_CAM_BREAKOUT_R3S3", "side": "both"}]          # untagged
+    monkeypatch.setattr(crew, "_parse_picks_block", lambda *A, **K: picks, raising=False)
+    src = inspect_source(crew._pick_scorecard)
+    assert '"entry": (p.get("entry") or "tv")' in src, "entry tag not carried into rows"
+    assert src.count('"entry": (p.get("entry") or "tv")') == 2, \
+        "traded and untraded rows must both carry it"
+
+
+def inspect_source(fn):
+    import inspect
+    return inspect.getsource(fn)
+
+
+def test_scorecard_is_bucketed_with_per_bucket_subtotals():
+    html = open("templates/recap.html", encoding="utf-8").read()
+    i = html.index("function renderScorecard(sc)")
+    j = html.index("</script>", i)
+    block = html[i:j]
+    assert "_bucket('tv', 'TV entries'" in block
+    assert "_bucket('kairos', 'Kairos entries'" in block
+    # A bucket without its own net is just a visual grouping, not a comparison.
+    assert "net <span" in block and "green" in block
+
+
+def test_untagged_picks_default_to_tv_not_dropped():
+    """An older report without tags must still render every pick — silently
+    dropping rows would make the scorecard understate the roster."""
+    html = open("templates/recap.html", encoding="utf-8").read()
+    i = html.index("function renderScorecard(sc)")
+    block = html[i:html.index("</script>", i)]
+    assert "(p.entry || 'tv')" in block

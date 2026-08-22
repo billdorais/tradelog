@@ -439,12 +439,33 @@
 
   function renderScorecard(sc) {
     if (!sc || !sc.picks) return '<div class="empty">No crew report with parseable picks yet.</div>';
-    const rows = sc.picks.map(p => `<tr>
+    // Bucketed by the [TV]/[Kairos] tag the crew wrote in THIS report — the entry
+    // mechanism each pick was chosen for. Read from the report rather than from
+    // current rule wiring, so a pick rewired since then is still graded under the
+    // decision that was actually made. Each bucket carries its own subtotal, which
+    // is the comparison the split exists for.
+    const _row = p => `<tr>
       <td class="mono">${esc(p.strategy.replace(/_V02_5MIN$/, ''))}</td>
       <td style="color:#888">${esc(p.side)}</td>
       <td>${p.trades}</td>
       <td class="${p.pnl == null ? 'thin' : cls(p.pnl)}" style="text-align:right">
-        ${p.pnl == null ? 'no trades' : money(p.pnl)}</td></tr>`).join('');
+        ${p.pnl == null ? 'no trades' : money(p.pnl)}</td></tr>`;
+    const _bucket = (key, label, colour) => {
+      const ps = sc.picks.filter(p => (p.entry || 'tv') === key);
+      if (!ps.length) return '';
+      const traded = ps.filter(p => p.pnl != null);
+      const net    = traded.reduce((t, p) => t + p.pnl, 0);
+      const green  = traded.filter(p => p.pnl > 0).length;
+      return `<tr><td colspan="4" style="padding:10px 8px 3px">
+          <span style="color:${colour};font-weight:600;font-size:0.78rem">${label}</span>
+          <span style="color:#666;font-size:0.72rem;margin-left:8px">
+            ${ps.length} pick${ps.length === 1 ? '' : 's'} ·
+            ${traded.length} traded · ${green} green ·
+            net <span class="${cls(net)}">${money(net)}</span></span>
+        </td></tr>` + ps.map(_row).join('');
+    };
+    const rows = _bucket('tv', 'TV entries', '#c4b5fd')
+               + _bucket('kairos', 'Kairos entries', '#F2E7AC');
     const m = sc.summary || {};
     const cards = !sc.summary ? '' : `
       <div class="tiles" style="margin-bottom:12px">
