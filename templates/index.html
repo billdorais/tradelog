@@ -773,6 +773,8 @@
               <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">None</span>
               <span onclick="selectIndices(event)" title="Select index/ETF strategies (SPY, QQQ, IWM, SMH)" style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Indices</span>
               <span onclick="selectCrew(event)" title="Select the strategies wired to Crew Paper (alpaca-paper-4)" style="font-size:0.75rem;color:#7FE098;cursor:pointer;font-weight:600">Crew</span>
+              <span onclick="selectCrewTv(event)" title="Crew picks that enter on TV alerts. On either farm this shows the same names with that farm's entry mechanism." style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Crew TV</span>
+              <span onclick="selectCrewKairos(event)" title="Crew picks that enter via the Kairos engine. On either farm this shows the same names with that farm's entry mechanism." style="font-size:0.75rem;color:#5FC8D4;cursor:pointer">Crew Kairos</span>
               <span onclick="narrowByPnl(1,event)" title="Narrow the CURRENT selection to strategies in profit over this range" style="font-size:0.75rem;color:#7FE098;cursor:pointer">Winners</span>
               <span onclick="narrowByPnl(-1,event)" title="Narrow the CURRENT selection to strategies losing money over this range" style="font-size:0.75rem;color:#ef5350;cursor:pointer">Losers</span>
               <span id="topNOosChip" onclick="toggleTopNOOS(event)"
@@ -1610,8 +1612,32 @@
       const _crewSet = activeTab === 'kairos'  ? _crewStrategiesKairos
                      : activeTab === 'refined' ? _crewStrategiesTv
                      : _crewStrategies;
-      if (!_crewSet.size) {
-        alert('No Crew picks are wired to enter on this book yet. '
+      return _applyCrewSet(_crewSet, 'wired to enter on this book');
+    }
+
+    // Crew picks scoped to ONE entry mechanism, on any tab. The auto-scoping in
+    // selectCrew keys off the account being viewed, which gives the wrong answer on
+    // the farms: both farms run EVERY strategy, so on TV Farm the [Kairos]-tagged
+    // picks still have TV-entry fills. Selecting them there is not a mistake, it is
+    // the head-to-head — the same names, the other mechanism. So these are explicit
+    // rather than inferred.
+    async function selectCrewTv(e) {
+      if (e) e.stopPropagation();
+      return _applyCrewSet(_crewStrategiesTv, 'tagged [TV]');
+    }
+
+    async function selectCrewKairos(e) {
+      if (e) e.stopPropagation();
+      return _applyCrewSet(_crewStrategiesKairos, 'tagged [Kairos]');
+    }
+
+    async function _applyCrewSet(_crewSet, whatFor) {
+      if (!_crewStrategies || _crewStrategies.size === 0) {
+        alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
+        return;
+      }
+      if (!_crewSet || !_crewSet.size) {
+        alert('No Crew picks are ' + whatFor + ' yet. '
             + 'Check the entry source on each pick in the Signal Router.');
         return;
       }

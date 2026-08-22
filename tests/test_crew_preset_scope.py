@@ -38,9 +38,29 @@ def test_preset_follows_the_selected_book():
 
 def test_empty_subset_says_why_rather_than_selecting_everything():
     """Falling back to all 18 when a book has no wired picks would reintroduce the
-    exact bug — silently showing a roster the account cannot trade."""
+    exact bug — silently showing a roster the account cannot trade. The guard lives
+    in _applyCrewSet, which every crew preset routes through."""
     html = _index()
-    i = html.index("async function selectCrew")
+    i = html.index("async function _applyCrewSet")
     block = html[i:i + 1800]
-    assert "if (!_crewSet.size)" in block
+    assert "if (!_crewSet || !_crewSet.size)" in block
     assert "entry source on each pick" in block
+    guard = block[block.index("if (!_crewSet || !_crewSet.size)"):]
+    assert "return;" in guard.split("selectedStrategies =")[0],         "must bail out before assigning — an empty Set means show-all"
+
+
+def test_every_crew_preset_routes_through_the_same_guard():
+    """A preset that skipped it would silently select everything on an empty set."""
+    html = _index()
+    for fn in ("selectCrew", "selectCrewTv", "selectCrewKairos"):
+        i = html.index("async function %s(" % fn)
+        assert "_applyCrewSet(" in html[i:i + 1100], fn
+
+
+def test_the_farm_tabs_get_explicit_per_mechanism_presets():
+    """Auto-scoping keys off the account being viewed, which is wrong on the farms:
+    both farms run EVERY strategy, so the [Kairos]-tagged picks have TV-entry fills
+    on TV Farm. That cross view is the head-to-head, not a mistake."""
+    html = _index()
+    assert "selectCrewTv(event)" in html and "selectCrewKairos(event)" in html
+    assert ">Crew TV<" in html and ">Crew Kairos<" in html
