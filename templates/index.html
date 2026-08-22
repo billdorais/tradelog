@@ -826,6 +826,10 @@
         <button id="sideShortBtn" onclick="toggleSideFilter('short')"
           style="padding:2px 10px;font-size:0.72rem;background:transparent;border:none;border-left:1px solid #2a2d3e;color:#777;cursor:pointer">Shorts</button>
       </div>
+      <button id="hoursWindowBtn" onclick="toggleHoursWindow()"
+        title="Curated hours only - keep just the trades whose ENTRY falls inside the trading windows. The farms are ungated and trade all day, so their headline curve includes trades the curated books can never take."
+        style="padding:2px 9px;font-size:0.78rem;line-height:1.1;background:transparent;
+               border:1px solid #2a2d3e;color:#555;border-radius:4px;cursor:pointer">&#128339;</button>
       <button id="alpacaResetExcluded" onclick="resetAlpacaExclusions()"
         style="display:none;padding:2px 10px;font-size:0.72rem;background:transparent;
                border:1px solid #ef5350;color:#ef5350;border-radius:4px;cursor:pointer">
@@ -1197,6 +1201,9 @@
     // '' = both, 'long', or 'short' — filters the equity chart by trade side.
     // Persisted so the 30s auto-refresh (and reloads) never silently drops it.
     let _sideFilter  = localStorage.getItem('alpaca_side_filter') || '';
+    // Curated-hours filter. Server-side (the windows are multi-range and live in
+    // settings), so this refetches rather than filtering the points on screen.
+    let _hoursWindow = localStorage.getItem('alpaca_hours_window') === '1';
 
     function _loadExclusions() {
       try { return new Set(JSON.parse(localStorage.getItem(_EXCL_KEY) || '[]')); }
@@ -1674,6 +1681,34 @@
       if (L) { const on = _sideFilter === 'long';  L.style.color = on ? '#7FE098' : '#777'; L.style.background = on ? 'rgba(127,224,152,0.12)' : 'transparent'; }
       if (S) { const on = _sideFilter === 'short'; S.style.color = on ? '#ef5350' : '#777'; S.style.background = on ? 'rgba(239,83,80,0.12)' : 'transparent'; }
     }
+    function toggleHoursWindow() {
+      _hoursWindow = !_hoursWindow;
+      try { localStorage.setItem('alpaca_hours_window', _hoursWindow ? '1' : '0'); } catch (_) {}
+      _syncHoursButton();
+      _cachedFullStats = null;
+      const fromDate = document.getElementById('equityFromDate').value;
+      const toDate   = document.getElementById('equityToDate').value;
+      // TV signals / IB are not Alpaca fills, so the server-side filter does not apply.
+      if (activeTab === 'signals' || activeTab === 'ib') { applyEquityFilter().catch(() => {}); return; }
+      renderAlpacaStats(fromDate, toDate, _acctForTab(activeTab) || null);
+    }
+
+    function _syncHoursButton(applied, windows) {
+      const b = document.getElementById('hoursWindowBtn');
+      if (!b) return;
+      b.style.color       = _hoursWindow ? '#F2E7AC' : '#555';
+      b.style.borderColor = _hoursWindow ? '#F2E7AC' : '#2a2d3e';
+      b.style.background  = _hoursWindow ? 'rgba(242,231,172,0.10)' : 'transparent';
+      // Name the real windows once the server says what it used. A filter the user
+      // cannot inspect is one they have to take on trust.
+      if (_hoursWindow && windows && windows.length) {
+        b.title = 'Curated hours only: ' + windows.join(', ') + ' ET (entry time). '
+                + 'Click to show all trades.';
+      } else if (_hoursWindow && applied === 'all') {
+        b.title = 'No curated windows are configured, so nothing is being filtered.';
+      }
+    }
+
     function toggleSideFilter(side) {
       _sideFilter = (_sideFilter === side) ? '' : side;
       try { localStorage.setItem('alpaca_side_filter', _sideFilter); } catch (_) {}
@@ -1695,12 +1730,14 @@
 
     async function renderAlpacaStats(fromDate, toDate, account) {
       _syncSideButtons();   // keep the Long/Short buttons lit after every refresh
+      _syncHoursButton();
       let url = '/api/alpaca/analysis';
       const params = new URLSearchParams();
       if (fromDate)    params.set('from_date',    fromDate);
       if (toDate)      params.set('to_date',       toDate);
       if (account)     params.set('account',       account);
       if (_signalsOnly) params.set('signals_only', '1');
+      if (_hoursWindow) params.set('hours', 'curated');
       const exclArr = [..._loadExclusions()];
       if (exclArr.length) params.set('exclude', exclArr.join(','));
       if (params.toString()) url += '?' + params.toString();
@@ -1735,6 +1772,7 @@
       // execs.filter then throws. loadTrades already guards every one of these the
       // same way; this call site did not, and the throw took out the rest of the
       // tab switch with it. Coerce rather than trust the shape.
+      _syncHoursButton(data.hours_applied, data.hours_windows);
       if (!Array.isArray(execs)) execs = [];
       if (fromDate || toDate) {
         execs = execs.filter(e => {

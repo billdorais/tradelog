@@ -21286,8 +21286,14 @@ def api_alpaca_analysis():
         # 9:30-11:30) and you want stats / rankings to reflect that window.
         from_time    = (request.args.get("from_time") or "").strip()
         to_time      = (request.args.get("to_time")   or "").strip()
+        # hours=curated keeps only entries inside the CURATED trading windows. The
+        # farms are ungated and trade all day, so their headline curve includes
+        # trades the books that select from them can never take. from_time/to_time
+        # cannot express this: the curated hours are multiple windows (e.g.
+        # 09:35-10:00 + 12:00-15:55) and that pair is one contiguous span.
+        hours_mode   = (request.args.get("hours") or "").strip().lower()
 
-        _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}|{from_time}|{to_time}"
+        _cache_key  = f"{from_date}|{to_date}|{signals_only}|{exclude}|{from_time}|{to_time}|{hours_mode}"
         _acache     = _alpaca_analysis_caches.get(str(account), _alpaca_analysis_caches["1"])
         _cached     = _acache.get(_cache_key)
         if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
@@ -21468,6 +21474,27 @@ def api_alpaca_analysis():
             closed       = [c for c in closed       if _in_window(c.get("entry_time"))]
             orphans      = [c for c in orphans      if _in_window(c.get("entry_time") or c.get("time"))]
             daily_closed = [c for c in daily_closed if _in_window(c.get("entry_time"))]
+
+        # Curated-hours filter. Shares _hhmm_in_windows with the live entry gate, so
+        # "what this chart shows" and "what the book would actually have taken"
+        # cannot drift apart.
+        curated_windows = []
+        if hours_mode == "curated":
+            curated_windows = _shared_hours_windows("refined") or []
+        if curated_windows:
+            from zoneinfo import ZoneInfo as _ZI2
+            _et2 = _ZI2("America/New_York")
+            def _in_curated(iso_ts):
+                if not iso_ts:
+                    return False          # unknown entry time is not provably takeable
+                try:
+                    hhmm = _dt.fromisoformat(iso_ts.replace("Z", "+00:00"))                               .astimezone(_et2).strftime("%H:%M")
+                except Exception:
+                    return False
+                return _hhmm_in_windows(hhmm, curated_windows)
+            closed       = [c for c in closed       if _in_curated(c.get("entry_time"))]
+            orphans      = [c for c in orphans      if _in_curated(c.get("entry_time") or c.get("time"))]
+            daily_closed = [c for c in daily_closed if _in_curated(c.get("entry_time"))]
 
         # Classify per-day orphans (global orphans were already separated by the helper).
         daily_orphans, daily_clean = [], []
@@ -21731,6 +21758,10 @@ def api_alpaca_analysis():
             "per_strategy": per_strategy,
             "per_ticker":   per_ticker,
             "hours_reach":  hours_reach,
+            # What the curated-hours filter actually did, so the UI can name the
+            # windows rather than asserting a filter the user cannot inspect.
+            "hours_applied": "curated" if curated_windows else "all",
+            "hours_windows": ["%s-%s" % (a, b) for a, b in curated_windows],
             "daily":        daily,
             "weekly":       weekly,
             "equity_curve": equity_curve,

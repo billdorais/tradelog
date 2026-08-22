@@ -40,7 +40,7 @@ def test_exec_list_is_coerced_before_filtering():
     guards every one of these with Array.isArray; this call site did not."""
     html = _index()
     i = html.index("async function renderAlpacaStats")
-    block = html[i:i + 2600]
+    block = html[i:i + 3400]
     assert "if (!Array.isArray(execs)) execs = [];" in block
     assert block.index("Array.isArray(execs)") < block.index("execs.filter("), \
         "the coercion must come before the filter"
