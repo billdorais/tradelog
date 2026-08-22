@@ -66,11 +66,9 @@
           <select id="acctBlockAcct" onchange="loadBlockedByAccount()"
                   style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
             <option value="">All books</option>
-            <option value="alpaca2">TV Refined</option>
-            <option value="alpaca3">Kairos Refined</option>
-            <option value="alpaca4">Crew Paper</option>
-            <option value="alpaca">TV Farm</option>
-            <option value="alpaca5">Kairos Farm</option>
+            {% for a in accounts %}
+            <option value="{{ a.tag }}">{% if not a.paper %}● {% endif %}{{ a.label }}</option>
+            {% endfor %}
           </select>
         </label>
         <label style="font-size:0.72rem;color:#888">Range

@@ -286,6 +286,11 @@
                                color: #c4b5fd; border-bottom-color: #a78bfa; }   /* TV Refined */
     .pnl-tab.active-farm    { border-color: #F2C07A; background: rgba(242,192,122,0.12);
                                color: #F2C07A; border-bottom-color: #F2C07A; }   /* Kairos Farm */
+    /* Crew Live — REAL MONEY. Tinted even when inactive so the tab you are on is
+       never ambiguous; every other tab is a paper book. */
+    .pnl-tab.live-tab        { color: #E8A0BF; border-bottom-color: rgba(232,160,191,0.4); }
+    .pnl-tab.active-live     { color: #E8A0BF; border-bottom-color: #E8A0BF;
+                               background: rgba(232,160,191,0.10); font-weight: 700; }
     .pnl-tab.active-kairos  { border-color: #F2C07A; background: rgba(242,192,122,0.12);
                                color: #F2C07A; border-bottom-color: #F2C07A; }   /* Kairos Refined */
     .pnl-tab.active-crew    { border-color: #7FE098; background: rgba(127,224,152,0.12);
@@ -733,11 +738,13 @@
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:4px;align-items:center">
-        <button id="tabCrew"     class="pnl-tab active-crew"    onclick="switchTab('crew')">Crew Paper</button>
-        <button id="tabKairos"   class="pnl-tab"                onclick="switchTab('kairos')">Kairos Refined</button>
-        <button id="tabRefined"  class="pnl-tab"                onclick="switchTab('refined')">TV Refined</button>
-        <button id="tabFarm"     class="pnl-tab"                onclick="switchTab('farm')">Kairos Farm</button>
-        <button id="tabAlpaca"   class="pnl-tab"                onclick="switchTab('alpaca')">TV Farm</button>
+        {# Registry-driven: only CONFIGURED accounts get a tab, in UI order. A book
+           the server has no keys for must not render a tab that fetches nothing. #}
+        {% for a in accounts %}
+        <button id="tab-{{ a.tab }}" class="pnl-tab{% if not a.paper %} live-tab{% endif %}"
+                onclick="switchTab('{{ a.tab }}')"
+                {% if not a.paper %}title="REAL MONEY"{% endif %}>{% if not a.paper %}● {% endif %}{{ a.label }}</button>
+        {% endfor %}
         <button id="tabSignals"  class="pnl-tab"                onclick="switchTab('signals')" style="display:none">Signals P&amp;L</button>
         <button id="tabIB"       class="pnl-tab"                onclick="switchTab('ib')"      style="display:none">IB P&amp;L</button>
         <span id="chartLoadingSpinner"
@@ -881,21 +888,11 @@
   <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;max-width:1200px;margin:0 auto 10px">
     <span>Trade Feed</span>
     <div style="display:flex;gap:4px">
-      <button id="feedTabCrew" onclick="switchFeedTab('crew')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #88BF8B;background:rgba(136,191,139,0.15);color:#88BF8B">
-        Crew</button>
-      <button id="feedTabKairos" onclick="switchFeedTab('kairos')"
+      {% for a in accounts %}
+      <button id="feedTab-{{ a.tab }}" onclick="switchFeedTab('{{ a.tab }}')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        ⚡ Kairos Refined</button>
-      <button id="feedTabRefined" onclick="switchFeedTab('refined')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        TV Refined</button>
-      <button id="feedTabFarm" onclick="switchFeedTab('farm')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        Kairos Farm</button>
-      <button id="feedTabAlpaca" onclick="switchFeedTab('alpaca')"
-        style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
-        TV Farm</button>
+        {% if not a.paper %}● {% endif %}{{ a.label }}</button>
+      {% endfor %}
       <button id="feedTabTV" onclick="switchFeedTab('tv')"
         style="padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #2a2d3e;background:transparent;color:#888">
         TV Signals</button>
@@ -981,26 +978,26 @@
     let allAlpaca3Execs = [];      // Kairos engine (alpaca-paper-3) fills
     let allAlpaca4Execs = [];      // Crew Paper (alpaca-paper-4) fills
     let allAlpaca5Execs = [];      // Engine Farm (alpaca-paper-5) fills
+    let allAlpaca6Execs = [];      // Crew Live (alpaca-live-6) fills — REAL MONEY
     let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
     let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
     let allAlpaca3Positions = [];   // authoritative open positions from Alpaca account 3 (Kairos)
     let allAlpaca4Positions = [];   // authoritative open positions from Alpaca account 4 (Crew Paper)
     let allAlpaca5Positions = [];   // authoritative open positions from Alpaca account 5 (Engine Farm)
+    let allAlpaca6Positions = [];   // authoritative open positions from Alpaca account 6 (Crew Live — REAL MONEY)
 
-    function _currentAlpacaExecs() {
-      if (feedTab === 'farm')    return allAlpaca5Execs;
-      if (feedTab === 'crew')    return allAlpaca4Execs;
-      if (feedTab === 'kairos')  return allAlpaca3Execs;
-      if (feedTab === 'refined') return allAlpaca2Execs;
-      return allAlpacaExecs;
+    // Keyed by account number so a new book needs no branch here — just the
+    // allAlpacaN* pair and its _ACCT_TABS row.
+    function _execsByAcct(n) {
+      return ({ '2': allAlpaca2Execs, '3': allAlpaca3Execs, '4': allAlpaca4Execs,
+                '5': allAlpaca5Execs, '6': allAlpaca6Execs })[n] || allAlpacaExecs;
     }
-    function _currentAlpacaPositions() {
-      if (feedTab === 'farm')    return allAlpaca5Positions;
-      if (feedTab === 'crew')    return allAlpaca4Positions;
-      if (feedTab === 'kairos')  return allAlpaca3Positions;
-      if (feedTab === 'refined') return allAlpaca2Positions;
-      return allAlpacaPositions;
+    function _positionsByAcct(n) {
+      return ({ '2': allAlpaca2Positions, '3': allAlpaca3Positions, '4': allAlpaca4Positions,
+                '5': allAlpaca5Positions, '6': allAlpaca6Positions })[n] || allAlpacaPositions;
     }
+    function _currentAlpacaExecs()     { return _execsByAcct(_acctForTab(feedTab)); }
+    function _currentAlpacaPositions() { return _positionsByAcct(_acctForTab(feedTab)); }
     let selectedStrategy   = '';
     // Per-tab strategy selections so Paper All and Paper Refined filter independently
     const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), crew: new Set(), farm: new Set(), signals: new Set() };
@@ -1011,12 +1008,39 @@
     let _cachedToDate      = null;
     let _allGroups     = [];
     let _feedFilter    = { tv: false, alpaca: true };  // Alpaca default
-    let feedTab        = 'crew';  // matches activeTab default so chart + feed start in sync
+    let feedTab        = activeTab;  // matches activeTab default so chart + feed start in sync
     let _shownGroups   = 0;
     const PAGE_SIZE    = 20;
-    let activeTab = 'crew';
+    // One row per account tab — the single place the dashboard learns about a book.
+    // Adding an account is a row here plus the matching <button>, not a new branch
+    // in switchTab. `account` is the ?account= value; acct 1 sends none.
+    // Which books the server actually has keys for. Gates the default tab so a
+    // deploy without ALPACA_KEY6 opens on Crew Paper instead of an empty Crew Live.
+    const _CONFIGURED = new Set({{ accounts | map(attribute='tab') | list | tojson }});
+    window.__ACCT6_ON__ = _CONFIGURED.has('live');
+    const _ACCT_TABS = {
+      live:    { account: '6', label: 'Cumulative realized P&L from Crew Live fills (acct 6) — REAL MONEY',
+                 note:  'Crew Live (account 6) trades REAL MONEY. Same roster as Crew Paper.' },
+      crew:    { account: '4', label: 'Cumulative realized P&L from Crew Paper fills (acct 4)',
+                 note:  'Cumulative realized P&L from Crew Paper fills (paper account 4).' },
+      kairos:  { account: '3', label: 'Cumulative realized P&L from Kairos Refined fills (acct 3)',
+                 note:  'Cumulative realized P&L from Kairos Refined fills (paper account 3).' },
+      refined: { account: '2', label: 'Cumulative realized P&L from TV Refined fills',
+                 note:  'Cumulative realized P&L from TV Refined fills.' },
+      farm:    { account: '5', label: 'Cumulative realized P&L from Kairos Farm fills (acct 5)',
+                 note:  'Cumulative realized P&L from Kairos Farm fills (paper account 5 - engine-entry twin of TV Farm).' },
+      alpaca:  { account: '',  label: 'Cumulative realized P&L from TV Farm fills',
+                 note:  'Cumulative realized P&L from TV Farm fills.' },
+    };
+    // Crew Live leads when it is configured. It is the only book with real money on
+    // it, so it should not be a tab you have to remember to click. When acct 6 is
+    // not configured the tab is hidden and this falls back to Crew Paper, so a
+    // deploy without ALPACA_KEY6 opens on a real book rather than an empty one.
+    for (const k of Object.keys(_ACCT_TABS)) if (!_CONFIGURED.has(k)) delete _ACCT_TABS[k];
+    let activeTab = (window.__ACCT6_ON__ ? 'live' : 'crew');
     // Map a chart tab to its Alpaca ?account= value ('' = Paper All, 2 = Refined, 3 = Kairos engine, 4 = Crew Paper).
-    function _acctForTab(tab) { return tab === 'refined' ? '2' : tab === 'kairos' ? '3' : tab === 'crew' ? '4' : tab === 'farm' ? '5' : ''; }
+    // Reads the same table the tabs do, so it cannot drift from them.
+    function _acctForTab(tab) { return (_ACCT_TABS[tab] || {}).account || ''; }
 
     async function switchTab(tab) {
       try {
@@ -1024,17 +1048,16 @@
         // Switch to the per-tab selection set so each tab filters independently
         selectedStrategies = _tabSelections[tab] || (_tabSelections[tab] = new Set());
 
-        // Tab button highlighting
-        document.getElementById('tabAlpaca').className  = 'pnl-tab' + (tab === 'alpaca'   ? ' active-alpaca'   : '');
+        // Tab button highlighting — driven off the rendered buttons, so a tab the
+        // server did not render simply is not here to light up.
+        for (const k of Object.keys(_ACCT_TABS)) {
+          const el = document.getElementById('tab-' + k);
+          if (el) el.className = 'pnl-tab'
+                              + (tab === k ? ' active-' + k : '')
+                              + (k === 'live' ? ' live-tab' : '');   // live keeps its warning tint always
+        }
         document.getElementById('tabSignals').className = 'pnl-tab' + (tab === 'signals'  ? ' active-signals'  : '');
         document.getElementById('tabIB').className      = 'pnl-tab' + (tab === 'ib'       ? ' active-ib'       : '');
-        document.getElementById('tabRefined').className = 'pnl-tab' + (tab === 'refined'  ? ' active-refined'  : '');
-        const _tabK = document.getElementById('tabKairos');
-        if (_tabK) _tabK.className = 'pnl-tab' + (tab === 'kairos' ? ' active-kairos' : '');
-        const _tabC = document.getElementById('tabCrew');
-        if (_tabC) _tabC.className = 'pnl-tab' + (tab === 'crew' ? ' active-crew' : '');
-        const _tabF = document.getElementById('tabFarm');
-        if (_tabF) _tabF.className = 'pnl-tab' + (tab === 'farm' ? ' active-farm' : '');
 
         const spinner = document.getElementById('chartLoadingSpinner');
         const label   = document.getElementById('equityChartLabel');
@@ -1047,11 +1070,15 @@
 
         // Update label and show spinner immediately (before any async work)
         if (spinner) spinner.style.display = 'inline-block';
-        if (note)    note.style.display    = (tab === 'alpaca' || tab === 'refined' || tab === 'kairos' || tab === 'crew' || tab === 'farm') ? 'flex' : 'none';
+        if (note)    note.style.display    = _ACCT_TABS[tab] ? 'flex' : 'none';
 
-        if (tab === 'refined') {
-          if (label) label.textContent = 'Cumulative realized P&L from TV Refined fills';
-          if (note)  note.textContent  = 'Cumulative realized P&L from TV Refined fills.';
+        // Account tabs. These five were five near-identical branches differing only
+        // in label text and account number, which is why adding a book meant editing
+        // JS. Table-driven now: a new account is one row in _ACCT_TABS.
+        const _t = _ACCT_TABS[tab];
+        if (_t) {
+          if (label) label.textContent = _t.label;
+          if (note)  note.textContent  = _t.note;
           const fromEl = document.getElementById('equityFromDate');
           if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
           const toEl = document.getElementById('equityToDate');
@@ -1060,62 +1087,11 @@
           renderAlpacaStats(
             document.getElementById('equityFromDate')?.value || '',
             document.getElementById('equityToDate')?.value   || '',
-            '2'
+            _t.account || undefined          // acct 1 sends no ?account, as before
           );
           loadAccount();
-          feedTab = 'refined'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('refined');
-          renderTable(allTrades, selectedStrategy);
-        } else if (tab === 'kairos') {
-          if (label) label.textContent = 'Cumulative realized P&L from Kairos Refined fills (acct 3)';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Kairos Refined fills (paper account 3).';
-          const fromEl = document.getElementById('equityFromDate');
-          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
-          const toEl = document.getElementById('equityToDate');
-          if (toEl) toEl.style.display = '';
-          await new Promise(r => requestAnimationFrame(r));
-          renderAlpacaStats(
-            document.getElementById('equityFromDate')?.value || '',
-            document.getElementById('equityToDate')?.value   || '',
-            '3'
-          );
-          loadAccount();
-          feedTab = 'kairos'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('kairos');
-          renderTable(allTrades, selectedStrategy);
-        } else if (tab === 'crew') {
-          if (label) label.textContent = 'Cumulative realized P&L from Crew Paper fills (acct 4)';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Crew Paper fills (paper account 4).';
-          const fromEl = document.getElementById('equityFromDate');
-          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
-          const toEl = document.getElementById('equityToDate');
-          if (toEl) toEl.style.display = '';
-          await new Promise(r => requestAnimationFrame(r));
-          renderAlpacaStats(
-            document.getElementById('equityFromDate')?.value || '',
-            document.getElementById('equityToDate')?.value   || '',
-            '4'
-          );
-          loadAccount();
-          feedTab = 'crew'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('crew');
-          renderTable(allTrades, selectedStrategy);
-        } else if (tab === 'farm') {
-          if (label) label.textContent = 'Cumulative realized P&L from Kairos Farm fills (acct 5)';
-          if (note)  note.textContent  = 'Cumulative realized P&L from Kairos Farm fills (paper account 5 - engine-entry twin of TV Farm).';
-          const fromEl = document.getElementById('equityFromDate');
-          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
-          const toEl = document.getElementById('equityToDate');
-          if (toEl) toEl.style.display = '';
-          await new Promise(r => requestAnimationFrame(r));
-          renderAlpacaStats(
-            document.getElementById('equityFromDate')?.value || '',
-            document.getElementById('equityToDate')?.value   || '',
-            '5'
-          );
-          loadAccount();
-          feedTab = 'farm'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('farm');
+          feedTab = tab; _feedFilter.tv = false; _feedFilter.alpaca = true;
+          _syncFeedTabButtons(tab);
           renderTable(allTrades, selectedStrategy);
         } else if (tab === 'signals') {
           if (label) label.textContent = 'Cumulative P&L from TV signals';
@@ -1124,22 +1100,6 @@
           feedTab = 'tv'; _feedFilter.tv = true; _feedFilter.alpaca = false;
           _syncFeedTabButtons('tv');
           renderTVFeed();
-        } else if (tab === 'alpaca') {
-          if (label) label.textContent = 'Cumulative realized P&L from TV Farm fills';
-          if (note)  note.textContent  = 'Cumulative realized P&L from TV Farm fills.';
-          const fromEl = document.getElementById('equityFromDate');
-          if (fromEl) { fromEl.style.display = ''; if (!fromEl.value) { const d30=new Date(); d30.setDate(d30.getDate()-30); fromEl.value=d30.toISOString().slice(0,10); } }
-          const toEl = document.getElementById('equityToDate');
-          if (toEl) toEl.style.display = '';
-          await new Promise(r => requestAnimationFrame(r));
-          renderAlpacaStats(
-            document.getElementById('equityFromDate')?.value || '',
-            document.getElementById('equityToDate')?.value   || ''
-          );
-          loadAccount();
-          feedTab = 'alpaca'; _feedFilter.tv = false; _feedFilter.alpaca = true;
-          _syncFeedTabButtons('alpaca');
-          renderTable(allTrades, selectedStrategy);
         } else {
           if (label) label.textContent = 'Cumulative realized P&L from IB fills';
           if (note)  note.textContent  = 'Cumulative realized P&L from IB fills.';
@@ -1384,7 +1344,7 @@
       const fromDate = document.getElementById('equityFromDate')?.value || '';
       const toDate   = document.getElementById('equityToDate')?.value   || '';
 
-      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos' || activeTab === 'crew' || activeTab === 'farm') {
+      if (_ACCT_TABS[activeTab]) {
         // Rank by Alpaca P&L within the active date range — the picker should
         // surface "top performers of this period," not all-time winners that
         // may not have traded today. If fewer than N strategies traded in the
@@ -2405,7 +2365,7 @@
       // both Alpaca tabs (Paper All and Paper Refined) draw their own chart with
       // ticker/pnl tooltips in renderAlpacaStats before calling renderStats.
       // Overdrawing here would replace it with [entry #? → exit #?] placeholders.
-      if (activeTab !== 'alpaca' && activeTab !== 'refined' && activeTab !== 'kairos' && activeTab !== 'crew' && activeTab !== 'farm') {
+      if (!_ACCT_TABS[activeTab]) {
         const _curve   = stats.equity_curve || [];
         const labels   = _curve.map(p => fmtET(p.time) || p.time);
         const values   = _curve.map(p => p.value);
@@ -2918,13 +2878,15 @@
       // Paired highlights: TV pair (Farm+Refined) = purple, Kairos pair = amber.
       const activeTV = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #a78bfa;background:rgba(167,139,250,0.12);color:#c4b5fd';
       const activeK  = 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;border:1px solid #F2C07A;background:rgba(242,192,122,0.12);color:#F2C07A';
-      document.getElementById('feedTabAlpaca').style.cssText  = tab === 'alpaca'  ? activeTV : inactive;
-      document.getElementById('feedTabRefined').style.cssText = tab === 'refined' ? activeTV : inactive;
-      document.getElementById('feedTabKairos').style.cssText  = tab === 'kairos'  ? activeK  : inactive;
-      const _fc = document.getElementById('feedTabCrew');
-      if (_fc) _fc.style.cssText = tab === 'crew' ? active : inactive;
-      const _ff = document.getElementById('feedTabFarm');
-      if (_ff) _ff.style.cssText = tab === 'farm' ? activeK : inactive;
+      // Pair colours: TV pair purple, Kairos pair amber, Crew green, Crew Live pink.
+      const _feedActive = { alpaca: activeTV, refined: activeTV, kairos: activeK,
+                            farm: activeK, crew: active,
+                            live: 'padding:4px 14px;font-size:0.78rem;border-radius:4px;cursor:pointer;'
+                                + 'border:1px solid #E8A0BF;background:rgba(232,160,191,0.12);color:#E8A0BF' };
+      for (const k of Object.keys(_ACCT_TABS)) {
+        const el = document.getElementById('feedTab-' + k);
+        if (el) el.style.cssText = (tab === k) ? (_feedActive[k] || active) : inactive;
+      }
       document.getElementById('feedTabTV').style.cssText      = tab === 'tv'      ? active  : inactive;
     }
 
@@ -2938,17 +2900,20 @@
       else renderTable(allTrades, selectedStrategy);
 
       // Sync chart tab — update buttons + trigger chart directly (no switchTab call to avoid loop)
-      const chartTab = tab === 'tv' ? 'signals' : (tab === 'kairos' ? 'kairos' : (tab === 'crew' ? 'crew' : (tab === 'farm' ? 'farm' : (tab === 'refined' ? 'refined' : 'alpaca'))));
+      const chartTab = tab === 'tv' ? 'signals' : (_ACCT_TABS[tab] ? tab : 'alpaca');
       if (activeTab !== chartTab) {
         activeTab = chartTab;
         selectedStrategies = _tabSelections[chartTab] || (_tabSelections[chartTab] = new Set());
-        document.getElementById('tabAlpaca').className  = 'pnl-tab' + (chartTab === 'alpaca'  ? ' active-alpaca'  : '');
-        document.getElementById('tabRefined').className = 'pnl-tab' + (chartTab === 'refined' ? ' active-refined' : '');
+        // Same loop as switchTab — account tabs are id="tab-<key>" and rendered from
+        // the registry, so this cannot go stale when a book is added or removed.
+        for (const k of Object.keys(_ACCT_TABS)) {
+          const el = document.getElementById('tab-' + k);
+          if (el) el.className = 'pnl-tab'
+                              + (chartTab === k ? ' active-' + k : '')
+                              + (k === 'live' ? ' live-tab' : '');
+        }
         document.getElementById('tabSignals').className = 'pnl-tab' + (chartTab === 'signals' ? ' active-signals' : '');
         document.getElementById('tabIB').className      = 'pnl-tab';
-        const _tkSync = document.getElementById('tabKairos'); if (_tkSync) _tkSync.className = 'pnl-tab' + (chartTab === 'kairos' ? ' active-kairos' : '');
-        const _tcSync = document.getElementById('tabCrew'); if (_tcSync) _tcSync.className = 'pnl-tab' + (chartTab === 'crew' ? ' active-crew' : '');
-        const _tfSync = document.getElementById('tabFarm'); if (_tfSync) _tfSync.className = 'pnl-tab' + (chartTab === 'farm' ? ' active-farm' : '');
         const spinner = document.getElementById('chartLoadingSpinner');
         if (chartTab === 'signals') {
           const label = document.getElementById('equityChartLabel');
@@ -3047,7 +3012,7 @@
     async function applyEquityFilter() {
       const fromDate = document.getElementById('equityFromDate').value;
       const toDate   = document.getElementById('equityToDate').value;
-      if (activeTab === 'alpaca' || activeTab === 'refined' || activeTab === 'kairos' || activeTab === 'crew' || activeTab === 'farm') { renderAlpacaStats(fromDate, toDate, _acctForTab(activeTab) || null); return; }
+      if (_ACCT_TABS[activeTab]) { renderAlpacaStats(fromDate, toDate, _acctForTab(activeTab) || null); return; }
       try {
         if (!_cachedFullStats || _cachedFromDate !== fromDate || _cachedToDate !== toDate) {
           const res = await fetch(buildStatsUrl('', fromDate, toDate));
@@ -3130,7 +3095,7 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpaca5ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, alpaca5PosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpaca5ExecsRes, alpaca6ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, alpaca5PosRes, alpaca6PosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
@@ -3140,11 +3105,13 @@
           fetch('/api/alpaca/trades?account=3').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=4').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=5').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/trades?account=6').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=2').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=3').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=4').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=5').then(r => r.json()).catch(() => ({positions: []})),
+          fetch('/api/alpaca/positions?account=6').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
@@ -3156,11 +3123,13 @@
         allAlpaca3Execs  = Array.isArray(alpaca3ExecsRes) ? alpaca3ExecsRes : [];
         allAlpaca4Execs  = Array.isArray(alpaca4ExecsRes) ? alpaca4ExecsRes : [];
         allAlpaca5Execs  = Array.isArray(alpaca5ExecsRes) ? alpaca5ExecsRes : [];
+        allAlpaca6Execs  = Array.isArray(alpaca6ExecsRes) ? alpaca6ExecsRes : [];
         allAlpacaPositions  = Array.isArray(alpacaPosRes)  ? alpacaPosRes  : (alpacaPosRes.positions  || []);
         allAlpaca2Positions = Array.isArray(alpaca2PosRes) ? alpaca2PosRes : (alpaca2PosRes.positions || []);
         allAlpaca3Positions = Array.isArray(alpaca3PosRes) ? alpaca3PosRes : (alpaca3PosRes.positions || []);
         allAlpaca4Positions = Array.isArray(alpaca4PosRes) ? alpaca4PosRes : (alpaca4PosRes.positions || []);
         allAlpaca5Positions = Array.isArray(alpaca5PosRes) ? alpaca5PosRes : (alpaca5PosRes.positions || []);
+        allAlpaca6Positions = Array.isArray(alpaca6PosRes) ? alpaca6PosRes : (alpaca6PosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
@@ -4204,7 +4173,7 @@
         if (typeof data.max_hold_enforcement === 'boolean') updateMaxHoldBtn(data.max_hold_enforcement);
         // Curated books (TV Refined, Kairos Refined, Crew) stacked ABOVE the farms
         // (TV Farm, Kairos Farm). Stable sort keeps each group's existing order.
-        const _acctRank = { alpaca2: 0, alpaca3: 1, alpaca4: 2, alpaca: 3, alpaca5: 4 };
+        const _acctRank = { alpaca6: 0, alpaca4: 1, alpaca3: 2, alpaca2: 3, alpaca: 4, alpaca5: 5 };
         const positions   = (data.positions || [])
           .map((p, i) => [p, i])
           .sort((a, b) => (_acctRank[a[0].broker] ?? 9) - (_acctRank[b[0].broker] ?? 9) || a[1] - b[1])
@@ -4277,10 +4246,11 @@
           const rowCls = isKairos ? ' class="kairos-row"' : (isCrew ? ' class="crew-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : ''));
           const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
           const brokerLabel = ({ 'alpaca': 'TV Farm', 'alpaca2': 'TV Refined', 'alpaca3': 'Kairos Refined',
-                                 'alpaca4': 'Crew Paper', 'alpaca5': 'Kairos Farm' })[p.broker] || escHtml(p.broker);
+                                 'alpaca4': 'Crew Paper', 'alpaca5': 'Kairos Farm',
+                                 'alpaca6': 'Crew Live ●' })[p.broker] || escHtml(p.broker);
           // Per-row Stop actions: Break-Even / Halfway / Close. Pass the broker
           // account and symbol so the handler routes to the right alpaca acct.
-          const _acctForBroker = { alpaca: 1, alpaca2: 2, alpaca3: 3, alpaca4: 4, alpaca5: 5 };
+          const _acctForBroker = { alpaca: 1, alpaca2: 2, alpaca3: 3, alpaca4: 4, alpaca5: 5, alpaca6: 6 };
           const _acct = _acctForBroker[p.broker] || 1;
           const _sym  = escHtml((p.symbol || '').toUpperCase());
           const actionsCell = `

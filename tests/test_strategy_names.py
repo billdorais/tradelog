@@ -77,7 +77,12 @@ def test_includes_wired_but_never_fired_strategies(names_db):
 
 
 def test_days_scopes_to_recent_signals(names_db):
-    _seed_signals(names_db, [("2026-08-14 13:45:00", "RECENT_CAM_BREAKOUT_R3S3"),
+    # Seeded RELATIVE to today. A hardcoded "recent" date is a time bomb: this was
+    # pinned to 2026-08-14 against ?days=7 and started failing on 2026-08-21, when
+    # the fixture aged out of its own window.
+    import datetime as _dt
+    _recent = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    _seed_signals(names_db, [(_recent, "RECENT_CAM_BREAKOUT_R3S3"),
                              ("2026-01-02 14:00:00", "OLD_CAM_BREAKOUT_R3S3")])
     with a.app.test_client() as c:
         allt = c.get("/api/strategies").get_json()

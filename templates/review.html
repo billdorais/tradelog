@@ -115,8 +115,9 @@
       <label for="acctSelect">Entries</label>
       <select id="acctSelect" onchange="load()"
         style="background:#0f1117;color:#e0e0e0;border:1px solid #2a2d3e;border-radius:6px;padding:6px 10px;font-size:0.9rem;cursor:pointer">
-        <option value="2">Refined (TV entries)</option>
-        <option value="3">Kairos (engine entries)</option>
+        {% for a in accounts %}
+        <option value="{{ a.num }}"{% if a.num == '2' %} selected{% endif %}>{% if not a.paper %}● {% endif %}{{ a.label }}</option>
+        {% endfor %}
       </select>
     </div>
     <button class="nudge" onclick="nudgeDay(-1)" title="Previous day">&#8592;</button>
@@ -310,7 +311,12 @@
   }
 
   function acctVal()   { return document.getElementById('acctSelect').value || '2'; }
-  function acctLabel()  { return acctVal() === '3' ? 'Kairos' : 'Refined'; }
+  // Labels come from the rendered <option>s, so a new book needs no branch here.
+  function acctLabel() {
+    const el = document.getElementById('acctSelect');
+    const o  = el && el.selectedOptions && el.selectedOptions[0];
+    return (o ? o.textContent : 'Refined').replace(/^●\s*/, '').trim();
+  }
 
   async function load() {
     const date    = document.getElementById('dateInput').value;
@@ -321,7 +327,7 @@
     const wkBtn = document.getElementById('weekBtn');
     if (wkBtn) wkBtn.style.display = account === '3' ? 'none' : '';
     const sub = document.getElementById('reviewSub');
-    if (sub) sub.textContent = (account === '3' ? 'Kairos engine account' : 'Refined account')
+    if (sub) sub.textContent = acctLabel()
       + ' · 5-minute bars with entry/exit markers · times shown in ET';
     btn.disabled = true;
     destroyCharts();

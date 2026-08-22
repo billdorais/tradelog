@@ -224,26 +224,15 @@
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s;display:none">
           Signals
         </button>
-        <button id="srcAlpaca4" onclick="switchSource('alpaca4')"
-          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:#1a1d2e;color:#e0e0e0;transition:all 0.15s">
-          Crew Paper
-        </button>
-        <button id="srcAlpaca3" onclick="switchSource('alpaca3')"
+        {# Registry-driven, UI order. Crew Live only appears when the server has
+           keys for it, and carries the same ● REAL-MONEY marker as the dashboard. #}
+        {% for a in accounts %}
+        <button id="src-{{ a.tag }}" onclick="switchSource('{{ a.tag }}')"
+          {% if not a.paper %}title="REAL MONEY"{% endif %}
           style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Kairos Refined
+          {% if not a.paper %}● {% endif %}{{ a.label }}
         </button>
-        <button id="srcAlpaca2" onclick="switchSource('alpaca2')"
-          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          TV Refined
-        </button>
-        <button id="srcAlpaca5" onclick="switchSource('alpaca5')"
-          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          Kairos Farm
-        </button>
-        <button id="srcAlpaca" onclick="switchSource('alpaca')"
-          style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:0.82rem;font-weight:500;background:transparent;color:#666;transition:all 0.15s">
-          TV Farm
-        </button>
+        {% endfor %}
       </div>
     </div>
   </div>
@@ -918,21 +907,29 @@
 <script>
   let analysisData = null;
   let sortState    = {};   // tableId → {col, dir}
-  let activeSource = 'alpaca4';
+  // Crew Live leads when configured — it is the only book with real money on it.
+  // Falls back to Crew Paper so a deploy without ALPACA_KEY6 opens on a real book.
+  const _CONFIGURED_SRC = new Set({{ accounts | map(attribute='tag') | list | tojson }});
+  let activeSource = _CONFIGURED_SRC.has('alpaca6') ? 'alpaca6' : 'alpaca4';
 
   // ── Source toggle ──────────────────────────────────────────────────────────
   function switchSource(src) {
     activeSource = src;
-    const tabs = { signals: 'srcSignals', alpaca: 'srcAlpaca', alpaca2: 'srcAlpaca2', alpaca3: 'srcAlpaca3', alpaca4: 'srcAlpaca4', alpaca5: 'srcAlpaca5' };
-    Object.entries(tabs).forEach(([key, id]) => {
-      const el = document.getElementById(id);
-      if (!el) return;
+    // Buttons are rendered from the registry as id="src-<tag>", plus the static
+    // Signals button. Pair colours: TV purple, Kairos amber, Crew green, Live pink.
+    const _SRC_BG  = { alpaca: '#1a1030', alpaca2: '#1a1030', alpaca3: '#2a1a08',
+                       alpaca5: '#2a1a08', alpaca4: '#0c2417', alpaca6: '#2a1622',
+                       signals: '#1a1d2e' };
+    const _SRC_COL = { alpaca: '#c4b5fd', alpaca2: '#c4b5fd', alpaca3: '#F2C07A',
+                       alpaca5: '#F2C07A', alpaca4: '#7FE098', alpaca6: '#E8A0BF',
+                       signals: '#e0e0e0' };
+    for (const key of Object.keys(_SRC_COL)) {
+      const el = document.getElementById(key === 'signals' ? 'srcSignals' : 'src-' + key);
+      if (!el) continue;
       const active = src === key;
-      const activeBg  = (key === 'alpaca2' || key === 'alpaca') ? '#1a1030' : (key === 'alpaca3' || key === 'alpaca5') ? '#2a1a08' : key === 'alpaca4' ? '#0c2417' : '#1a1d2e';
-      const activeCol = (key === 'alpaca2' || key === 'alpaca') ? '#c4b5fd' : (key === 'alpaca3' || key === 'alpaca5') ? '#F2C07A' : key === 'alpaca4' ? '#7FE098' : '#e0e0e0';
-      el.style.background = active ? activeBg  : 'transparent';
-      el.style.color      = active ? activeCol : '#666';
-    });
+      el.style.background = active ? (_SRC_BG[key]  || '#1a1d2e') : 'transparent';
+      el.style.color      = active ? (_SRC_COL[key] || '#e0e0e0') : '#666';
+    }
     // Always hide the reconciliation panel on tab switch — loadReconciliation()
     // will re-show it with the correct account's numbers if applicable.
     document.getElementById('reconPanel').style.display = 'none';
@@ -1079,21 +1076,22 @@
     const toDate   = document.getElementById('analysisTo').value;
     const fromTime = document.getElementById('analysisFromTime').value;
     const toTime   = document.getElementById('analysisToTime').value;
+    // Any 'alpacaN' source is an Alpaca book; the number is the ?account= value.
+    // Derived from the tag so adding a book needs no new isAlpacaN flag.
+    const _acctNum  = /^alpaca(\d*)$/.test(activeSource) ? (activeSource.slice(6) || '1') : null;
     const isAlpaca  = activeSource === 'alpaca';
     const isAlpaca2 = activeSource === 'alpaca2';
     const isAlpaca3 = activeSource === 'alpaca3';
     const isAlpaca4 = activeSource === 'alpaca4';
     const isAlpaca5 = activeSource === 'alpaca5';
-    let endpoint = (isAlpaca || isAlpaca2 || isAlpaca3 || isAlpaca4 || isAlpaca5) ? '/api/alpaca/analysis' : '/api/analysis';
+    const isAlpaca6 = activeSource === 'alpaca6';
+    let endpoint = _acctNum ? '/api/alpaca/analysis' : '/api/analysis';
     const params = new URLSearchParams();
     if (fromDate) params.set('from_date', fromDate);
     if (toDate)   params.set('to_date',   toDate);
     if (fromTime) params.set('from_time', fromTime);
     if (toTime)   params.set('to_time',   toTime);
-    if (isAlpaca2) params.set('account', '2');
-    if (isAlpaca3) params.set('account', '3');
-    if (isAlpaca4) params.set('account', '4');
-    if (isAlpaca5) params.set('account', '5');
+    if (_acctNum && _acctNum !== '1') params.set('account', _acctNum);
     if (isAlpaca) {
       try {
         const excl = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]');
@@ -1111,7 +1109,10 @@
     const data = await res.json();
     if (data.error) { document.getElementById('dataAge').textContent = 'Error: ' + data.error; return; }
     analysisData = data;
-    const srcLabel = isAlpaca2 ? 'TV Refined fills' : isAlpaca3 ? 'Kairos Refined fills' : isAlpaca4 ? 'Crew Paper fills' : isAlpaca5 ? 'Kairos Farm fills' : isAlpaca ? 'TV Farm fills' : 'signal trades';
+    const srcLabel = ({ alpaca: 'TV Farm fills', alpaca2: 'TV Refined fills',
+                        alpaca3: 'Kairos Refined fills', alpaca4: 'Crew Paper fills',
+                        alpaca5: 'Kairos Farm fills',
+                        alpaca6: 'Crew Live fills (REAL MONEY)' })[activeSource] || 'signal trades';
     const exclNote = isAlpaca ? (() => {
       try {
         const n = JSON.parse(localStorage.getItem('alpaca_excluded_trades') || '[]').length;
@@ -1555,6 +1556,7 @@
 
     const accountLabel = activeSource === 'alpaca'  ? 'TV Farm'
                        : activeSource === 'alpaca2' ? 'TV Refined'
+                       : activeSource === 'alpaca6' ? 'Crew Live'
                        : activeSource === 'alpaca5' ? 'Kairos Farm'
                        : activeSource === 'alpaca3' ? 'Kairos Refined'
                        : activeSource === 'alpaca4' ? 'Crew Paper'
@@ -1838,7 +1840,7 @@
     const pfCls = pf == null ? 'neu' : pf >= 1.5 ? 'pos' : pf >= 1.0 ? 'neu' : 'neg';
     const pnlCls = (s.total_pnl || 0) >= 0 ? 'pos' : 'neg';
     const orphanPnl = s.orphan_pnl;
-    const orphanCard = ((activeSource === 'alpaca' || activeSource === 'alpaca2' || activeSource === 'alpaca3' || activeSource === 'alpaca4' || activeSource === 'alpaca5') && orphanPnl != null && orphanPnl !== 0)
+    const orphanCard = (/^alpaca\d*$/.test(activeSource) && orphanPnl != null && orphanPnl !== 0)
       ? card(`Orphan P&L (${s.orphan_count || 0})`,
              fmt(orphanPnl),
              orphanPnl >= 0 ? 'pos' : 'neg',
@@ -2673,7 +2675,7 @@
     _renderTimeOfDayBreakdown(clean);
     // Load current stop settings for this strategy (only for strategy-level drills)
     if (kind === 'strategy') {
-      const acct = (opts && opts.acct) || (activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca5' ? '5' : activeSource === 'alpaca' ? '1' : '2');
+      const acct = (opts && opts.acct) || (/^alpaca\d*$/.test(activeSource) ? (activeSource.slice(6) || '1') : '2');
       _loadStrategyStops(key, acct);
       _load20dStats(key, acct);
     } else {
@@ -2942,7 +2944,7 @@
 
   async function loadLsBreakdown() {
     const wrap = document.getElementById('lsBreakdownWrap');
-    const acct = activeSource === 'alpaca2' ? '2' : activeSource === 'alpaca3' ? '3' : activeSource === 'alpaca4' ? '4' : activeSource === 'alpaca5' ? '5' : '1';
+    const acct = /^alpaca\d*$/.test(activeSource) ? (activeSource.slice(6) || '1') : '1';
     const fromDate = document.getElementById('analysisFrom').value;
     const toDate   = document.getElementById('analysisTo').value;
     const p = new URLSearchParams({ account: acct });

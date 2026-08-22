@@ -273,6 +273,27 @@ def _meta_tag(num):
 # every sort key ties and the result falls back to set-iteration order.
 _NUM_BY_TAG = {_meta_tag(_n): _n for _n in ACCOUNT_META}
 
+# Dashboard/analysis tab keys. The front end addresses books by these symbolic
+# names ('crew', 'kairos', ...) rather than by slot number, so server and template
+# need one shared map — otherwise a new account gets a tab the JS cannot switch to.
+_TAB_KEY_BY_NUM = {"1": "alpaca", "2": "refined", "3": "kairos",
+                   "4": "crew",   "5": "farm",    "6": "live"}
+
+
+def _ui_accounts():
+    """Configured accounts in UI order, shaped for a template.
+
+    Only CONFIGURED accounts (ALPACA_ACCOUNTS, i.e. keys actually present) appear,
+    so a deploy without ALPACA_KEY6 renders no Crew Live tab rather than a tab that
+    fetches an account the server does not have.
+    """
+    return sorted(
+        ({"num": a["num"], "tag": a["tag"], "label": a["label"],
+          "color": a.get("color") or "#888", "paper": bool(a.get("paper", True)),
+          "tab": _TAB_KEY_BY_NUM.get(str(a["num"]), "acct" + str(a["num"]))}
+         for a in ALPACA_ACCOUNTS),
+        key=lambda a: _ui_account_rank(a["num"]))
+
 def _accounts_with(flag):
     """Tags of accounts whose ACCOUNT_META flag is truthy — config-driven gate sets."""
     return {_meta_tag(n) for n, m in ACCOUNT_META.items() if m.get(flag)}
@@ -4640,7 +4661,8 @@ def alpaca_close_position(symbol):
 def dashboard():
     # Pass the webhook token so the Open Positions row actions (BE / ½ / close)
     # can authenticate silently — no password prompt on every click.
-    return render_template("index.html", webhook_token=WEBHOOK_TOKEN)
+    return render_template("index.html", webhook_token=WEBHOOK_TOKEN,
+                           accounts=_ui_accounts())
 
 
 @app.route("/routing")
@@ -10710,7 +10732,7 @@ def set_account_gates():
 
 @app.route("/diagnostics")
 def diagnostics_page():
-    return render_template("diagnostics.html")
+    return render_template("diagnostics.html", accounts=_ui_accounts())
 
 
 @app.route("/api/diagnostics/errors")
@@ -13433,7 +13455,7 @@ def api_orphaned_trades():
 
 @app.route("/analysis")
 def analysis_page():
-    return render_template("analysis.html")
+    return render_template("analysis.html", accounts=_ui_accounts())
 
 
 def _trade_level(strategy: str, side: str):
@@ -13683,7 +13705,7 @@ def _ticker_read(rows, lv, strikes: int = 2):
 
 @app.route("/review")
 def review_page():
-    return render_template("review.html")
+    return render_template("review.html", accounts=_ui_accounts())
 
 
 @app.route("/entry-engine")
@@ -13779,14 +13801,15 @@ def _chart_levels(lv, tlist):
 
 @app.route("/api/review")
 def api_review():
-    """End-of-day chart review for the Refined (alpaca2) or Kairos engine (alpaca3)
-    account, selected via ?account=2|3 (default 2).
+    """End-of-day chart review for any configured Alpaca book, via ?account=N
+    (default 2).
 
     Returns, for a single day, each round-trip grouped by ticker along with
     5-minute OHLC bars and entry/exit markers ready for lightweight-charts.
 
       ?date=YYYY-MM-DD   (defaults to today, US/Eastern)
-      ?account=2|3       (2 = Refined / TV entries, 3 = Kairos engine entries)
+      ?account=N         any configured slot (2 = TV Refined, 3 = Kairos engine,
+                         4 = Crew Paper, 6 = Crew Live, ...)
     """
     import datetime as _dt
     import concurrent.futures as _cf
@@ -13800,10 +13823,11 @@ def api_review():
             # tzdata unavailable — approximate ET as UTC-4 so the default day is right
             date = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)).date().isoformat()
 
-    # Pick the account to review. Only the two paper books that take entries
-    # (Refined TV = acct2, Kairos engine = acct3) are valid here.
+    # Pick the account to review. Any CONFIGURED book is reviewable — the pairing,
+    # bars and markers below are account-agnostic, and the old ("2","3") allow-list
+    # was the only thing stopping Crew Paper or Crew Live from being chart-reviewed.
     account = (request.args.get("account") or "2").strip()
-    if account not in ("2", "3"):
+    if account not in ACCOUNTS_BY_NUM:
         account = "2"
     _broker, _tag, _label, _fills_fn = _alpaca_account_ctx(account)
     if _broker is None:

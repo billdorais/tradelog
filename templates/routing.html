@@ -75,6 +75,10 @@
     .node-broker-alpaca-paper-4 { background: #0c2417; border-color: #7FE098; color: #7FE098; }
     .node-broker-alpaca-paper-5 { background: #0e2426; border-color: #5FC8D4; color: #5FC8D4; }
     .node-broker-alpaca-live-4  { background: #0c2417; border-color: #7FE098; color: #7FE098; }
+    /* Crew Live is the only REAL-MONEY broker, so it is the only red chip. Every
+       other broker node is a shade of its book's colour; this one is a warning. */
+    .node-broker-alpaca-live-6  { background: #2a0f14; border-color: #ef5350; color: #ff8a80; font-weight: 700; }
+    .node-broker-alpaca-paper-6 { background: #241a1c; border-color: #6a4a4e; color: #c9a0a4; }
     /* Bulk-actions toolbar — grouped, labeled rows */
     .bulk-card    { background:#0d0f16; border:1px solid #1e2130; border-radius:10px; padding:12px 14px; margin-bottom:10px; display:flex; flex-direction:column; gap:9px; }
     .bulk-row     { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
@@ -2383,6 +2387,7 @@
           'alpaca-paper-3': 'Kairos Refined', 'alpaca-live-3': 'Kairos Refined Live',
           'alpaca-paper-4': 'Crew Paper', 'alpaca-live-4': 'Crew Paper Live',
           'alpaca-paper-5': 'Kairos Farm', 'alpaca-live-5': 'Kairos Farm Live',
+          'alpaca-paper-6': 'Crew Live (paper slot)', 'alpaca-live-6': 'Crew Live · REAL',
           'coinbase': 'Coinbase',
         };
         return bmap[node.value] || node.value || 'IB Paper';
@@ -3017,6 +3022,8 @@
               <option value="alpaca-live-4"  ${bv==='alpaca-live-4'  ? 'selected':''}>Alpaca Live — Crew Paper (account 4)</option>
               <option value="alpaca-paper-5" ${bv==='alpaca-paper-5' ? 'selected':''}>Alpaca Paper — Kairos Farm (account 5)</option>
               <option value="alpaca-live-5"  ${bv==='alpaca-live-5'  ? 'selected':''}>Alpaca Live — Kairos Farm (account 5)</option>
+              <option value="alpaca-live-6"  ${bv==='alpaca-live-6'  ? 'selected':''}>⚠ Alpaca LIVE — Crew Live · REAL MONEY (account 6)</option>
+              <option value="alpaca-paper-6" ${bv==='alpaca-paper-6' ? 'selected':''}>Alpaca Paper — Crew Live slot (account 6)</option>
               <option value="coinbase"     ${bv==='coinbase'     ? 'selected':''}>Coinbase</option>
             </select>
           </div>`;

@@ -45,26 +45,50 @@ fills / endpoint sites individually any more; they all loop the registry.
 
 ## Front-end (per-account tabs/cards)
 
-The backend is fully registry-driven; the templates still list accounts explicitly.
-To surface account N in the UI, follow the acct-4 ("crew") pattern:
+**This is now registry-driven too** (changed when Crew Live / acct 6 was added).
+Routes pass `_ui_accounts()` — configured accounts in `UI_ACCOUNT_ORDER`, each with
+`num`, `tag`, `label`, `color`, `paper`, and a `tab` key — and the templates loop it.
+Only accounts the server actually has keys for render a control, so a deploy missing
+`ALPACA_KEY{N}` shows no tab rather than one that fetches nothing.
 
-- **Dashboard** [templates/index.html](../templates/index.html): a P&L tab + feed
-  tab, the `allAlpacaN*` arrays, `_acctForTab`, `switchTab`/`switchFeedTab` branches,
-  the `account=N` fetch pair in the refresh `Promise.all`, the open-positions
-  row-class, and the `.active-*` / `.*-row` CSS.
-- **Analysis** [templates/analysis.html](../templates/analysis.html): a `srcAlpacaN`
-  source button, the `tabs` map + colours in `switchSource`, and the `isAlpacaN` /
-  `account=N` branches in `load()` and the label/breakdown helpers.
-- **Routing** [templates/routing.html](../templates/routing.html): broker `<option>`s,
-  the broker-label map, and a `.node-broker-alpaca-paper-N` colour.
+To add account N to the UI:
 
-The **Replay** page ([templates/simulate.html](../templates/simulate.html)) is
-registry-driven — its Account dropdown renders from `ALPACA_ACCOUNTS` (passed by the
-`/simulate` route), so a new account appears there automatically with no edit.
+1. Add its tab key to `_TAB_KEY_BY_NUM` in [app.py](../app.py) (`"6": "live"`). A
+   slot with no key renders a button `switchTab` cannot handle — a test enforces
+   that every `ACCOUNT_META` slot has one.
+2. Add a row to `_ACCT_TABS` in [templates/index.html](../templates/index.html) for
+   its chart label / note text, keyed by that tab key.
+3. Add its `allAlpacaN{Execs,Positions}` pair and the `account=N` fetches in the
+   dashboard refresh `Promise.all`, plus its entry in `_execsByAcct` /
+   `_positionsByAcct`.
+4. Give it colours: `.active-<tabkey>` in index.html, `_SRC_BG` / `_SRC_COL` in
+   [templates/analysis.html](../templates/analysis.html), and
+   `.node-broker-alpaca-{paper,live}-N` in [templates/routing.html](../templates/routing.html).
 
-The Refined-vs-Kairos A/B tools ([templates/journal.html](../templates/journal.html),
-[templates/entry_engine.html](../templates/entry_engine.html)) are pilot-specific
-comparisons, not per-account views, and are intentionally left at two columns.
+Tabs, feed buttons, source buttons, the diagnostics account filter, the chart-review
+picker and the Replay dropdown all render from the registry with no further edits.
+
+**Routing is the exception, on purpose.** Its broker `<option>` list is static and
+lists every *possible* target, because a rule may reference a broker this deploy has
+no keys for and the router still has to display and edit it. So a new account needs
+its two `<option>`s and its entry in the broker-label map added by hand.
+
+[tests/test_ui_accounts.py](../tests/test_ui_accounts.py) pins all of the above,
+including that an unconfigured account renders nowhere.
+
+## Live (real-money) accounts
+
+`ALPACA_PAPER{N}=false` makes a slot real money, and that changes the rules:
+
+- The account is **inert until armed**. `LIVE_TRADING_ARMED=1` plus an explicit
+  `LIVE_SIZE_DOLLARS` are both required; `_live_entry_allowed()` refuses every entry
+  otherwise, and it FAILS CLOSED (an unreadable balance refuses the trade). See
+  `LIVE_MAX_POSITION_PCT` and `LIVE_MAX_ENTRIES_PER_DAY`.
+- Check `/api/accounts/preflight?account=<tag>` before arming. It asks Alpaca rather
+  than inferring: equity, buying power, blocks, whether leverage is extended.
+- The UI must mark it. Live books render a `●` and `title="REAL MONEY"`, keep a tint
+  even when inactive, and get the only red broker chip in the router. A real-money
+  book that looks like a paper book is the failure mode to avoid.
 
 ## What the registry already handles for you
 
