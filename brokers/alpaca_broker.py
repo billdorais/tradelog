@@ -1275,7 +1275,7 @@ class AlpacaBroker:
             log.error("Alpaca get_portfolio_history failed: %s", e, exc_info=True)
             return []
 
-    def get_fills(self, days=90):
+    def get_fills(self, days=90, raise_on_error=False):
         """Return filled and partially-filled orders for the last `days` days.
 
         Returns one row per order with the order's actual filled_qty / filled_avg_price.
@@ -1352,4 +1352,10 @@ class AlpacaBroker:
             return result
         except Exception as e:
             log.error("Alpaca get_fills failed: %s", e)
+            # Returning [] makes an API failure indistinguishable from "this account
+            # has no trades" — every page renders empty with nothing to indicate
+            # anything went wrong. Callers that cache or display the result pass
+            # raise_on_error=True so the failure stays a failure.
+            if raise_on_error:
+                raise
             return []

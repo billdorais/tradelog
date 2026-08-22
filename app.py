@@ -1005,10 +1005,28 @@ _alpaca_positions_cache  = _alpaca_positions_caches["1"]   # back-compat alias (
 ALPACA_POSITIONS_TTL = 15  # seconds — live P&L dashboard polls every 10s; cache prevents thundering herd
 
 
-def _get_cached_fills_n(num):
+FILLS_ERROR_BACKOFF = 20   # seconds — don't hammer the API while it is failing
+
+
+def _fills_error(num):
+    """Last fetch error for account `num`, or None. Endpoints use this to say
+    "couldn't load fills" instead of rendering a confident empty chart."""
+    c = _alpaca_caches.get(str(num)) or {}
+    return c.get("error")
+
+
+def _get_cached_fills_n(num, raise_on_error=False):
     """Return cached Alpaca fills for account `num`, fetching only when stale.
     Mutates the cache dict IN PLACE (never rebinds) so registry/alias refs stay
-    valid. Lock prevents concurrent duplicate fetches (thundering herd on startup)."""
+    valid. Lock prevents concurrent duplicate fetches (thundering herd on startup).
+
+    A FAILED fetch must never be cached as success. It used to be: get_fills()
+    swallowed the exception, returned [], and this wrote both that empty list and a
+    fresh timestamp — so one transient API error became two full minutes of "this
+    account has no trades", on every page, with nothing on screen to say otherwise.
+    Now a failure leaves the previous data and timestamp alone, records the reason,
+    and backs off briefly so an outage is not hammered.
+    """
     num   = str(num)
     cache = _alpaca_caches.get(num)
     if cache is None:
@@ -1020,11 +1038,28 @@ def _get_cached_fills_n(num):
         # Re-check inside lock — another thread may have populated while we waited
         if time.time() - cache["ts"] < ALPACA_CACHE_TTL:
             return cache["data"]
+        # Still failing and inside the backoff: serve what we have, do not retry.
+        if cache.get("error") and (time.time() - cache.get("error_ts", 0)) < FILLS_ERROR_BACKOFF:
+            if raise_on_error:
+                raise RuntimeError(cache["error"])
+            return cache["data"]
         rec    = ACCOUNTS_BY_NUM.get(num)
         broker = rec["broker"] if rec else None
-        fills  = broker.get_fills() if broker else []
-        cache["data"] = fills
-        cache["ts"]   = time.time()
+        if broker is None:
+            return cache["data"]
+        try:
+            fills = broker.get_fills(raise_on_error=True)
+        except Exception as e:
+            cache["error"]    = str(e)[:200]
+            cache["error_ts"] = time.time()
+            log.error("Fills fetch failed for account %s — serving %d cached fill(s): %s",
+                      num, len(cache["data"] or []), e)
+            if raise_on_error:
+                raise
+            return cache["data"]
+        cache["data"]  = fills
+        cache["ts"]    = time.time()
+        cache["error"] = None
     return cache["data"]
 
 
@@ -1178,7 +1213,14 @@ if alpaca_broker is not None:
         all of them on load, so warming one still left 4 paginated 90-day fetches on
         the critical path."""
         time.sleep(3)   # let gunicorn finish binding before making API calls
-        for _n in ACCOUNTS_BY_NUM:
+        # STAGGERED. Each warm is a paginated 90-day fetch; firing one per account
+        # back-to-back means six of them at once across two gunicorn workers, which
+        # is a plausible way to get rate-limited into a state where every account
+        # returns nothing. A few seconds apart costs nothing — this is a background
+        # warm, not a request path.
+        for _i, _n in enumerate(ACCOUNTS_BY_NUM):
+            if _i:
+                time.sleep(4)
             try:
                 _fills = _get_cached_fills_n(_n)
                 log.info("Fills cache pre-warmed for account %s (%d fills)", _n, len(_fills))
@@ -13183,6 +13225,11 @@ def alpaca_trades():
         return jsonify(_cache["data"])
     try:
         fills = fills_fn()
+        if not fills and _fills_error(account):
+            # 503, not an empty list: the caller is asking for data we could not
+            # fetch, and [] would be read as "this account has no trades".
+            return jsonify({"error": "fills unavailable",
+                            "detail": _fills_error(account)}), 503
         # Resolve strategy for each fill by matching time+ticker against signals DB
         try:
             from datetime import datetime as _dt
@@ -21248,7 +21295,14 @@ def api_alpaca_analysis():
 
         fills = _fills_fn()
         if not fills:
-            return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {}, "daily": [], "weekly": [], "equity_curve": []})
+            # Distinguish "no trades" from "could not load trades". Rendering an
+            # empty chart for a failed fetch is how an Alpaca outage read as every
+            # book being flat, on every page, with nothing to say otherwise.
+            _err = _fills_error(account)
+            return jsonify({"overall": {}, "per_strategy": {}, "per_ticker": {},
+                            "daily": [], "weekly": [], "equity_curve": [],
+                            "fills_unavailable": bool(_err),
+                            "fills_error": _err})
 
         signals_only = (signals_only == "1")
 

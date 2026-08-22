@@ -978,6 +978,7 @@
     let allAlpaca3Execs = [];      // Kairos engine (alpaca-paper-3) fills
     let allAlpaca4Execs = [];      // Crew Paper (alpaca-paper-4) fills
     let allAlpaca5Execs = [];      // Engine Farm (alpaca-paper-5) fills
+    let _fillsUnavailable = false, _fillsError = '';   // fetch failed vs genuinely empty
     let allAlpaca6Execs = [];      // Crew Live (alpaca-live-6) fills — REAL MONEY
     let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
     let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
@@ -1527,6 +1528,9 @@
       if (params.toString()) url += '?' + params.toString();
 
       const data = await fetch(url).then(r => r.json()).catch(() => ({}));
+      // An outage is not an empty book. Say which one this is.
+      _fillsUnavailable = !!data.fills_unavailable;
+      _fillsError = data.fills_error || '';
       const equityCurve = data.equity_curve || [];
       const overall     = data.overall      || {};
 
@@ -1683,7 +1687,7 @@
       if (!displayCurve.length) {
         const c = document.getElementById('equityChart').getContext('2d');
         c.fillStyle = '#444'; c.font = '14px Arial'; c.textAlign = 'center';
-        c.fillText('No closed Alpaca trades yet', document.getElementById('equityChart').width / 2, 60);
+        c.fillText((_fillsUnavailable ? 'Could not load fills — ' + (_fillsError || 'the broker API did not respond') : 'No closed Alpaca trades yet'), document.getElementById('equityChart').width / 2, 60);
       }
     }
 
