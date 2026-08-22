@@ -324,7 +324,12 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
         from crewai import Agent, Crew, LLM, Process, Task
 
         def _llm(temp=0.2):
-            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key, temperature=temp, max_tokens=4096)
+            # 4096 truncated the report mid-output. The ```picks block is emitted LAST
+            # (after the card and the Changes table), so a cap clips the one part
+            # the wire button reads literally — producing a partial roster that
+            # looked like a deliberate short list.
+            return LLM(model="anthropic/claude-sonnet-4-6", api_key=api_key,
+                       temperature=temp, max_tokens=16000)
 
         # ── Format pre-fetched data ───────────────────────────────────────────
         # Data was fetched in the Flask route handler and passed in directly.
@@ -1887,6 +1892,48 @@ def _parse_picks_block(report):
     return out
 
 
+
+_TOP_N_RE = re.compile(r"top\s*(\d{1,3})\s*(?:to run|picks|strategies)?", re.I)
+
+
+def _claimed_pick_count(report):
+    """How many picks the decision card SAYS it is running, from its "Top N to run"
+    row. Returns None when the row is absent or unreadable — an unknown target must
+    not become a reason to block a wire."""
+    for raw in (report or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        label = cells[0].replace("*", "").strip().lower()
+        if label.startswith("top") and "run" in label:
+            m = _TOP_N_RE.search(label)
+            if m:
+                try:
+                    n = int(m.group(1))
+                except ValueError:
+                    return None
+                return n if 1 <= n <= 100 else None
+    return None
+
+
+def _picks_block_truncated(report):
+    """True when a ```picks fence was opened but never closed.
+
+    This is the precise signature of a cut-off generation, and it matters more than
+    it looks: _parse_picks_block requires the closing fence, so an unclosed block
+    matches nothing and _parse_next_month_card falls back to scraping the PROSE
+    "Top N to run" row — the source its own docstring calls unreliable. The wire
+    then proceeds on a downgraded parse with no outward sign anything went wrong.
+    """
+    txt = report or ""
+    m = re.search(r"```picks", txt, re.IGNORECASE)
+    if not m:
+        return False
+    return "```" not in txt[m.end():]
+
 def _parse_next_month_card(report):
     """Extract the wire-able picks from a crew report's "Next Month — Crew Paper"
     decision card. Returns {picks:[{strategy, side}], entry_source, sizing,
@@ -1896,6 +1943,7 @@ def _parse_next_month_card(report):
     from the prose table rows."""
     picks, seen = [], set()
     entry_source, sizing, size_dollars, daytype = "tv", "equal", None, None
+    sizing_conflict = None   # set when the Sizing row names both schemes
     # Authoritative machine-readable block wins over the prose Top-18 row.
     block_picks = _parse_picks_block(report)
     used_block  = bool(block_picks)
@@ -1976,7 +2024,17 @@ def _parse_next_month_card(report):
             i_eng  = min(_cands) if _cands else -1
             entry_source = "kairos" if (i_eng >= 0 and (i_tv < 0 or i_eng < i_tv)) else "tv"
         elif label == "sizing":
-            if "scaled" in low_v:
+            # A row can name BOTH schemes — "Equal risk ($1.5k-$5k scaled by score
+            # band)" argued for equal risk in its own justification while the bare
+            # "scaled" keyword silently wired the opposite. Substring matching cannot
+            # resolve that, so treat it as unresolved rather than guessing: fall back
+            # to equal risk (the conservative, uniform scheme) and say so.
+            _says_scaled = "scaled" in low_v or "scale by" in low_v
+            _says_equal  = "equal" in low_v
+            if _says_scaled and _says_equal:
+                sizing_conflict = value.strip()
+                sizing = "equal"
+            elif _says_scaled:
                 sizing = "scaled"
             # First "$N[k]" in the cell → the flat per-trade dollar size (e.g. $1.5k).
             m = re.search(r"\$\s*([\d][\d,.]*)\s*([kK])?", value)
@@ -1996,7 +2054,8 @@ def _parse_next_month_card(report):
         if not p.get("entry"):
             p["entry"] = entry_source
     return {"picks": picks, "entry_source": entry_source, "sizing": sizing,
-            "size_dollars": size_dollars, "daytype": daytype}
+            "size_dollars": size_dollars, "daytype": daytype,
+            "sizing_conflict": sizing_conflict}
 
 
 def _snapshot_top_picks(app_obj, n=9):
@@ -2399,6 +2458,32 @@ def api_crew_wire_to_router():
 
         parsed = _parse_next_month_card(report)
         picks  = parsed["picks"]
+        # The ```picks block is the LAST thing the crew writes, so a truncated
+        # generation loses its tail — and a short block is indistinguishable from a
+        # deliberately short roster. Cross-check it against the count the card's own
+        # "Top N to run" row claims, and refuse rather than wire a partial book.
+        if _picks_block_truncated(report):
+            conn.close()
+            return jsonify({
+                "error": "The report's ```picks block was never closed, which means "
+                         "the generation was cut off. The parser silently falls back "
+                         "to scraping the prose row when that happens, so wiring now "
+                         "would use a roster nobody verified. Re-run the crew. "
+                         "Nothing was changed.",
+                "truncated": True,
+            }), 409
+        _claimed = _claimed_pick_count(report)
+        if picks and _claimed and len(picks) < _claimed:
+            conn.close()
+            return jsonify({
+                "error": f"The report's card says Top {_claimed}, but its ```picks "
+                         f"block only lists {len(picks)}. That usually means the "
+                         f"report was cut off mid-write — the picks block is written "
+                         f"last. Re-run the crew, or fix the block by hand, before "
+                         f"wiring. Nothing was changed.",
+                "claimed": _claimed, "found": len(picks),
+                "found_picks": [p["strategy"] for p in picks],
+            }), 409
         if not picks:
             conn.close()
             return jsonify({"error": "Could not find any strategy names in the "
