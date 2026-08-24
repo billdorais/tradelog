@@ -5,6 +5,49 @@ from datetime import datetime, timezone, date, timedelta
 
 log = logging.getLogger(__name__)
 
+
+
+# ── Alpaca rate limiting (429 / 42910000) ───────────────────────────────────
+# Every curated book opens its window at the same instant, so 09:35 fires a burst
+# of entries plus the exit-stop and fill-poll traffic each one spawns. Alpaca
+# answers with 429s, and before this there was no handling anywhere: a rate-limited
+# order submission was simply lost. On 2026-08-24 that dropped SELL 2 AMD and
+# SELL 14 RKLB outright, and left ~20 filled positions with no broker-side stop
+# because their fill-polls 429'd until the delayed-stop thread gave up.
+#
+# Retrying is SAFE for this specific failure and only this one: a 429 means the
+# request was REJECTED, so nothing was created and a retry cannot duplicate an
+# order. A timeout is the opposite — the order may exist — which is why the check
+# is narrow, matching the rate-limit code rather than "any error".
+def _is_rate_limited(exc) -> bool:
+    s = str(exc)
+    return "42910000" in s or "rate limit exceeded" in s.lower() or "429" in s.split()[:1]
+
+
+def _retry_rate_limited(fn, *, what="alpaca call", attempts=4, base=0.4):
+    """Call fn(), retrying ONLY on rate-limit rejections, with exponential backoff
+    and jitter so simultaneous callers do not resynchronise into the next burst.
+
+    Any other exception propagates immediately and unchanged.
+    """
+    import random as _rnd
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if not _is_rate_limited(e):
+                raise
+            last = e
+            if i == attempts - 1:
+                break
+            delay = base * (2 ** i) + _rnd.uniform(0, base)
+            log.warning("Rate limited on %s — retry %d/%d in %.2fs",
+                        what, i + 1, attempts - 1, delay)
+            time.sleep(delay)
+    log.error("Rate limited on %s — giving up after %d attempts: %s", what, attempts, last)
+    raise last
+
 ALPACA_KEY     = os.environ.get("ALPACA_KEY", "")
 ALPACA_SECRET  = os.environ.get("ALPACA_SECRET", "")
 ALPACA_PAPER   = os.environ.get("ALPACA_PAPER", "true").lower() != "false"
@@ -37,7 +80,8 @@ class AlpacaBroker:
         now = time.time()
         if self._pos_cache is not None and (now - self._pos_cache_ts) < self._POS_CACHE_TTL:
             return self._pos_cache
-        self._pos_cache    = self._trading.get_all_positions()
+        self._pos_cache    = _retry_rate_limited(self._trading.get_all_positions,
+                                                 what="get_all_positions", attempts=3)
         self._pos_cache_ts = now
         return self._pos_cache
 
@@ -83,8 +127,9 @@ class AlpacaBroker:
         from alpaca.trading.enums import OrderSide, TimeInForce
         deadline = _t.time() + max_wait_secs
         filled = False
+        _wait, _rl_hits = 0.5, 0
         while _t.time() < deadline:
-            _t.sleep(0.5)
+            _t.sleep(_wait)
             try:
                 o = self._trading.get_order_by_id(order_id)
                 status = (o.status.value if hasattr(o.status, 'value') else str(o.status)).lower()
@@ -95,13 +140,42 @@ class AlpacaBroker:
                     log.info("Delayed stop: entry %s for %s reached terminal status %s — no stop needed",
                              order_id, ticker, status)
                     return
+                _wait = 0.5
             except Exception as _ge:
-                log.debug("Delayed stop: poll error for %s: %s", ticker, _ge)
+                # A rate-limited poll says nothing about the ORDER — it means we
+                # could not look. Counting it as "not filled" is what let ~20
+                # positions time out unprotected at the 09:35 burst, while the
+                # 0.5s polls from every concurrent thread fed the burst itself.
+                # Back off (which also relieves the API) and extend the deadline.
+                if _is_rate_limited(_ge):
+                    _rl_hits += 1
+                    _wait = min(_wait * 2, 4.0)
+                    deadline = max(deadline, _t.time() + 10)
+                    log.debug("Delayed stop: %s poll rate-limited (%d) — backing off %.1fs",
+                              ticker, _rl_hits, _wait)
+                else:
+                    log.debug("Delayed stop: poll error for %s: %s", ticker, _ge)
         if not filled:
-            log.warning("Delayed stop: entry %s for %s still not filled after %ds — giving up",
-                        order_id, ticker, max_wait_secs)
-            return
-        log.info("Delayed stop: entry %s for %s confirmed filled — placing exit stops now", order_id, ticker)
+            # Never walk away without checking. The order may well have filled while
+            # the polls were being refused, and a position with no broker-side stop
+            # is the worst outcome this function can produce.
+            try:
+                _pos = self._trading.get_open_position(ticker.upper())
+                _held = abs(float(getattr(_pos, "qty", 0) or 0))
+            except Exception:
+                _held = 0.0
+            if _held <= 0:
+                log.warning("Delayed stop: entry %s for %s still not filled after %ds "
+                            "and no position exists — nothing to protect",
+                            order_id, ticker, max_wait_secs)
+                return
+            log.error("Delayed stop: entry %s for %s never confirmed filled (%d rate-limited "
+                      "polls) but %s shares ARE held — attaching the stop anyway",
+                      order_id, ticker, _rl_hits, _held)
+            qty = _held
+        if filled:
+            log.info("Delayed stop: entry %s for %s confirmed filled — placing exit stops now",
+                     order_id, ticker)
         _exit_trail = trail_offset
         is_long = action.upper() == "BUY"
         _trail_side = OrderSide.SELL if is_long else OrderSide.BUY
@@ -750,7 +824,10 @@ class AlpacaBroker:
                     time_in_force    = tif,
                     client_order_id  = _client_oid,
                 )
-            order = self._trading.submit_order(req)
+            # Retried on rate-limit ONLY. A 429 means the order was rejected, so a
+            # retry cannot duplicate it; any other error propagates untouched.
+            order = _retry_rate_limited(lambda: self._trading.submit_order(req),
+                                        what=f"submit {action} {quantity} {ticker}")
             self._invalidate_pos_cache()
             log.info("Alpaca order submitted: %s %s %s → id=%s status=%s",
                      action, qty, ticker, order.id, order.status)
@@ -947,6 +1024,16 @@ class AlpacaBroker:
                     result["hard_stop_error"] = str(_hs)[:200]
             return result
         except Exception as e:
+            # A "cannot be sold short" rejection is a fact about the ticker, not a
+            # transient failure. Feed it back so the next signal is skipped cleanly
+            # instead of erroring again — the static NON_SHORTABLE list only knows
+            # what someone remembered to add.
+            if "cannot be sold short" in str(e).lower():
+                try:
+                    import app as _app
+                    _app._note_non_shortable(ticker)
+                except Exception:
+                    pass
             log.error("Alpaca order failed for %s %s %s: %s", action, qty, ticker, e)
             return {"success": False, "error": str(e)}
 

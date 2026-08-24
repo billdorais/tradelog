@@ -386,8 +386,34 @@ NON_SHORTABLE = {t.strip().upper()
                  for t in os.environ.get("NON_SHORTABLE_TICKERS", "SPCX").split(",")
                  if t.strip()}
 
+# Learned at runtime from Alpaca's own rejections. The static list only knows what
+# someone remembered to put in it — SOXL was not in it, so its short entry errored
+# out on 2026-08-24 and would have errored again every day until noticed. A ticker
+# the broker has refused once is skipped cleanly from then on.
+_non_shortable_learned = set()
+_non_shortable_lock    = threading.Lock()
+
+
+def _note_non_shortable(ticker: str) -> None:
+    """Record a ticker the broker refused to short. In-memory: it resets on deploy,
+    which is the right default — shortability changes, and a permanent ban would
+    outlive the borrow constraint that caused it."""
+    t = (ticker or "").strip().upper()
+    if not t:
+        return
+    with _non_shortable_lock:
+        if t not in _non_shortable_learned:
+            _non_shortable_learned.add(t)
+            log.warning("Learned non-shortable: %s — short entries will be skipped "
+                        "cleanly until restart (add to NON_SHORTABLE_TICKERS to persist)", t)
+
+
 def _is_non_shortable(ticker: str) -> bool:
-    return (ticker or "").strip().upper() in NON_SHORTABLE
+    t = (ticker or "").strip().upper()
+    if t in NON_SHORTABLE:
+        return True
+    with _non_shortable_lock:
+        return t in _non_shortable_learned
 
 # Per-account reversal-side policy (tag → "long"/"short"/None), from ACCOUNT_META
 # with an optional REVERSAL_SIDE_<TAG> env override. Config-static, so it resolves
@@ -8934,12 +8960,18 @@ def api_blocked_signals():
     days = int(request.args.get("days", 7))
     try:
         conn = get_db(); cur = conn.cursor(); p = placeholder()
+        # Cutoff computed in Python, not SQL. datetime('now', '-N days') is SQLite
+        # only — on Postgres it raises "function datetime(unknown, unknown) does not
+        # exist" and this endpoint returned nothing but an error in production.
+        import datetime as _bd
+        _cutoff = (_bd.datetime.now(_bd.timezone.utc)
+                   - _bd.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         cur.execute(
             f"SELECT strategy, ticker, action, received_at, exec_detail "
             f"FROM trades WHERE exec_status={p} "
-            f"AND received_at >= datetime('now', '-{days} days') "
+            f"AND received_at >= {p} "
             f"ORDER BY received_at DESC LIMIT 200",
-            ("blocked",),
+            ("blocked", _cutoff),
         )
         rows = cur.fetchall()
         conn.close()
