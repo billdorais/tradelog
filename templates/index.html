@@ -664,21 +664,15 @@
   <!-- Curated accounts — today's P&L at a glance (no tabbing needed) -->
   <div class="section-label" style="margin-top:8px">Today's P&amp;L · Curated Accounts</div>
   <div class="stats" style="margin-bottom:8px">
-    <div class="stat-card">
-      <div class="label" style="color:#7FE098">Crew Paper</div>
-      <div class="value" id="glance4">—</div>
-      <div id="glance4sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
+    {# Registry-driven: every CONFIGURED curated book, in UI order. Crew Live leads
+       and carries the ● real-money marker used everywhere else on the page. #}
+    {% for a in accounts if a.curated %}
+    <div class="stat-card"{% if not a.paper %} style="border-color:#6a3f52"{% endif %}>
+      <div class="label" style="color:{{ a.color }}">{% if not a.paper %}● {% endif %}{{ a.label }}</div>
+      <div class="value" id="glance{{ a.num }}">—</div>
+      <div id="glance{{ a.num }}sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
     </div>
-    <div class="stat-card">
-      <div class="label" style="color:#F2C07A">Kairos Refined</div>
-      <div class="value" id="glance3">—</div>
-      <div id="glance3sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="label" style="color:#c4b5fd">TV Refined</div>
-      <div class="value" id="glance2">—</div>
-      <div id="glance2sub" style="font-size:0.68rem;color:#555;margin-top:4px">—</div>
-    </div>
+    {% endfor %}
   </div>
 
   <!-- Signal stats -->
@@ -4431,11 +4425,13 @@
       </div>`;
     }
 
-    // Today's P&L per curated account (TV Refined, Kairos Refined, Crew Paper) —
-    // visible at the top without tabbing. Raw paper-account daily P&L (unscaled).
+    // Today's P&L per curated account — visible at the top without tabbing.
+    // Account numbers come from the registry, not a hardcoded list: a book with a
+    // card but no fetch (or the reverse) shows a permanent em-dash.
+    const _GLANCE_ACCTS = {{ accounts | selectattr('curated') | map(attribute='num') | list | tojson }};
     async function loadGlancePnl() {
       const money = v => (v < 0 ? '-$' : '+$') + Math.abs(Number(v || 0)).toFixed(2);
-      await Promise.all(['2', '3', '4'].map(async n => {
+      await Promise.all(_GLANCE_ACCTS.map(async n => {
         const el  = document.getElementById('glance' + n);
         const sub = document.getElementById('glance' + n + 'sub');
         if (!el) return;

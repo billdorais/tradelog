@@ -290,6 +290,10 @@ def _ui_accounts():
     return sorted(
         ({"num": a["num"], "tag": a["tag"], "label": a["label"],
           "color": a.get("color") or "#888", "paper": bool(a.get("paper", True)),
+          # `curated` = carries a profit lock, i.e. one of the books whose daily P&L
+          # is worth showing at a glance. Same predicate the backend already uses to
+          # build pnl_accounts, so the row and the API cannot disagree.
+          "curated": bool(a.get("profit_lock", True)),
           "tab": _TAB_KEY_BY_NUM.get(str(a["num"]), "acct" + str(a["num"]))}
          for a in ALPACA_ACCOUNTS),
         key=lambda a: _ui_account_rank(a["num"]))

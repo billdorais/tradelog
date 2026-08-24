@@ -11,6 +11,7 @@ keys for must never render a tab that fetches nothing.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -161,3 +162,51 @@ def test_ui_accounts_is_ordered_and_flags_real_money(monkeypatch):
     assert [x["num"] for x in accts] == ["6", "4", "3", "2", "5", "1"]
     assert accts[0]["tab"] == "live" and accts[0]["paper"] is False
     assert all(x["paper"] for x in accts[1:]), "only acct6 trades real money"
+
+
+# ── Today's P&L glance row ──────────────────────────────────────────────────
+
+def _curated(monkeypatch, rows=None):
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"num": n, "tag": t, "label": l, "color": "#888", "paper": p,
+         "profit_lock": n in ("2", "3", "4", "6")}
+        for n, t, l, p in (rows or _ALL)])
+    a.app.config["TESTING"] = True
+    return a.app.test_client()
+
+
+def test_the_glance_row_includes_the_live_book(monkeypatch):
+    html = _curated(monkeypatch).get("/").get_data(as_text=True)
+    assert 'id="glance6"' in html
+    assert re.findall(r'id="glance(\d)"', html)[0] == "6", "live book leads the row"
+
+
+def test_every_glance_card_is_actually_fetched(monkeypatch):
+    """The row used to render three fixed cards while the JS fetched a hardcoded
+    ['2','3','4']. A card with no matching fetch shows a permanent em-dash and reads
+    as a broken account rather than a missing wire-up."""
+    html  = _curated(monkeypatch).get("/").get_data(as_text=True)
+    cards = re.findall(r'id="glance(\d)"', html)
+    fetched = json.loads(re.search(r"_GLANCE_ACCTS = (\[[^\]]*\])", html).group(1))
+    assert cards == fetched, "a card without a fetch stays blank forever"
+
+
+def test_the_glance_row_excludes_the_farms(monkeypatch):
+    """Curated = carries a profit lock. The farms run ungated and are not books
+    whose daily P&L you watch at a glance."""
+    html = _curated(monkeypatch).get("/").get_data(as_text=True)
+    assert 'id="glance1"' not in html and 'id="glance5"' not in html
+
+
+def test_the_glance_row_drops_the_live_book_when_unconfigured(monkeypatch):
+    html = _curated(monkeypatch, [r for r in _ALL if r[0] != "6"]).get("/").get_data(as_text=True)
+    assert 'id="glance6"' not in html
+    assert "6" not in json.loads(re.search(r"_GLANCE_ACCTS = (\[[^\]]*\])", html).group(1))
+
+
+def test_ui_accounts_curated_matches_the_profit_lock_flag(monkeypatch):
+    """The row and /api/risk/status build their lists from the same predicate;
+    if they diverge the card and the API disagree about which books exist."""
+    _curated(monkeypatch)
+    curated = {x["num"] for x in a._ui_accounts() if x["curated"]}
+    assert curated == {"2", "3", "4", "6"}
