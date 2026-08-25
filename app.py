@@ -1032,7 +1032,8 @@ BROKER_STATUS_TTL = 30  # seconds — broker connectivity rarely flips that fast
 # round-trips on the critical path of every load.
 _alpaca_positions_caches = {n: {"data": None, "ts": 0.0} for n in _ALPACA_NUMS}
 _alpaca_positions_cache  = _alpaca_positions_caches["1"]   # back-compat alias (same dict)
-ALPACA_POSITIONS_TTL = 15  # seconds — live P&L dashboard polls every 10s; cache prevents thundering herd
+ALPACA_POSITIONS_TTL = 30  # seconds — SWR pattern below returns stale data past this while refreshing in background
+_positions_refresh_locks = {n: threading.Lock() for n in _ALPACA_NUMS}   # ensures only one background refresh per account at a time
 
 
 FILLS_ERROR_BACKOFF = 20   # seconds — don't hammer the API while it is failing
@@ -1045,7 +1046,7 @@ def _fills_error(num):
     return c.get("error")
 
 
-def _get_cached_fills_n(num, raise_on_error=False):
+def _get_cached_fills_n(num, raise_on_error=False, swr=False):
     """Return cached Alpaca fills for account `num`, fetching only when stale.
     Mutates the cache dict IN PLACE (never rebinds) so registry/alias refs stay
     valid. Lock prevents concurrent duplicate fetches (thundering herd on startup).
@@ -1056,6 +1057,12 @@ def _get_cached_fills_n(num, raise_on_error=False):
     account has no trades", on every page, with nothing on screen to say otherwise.
     Now a failure leaves the previous data and timestamp alone, records the reason,
     and backs off briefly so an outage is not hammered.
+
+    swr=True: stale-while-revalidate. If cached data exists (even past TTL), return
+    it instantly and kick off a background refresh. Use for endpoint-facing calls
+    where "recent" data is fine and the user shouldn't wait for a fresh Alpaca
+    pagination. Monitor/pairing paths pass swr=False (default) so they get truly
+    fresh data on stale.
     """
     num   = str(num)
     cache = _alpaca_caches.get(num)
@@ -1063,6 +1070,31 @@ def _get_cached_fills_n(num, raise_on_error=False):
         return []
     now = time.time()
     if now - cache["ts"] < ALPACA_CACHE_TTL:
+        return cache["data"]
+    # SWR path: cache has data (even if stale) → return it + trigger background refresh.
+    if swr and cache["data"]:
+        _lock = _alpaca_cache_locks[num]
+        if _lock.acquire(blocking=False):
+            def _bg_refresh():
+                try:
+                    rec    = ACCOUNTS_BY_NUM.get(num)
+                    broker = rec["broker"] if rec else None
+                    if broker is None:
+                        return
+                    if cache.get("error") and (time.time() - cache.get("error_ts", 0)) < FILLS_ERROR_BACKOFF:
+                        return
+                    try:
+                        fills = broker.get_fills(raise_on_error=True)
+                        cache["data"]  = fills
+                        cache["ts"]    = time.time()
+                        cache["error"] = None
+                    except Exception as _e:
+                        cache["error"]    = str(_e)[:200]
+                        cache["error_ts"] = time.time()
+                        log.debug("Fills SWR bg refresh [%s] failed: %s", num, _e)
+                finally:
+                    _lock.release()
+            threading.Thread(target=_bg_refresh, daemon=True).start()
         return cache["data"]
     with _alpaca_cache_locks[num]:
         # Re-check inside lock — another thread may have populated while we waited
@@ -1237,25 +1269,33 @@ alpaca_broker4 = ACCOUNTS_BY_NUM.get("4", {}).get("broker")
 
 if alpaca_broker is not None:
     def _prewarm_fills():
-        """Populate the fills caches in background so the first page load is instant.
+        """Populate the fills caches in background so the first page load is instant,
+        then loop forever keeping every account's cache warm ahead of TTL expiry so
+        the dashboard NEVER pays the paginated-fetch cost.
 
         Warms EVERY configured account, not just account 1 — the dashboard asks for
         all of them on load, so warming one still left 4 paginated 90-day fetches on
-        the critical path."""
+        the critical path.
+
+        STAGGERED. Each warm is a paginated 90-day fetch; firing one per account
+        back-to-back means six of them at once across two gunicorn workers, which
+        is a plausible way to get rate-limited into a state where every account
+        returns nothing. A few seconds apart costs nothing — this is a background
+        warm, not a request path."""
         time.sleep(3)   # let gunicorn finish binding before making API calls
-        # STAGGERED. Each warm is a paginated 90-day fetch; firing one per account
-        # back-to-back means six of them at once across two gunicorn workers, which
-        # is a plausible way to get rate-limited into a state where every account
-        # returns nothing. A few seconds apart costs nothing — this is a background
-        # warm, not a request path.
-        for _i, _n in enumerate(ACCOUNTS_BY_NUM):
-            if _i:
-                time.sleep(4)
-            try:
-                _fills = _get_cached_fills_n(_n)
-                log.info("Fills cache pre-warmed for account %s (%d fills)", _n, len(_fills))
-            except Exception as _e:
-                log.warning("Fills cache pre-warm failed for account %s: %s", _n, _e)
+        while True:
+            for _i, _n in enumerate(ACCOUNTS_BY_NUM):
+                if _i:
+                    time.sleep(4)
+                try:
+                    _fills = _get_cached_fills_n(_n)
+                    log.debug("Fills cache warm [account %s] — %d fills", _n, len(_fills))
+                except Exception as _e:
+                    log.debug("Fills cache warm failed [account %s]: %s", _n, _e)
+            # Next sweep well BEFORE the 120s TTL expires so the cache never goes
+            # stale from the dashboard's POV. Total loop time ~ 6 accts × 4s + 90s
+            # idle = ~114s per full cycle. First sweep logs INFO once for visibility.
+            time.sleep(90)
 
     threading.Thread(target=_prewarm_fills, daemon=True).start()
 
@@ -3699,22 +3739,21 @@ def eod_close_toggle():
 @app.route("/api/alpaca/positions")
 def alpaca_positions():
     """Return current open Alpaca positions with live unrealized P&L.
-    Pass ?account=2 to query the Refined (account 2) broker."""
+    Pass ?account=2 to query the Refined (account 2) broker.
+
+    Stale-while-revalidate: if we have ANY cached data (even past TTL), return
+    it instantly and kick off a background refresh. Only a true cold cache
+    (never fetched) blocks the caller. Keeps the dashboard snappy even when
+    the profit-lock monitor has just invalidated the broker's inner cache."""
     account = request.args.get("account", "1")
     broker, broker_tag, _, _ = _alpaca_account_ctx(account)
     if broker is None:
         return jsonify({"positions": [], "_debug": {"error": "broker not configured"}})
     _pcache = _alpaca_positions_caches.get(str(account))
-    if _pcache is not None:
-        now = time.time()
-        if _pcache["data"] is not None and (now - _pcache["ts"]) < ALPACA_POSITIONS_TTL:
-            return jsonify(_pcache["data"])
-    try:
-        # raise_on_error so a network blip returns an error payload instead of an
-        # empty list that the per-account cache would then serve for 15s.
+
+    def _fetch_and_store():
+        """Fetch positions, enrich with entry_time, mutate cache in place."""
         positions = broker.get_positions(raise_on_error=True)
-        # Enrich each position with entry_time from the max-hold timer dict so the
-        # dashboard can display how long the trade has been live.
         with _risk_lock:
             hold_snapshot = dict(_max_hold_positions)
         for pos in positions:
@@ -3726,10 +3765,32 @@ def alpaca_positions():
             "_debug": {"paper": broker._paper, "raw_count": len(positions)},
         }
         if _pcache is not None:
-            # Mutate in place so the back-compat alias stays valid.
             _pcache["data"] = result
             _pcache["ts"]   = time.time()
-        return jsonify(result)
+        return result
+
+    if _pcache is not None and _pcache["data"] is not None:
+        now = time.time()
+        age = now - _pcache["ts"]
+        if age < ALPACA_POSITIONS_TTL:
+            # Fresh — return instantly.
+            return jsonify(_pcache["data"])
+        # Stale but usable — return old data, refresh in background.
+        _rlock = _positions_refresh_locks.get(str(account))
+        if _rlock is not None and _rlock.acquire(blocking=False):
+            def _bg_refresh():
+                try:
+                    _fetch_and_store()
+                except Exception as _re:
+                    log.debug("Positions bg refresh [%s] failed: %s", broker_tag, _re)
+                finally:
+                    _rlock.release()
+            threading.Thread(target=_bg_refresh, daemon=True).start()
+        return jsonify(_pcache["data"])
+
+    # Cold cache — must fetch synchronously.
+    try:
+        return jsonify(_fetch_and_store())
     except Exception as e:
         log.error("alpaca_positions failed: %s", e, exc_info=True)
         return jsonify({"positions": [], "_debug": {"error": str(e)}})
@@ -13254,10 +13315,56 @@ def alpaca_trades():
     broker, broker_tag, _, fills_fn = _alpaca_account_ctx(account)
     if broker is None:
         return jsonify([])
-    # Check if we already have strategy-annotated data in the fills cache
+    # Check if we already have strategy-annotated data in the fills cache. When
+    # stale, return the cached (annotated) data instantly and refresh + re-annotate
+    # in background (SWR) — a paginated Alpaca fetch can take 1-3s and this
+    # endpoint is on the critical path of every dashboard render.
     now = time.time()
     _cache = _alpaca_caches.get(str(account), _alpaca_caches["1"])
     if now - _cache["ts"] < ALPACA_CACHE_TTL and _cache["data"]:
+        return jsonify(_cache["data"])
+    if _cache["data"]:
+        # Stale-while-revalidate — kick off a refresh + re-annotate in background,
+        # return the previously annotated cached data instantly.
+        _lock = _alpaca_cache_locks.get(str(account))
+        if _lock is not None and _lock.acquire(blocking=False):
+            def _bg_annotate_refresh():
+                try:
+                    from datetime import datetime as _dt2
+                    rec    = ACCOUNTS_BY_NUM.get(str(account))
+                    br     = rec["broker"] if rec else None
+                    if br is None:
+                        return
+                    if _cache.get("error") and (time.time() - _cache.get("error_ts", 0)) < FILLS_ERROR_BACKOFF:
+                        return
+                    new_fills = br.get_fills(raise_on_error=True)
+                    try:
+                        sig_lookup = _signal_lookup()
+                        for f in new_fills:
+                            sym  = (f.get("symbol") or "").upper().replace("/", "").replace("USD", "")
+                            side = f.get("side", "")
+                            fill_time = f.get("time") or ""
+                            try:
+                                fill_ts = _dt2.fromisoformat(fill_time.replace("Z", "+00:00")).timestamp()
+                            except Exception:
+                                continue
+                            candidates = sig_lookup.get((sym, side), []) or sig_lookup.get((f.get("symbol","").upper(), side), [])
+                            if candidates:
+                                best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+                                if abs(best[0] - fill_ts) <= 300:
+                                    f["strategy"] = best[1]
+                    except Exception as _ae:
+                        log.debug("Trades SWR annotate [%s] failed: %s", account, _ae)
+                    _cache["data"]  = new_fills
+                    _cache["ts"]    = time.time()
+                    _cache["error"] = None
+                except Exception as _e:
+                    _cache["error"]    = str(_e)[:200]
+                    _cache["error_ts"] = time.time()
+                    log.debug("Trades SWR refresh [%s] failed: %s", account, _e)
+                finally:
+                    _lock.release()
+            threading.Thread(target=_bg_annotate_refresh, daemon=True).start()
         return jsonify(_cache["data"])
     try:
         fills = fills_fn()
