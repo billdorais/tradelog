@@ -468,6 +468,13 @@ _auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed tod
 _position_peaks       = {}      # {(broker, SYMBOL): peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
 _max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
+# {(broker_tag, SYMBOL): {"at": epoch, "n": attempts}} — a max-hold close was
+# SUBMITTED and accepted, but acceptance is not closure. The position stays tracked
+# until it is observed flat, so a close that is rejected async, partially fills, or
+# never fills is retried instead of being forgotten at the moment it looked handled.
+_max_hold_close_sent  = {}
+MAX_HOLD_CLOSE_VERIFY_SECS  = 45   # give an accepted close this long to actually fill
+MAX_HOLD_CLOSE_MAX_ATTEMPTS = 4    # then stop resubmitting, but keep it visible
 _max_hold_fail_ticks  = {}      # {(broker_tag, SYMBOL): consecutive_fail_count}
 # Per-position trail override set by the dashboard Pull-Stop buttons: the gap the
 # pull created (peak→new stop, as %) becomes the NEW trailing distance for that
@@ -2092,7 +2099,13 @@ def _check_position_stops():
         stale_holds = [k for k in _max_hold_positions if k[0] in nonempty_brokers and k not in open_keys]
         for k in stale_holds:
             _max_hold_positions.pop(k, None)
+            _max_hold_close_sent.pop(k, None)
             _clear_max_hold_db(k[0], k[1])
+        # A close-attempt record must never outlive its position: left behind, it
+        # would make the NEXT position in that symbol look already-handled.
+        for k in [k for k in _max_hold_close_sent
+                  if k[0] in nonempty_brokers and k not in open_keys]:
+            _max_hold_close_sent.pop(k, None)
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
     if stale_holds:
@@ -2362,10 +2375,6 @@ def _check_max_hold_exits():
         if elapsed_mins < info["max_hold_mins"]:
             continue
 
-        with _risk_lock:
-            if (broker_tag, symbol) in _auto_closed_symbols:
-                continue
-
         _rec = ACCOUNTS_BY_TAG.get(broker_tag)
         broker_inst = _rec["broker"] if _rec else None
         if broker_inst is None:
@@ -2385,10 +2394,34 @@ def _check_max_hold_exits():
             continue
 
         if not still_open:
+            # Observed flat — THIS is what closure means, not a submitted order.
             with _risk_lock:
                 _max_hold_positions.pop((broker_tag, symbol), None)
+                _max_hold_close_sent.pop((broker_tag, symbol), None)
+                _auto_closed_symbols.discard((broker_tag, symbol))
             _clear_max_hold_db(broker_tag, symbol)
             continue
+
+        # Still open despite a close we already sent. Wait out the fill window, then
+        # send another — an accepted order can still be rejected async, partially
+        # fill, or sit unfilled, and the old code treated acceptance as done and
+        # never looked again.
+        _sent = _max_hold_close_sent.get((broker_tag, symbol))
+        if _sent:
+            _age = time.time() - _sent["at"]
+            if _age < MAX_HOLD_CLOSE_VERIFY_SECS:
+                continue
+            if _sent["n"] >= MAX_HOLD_CLOSE_MAX_ATTEMPTS:
+                # Out of retries. Keep it tracked and keep saying so — a position
+                # past its max hold that we cannot close is not a quiet condition.
+                if not _sent.get("gave_up"):
+                    _sent["gave_up"] = True
+                    log.error("MAX HOLD STUCK: %s [%s] still open after %d close attempts "
+                              "(%.1f min elapsed, limit %.0f) — needs manual intervention",
+                              symbol, broker_tag, _sent["n"], elapsed_mins, info["max_hold_mins"])
+                continue
+            log.error("MAX HOLD: %s [%s] still open %.0fs after close #%d was accepted "
+                      "— resubmitting", symbol, broker_tag, _age, _sent["n"])
 
         # Throttle retries: skip every other tick after first failure, then
         # every 5 ticks (15s) after 3 consecutive failures. ESCAPE VALVE: once
@@ -2416,12 +2449,17 @@ def _check_max_hold_exits():
         try:
             res = broker_inst.close_position(symbol)
             if res.get("success"):
+                # Submitted, NOT confirmed. The tracker and the DB row stay until the
+                # position is observed flat above; dropping them here is what stranded
+                # a position past its limit with nothing left watching it.
                 with _risk_lock:
                     _auto_closed_symbols.add((broker_tag, symbol))
-                    _max_hold_positions.pop((broker_tag, symbol), None)
+                    _prev = _max_hold_close_sent.get((broker_tag, symbol)) or {"n": 0}
+                    _max_hold_close_sent[(broker_tag, symbol)] = {
+                        "at": time.time(), "n": _prev["n"] + 1}
                 _max_hold_fail_ticks.pop((broker_tag, symbol), None)
-                _clear_max_hold_db(broker_tag, symbol)
-                log.info("Max hold: close order submitted for %s on %s", symbol, broker_tag)
+                log.info("Max hold: close order submitted for %s on %s (attempt %d)",
+                         symbol, broker_tag, _prev["n"] + 1)
             else:
                 _max_hold_fail_ticks[(broker_tag, symbol)] = fail_count + 1
                 log.error("Max hold: close failed for %s [%s]: %s", symbol, broker_tag, res.get("error"))
@@ -19519,6 +19557,7 @@ def _engine_pilot_tick(now_et, today):
                 with _risk_lock:
                     _max_hold_positions[(broker_tag, tk.upper())] = {"entry_time": now_utc, "max_hold_mins": eff_mhm}
                     _auto_closed_symbols.discard((broker_tag, tk.upper()))
+                    _max_hold_close_sent.pop((broker_tag, tk.upper()), None)
                 _persist_max_hold(broker_tag, tk.upper(), now_utc, eff_mhm)
             slip = (cur - order_px) if is_long else (order_px - cur)
             _log_engine_pilot_fill({
