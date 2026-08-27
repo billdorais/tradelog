@@ -9575,12 +9575,38 @@ def _composite_score(stats, max_pnl):
 #   margin-called. Widen the steps only if the ≥0.60 band's PROFIT FACTOR proves
 #   materially above the lower bands out of sample; flatten further if the top
 #   band keeps round-tripping.
-_REFINED_SIZE_BANDS = [
-    (60, 25_000),   # score ≥ 0.60 → $25k per trade  (top, anchored)
-    (52, 22_000),   # score ≥ 0.52 → $22k
-    (46, 19_000),   # score ≥ 0.46 → $19k
-    ( 0, 16_000),   # else         → $16k floor
-]
+def _build_size_bands(flat_dollars):
+    """The score-graded size ladder, or one flat size for every band.
+
+    REFINED_SIZE_DOLLARS collapses the ladder to a single number. Scaling the ladder
+    proportionally would be the other option, but it cannot express "these books trade
+    the same size" — the whole point of the ladder is that they do not.
+
+    Collapsing rather than only lowering the top rung is deliberate: setting the top
+    band below the rungs beneath it would invert the ladder, sizing the best-scoring
+    strategies smallest. One value keeps that unrepresentable.
+
+    Note this governs TV Refined, Kairos Refined AND Crew Paper — the crew wire sizes
+    from the top band on purpose, so its positions match the curated books.
+    """
+    if flat_dollars and flat_dollars > 0:
+        return [(0, int(flat_dollars))]
+    return [
+        (60, 25_000),   # score ≥ 0.60 → $25k per trade  (top, anchored)
+        (52, 22_000),   # score ≥ 0.52 → $22k
+        (46, 19_000),   # score ≥ 0.46 → $19k
+        ( 0, 16_000),   # else         → $16k floor
+    ]
+
+
+# A bad value must not take the app down at import — fall back to the ladder.
+try:
+    REFINED_SIZE_DOLLARS = float(os.environ.get("REFINED_SIZE_DOLLARS", "0") or 0)
+except (TypeError, ValueError):
+    REFINED_SIZE_DOLLARS = 0.0
+    log.warning("REFINED_SIZE_DOLLARS is not a number — using the score-graded bands")
+
+_REFINED_SIZE_BANDS = _build_size_bands(REFINED_SIZE_DOLLARS)
 
 # Consecutive live losing trades that trigger auto-demotion from Refined.
 # Strategy stays in catch-all but is excluded from the top-N selection until
