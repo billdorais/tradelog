@@ -1208,9 +1208,14 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                  if p.symbol.upper() == ticker.upper() and abs(float(p.qty or 0)) > 0),
                                 None,
                             )
+                            _pend_key = (broker_tag, ticker.upper())
                             if existing:
                                 held_qty = float(existing.qty)
                                 held_side = "long" if held_qty > 0 else "short"
+                                # The order filled, so the position itself is now the
+                                # guard — drop the pending marker.
+                                with app._risk_lock:
+                                    app._pending_entries.pop(_pend_key, None)
                                 app.log.info(
                                     "Position gate: %s %s skipped — already holding %.0f shares %s (%s)",
                                     action, ticker, abs(held_qty), held_side, strategy,
@@ -1219,6 +1224,29 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                 _exec_detail = (
                                     f"Position gate: already holding {abs(held_qty):.0f}"
                                     f" shares {held_side} of {ticker}"
+                                )
+                                return
+
+                            # No position — but an entry we already sent may simply not
+                            # have filled yet. Without this, a second strategy on the
+                            # same ticker enters during that window and the two fight
+                            # over one position's shares.
+                            with app._risk_lock:
+                                _sent_at = app._pending_entries.get(_pend_key)
+                                if _sent_at is not None and (
+                                        time.time() - _sent_at) >= app.PENDING_ENTRY_TTL_SECS:
+                                    app._pending_entries.pop(_pend_key, None)
+                                    _sent_at = None
+                            if _sent_at is not None:
+                                _age = time.time() - _sent_at
+                                app.log.info(
+                                    "Position gate: %s %s skipped — an entry sent %.0fs ago "
+                                    "has not filled yet (%s)", action, ticker, _age, strategy,
+                                )
+                                _exec_status = "skipped"
+                                _exec_detail = (
+                                    f"Position gate: entry for {ticker} submitted "
+                                    f"{_age:.0f}s ago is still unfilled"
                                 )
                                 return
                         except Exception as _pe:
@@ -1274,6 +1302,15 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                     _exec_status = "ok" if result.get("success") else "error"
                     _exec_detail = json.dumps(result)
                     app.log.info("Alpaca order %s %s %s: %s", action, qty, ticker, result)
+                    # Claim the ticker the moment the entry is accepted. A FAILED
+                    # submission must not claim it — that would block the retry.
+                    if is_entry:
+                        _pk = (broker_tag, ticker.upper())
+                        with app._risk_lock:
+                            if result.get("success"):
+                                app._pending_entries[_pk] = time.time()
+                            else:
+                                app._pending_entries.pop(_pk, None)
                     # Register the max-hold timer: per-rule value if set, else the
                     # global MAX_HOLD_MINS backstop so no entry can run uncapped.
                     _eff_mhm = ep_max_hold_mins or (app.MAX_HOLD_MINS if app.MAX_HOLD_MINS > 0 else None)

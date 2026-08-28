@@ -467,6 +467,15 @@ _blocked_strategies   = {}      # {strategy: {reason, symbol, loss, ts, broker}}
 _auto_closed_symbols  = set()   # {(broker, SYMBOL)} — already auto-closed today; keyed per-account so same ticker on alpaca + alpaca2 trips independently
 _position_peaks       = {}      # {(broker, SYMBOL): peak_unrealized_pnl}; cleared on close
 _latest_positions     = []      # cached by position monitor for the status endpoint
+# {(broker_tag, TICKER): epoch} — an entry order was SUBMITTED and no position has
+# been observed for it yet. The positions API cannot see an unfilled order, so the
+# position gate alone leaves a submit-to-fill window in which a SECOND strategy on
+# the same ticker passes the "already holding?" check and enters too. On 2026-08-27
+# HOOD took two SELL 9 entries 8s apart that way: one oversized position, two stop
+# threads, and the second stop rejected for insufficient qty (8 of 13 already held)
+# — after which every later order on HOOD was refused.
+_pending_entries      = {}
+PENDING_ENTRY_TTL_SECS = 90     # an entry unfilled this long is dead or already stopped
 _max_hold_positions   = {}      # {(broker_tag, SYMBOL): {entry_time, max_hold_mins}}
 # {(broker_tag, SYMBOL): {"at": epoch, "n": attempts}} — a max-hold close was
 # SUBMITTED and accepted, but acceptance is not closure. The position stays tracked
@@ -2106,6 +2115,11 @@ def _check_position_stops():
         for k in [k for k in _max_hold_close_sent
                   if k[0] in nonempty_brokers and k not in open_keys]:
             _max_hold_close_sent.pop(k, None)
+        # An entry that has FILLED no longer needs its pending claim — the position
+        # itself is the guard now. Releasing here (rather than waiting out the TTL)
+        # means a position opened and closed inside the TTL can be re-entered.
+        for k in [k for k in _pending_entries if k in open_keys]:
+            _pending_entries.pop(k, None)
     if stale:
         log.info("Position stop: cleared auto-close guard for %s (no longer open)", stale)
     if stale_holds:
