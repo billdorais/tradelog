@@ -722,17 +722,42 @@ def _webhook_locked(data, received_at, broker_name, ticker):
         if level:
             try:
                 counts = app._get_strike_counts()
-                accts  = {_alpaca_broker_name(_bt[0]) for _bt in broker_targets
-                          if _broker_family(_bt[0]) == "alpaca"}
                 # Per-account limit: SHORT levels on curated books use the tighter
                 # re-fade cap (STRIKES_PER_LEVEL_SHORT); longs/farms use the normal one.
-                hit = [(a, app._strike_limit(level, a)) for a in accts
-                       if counts.get((a, ticker.upper(), level), 0) >= app._strike_limit(level, a)]
-                if hit:
-                    _names = [a for a, _ in hit]; _lim = hit[0][1]
+                #
+                # Counts and limits are PER ACCOUNT, so enforcement is too: only the
+                # books that reached their own limit are dropped. This used to return
+                # outright the moment ANY account was over, which blocked every other
+                # book for losses it had not taken — and silently gated the farms,
+                # whose whole job is to be the ungated control group that makes a gate
+                # block priceable.
+                _kept_strikes, _hit_pairs = [], []
+                for _bt in broker_targets:
+                    if _broker_family(_bt[0]) != "alpaca":
+                        _kept_strikes.append(_bt)
+                        continue
+                    _a   = _alpaca_broker_name(_bt[0])
+                    _lim_a = app._strike_limit(level, _a)
+                    if counts.get((_a, ticker.upper(), level), 0) >= _lim_a:
+                        _hit_pairs.append((_a, _lim_a))
+                    else:
+                        _kept_strikes.append(_bt)
+                if _hit_pairs:
+                    _names = sorted({a for a, _ in _hit_pairs}); _lim = _hit_pairs[0][1]
                     app.log.warning(
-                        "Strikes gate: %s %s (%s) blocked — %s+ losses at %s today on %s",
-                        order_action, ticker, strategy_name, _lim, level, ",".join(_names))
+                        "Strikes gate: %s %s (%s) blocked on %s — %s+ losses at %s today"
+                        "%s",
+                        order_action, ticker, strategy_name, ",".join(_names), _lim, level,
+                        "" if not _kept_strikes else
+                        f" (still routing to {', '.join(_bt[0] for _bt in _kept_strikes)})")
+                    for _a, _lim_a in _hit_pairs:
+                        app._record_block(_a, ticker, strategy_name,
+                                          "LONG" if order_action == "BUY" else "SHORT",
+                                          "strikes",
+                                          f"{_lim_a}+ losses at {level} today")
+                broker_targets = _kept_strikes
+                if _hit_pairs and not broker_targets:
+                    _names = sorted({a for a, _ in _hit_pairs}); _lim = _hit_pairs[0][1]
                     app._update_exec(cur, trade_id, "blocked",
                         f"{_lim}-strikes/level: {level} already took {_lim} loss(es) "
                         f"today ({', '.join(_names)})")
