@@ -74,6 +74,7 @@
         <label style="font-size:0.72rem;color:#888">Range
           <select id="acctBlockDays" onchange="loadBlockedByAccount()"
                   style="background:#0f1219;color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 8px;margin-left:6px">
+            <option value="0">Today</option>
             <option value="2">2d</option><option value="7" selected>7d</option>
             <option value="14">14d</option><option value="30">30d</option>
           </select>
@@ -123,7 +124,7 @@
         <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#f0a35e">Why entries were blocked</span>
         <span id="blockedMeta" style="font-size:0.75rem;color:#666">loading…</span>
         <label style="font-size:0.7rem;color:#777;margin-left:auto">Range
-          <select id="blockedDays" onchange="loadBlockedBreakdown()"
+          <select id="blockedDays" onchange="loadBlockedBreakdown(); loadRouteMisses()"
                   style="background:#1a1d2e;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:3px 6px;font-size:0.72rem;cursor:pointer">
             <option value="2">2d</option>
             <option value="7" selected>7d</option>
@@ -139,6 +140,37 @@
         side, reversal, halts) and over-weights whole-signal ones (day-type, which blocks the farms too).
         <span style="color:#7FE098">For &ldquo;why didn&rsquo;t THIS book trade?&rdquo; use the per-account panel below.</span>
       </div>
+    <!-- Routing misses — TV alerts whose strategy ID matches no pipeline. Lives here
+         rather than on the Signal Router because it is a diagnostic, not a control. -->
+    <div id="routeMissPanel" style="display:none;background:#1a0e0e;border:1px solid #5a1a1a;border-radius:10px;padding:14px 20px;margin-top:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#e74c3c">
+          &#9888; Routing misses &mdash; TradingView alerts with no matching pipeline
+        </span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:0.72rem;color:#666">Fix the Routing Strategy ID in the TV Pine script inputs</span>
+          <button onclick="clearRouteMisses(this)"
+                  title="Hide everything listed above. Nothing is deleted — a strategy that keeps missing reappears on its next signal."
+                  style="background:transparent;border:1px solid #5a1a1a;color:#c66;border-radius:6px;padding:3px 12px;font-size:0.72rem;cursor:pointer;font-family:inherit">
+            Clear
+          </button>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+        <thead><tr style="color:#555;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.04em">
+          <th style="text-align:left;padding:0 12px 6px 0">Strategy ID sent by TV</th>
+          <th style="text-align:left;padding:0 12px 6px 0">Ticker</th>
+          <th style="text-align:left;padding:0 12px 6px 0">Last seen</th>
+          <th style="text-align:right;padding:0 0 6px 0">Count</th>
+        </tr></thead>
+        <tbody id="routeMissTbody"></tbody>
+      </table>
+      <div style="font-size:0.68rem;color:#5a4a4a;margin-top:8px;line-height:1.5">
+        These are alerts that reached the webhook and matched <strong>no pipeline at all</strong>
+        &mdash; usually a typo in the Pine script's Routing Strategy ID. A wired strategy stopped
+        by a gate is not a routing miss; it appears under &ldquo;Why entries were blocked&rdquo; above.
+      </div>
+    </div>
     </div>
 
   </div>
@@ -188,6 +220,53 @@
           + `<div class="c-msg">${_esc(r.msg)}</div></div>`).join('');
       } catch (e) {
         meta.textContent = '— error loading';
+      }
+    }
+
+    // ── Routing misses — TV alerts that matched no pipeline ────────────────────
+    // Moved off the Signal Router: it reports what happened, it does not configure
+    // anything. The endpoint selects exec_status="error" with the routing-miss
+    // detail — NOT exec_status="blocked", which is a gate stopping a strategy that
+    // is wired correctly and told the user to fix a typo that did not exist.
+    async function loadRouteMisses() {
+      const panel = document.getElementById('routeMissPanel');
+      const tbody = document.getElementById('routeMissTbody');
+      if (!panel || !tbody) return;
+      const days = document.getElementById('blockedDays')?.value ?? '7';
+      try {
+        const rows = await fetch('/api/webhook/blocked?days=' + days).then(r => r.json());
+        if (!Array.isArray(rows) || !rows.length) { panel.style.display = 'none'; return; }
+        panel.style.display = 'block';
+        tbody.innerHTML = rows.map(r => {
+          const raw = r.last_seen || '';
+          const d   = new Date(raw.endsWith('Z') ? raw : raw + 'Z');
+          const when = isNaN(d) ? raw : d.toLocaleString();
+          return `<tr style="border-top:1px solid #2a1010">
+            <td style="padding:6px 12px 6px 0;font-family:monospace;color:#f57070">${_esc(r.strategy)}</td>
+            <td style="padding:6px 12px 6px 0;color:#aaa">${_esc(r.ticker || '—')}</td>
+            <td style="padding:6px 12px 6px 0;color:#666;font-size:0.78rem">${_esc(when)}</td>
+            <td style="padding:6px 0;text-align:right;color:#e74c3c">${r.count}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        console.warn('routing misses failed:', e);
+        panel.style.display = 'none';
+      }
+    }
+
+    async function clearRouteMisses(btn) {
+      if (!confirm('Hide the routing misses listed above?\n\nNothing is deleted — a '
+                 + 'strategy that keeps missing will reappear on its next signal.')) return;
+      if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
+      try {
+        const d = await fetch('/api/webhook/blocked/clear', { method: 'POST' })
+                          .then(r => r.json());
+        if (!d.ok) throw new Error(d.error || 'clear failed');
+        await loadRouteMisses();
+      } catch (e) {
+        alert('Could not clear: ' + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Clear'; }
       }
     }
 
@@ -404,6 +483,7 @@
 
     loadErrors();
     loadBlockedBreakdown();
+    loadRouteMisses();
     loadBlockedByAccount();
     setInterval(() => { if (document.getElementById('autoRefresh').checked) loadErrors(); }, 15000);
   </script>

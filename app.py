@@ -9074,21 +9074,36 @@ def progress_fill_stats():
 @app.route("/api/webhook/blocked")
 def api_blocked_signals():
     """Recent signals blocked because no routing rule matched their strategy name."""
-    days = int(request.args.get("days", 7))
+    try:    days = max(0, min(60, int(request.args.get("days", 7))))
+    except (TypeError, ValueError): days = 7
     try:
         conn = get_db(); cur = conn.cursor(); p = placeholder()
         # Cutoff computed in Python, not SQL. datetime('now', '-N days') is SQLite
         # only — on Postgres it raises "function datetime(unknown, unknown) does not
         # exist" and this endpoint returned nothing but an error in production.
         import datetime as _bd
-        _cutoff = (_bd.datetime.now(_bd.timezone.utc)
-                   - _bd.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        # DATE cutoff in ET, matching /api/signals/blocked_breakdown so the two
+        # panels sharing one range selector agree. A now-minus-N-days cutoff made
+        # days=0 mean "since this instant", i.e. Today showed nothing.
+        try:    _bet = ZoneInfo("America/New_York")
+        except Exception: _bet = _bd.timezone.utc
+        _cutoff = (_bd.datetime.now(_bet).date() - _bd.timedelta(days=days)).isoformat()
+        # A DISMISSED mark hides everything already seen without deleting signal
+        # history — these rows are the record of what TradingView actually sent.
+        _dismissed = _load_setting("BLOCKED_SIGNALS_CLEARED_AT") or ""
+        if _dismissed > _cutoff:
+            _cutoff = _dismissed
+        # exec_status is "error" for a routing miss, NOT "blocked" — "blocked" is a
+        # GATE stopping a wired strategy. Selecting on it listed strikes-gate blocks
+        # under a heading that told the user to fix a typo in a strategy name that
+        # was never wrong.
         cur.execute(
             f"SELECT strategy, ticker, action, received_at, exec_detail "
             f"FROM trades WHERE exec_status={p} "
+            f"AND exec_detail LIKE {p} "
             f"AND received_at >= {p} "
             f"ORDER BY received_at DESC LIMIT 200",
-            ("blocked", _cutoff),
+            ("error", "No routing pipeline matched%", _cutoff),
         )
         rows = cur.fetchall()
         conn.close()
@@ -9112,6 +9127,24 @@ def api_blocked_signals():
     except Exception as e:
         log.warning("api_blocked_signals failed: %s", e)
         return jsonify([])
+
+
+@app.route("/api/webhook/blocked/clear", methods=["POST"])
+def api_blocked_signals_clear():
+    """Dismiss the routing-miss list up to now.
+
+    Marks a timestamp rather than deleting rows: these are the record of what
+    TradingView actually sent, and a strategy that keeps missing will reappear on
+    its next signal — which is the point of the panel.
+    """
+    import datetime as _cd
+    _now = _cd.datetime.now(_cd.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        _save_setting("BLOCKED_SIGNALS_CLEARED_AT", _now)
+        return jsonify({"ok": True, "cleared_at": _now})
+    except Exception as e:
+        log.warning("api_blocked_signals_clear failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 _refined_last_run    = None   # UTC timestamp of last scheduled/manual refresh
@@ -15318,7 +15351,9 @@ def api_blocked_breakdown():
     RVOL-specific counts. ?days=7, ?entries_only=1 (skip exits)."""
     import datetime as _dt
     from collections import Counter
-    try:    days = max(1, min(60, int(request.args.get("days") or 7)))
+    # days=0 means TODAY only (cutoff == today), so the panel can answer
+    # "what is happening right now" rather than only multi-day windows.
+    try:    days = max(0, min(60, int(request.args.get("days") or 7)))
     except Exception: days = 7
     entries_only = (request.args.get("entries_only", "1") != "0")
     try:    et = ZoneInfo("America/New_York")
@@ -15379,7 +15414,7 @@ def api_blocked_by_account():
     """
     import datetime as _dt
     from collections import Counter, defaultdict
-    try:    days = max(1, min(BLOCKED_TARGETS_RETENTION_DAYS, int(request.args.get("days") or 7)))
+    try:    days = max(0, min(BLOCKED_TARGETS_RETENTION_DAYS, int(request.args.get("days") or 7)))
     except Exception: days = 7
     account = (request.args.get("account") or "").strip()
     try:    et = ZoneInfo("America/New_York")
