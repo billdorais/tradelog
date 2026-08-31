@@ -127,7 +127,7 @@ class AlpacaBroker:
         from alpaca.trading.enums import OrderSide, TimeInForce
         deadline = _t.time() + max_wait_secs
         filled = False
-        _wait, _rl_hits = 0.5, 0
+        _wait, _rl_hits, _last_status = 0.5, 0, None
         while _t.time() < deadline:
             _t.sleep(_wait)
             try:
@@ -140,6 +140,12 @@ class AlpacaBroker:
                     log.info("Delayed stop: entry %s for %s reached terminal status %s — no stop needed",
                              order_id, ticker, status)
                     return
+                _last_status = status
+                if status == 'partially_filled':
+                    # A partial fill is a REAL position that needs protecting now.
+                    # Waiting out the full window for the remainder left it naked
+                    # for 30s — and the remainder may never come.
+                    break
                 _wait = 0.5
             except Exception as _ge:
                 # A rate-limited poll says nothing about the ORDER — it means we
@@ -169,9 +175,16 @@ class AlpacaBroker:
                             "and no position exists — nothing to protect",
                             order_id, ticker, max_wait_secs)
                 return
-            log.error("Delayed stop: entry %s for %s never confirmed filled (%d rate-limited "
-                      "polls) but %s shares ARE held — attaching the stop anyway",
-                      order_id, ticker, _rl_hits, _held)
+            if _last_status == 'partially_filled':
+                # Expected and handled — not an error. Sizing the stop to what is
+                # actually held is the correct outcome, not a degraded one.
+                log.warning("Delayed stop: %s partially filled (%s of %s) — attaching the "
+                            "stop to the filled qty", ticker, _held, qty)
+            else:
+                log.error("Delayed stop: entry %s for %s never confirmed filled (last status "
+                          "%s, %d rate-limited polls) but %s shares ARE held — attaching the "
+                          "stop anyway", order_id, ticker, _last_status or "unknown",
+                          _rl_hits, _held)
             qty = _held
         if filled:
             log.info("Delayed stop: entry %s for %s confirmed filled — placing exit stops now",
@@ -1243,6 +1256,22 @@ class AlpacaBroker:
                              sym_u, o.id, label, _ce)
             return len(list(open_orders))
 
+        def _qty_available():
+            """Shares Alpaca will actually let us sell right now. A stop order
+            reserves the position (held_for_orders), and the reservation clears
+            asynchronously after the cancel is accepted."""
+            try:
+                _p = self._trading.get_open_position(sym_u)
+            except Exception:
+                return None                      # gone, or unreadable — caller decides
+            for _f in ("qty_available", "available_qty"):
+                _v = getattr(_p, _f, None)
+                if _v not in (None, ""):
+                    try:    return abs(float(_v))
+                    except (TypeError, ValueError): pass
+            try:    return abs(float(getattr(_p, "qty", 0) or 0))
+            except (TypeError, ValueError): return None
+
         # Pass 1: cancel whatever's open right now.
         _sweep_open_orders("pass1")
         # Brief settle; cancellations are usually near-instant but a timed-out
@@ -1252,6 +1281,22 @@ class AlpacaBroker:
         remaining = _sweep_open_orders("pass2")
         if remaining > 0:
             _time.sleep(0.4)
+
+        # WAIT for the reservation to actually clear rather than assuming 0.4s did
+        # it. Sleeping a fixed beat and submitting anyway is what produced
+        # "insufficient qty available (requested 1, available 0), held_for_orders 1"
+        # on UNH and JPM at the 09:35 open — the close was rejected, max-hold
+        # resubmitted, and the position stayed open across three attempts.
+        for _i in range(10):                     # ~3s worst case
+            _avail = _qty_available()
+            if _avail is None or _avail > 0:
+                break
+            if _i in (3, 7):                     # re-sweep: a new stop may have landed
+                _sweep_open_orders(f"held-retry{_i}")
+            _time.sleep(0.3)
+        else:
+            log.warning("close_position %s: qty still reserved after re-sweeps — "
+                        "submitting anyway", sym_u)
 
         # Built-in close — submits a market order opposite the position.
         try:
@@ -1394,7 +1439,12 @@ class AlpacaBroker:
                 if until_ts:
                     kwargs["until"] = until_ts
                 req    = GetOrdersRequest(**kwargs)
-                orders = self._trading.get_orders(filter=req)
+                # Paginated, so one 429 mid-walk would truncate the history and
+                # read as "these fills do not exist" — which is how a leaderboard
+                # silently loses trades.
+                orders = _retry_rate_limited(
+                    lambda: self._trading.get_orders(filter=req),
+                    what="get_fills page", attempts=3)
                 if not orders:
                     break
                 oldest_sub = None

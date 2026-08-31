@@ -175,3 +175,66 @@ def test_no_sqlite_only_date_sql_remains_anywhere():
         for line in src.splitlines():
             if "datetime('now'" in line and not line.strip().startswith("#"):
                 pytest.fail(f"{f}: SQLite-only date SQL: {line.strip()}")
+
+
+# ── close_position must wait for the share reservation to clear ──────────────
+
+def test_close_waits_for_held_shares_to_be_released():
+    """UNH and JPM on 2026-08-31: close_position swept the open orders, slept a
+    fixed 0.4s and submitted anyway. Under load the cancel had not landed, so the
+    market order was rejected with "insufficient qty available (requested 1,
+    available 0), held_for_orders 1" — max-hold then resubmitted three times and
+    the position stayed open the whole while."""
+    import inspect
+    src = inspect.getsource(ab.AlpacaBroker.close_position)
+    assert "qty_available" in src, "must ask what is actually sellable"
+    assert "held-retry" in src, "must re-sweep if the reservation persists"
+    # A fixed sleep is not a substitute for checking.
+    assert src.count("_qty_available()") >= 2
+
+
+def test_close_still_submits_rather_than_hanging_forever():
+    """A position past its max hold that we refuse to even attempt is worse than
+    one we attempt and fail — the bounded wait must fall through."""
+    import inspect
+    src = inspect.getsource(ab.AlpacaBroker.close_position)
+    assert "submitting anyway" in src
+
+
+# ── partial fills are a normal outcome, not an error ────────────────────────
+
+def test_a_partial_fill_stops_waiting_and_protects_what_is_held():
+    """SELL 3 GOOG filled 1, SELL 2 META filled 1, BUY 7 SPCX filled 4. Waiting the
+    full 30s for a remainder that may never arrive left real positions unprotected
+    that whole time."""
+    import inspect
+    src = inspect.getsource(ab)
+    assert "partially_filled" in src
+    assert "partially filled (%s of %s)" in src, "log the shortfall, not a generic error"
+
+
+def test_a_partial_fill_is_not_logged_as_an_error():
+    """It is expected and correctly handled. Logging it at ERROR trains you to
+    ignore the level that also carries the genuinely unexplained cases."""
+    import inspect
+    src = inspect.getsource(ab)
+    i = src.index("partially filled (%s of %s)")
+    line_start = src.rindex("log.", 0, i)
+    assert src[line_start:i].startswith("log.warning")
+
+
+def test_an_unexplained_fill_still_reports_its_last_status():
+    """When it is NOT a partial fill, the error should say what the order looked
+    like — 'never confirmed filled' alone gave nothing to act on."""
+    import inspect
+    src = inspect.getsource(ab)
+    assert "last status" in src and "_last_status or" in src
+
+
+# ── fills pagination ────────────────────────────────────────────────────────
+
+def test_the_fills_walk_is_rate_limit_retried():
+    """get_fills paginates. One 429 mid-walk truncates the history and reads as
+    'those fills do not exist' — which is how a leaderboard silently loses trades."""
+    import inspect
+    assert "_retry_rate_limited" in inspect.getsource(ab.AlpacaBroker.get_fills)
