@@ -258,6 +258,7 @@
       drawEquity();         // cumulative P&L, same period as everything else
       loadGateDocs();       // gate rule reference — powers every gate modal
       loadGates();          // the Refusal panel — separate call, it is the slow one
+      loadLiveVsPaper();    // pairs the two Crew books over the same window
       loadSixCharts();      // top 3 + bottom 3, one session each
     } catch (e) {
       document.getElementById('meta').textContent = 'failed: ' + e;
@@ -393,7 +394,15 @@
       </div>
 
       <div class="panel">
-        <div class="band-q">5 · Script notes</div>
+        <div class="band-q">5 &middot; Live vs Paper</div>
+        <div class="band-sub">Same roster, same gates &mdash; so anything here is <b>execution</b>.
+          Ranked on <b>return</b>, never dollars: the books run different position sizes,
+          so comparing P&amp;L would mostly measure LIVE_SIZE_DOLLARS.</div>
+        <div id="lvp"><div class="empty">Loading&hellip;</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="band-q">6 · Script notes</div>
         <div class="band-sub">Hidden by default so it can&rsquo;t wander into a screen recording.
           <b>Copy script</b> works whether or not it&rsquo;s open.</div>
         <button class="script-toggle" id="scriptToggle" onclick="toggleScript()">Show script notes</button>
@@ -747,6 +756,82 @@
     closeChartModal();
     closeGateModal();
   });
+
+  // ── Live vs Paper ─────────────────────────────────────────────────────────
+  // The two Crew books trade the same roster under the same gates, so a
+  // difference between them is execution. Everything here is framed from LIVE's
+  // point of view: negative lag = Live entered first, positive slippage = Live
+  // got the worse price, positive return delta = Live did better.
+  async function loadLiveVsPaper() {
+    const host = document.getElementById('lvp');
+    if (!host) return;
+    try {
+      const d = await fetch(`/api/live_vs_paper?from=${DATA.from}&to=${DATA.to}`)
+                        .then(r => r.json());
+      if (d.error) { host.innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+      const s = d.summary;
+      const secs = v => v == null ? '—' : (v < 0 ? '-' : '+') + Math.abs(v) + 's';
+      const bps  = v => v == null ? '—' : (v > 0 ? '+' : '') + v + ' bps';
+      const pct  = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+
+      if (!s.paired && !s.live_only && !s.paper_only) {
+        host.innerHTML = `<div class="empty">No Crew trades on either book ${esc(d.from)} → ${esc(d.to)}.</div>`;
+        return;
+      }
+
+      const tiles = `
+        <div class="tiles" style="margin-bottom:12px">
+          <div class="tile"><div class="k">Paired setups</div><div class="v">${s.paired}</div>
+            <div class="s">${s.live_only} live-only · ${s.paper_only} paper-only</div></div>
+          <div class="tile"><div class="k">Median entry lag</div>
+            <div class="v ${s.median_entry_lag_secs > 0 ? 'neg' : 'pos'}">${secs(s.median_entry_lag_secs)}</div>
+            <div class="s">negative = Live entered first</div></div>
+          <div class="tile"><div class="k">Median slippage</div>
+            <div class="v ${s.median_slippage_bps > 0 ? 'neg' : 'pos'}">${bps(s.median_slippage_bps)}</div>
+            <div class="s">positive = Live got the worse price</div></div>
+          <div class="tile"><div class="k">Mean return delta</div>
+            <div class="v ${cls(s.mean_pct_delta)}">${pct(s.mean_pct_delta)}</div>
+            <div class="s">${s.live_better} live better · ${s.paper_better} paper better</div></div>
+        </div>`;
+
+      const row = p => `<tr>
+        <td class="mono">${esc((p.ticker || '') + ' ' + (p.side || ''))}</td>
+        <td style="color:#666">${esc((p.date || '').slice(5))}</td>
+        <td>${secs(p.entry_lag_secs)}</td>
+        <td class="${p.slippage_bps > 0 ? 'neg' : 'pos'}">${bps(p.slippage_bps)}</td>
+        <td class="${cls(p.live.pct)}">${pct(p.live.pct)}</td>
+        <td class="${cls(p.paper.pct)}">${pct(p.paper.pct)}</td>
+        <td class="${cls(p.pct_delta)}" style="text-align:right;font-weight:700">${pct(p.pct_delta)}</td>
+        <td class="thin" style="font-size:0.7rem">${money(p.live.pnl)} / ${money(p.paper.pnl)}</td></tr>`;
+
+      const onlyRow = (o, who) => `<tr>
+        <td class="mono">${esc((o.trade.ticker || '') + ' ' + (o.trade.side || ''))}</td>
+        <td style="color:#666">${esc((o.trade.date || '').slice(5))}</td>
+        <td style="color:#f0a35e">${who}</td>
+        <td class="${cls(o.trade.pct)}">${pct(o.trade.pct)}</td>
+        <td class="thin" style="font-size:0.72rem">${o.other_book_blocked
+            ? esc(o.other_book_blocked.gate + ' — ' + (o.other_book_blocked.reason || ''))
+            : 'no recorded block (often: already holding it)'}</td></tr>`;
+
+      const pairsTable = !d.pairs.length ? '' : `
+        <table><thead><tr><th>Setup</th><th>Day</th><th>Lag</th><th>Slippage</th>
+          <th>Live</th><th>Paper</th><th style="text-align:right">Delta</th><th>$ L/P</th></tr></thead>
+        <tbody>${d.pairs.map(row).join('')}</tbody></table>`;
+
+      const onlyAll = [...d.live_only.map(o => onlyRow(o, 'live only')),
+                       ...d.paper_only.map(o => onlyRow(o, 'paper only'))];
+      const onlyTable = !onlyAll.length ? '' : `
+        <div class="band-q" style="margin-top:14px">Taken by one book only</div>
+        <table><thead><tr><th>Setup</th><th>Day</th><th>Book</th><th>Return</th>
+          <th>Why the other stood aside</th></tr></thead>
+        <tbody>${onlyAll.join('')}</tbody></table>`;
+
+      host.innerHTML = tiles + pairsTable + onlyTable
+        + `<div class="band-sub" style="margin-top:8px">${(d.caveats || []).map(esc).join(' ')}</div>`;
+    } catch (e) {
+      host.innerHTML = `<div class="empty">failed: ${esc(e)}</div>`;
+    }
+  }
 
   // ── Gate reference ────────────────────────────────────────────────────────
   // The Refusal table and the gate strip both name gates without saying what

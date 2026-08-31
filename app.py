@@ -16285,6 +16285,215 @@ def api_recap():
     return (jsonify(out), 400) if out.get("error") else jsonify(out)
 
 
+# ── Live vs Paper ───────────────────────────────────────────────────────────
+# Crew Live and Crew Paper trade the SAME roster under the SAME gates, so any
+# difference between them is execution: fill timing, fill price, and the knock-on
+# effects of one book being in a position the other is not.
+#
+# Comparing their dollars would measure position size instead — Paper runs the
+# Refined band while Live runs LIVE_SIZE_DOLLARS. So the comparable unit is
+# RETURN ON NOTIONAL per trade, with dollars reported alongside but never used to
+# rank. Slippage is signed against the side, so "worse" always means worse.
+_LVP_PAIR_WINDOW_SECS = 15 * 60      # entries this far apart can still be one setup
+
+
+def _lvp_pct(t):
+    """Round-trip return on its own notional, in percent."""
+    try:
+        notional = abs(float(t.get("entry_price") or 0)) * abs(float(t.get("qty") or 0))
+        return round(float(t.get("pnl") or 0) / notional * 100, 4) if notional else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _lvp_epoch(ts):
+    import datetime as _d
+    if not ts:
+        return None
+    try:
+        return _d.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _lvp_slippage_bps(live, paper):
+    """Signed entry-price difference in basis points, from LIVE's point of view.
+
+    Positive = Live got the worse price. A long paying more and a short receiving
+    less are both worse, so the sign flips with the side — otherwise the average
+    over a mixed book cancels itself out and reads as zero slippage.
+    """
+    try:
+        lp, pp = float(live.get("entry_price") or 0), float(paper.get("entry_price") or 0)
+    except (TypeError, ValueError):
+        return None
+    if lp <= 0 or pp <= 0:
+        return None
+    raw = (lp - pp) / pp * 10_000
+    return round(raw if (live.get("side") or "").upper() == "LONG" else -raw, 1)
+
+
+def _lvp_trade(t):
+    return {
+        "strategy":    t.get("strategy"), "ticker": t.get("ticker"),
+        "side":        t.get("side"),     "date":   t.get("date"),
+        "entry_time":  t.get("entry_time"), "exit_time": t.get("exit_time"),
+        "entry_price": t.get("entry_price"), "exit_price": t.get("exit_price"),
+        "qty":         t.get("qty"),
+        "pnl":         round(float(t.get("pnl") or 0), 2),
+        "pct":         _lvp_pct(t),
+        "exit_reason": t.get("exit_reason"),
+    }
+
+
+def _lvp_blocks(from_date, to_date):
+    """Recorded gate blocks in the window, keyed (account, ticker, date).
+
+    Lets an unmatched trade say WHY the other book stood aside instead of leaving
+    it as an unexplained gap. Only gates that call _record_block appear — the
+    position gate does not, which is itself worth knowing when nothing is found.
+    """
+    out = {}
+    try:
+        conn = get_db(); cur = conn.cursor(); p = placeholder()
+        cur.execute(
+            f"SELECT ts, account, ticker, strategy, gate, reason FROM blocked_targets "
+            f"WHERE ts >= {p} AND ts <= {p}", (from_date, to_date + "T23:59:59"))
+        for r in cur.fetchall():
+            ts, acct, tk, strat, gate, reason = (
+                (r[0], r[1], r[2], r[3], r[4], r[5]) if DATABASE_URL else
+                (r["ts"], r["account"], r["ticker"], r["strategy"], r["gate"], r["reason"]))
+            out.setdefault((acct, (tk or "").upper(), str(ts)[:10]), []).append(
+                {"gate": gate, "reason": reason, "strategy": strat})
+        conn.close()
+    except Exception as e:
+        log.debug("live_vs_paper blocks lookup failed: %s", e)
+    return out
+
+
+@app.route("/api/live_vs_paper")
+def api_live_vs_paper():
+    """Pair Crew Live's round-trips with Crew Paper's, trade by trade.
+
+    Same roster, same gates — so this isolates execution. Three buckets:
+      paired      both books took the setup: entry lag, slippage, return delta
+      live_only   Live traded it, Paper did not
+      paper_only  Paper traded it, Live did not
+
+    Ranking is on RETURN, never dollars: the books run different position sizes,
+    so a dollar comparison would mostly measure LIVE_SIZE_DOLLARS.
+    """
+    import datetime as _d
+
+    live_num, paper_num = "6", "4"
+    _lb, live_tag, live_label, live_fills   = _alpaca_account_ctx(live_num)
+    _pb, paper_tag, paper_label, paper_fills = _alpaca_account_ctx(paper_num)
+    if _lb is None or live_tag != "alpaca6":
+        return jsonify({"error": "Crew Live (acct6) is not configured"}), 400
+    if _pb is None or paper_tag != "alpaca4":
+        return jsonify({"error": "Crew Paper (acct4) is not configured"}), 400
+
+    today = _et_today_iso()
+    frm = (request.args.get("from") or "").strip() or today
+    to  = (request.args.get("to")   or "").strip() or today
+
+    lookup = _build_signal_lookup_for_alpaca()
+    live_rts  = _pair_alpaca_fills_lifo(live_fills(),  from_date=frm, to_date=to,
+                                        signal_lookup=lookup)["closed_clean"]
+    paper_rts = _pair_alpaca_fills_lifo(paper_fills(), from_date=frm, to_date=to,
+                                        signal_lookup=lookup)["closed_clean"]
+
+    # Pair on strategy + side + day, nearest entry first, one-to-one. Greedy by
+    # smallest lag so a repeated setup pairs like with like rather than pairing the
+    # first Live trade against a Paper trade three hours later.
+    unpaired_paper = list(paper_rts)
+    pairs, live_only = [], []
+    for lt in sorted(live_rts, key=lambda t: t.get("entry_time") or ""):
+        key = ((lt.get("strategy") or "").upper(), (lt.get("side") or "").upper(),
+               lt.get("date"))
+        le  = _lvp_epoch(lt.get("entry_time"))
+        best, best_lag = None, None
+        for pt in unpaired_paper:
+            if ((pt.get("strategy") or "").upper(), (pt.get("side") or "").upper(),
+                    pt.get("date")) != key:
+                continue
+            pe = _lvp_epoch(pt.get("entry_time"))
+            lag = abs(le - pe) if (le and pe) else None
+            if lag is None or lag > _LVP_PAIR_WINDOW_SECS:
+                continue
+            if best_lag is None or lag < best_lag:
+                best, best_lag = pt, lag
+        if best is None:
+            live_only.append(lt)
+            continue
+        unpaired_paper.remove(best)
+        _lp, _pp = _lvp_pct(lt), _lvp_pct(best)
+        pairs.append({
+            "strategy": lt.get("strategy"), "ticker": lt.get("ticker"),
+            "side": lt.get("side"), "date": lt.get("date"),
+            "live": _lvp_trade(lt), "paper": _lvp_trade(best),
+            # Signed so Live is always the subject: negative lag = Live entered first.
+            "entry_lag_secs": (None if (le is None or _lvp_epoch(best.get("entry_time")) is None)
+                               else round(le - _lvp_epoch(best.get("entry_time")))),
+            "slippage_bps": _lvp_slippage_bps(lt, best),
+            "pct_delta": (None if (_lp is None or _pp is None) else round(_lp - _pp, 4)),
+        })
+
+    blocks = _lvp_blocks(frm, to)
+
+    def _why(tag, t):
+        hits = blocks.get((tag, (t.get("ticker") or "").upper(), t.get("date"))) or []
+        exact = [h for h in hits if (h.get("strategy") or "").upper()
+                 == (t.get("strategy") or "").upper()]
+        h = (exact or hits or [None])[0]
+        return {"gate": h["gate"], "reason": h["reason"]} if h else None
+
+    live_only_out  = [{"trade": _lvp_trade(t), "other_book_blocked": _why(paper_tag, t)}
+                      for t in live_only]
+    paper_only_out = [{"trade": _lvp_trade(t), "other_book_blocked": _why(live_tag, t)}
+                      for t in unpaired_paper]
+
+    def _book(rts, label, tag):
+        pcts = [p for p in (_lvp_pct(t) for t in rts) if p is not None]
+        return {"tag": tag, "label": label, "trades": len(rts),
+                "pnl": round(sum(float(t.get("pnl") or 0) for t in rts), 2),
+                "avg_pct": round(sum(pcts) / len(pcts), 4) if pcts else None}
+
+    lags  = [p["entry_lag_secs"] for p in pairs if p["entry_lag_secs"] is not None]
+    slips = [p["slippage_bps"]   for p in pairs if p["slippage_bps"]   is not None]
+    dels  = [p["pct_delta"]      for p in pairs if p["pct_delta"]      is not None]
+
+    def _median(xs):
+        if not xs:
+            return None
+        s = sorted(xs); n = len(s)
+        return round(s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2, 2)
+
+    return jsonify({
+        "from": frm, "to": to,
+        "live":  _book(live_rts,  live_label,  live_tag),
+        "paper": _book(paper_rts, paper_label, paper_tag),
+        "pairs": sorted(pairs, key=lambda p: p.get("pct_delta") if p.get("pct_delta") is not None else 0),
+        "live_only": live_only_out, "paper_only": paper_only_out,
+        "summary": {
+            "paired": len(pairs), "live_only": len(live_only_out),
+            "paper_only": len(paper_only_out),
+            "median_entry_lag_secs": _median(lags),
+            "median_slippage_bps":   _median(slips),
+            "mean_pct_delta": (round(sum(dels) / len(dels), 4) if dels else None),
+            "live_better":  sum(1 for d in dels if d > 0),
+            "paper_better": sum(1 for d in dels if d < 0),
+        },
+        "caveats": [
+            "Ranked on return, not dollars — the books run different position sizes.",
+            "Slippage is signed from Live's side: positive means Live got the worse price.",
+            "An unmatched trade shows the other book's recorded gate block when there is "
+            "one. The position gate is not recorded, so a blank reason often means that "
+            "book was already holding the ticker.",
+        ],
+    })
+
+
 @app.route("/api/signals/gate_opportunity")
 def api_gate_opportunity():
     """Did the gates cost money? Prices each blocked entry against the FARM.
