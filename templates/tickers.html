@@ -66,8 +66,15 @@
 
   <div class="content">
     <div class="panel" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <select class="f" id="tickerSel" onchange="onTicker()" style="min-width:120px">
+      <select class="f" id="tickerSel" onchange="onTicker()" style="min-width:160px">
         <option value="">Loading…</option>
+      </select>
+      <!-- Sort mode for the ticker picker. Persisted so a refresh keeps the view. -->
+      <select class="f" id="tickerSortSel" onchange="onSortChange()" title="Sort tickers in the picker" style="min-width:140px">
+        <option value="alpha">Sort: A–Z</option>
+        <option value="pnl_desc">Sort: Most profit</option>
+        <option value="pnl_asc">Sort: Biggest loss</option>
+        <option value="trades_desc">Sort: Most trades</option>
       </select>
       <!-- Narrowing to one strategy is the second axis: a ticker often carries
            several (R3S3 and R4S4, breakout and reversal) that disagree. -->
@@ -156,21 +163,64 @@
     return 'from_date=' + _fmt(from) + '&to_date=' + _fmt(to);
   }
 
+  let _tickerTotals = {};   // { SYM: {pnl, trades} } — cached so re-sorting is instant
+
   async function boot() {
+    // Restore last sort choice so a refresh keeps the picker view the user picked.
+    const savedSort = localStorage.getItem('ticker_sort_mode');
+    if (savedSort) document.getElementById('tickerSortSel').value = savedSort;
     // No ticker → the endpoint returns just the list that actually traded, so the
     // picker only ever offers symbols with data behind them.
     try {
       const d = await fetch('/api/ticker/breakdown?' + _range()).then(r => r.json());
-      const sel = document.getElementById('tickerSel');
+      _tickerTotals = d.ticker_totals || {};
       const list = d.tickers || [];
-      sel.innerHTML = list.length
-        ? list.map(t => `<option value="${_esc(t)}">${_esc(t)}</option>`).join('')
-        : '<option value="">no trades in range</option>';
+      _populateTickerPicker(list);
       if (list.length) load();
     } catch (e) {
       document.getElementById('warnBox').innerHTML =
         '<div class="panel warn">Could not load tickers: ' + _esc(String(e)) + '</div>';
     }
+  }
+
+  // Re-sort the picker in-place from the cached totals — no refetch needed.
+  function _populateTickerPicker(list) {
+    const sel  = document.getElementById('tickerSel');
+    const mode = document.getElementById('tickerSortSel').value || 'alpha';
+    if (!list.length) {
+      sel.innerHTML = '<option value="">no trades in range</option>';
+      return;
+    }
+    const currentPick = sel.value;
+    const totals = _tickerTotals || {};
+    const withTotals = list.map(t => ({
+      t,
+      pnl:    (totals[t] && totals[t].pnl)    || 0,
+      trades: (totals[t] && totals[t].trades) || 0,
+    }));
+    const sorters = {
+      alpha:       (a, b) => a.t.localeCompare(b.t),
+      pnl_desc:    (a, b) => b.pnl - a.pnl,
+      pnl_asc:     (a, b) => a.pnl - b.pnl,
+      trades_desc: (a, b) => b.trades - a.trades,
+    };
+    withTotals.sort(sorters[mode] || sorters.alpha);
+    const fmtLbl = (r) => {
+      if (mode === 'alpha') return r.t;
+      const sign = r.pnl >= 0 ? '+' : '−';
+      const amt  = Math.abs(r.pnl).toFixed(0);
+      return `${r.t}  ${sign}$${amt} (${r.trades})`;
+    };
+    sel.innerHTML = withTotals
+      .map(r => `<option value="${_esc(r.t)}">${_esc(fmtLbl(r))}</option>`).join('');
+    // Preserve the current pick if it's still in the list; otherwise pick the first.
+    if (withTotals.some(r => r.t === currentPick)) sel.value = currentPick;
+  }
+
+  function onSortChange() {
+    localStorage.setItem('ticker_sort_mode', document.getElementById('tickerSortSel').value);
+    // Repopulate from what we already know — no round-trip needed.
+    _populateTickerPicker(Object.keys(_tickerTotals));
   }
 
   function onTicker() {
@@ -193,6 +243,13 @@
       return;
     }
     _data = d;
+    // Refresh cached per-ticker totals whenever we get a fresh response — the date
+    // range or account filter may have changed, and the picker P&L labels should
+    // reflect what the user is actually looking at.
+    if (d.ticker_totals) {
+      _tickerTotals = d.ticker_totals;
+      _populateTickerPicker(d.tickers || Object.keys(_tickerTotals));
+    }
     render();
   }
 

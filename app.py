@@ -22935,7 +22935,10 @@ def api_ticker_breakdown():
     if only_acct and not books:
         return jsonify({"error": f"Account {only_acct} is not configured"}), 400
 
-    rows, unavailable, seen_tickers = [], [], set()
+    rows, unavailable = [], []
+    # {ticker: {"pnl": float, "trades": int}} — populated across every book so the
+    # picker can sort by profitability without a second scan.
+    ticker_totals: dict = {}
     for acct in books:
         num = acct["num"]
         try:
@@ -22956,7 +22959,10 @@ def api_ticker_breakdown():
             continue
         for c in (paired.get("closed_clean") or []):
             sym = (c.get("ticker") or "").upper()
-            seen_tickers.add(sym)
+            _pnl = float(c.get("pnl") or 0)
+            _tt  = ticker_totals.setdefault(sym, {"pnl": 0.0, "trades": 0})
+            _tt["pnl"]    += _pnl
+            _tt["trades"] += 1
             if not ticker or sym != ticker:
                 continue
             strat = (c.get("strategy") or "").strip().upper()
@@ -22976,7 +22982,11 @@ def api_ticker_breakdown():
     return jsonify({
         "ticker": ticker, "from_date": from_date, "to_date": to_date,
         "account": only_acct or None, "strategy": only_strat or None,
-        "tickers": sorted(seen_tickers),
+        # Picker feed: alphabetized for backward compat, plus per-ticker totals so
+        # the frontend can offer a "sort by profit" toggle without a second fetch.
+        "tickers": sorted(ticker_totals),
+        "ticker_totals": {sym: {"pnl": round(t["pnl"], 2), "trades": t["trades"]}
+                          for sym, t in ticker_totals.items()},
         "overall":       _ticker_stats(rows),
         "by_strategy":   _group_stats(rows, lambda t: t["strategy"]),
         "by_book":       _group_stats(rows, lambda t: t["book"]),
