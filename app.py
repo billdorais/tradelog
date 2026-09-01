@@ -22869,5 +22869,136 @@ def _restore_kairos_refined_snapshot():
 
 _restore_kairos_refined_snapshot()
 
+
+# ── Ticker breakdown ────────────────────────────────────────────────────────────
+# One symbol, everything that traded it. The other views slice a different way:
+# recap is period-first, /strategy-explorer is a strategy leaderboard, the dashboard
+# is account-first. None answers "how is AAPL doing, and which of its strategies and
+# books are responsible" — a ticker can carry several strategies (R3S3 and R4S4,
+# breakout and reversal) across six books, and their results can point opposite ways.
+
+def _ticker_stats(trades):
+    """Summary for one group of round-trips. Returns None for an empty group so a
+    caller can tell "no trades" from "traded to zero"."""
+    if not trades:
+        return None
+    pnls   = [float(t.get("pnl") or 0) for t in trades]
+    wins   = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    gross_w, gross_l = sum(wins), abs(sum(losses))
+    # Drawdown is computed on the running total in exit order, so it is the worst
+    # peak-to-trough this ticker actually put the book through.
+    run = peak = worst = 0.0
+    for t in sorted(trades, key=lambda x: x.get("exit_time") or ""):
+        run += float(t.get("pnl") or 0)
+        peak = max(peak, run)
+        worst = min(worst, run - peak)
+    return {
+        "trades":     len(trades),
+        "wins":       len(wins),
+        "losses":     len(losses),
+        "win_rate":   round(len(wins) / len(trades) * 100, 1),
+        "pnl":        round(sum(pnls), 2),
+        "avg":        round(sum(pnls) / len(trades), 2),
+        "avg_win":    round(gross_w / len(wins), 2) if wins else 0.0,
+        "avg_loss":   round(-gross_l / len(losses), 2) if losses else 0.0,
+        "best":       round(max(pnls), 2),
+        "worst":      round(min(pnls), 2),
+        "profit_factor": round(gross_w / gross_l, 2) if gross_l > 0 else None,
+        "max_drawdown":  round(worst, 2),
+    }
+
+
+def _group_stats(trades, key):
+    out = {}
+    for t in trades:
+        out.setdefault(key(t) or "—", []).append(t)
+    return {k: _ticker_stats(v) for k, v in out.items()}
+
+
+@app.route("/api/ticker/breakdown")
+def api_ticker_breakdown():
+    """Every round-trip on one ticker, split by strategy, book, side and exit reason.
+
+    ?ticker=AAPL (required) &from_date= &to_date= &account= &strategy=
+    Omit account to span every configured book. Omit ticker to get just the list of
+    tickers that traded, so the picker can populate without a second endpoint.
+    """
+    ticker    = (request.args.get("ticker") or "").strip().upper()
+    from_date = (request.args.get("from_date") or "").strip()
+    to_date   = (request.args.get("to_date") or "").strip()
+    only_acct = (request.args.get("account") or "").strip()
+    only_strat = (request.args.get("strategy") or "").strip().upper()
+
+    books = [a for a in (ALPACA_ACCOUNTS or [])
+             if not only_acct or a["num"] == only_acct or a["tag"] == only_acct]
+    if only_acct and not books:
+        return jsonify({"error": f"Account {only_acct} is not configured"}), 400
+
+    rows, unavailable, seen_tickers = [], [], set()
+    for acct in books:
+        num = acct["num"]
+        try:
+            _b, _tag, label, fills_fn = _alpaca_account_ctx(num)
+            fills = fills_fn()
+        except Exception:
+            fills, label = None, acct.get("label", num)
+        # An empty list from a FAILED fetch is not an empty book. Saying so beats
+        # rendering a confident zero for a ticker that may have traded all day.
+        if not fills:
+            if _fills_error(num):
+                unavailable.append(label)
+            continue
+        try:
+            paired = _pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
+        except Exception:
+            unavailable.append(label)
+            continue
+        for c in (paired.get("closed_clean") or []):
+            sym = (c.get("ticker") or "").upper()
+            seen_tickers.add(sym)
+            if not ticker or sym != ticker:
+                continue
+            strat = (c.get("strategy") or "").strip().upper()
+            if only_strat and strat != only_strat:
+                continue
+            rows.append({**c, "strategy": strat, "account": num, "book": label,
+                         "side": (c.get("side") or "").lower()})
+
+    rows.sort(key=lambda t: t.get("exit_time") or "")
+    curve, run = [], 0.0
+    for t in rows:
+        run = round(run + float(t.get("pnl") or 0), 2)
+        curve.append({"time": t.get("exit_time"), "value": run,
+                      "pnl": round(float(t.get("pnl") or 0), 2),
+                      "strategy": t["strategy"], "book": t["book"], "side": t["side"]})
+
+    return jsonify({
+        "ticker": ticker, "from_date": from_date, "to_date": to_date,
+        "account": only_acct or None, "strategy": only_strat or None,
+        "tickers": sorted(seen_tickers),
+        "overall":       _ticker_stats(rows),
+        "by_strategy":   _group_stats(rows, lambda t: t["strategy"]),
+        "by_book":       _group_stats(rows, lambda t: t["book"]),
+        "by_side":       _group_stats(rows, lambda t: t["side"]),
+        "by_exit_reason": _group_stats(rows, lambda t: t.get("exit_reason")),
+        "curve": curve,
+        "trades": [{
+            "entry_time": t.get("entry_time"), "exit_time": t.get("exit_time"),
+            "entry_price": t.get("entry_price"), "exit_price": t.get("exit_price"),
+            "qty": t.get("qty"), "pnl": round(float(t.get("pnl") or 0), 2),
+            "side": t["side"], "strategy": t["strategy"], "book": t["book"],
+            "exit_reason": t.get("exit_reason"),
+        } for t in rows],
+        "fills_unavailable": unavailable,
+    })
+
+
+@app.route("/tickers")
+def tickers_page():
+    """Per-ticker breakdown. /strategy-explorer ranks strategies against each other;
+    this takes one symbol apart."""
+    return render_template("tickers.html", accounts=_ui_accounts())
+
 if __name__ == "__main__":
     app.run(debug=True)

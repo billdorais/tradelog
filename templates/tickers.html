@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ticker Breakdown — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    .content { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+    .btn { background: transparent; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .btn:hover { border-color: #4a5568; }
+    .btn.on { border-color: #3a7a4e; color: #7FE098; background: rgba(127,224,152,0.10); }
+    select.f, input.f { background: #1a1d2e; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 8px; font-size: 0.8rem; font-family: inherit; }
+    select.f { cursor: pointer; }
+    .panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+    .band-q { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #f0a35e; margin-bottom: 2px; }
+    .band-sub { font-size: 0.72rem; color: #666; margin-bottom: 12px; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .tile { background: #171a24; border: 1px solid #232735; border-radius: 8px; padding: 10px 12px; }
+    .tile .k { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+    .tile .v { font-size: 1.25rem; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .tile .s { font-size: 0.66rem; color: #666; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+    th { text-align: right; padding: 5px 9px; color: #666; font-weight: 500; font-size: 0.64rem; text-transform: uppercase; }
+    th:first-child, td:first-child { text-align: left; }
+    td { text-align: right; padding: 5px 9px; border-top: 1px solid #1e2130; font-variant-numeric: tabular-nums; }
+    .pos { color: #7FE098; } .neg { color: #e08a8a; }
+    /* Under the sample floor everything renders gray — colour is a claim, and a
+       claim on three trades is one the data cannot support. Same rule as the
+       Strategy Explorer so the two pages read alike. */
+    .thin { color: #5a5f70 !important; }
+    .empty { color: #666; font-size: 0.85rem; padding: 20px 0; text-align: center; }
+    .scroll { max-height: 460px; overflow-y: auto; }
+    .warn { color: #e08a8a; font-size: 0.74rem; margin-bottom: 8px; }
+    .chip { font-size: 0.62rem; color: #9aa0b5; background: #1a1d2e; border: 1px solid #2a2d3e;
+            border-radius: 4px; padding: 1px 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+      <h1>Kairos Automata — Ticker Breakdown</h1>
+    </div>
+    <div style="position:relative;display:inline-block">
+      <button onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+      <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:190px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+        <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+        <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+        <a href="/simulate" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Replay</a>
+        <a href="/strategy-explorer" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128202; Strategy Explorer</a>
+        <a href="/tickers" style="display:block;padding:10px 16px;color:#7FE098;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127991; Ticker Breakdown</a>
+        <a href="/recap" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Recap</a>
+        <a href="/crew" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#10022; Crew</a>
+        <a href="/diagnostics" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128736; Diagnostics</a>
+        <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="panel" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <select class="f" id="tickerSel" onchange="onTicker()" style="min-width:120px">
+        <option value="">Loading…</option>
+      </select>
+      <!-- Narrowing to one strategy is the second axis: a ticker often carries
+           several (R3S3 and R4S4, breakout and reversal) that disagree. -->
+      <select class="f" id="stratSel" onchange="load()" style="min-width:240px">
+        <option value="">All strategies</option>
+      </select>
+      <!-- Rendered from _ui_accounts() so it lists exactly the CONFIGURED books,
+           in UI order — a hardcoded list drifts the moment an account is added. -->
+      <select class="f" id="acctSel" onchange="load()">
+        <option value="">All books</option>
+        {% for a in accounts %}<option value="{{ a.num }}">{{ a.label }}</option>{% endfor %}
+      </select>
+      <span style="width:1px;height:18px;background:#2a2d3e"></span>
+      <button class="btn" data-days="7"  onclick="setDays(7)">7d</button>
+      <button class="btn on" data-days="30" onclick="setDays(30)">30d</button>
+      <button class="btn" data-days="60" onclick="setDays(60)">60d</button>
+      <button class="btn" data-days="90" onclick="setDays(90)">90d</button>
+      <button class="btn" onclick="load()" style="margin-left:auto">&#8635; Refresh</button>
+    </div>
+
+    <div id="warnBox"></div>
+
+    <div class="panel">
+      <div class="band-q" id="q1">How did this ticker do?</div>
+      <div class="band-sub" id="sub1">Every closed round-trip on the symbol, across the selected books.</div>
+      <div class="tiles" id="tiles"></div>
+      <div style="height:250px;position:relative;margin-top:14px"><canvas id="curve"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <div class="band-q">Which strategy is responsible?</div>
+      <div class="band-sub">One ticker can carry several strategies whose results point opposite ways.
+        Click a row to narrow the whole page to it.</div>
+      <div id="byStrategy"></div>
+    </div>
+
+    <div class="panel">
+      <div class="band-q">Which book, and which side?</div>
+      <div class="band-sub">The same setup can land differently per book — sizing, gates and fills all differ.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px">
+        <div><div style="font-size:0.66rem;color:#666;margin-bottom:4px">BY BOOK</div><div id="byBook"></div></div>
+        <div><div style="font-size:0.66rem;color:#666;margin-bottom:4px">BY SIDE</div><div id="bySide"></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="band-q">How did the trades end?</div>
+      <div class="band-sub">Exit reason tells you whether the stops are doing the work or the targets are.</div>
+      <div id="byExit"></div>
+    </div>
+
+    <div class="panel">
+      <div class="band-q">Every trade</div>
+      <div class="band-sub" id="tradeSub">Oldest first.</div>
+      <div class="scroll" id="tradeList"></div>
+    </div>
+  </div>
+
+<script>
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+
+  // Below this, numbers render gray rather than green/red. Matches the Strategy
+  // Explorer: colour asserts a result, and a handful of trades cannot support one.
+  const MIN_N = 5;
+  let _days = 30, _chart = null, _data = null;
+
+  function _esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function _money(v) { return (v >= 0 ? '+' : '-') + '$' + Math.abs(v).toFixed(2); }
+  function _cls(v, n) { return (n !== undefined && n < MIN_N) ? 'thin' : (v >= 0 ? 'pos' : 'neg'); }
+  function _pad(n) { return String(n).padStart(2, '0'); }
+  function _fmt(d) { return d.getFullYear() + '-' + _pad(d.getMonth()+1) + '-' + _pad(d.getDate()); }
+
+  function setDays(d) {
+    _days = d;
+    document.querySelectorAll('.btn[data-days]').forEach(b =>
+      b.classList.toggle('on', Number(b.dataset.days) === d));
+    load();
+  }
+
+  function _range() {
+    const to = new Date(), from = new Date();
+    from.setDate(to.getDate() - _days);
+    return 'from_date=' + _fmt(from) + '&to_date=' + _fmt(to);
+  }
+
+  async function boot() {
+    // No ticker → the endpoint returns just the list that actually traded, so the
+    // picker only ever offers symbols with data behind them.
+    try {
+      const d = await fetch('/api/ticker/breakdown?' + _range()).then(r => r.json());
+      const sel = document.getElementById('tickerSel');
+      const list = d.tickers || [];
+      sel.innerHTML = list.length
+        ? list.map(t => `<option value="${_esc(t)}">${_esc(t)}</option>`).join('')
+        : '<option value="">no trades in range</option>';
+      if (list.length) load();
+    } catch (e) {
+      document.getElementById('warnBox').innerHTML =
+        '<div class="panel warn">Could not load tickers: ' + _esc(String(e)) + '</div>';
+    }
+  }
+
+  function onTicker() {
+    document.getElementById('stratSel').value = '';   // a strategy list is per-ticker
+    load();
+  }
+
+  async function load() {
+    const t = document.getElementById('tickerSel').value;
+    if (!t) return;
+    const qs = '?ticker=' + encodeURIComponent(t) + '&' + _range()
+             + '&account='  + encodeURIComponent(document.getElementById('acctSel').value || '')
+             + '&strategy=' + encodeURIComponent(document.getElementById('stratSel').value || '');
+    let d;
+    try {
+      d = await fetch('/api/ticker/breakdown' + qs).then(r => r.json());
+    } catch (e) {
+      document.getElementById('warnBox').innerHTML =
+        '<div class="panel warn">Load failed: ' + _esc(String(e)) + '</div>';
+      return;
+    }
+    _data = d;
+    render();
+  }
+
+  function render() {
+    const d = _data || {};
+    // A failed fills fetch must never render as a confident zero.
+    document.getElementById('warnBox').innerHTML =
+      (d.fills_unavailable && d.fills_unavailable.length)
+        ? '<div class="panel warn">&#9888; Could not read fills for: '
+          + _esc(d.fills_unavailable.join(', ')) + ' — this breakdown is incomplete.</div>'
+        : '';
+
+    const o = d.overall;
+    document.getElementById('q1').textContent =
+      'How did ' + _esc(d.ticker || '—') + ' do?';
+    document.getElementById('sub1').textContent = d.strategy
+      ? 'Narrowed to ' + d.strategy + '.'
+      : 'Every closed round-trip on the symbol, across the selected books.';
+
+    if (!o) {
+      document.getElementById('tiles').innerHTML =
+        '<div class="empty">No closed trades for this selection.</div>';
+      ['byStrategy','byBook','bySide','byExit','tradeList'].forEach(id =>
+        document.getElementById(id).innerHTML = '');
+      if (_chart) { _chart.destroy(); _chart = null; }
+      return;
+    }
+
+    const tile = (k, v, s, cls) =>
+      `<div class="tile"><div class="k">${k}</div>
+       <div class="v ${cls || ''}">${v}</div><div class="s">${s || ''}</div></div>`;
+    document.getElementById('tiles').innerHTML =
+        tile('Net P&L', _money(o.pnl), o.trades + ' trades', _cls(o.pnl, o.trades))
+      + tile('Win rate', o.win_rate + '%', o.wins + 'W / ' + o.losses + 'L')
+      + tile('Per trade', _money(o.avg), 'expectancy', _cls(o.avg, o.trades))
+      + tile('Profit factor', o.profit_factor === null ? '∞' : o.profit_factor,
+             'avg win ' + _money(o.avg_win) + ' / loss ' + _money(o.avg_loss))
+      + tile('Max drawdown', _money(o.max_drawdown), 'peak to trough', 'neg')
+      + tile('Best / worst', _money(o.best), 'worst ' + _money(o.worst));
+
+    _renderCurve(d.curve || []);
+    _renderGroup('byStrategy', d.by_strategy, true);
+    _renderGroup('byBook', d.by_book);
+    _renderGroup('bySide', d.by_side);
+    _renderGroup('byExit', d.by_exit_reason);
+    _renderTrades(d.trades || []);
+
+    // The strategy picker lists only what traded THIS ticker, so it can never
+    // offer a combination with nothing behind it.
+    const sel = document.getElementById('stratSel');
+    const names = Object.keys(d.by_strategy || {}).sort();
+    if (!d.strategy) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">All strategies</option>'
+        + names.map(n => `<option value="${_esc(n)}">${_esc(n)}</option>`).join('');
+      sel.value = cur;
+    }
+  }
+
+  function _renderGroup(id, groups, clickable) {
+    const el = document.getElementById(id);
+    const rows = Object.entries(groups || {})
+      .filter(([, s]) => s)
+      .sort((a, b) => b[1].pnl - a[1].pnl);
+    if (!rows.length) { el.innerHTML = '<div class="empty">Nothing to show.</div>'; return; }
+    el.innerHTML = '<table><thead><tr><th>Name</th><th>Trades</th><th>Win %</th>'
+      + '<th>P&L</th><th>Per trade</th><th>PF</th></tr></thead><tbody>'
+      + rows.map(([name, s]) => {
+          const click = clickable
+            ? ` style="cursor:pointer" onclick="pickStrategy('${_esc(name).replace(/'/g, "\\'")}')"` : '';
+          return `<tr${click}><td>${_esc(name)}</td><td>${s.trades}</td>`
+            + `<td>${s.win_rate}%</td>`
+            + `<td class="${_cls(s.pnl, s.trades)}">${_money(s.pnl)}</td>`
+            + `<td class="${_cls(s.avg, s.trades)}">${_money(s.avg)}</td>`
+            + `<td>${s.profit_factor === null ? '∞' : s.profit_factor}</td></tr>`;
+        }).join('')
+      + '</tbody></table>';
+  }
+
+  function pickStrategy(name) {
+    const sel = document.getElementById('stratSel');
+    sel.value = (sel.value === name) ? '' : name;   // click again to clear
+    load();
+  }
+
+  function _renderTrades(trades) {
+    const el = document.getElementById('tradeList');
+    document.getElementById('tradeSub').textContent =
+      trades.length + ' closed round-trip' + (trades.length === 1 ? '' : 's') + ', oldest first.';
+    if (!trades.length) { el.innerHTML = '<div class="empty">No trades.</div>'; return; }
+    const when = (s) => {
+      const d = new Date(s);
+      return isNaN(d) ? (s || '—') : d.toLocaleString();
+    };
+    el.innerHTML = '<table><thead><tr><th>Entry</th><th>Book</th><th>Strategy</th><th>Side</th>'
+      + '<th>Qty</th><th>In</th><th>Out</th><th>Exit</th><th>P&L</th></tr></thead><tbody>'
+      + trades.map(t => `<tr>
+          <td style="color:#888">${_esc(when(t.entry_time))}</td>
+          <td><span class="chip">${_esc(t.book || '')}</span></td>
+          <td style="color:#9aa0b5">${_esc(t.strategy || '')}</td>
+          <td style="color:${t.side === 'short' ? '#e0a0a0' : '#a0c0e0'}">${_esc(t.side || '')}</td>
+          <td>${t.qty ?? ''}</td>
+          <td>${t.entry_price ?? ''}</td>
+          <td>${t.exit_price ?? ''}</td>
+          <td style="color:#666">${_esc(t.exit_reason || '—')}</td>
+          <td class="${t.pnl >= 0 ? 'pos' : 'neg'}">${_money(t.pnl)}</td>
+        </tr>`).join('')
+      + '</tbody></table>';
+  }
+
+  function _renderCurve(curve) {
+    if (_chart) { _chart.destroy(); _chart = null; }
+    if (!curve.length) return;
+    const ctx = document.getElementById('curve').getContext('2d');
+    const labels = curve.map(p => {
+      const d = new Date(p.time);
+      return isNaN(d) ? '' : (d.getMonth() + 1) + '/' + d.getDate();
+    });
+    const up = curve[curve.length - 1].value >= 0;
+    _chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [{
+        label: 'Cumulative P&L',
+        data: curve.map(p => p.value),
+        borderColor: up ? '#7FE098' : '#e08a8a',
+        backgroundColor: (up ? '#7FE098' : '#e08a8a') + '22',
+        borderWidth: 2, pointRadius: 0, tension: 0.15, fill: true,
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { afterBody: (items) => {
+            const p = curve[items[0].dataIndex];
+            return p ? p.strategy + '  ' + p.side + '  ' + _money(p.pnl) + '  [' + p.book + ']' : '';
+          } } },
+        },
+        scales: {
+          x: { ticks: { color: '#555', font: { size: 9 }, maxTicksLimit: 12 },
+               grid: { color: 'rgba(255,255,255,0.03)' } },
+          y: { ticks: { color: '#555', font: { size: 9 }, callback: (v) => '$' + v },
+               grid: { color: 'rgba(255,255,255,0.03)' } },
+        },
+      },
+    });
+  }
+
+  boot();
+</script>
+</body>
+</html>

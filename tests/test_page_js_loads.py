@@ -32,7 +32,7 @@ _HARNESS = os.path.join(os.path.dirname(__file__), "js_load_harness.js")
 
 # Pages carrying enough JS to break. A new page belongs here.
 _PAGES = ["/", "/analysis", "/diagnostics", "/review", "/routing", "/recap",
-          "/simulate", "/strategy-explorer", "/crew"]
+          "/simulate", "/strategy-explorer", "/tickers", "/crew"]
 
 _ACCOUNTS = [{"num": n, "tag": t, "label": l, "color": "#888", "paper": p}
              for n, t, l, p in [("1", "alpaca", "TV Farm", True),
