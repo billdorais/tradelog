@@ -164,3 +164,117 @@ def test_thin_samples_are_not_coloured():
     html = open("templates/tickers.html", encoding="utf-8").read()
     assert "const MIN_N" in html
     assert "n < MIN_N" in html and "thin" in html
+
+
+# ── Gate cost, scoped to one ticker ─────────────────────────────────────────────
+
+@pytest.fixture
+def blocks(tmp_path, monkeypatch):
+    import datetime as _dt
+    import shutil as _sh
+    import sqlite3 as _sq
+    db = tmp_path / "gc.db"
+    _sh.copy("trades.db", db)
+    ts = (_dt.datetime.now(_dt.timezone.utc)
+          - _dt.timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    c = _sq.connect(db)
+    c.execute("DELETE FROM blocked_targets")
+    for acct, tk, strat, side, gate in [
+        ("alpaca2", "AAPL", "AAPL_CAM_BREAKOUT_R3S3_V02_5MIN", "long",  "strikes"),
+        ("alpaca2", "AAPL", "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN", "short", "daytype"),
+        ("alpaca3", "AAPL", "AAPL_CAM_BREAKOUT_R3S3_V02_5MIN", "long",  "hours"),
+        ("alpaca2", "MSFT", "MSFT_CAM_REVERSAL_R3S3_V02_5MIN", "long",  "strikes"),
+    ]:
+        c.execute("INSERT INTO blocked_targets (ts,account,ticker,strategy,side,gate,"
+                  "reason) VALUES (?,?,?,?,?,?,?)", (ts, acct, tk, strat, side, gate, "t"))
+    c.commit(); c.close()
+
+    def _fake_db():
+        x = _sq.connect(db); x.row_factory = _sq.Row
+        return x
+
+    monkeypatch.setattr(kairos, "get_db", _fake_db)
+    monkeypatch.setattr(kairos, "_flush_blocked_targets", lambda: None)
+    kairos.app.config["TESTING"] = True
+    return kairos.app.test_client()
+
+
+def _gc(client, qs=""):
+    return client.get("/api/signals/gate_opportunity?days=7" + qs).get_json() or {}
+
+
+def test_gate_cost_is_unfiltered_by_default(blocks):
+    assert _gc(blocks)["total_blocks"] == 4
+
+
+def test_gate_cost_can_be_scoped_to_one_ticker(blocks):
+    """So the Ticker Breakdown page can price the gates for just that symbol."""
+    d = _gc(blocks, "&ticker=AAPL")
+    assert d["total_blocks"] == 3 and d["ticker"] == "AAPL"
+
+
+def test_the_ticker_filter_is_case_insensitive(blocks):
+    assert _gc(blocks, "&ticker=aapl")["total_blocks"] == 3
+
+
+def test_a_ticker_with_no_blocks_reports_zero_not_everything(blocks):
+    """A filter that silently falls back to unfiltered would read as "this ticker
+    was blocked constantly"."""
+    d = _gc(blocks, "&ticker=NOSUCH")
+    assert d["total_blocks"] == 0 and not d["gates"]
+
+
+def test_the_panel_asks_for_the_selected_ticker():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    i = html.index("async function loadGateCost")
+    assert "gate_opportunity" in html[i:i + 900]
+    assert "&ticker=' + encodeURIComponent(t)" in html[i:i + 900]
+
+
+def test_a_gate_with_no_control_group_is_not_reported_as_free():
+    """day-type runs on the farms too, so those blocks have no counterfactual.
+    Rendering them as $0 would read as "the gate cost nothing"."""
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    i = html.index("async function loadGateCost")
+    block = html[i:i + 3000]
+    assert "no control group" in block
+    assert "noCtl" in block
+
+
+# ── Trail sweep for the selected strategy ───────────────────────────────────────
+
+def _sweep_src():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    i = html.index("async function runSweep")
+    return html[i:html.index("function _renderCurve", i)]
+
+
+def test_the_sweep_requires_one_strategy():
+    """Sweeping a whole ticker would average across strategies that want different
+    trails — R3S3 and R4S4 do not share an answer."""
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert "_syncSweepAvailability" in html
+    i = html.index("function _syncSweepAvailability")
+    assert "btn.disabled = !strat" in html[i:i + 500]
+
+
+def test_the_sweep_reuses_the_replay_engine():
+    """/api/strategy/sweep replays the strategy's own Alpaca fills; a second
+    implementation would drift from what Replay reports."""
+    assert "/api/strategy/sweep" in _sweep_src()
+
+
+def test_the_sweep_compares_against_the_currently_wired_trail():
+    """A ranking without it names the best value but not whether it beats what is
+    already running."""
+    src = _sweep_src()
+    assert "sr_trail" in src and "delta_vs_sr" in src
+    assert "Currently wired" in src
+
+
+def test_the_sweep_says_the_winner_is_in_sample():
+    """It picks the best value on the very trades it scores. Without saying so, a
+    curve fit reads as a finding."""
+    src = _sweep_src()
+    assert "not a forecast" in src
+    assert "noise" in src

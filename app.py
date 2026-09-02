@@ -16519,6 +16519,7 @@ def api_gate_opportunity():
     from collections import defaultdict
     try:    days = max(1, min(BLOCKED_TARGETS_RETENTION_DAYS, int(request.args.get("days") or 14)))
     except Exception: days = 14
+    only_ticker = (request.args.get("ticker") or "").strip().upper()
     one = (request.args.get("account") or "").strip()
     if one:
         accounts = [one]
@@ -16556,10 +16557,16 @@ def api_gate_opportunity():
     try:
         conn = get_db(); cur = conn.cursor()
         marks = ",".join([p] * len(accounts)) or p
+        # ?ticker= narrows to one symbol so the Ticker Breakdown page can price the
+        # gates for just that name. Filtered in SQL rather than after the farm join,
+        # so a single-ticker view does not pay for pricing every other block.
+        _tk_sql, _tk_args = "", []
+        if only_ticker:
+            _tk_sql, _tk_args = f"AND UPPER(ticker) = {p} ", [only_ticker]
         cur.execute(f"SELECT ts, account, ticker, strategy, side, gate, reason "
                     f"FROM blocked_targets WHERE ts >= {p} AND ts <= {p} "
-                    f"AND account IN ({marks}) "
-                    f"ORDER BY ts", tuple([lo_ts, hi_ts] + accounts))
+                    f"AND account IN ({marks}) {_tk_sql}"
+                    f"ORDER BY ts", tuple([lo_ts, hi_ts] + accounts + _tk_args))
         cols = [c[0] for c in cur.description]
         blocks = [dict(zip(cols, r)) for r in cur.fetchall()]
         conn.close()
@@ -16668,6 +16675,7 @@ def api_gate_opportunity():
     gates = [g for g, _ in sorted(gate_totals.items(), key=lambda kv: -kv[1])]
 
     return jsonify({"days": days, "from": from_date, "to": to_date,
+                    "ticker": only_ticker or None,
                     "accounts": accounts, "books": books,
                     "gates": gates, "total_blocks": len(blocks),
                     "samples": samples, "farm_errors": farm_err,
