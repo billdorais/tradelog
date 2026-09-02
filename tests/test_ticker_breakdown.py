@@ -508,3 +508,68 @@ def test_the_modal_can_be_dismissed_three_ways():
     assert "closeGateDetail()" in html
     assert "event.target === this" in html, "clicking the backdrop should close it"
     assert "e.key === 'Escape'" in html
+
+
+# ── Modal timestamps ────────────────────────────────────────────────────────────
+
+def _et_samples(client, rows):
+    """Seed blocked_targets with raw UTC timestamps and read back what the API shows."""
+    import shutil as _sh, sqlite3 as _sq, tempfile as _tf, os as _os
+    d = _tf.mkdtemp(); db = _os.path.join(d, "ts.db")
+    _sh.copy("trades.db", db)
+    c = _sq.connect(db); c.execute("DELETE FROM blocked_targets")
+    for ts in rows:
+        c.execute("INSERT INTO blocked_targets (ts,account,ticker,strategy,side,gate,"
+                  "reason) VALUES (?,?,?,?,?,?,?)",
+                  (ts, "alpaca2", "AAPL", "AAPL_CAM_BREAKOUT_R3S3_V02_5MIN",
+                   "long", "hours", "t"))
+    c.commit(); c.close()
+    def _fake():
+        x = _sq.connect(db); x.row_factory = _sq.Row
+        return x
+    kairos.get_db = _fake
+    kairos._flush_blocked_targets = lambda: None
+    kairos.app.config["TESTING"] = True
+    r = kairos.app.test_client().get(
+        "/api/signals/gate_opportunity?days=2&ticker=AAPL&accounts=alpaca2").get_json()
+    return [s["ts"] for s in (r.get("samples") or [])]
+
+
+def test_modal_timestamps_are_market_time_not_utc(monkeypatch):
+    """Everything else this app shows a trader is ET — the gates, the windows and
+    the day boundaries are all defined in market time."""
+    import datetime as _d
+    day = _d.datetime.now(_d.timezone.utc).strftime("%Y-%m-%d")
+    got = _et_samples(None, [f"{day} 14:25:00"])
+    assert got == [f"{day} 10:25"], got     # 14:25 UTC = 10:25 EDT
+
+
+def test_a_utc_timestamp_can_roll_back_a_day_in_et(monkeypatch):
+    """03:10 UTC is the PREVIOUS evening in ET. Showing the UTC date would file the
+    block under a trading day it did not belong to."""
+    import datetime as _d
+    now = _d.datetime.now(_d.timezone.utc)
+    day = now.strftime("%Y-%m-%d")
+    prev = (now - _d.timedelta(days=1)).strftime("%Y-%m-%d")
+    got = _et_samples(None, [f"{day} 03:10:00"])
+    assert got == [f"{prev} 23:10"], got
+
+
+def test_conversion_happens_on_the_server_not_the_browser():
+    """toLocaleString would use the VIEWER's zone, which is not market time."""
+    import inspect
+    src = inspect.getsource(kairos.api_gate_opportunity)
+    assert "_ts_et" in src and 'ZoneInfo("America/New_York")' in src
+
+
+def test_an_unreadable_timestamp_is_shown_raw_not_blanked():
+    """A blank cell in the modal reads as missing data."""
+    import inspect
+    src = inspect.getsource(kairos.api_gate_opportunity)
+    i = src.index("def _ts_et")
+    assert 'return (raw or "")[:16]' in src[i:i + 500]
+
+
+def test_the_column_is_labelled_et():
+    html = _tk_html()
+    assert "When (ET)" in html and "When (UTC)" not in html

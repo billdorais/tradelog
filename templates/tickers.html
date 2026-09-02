@@ -564,7 +564,7 @@
         + (priced.length ? ' · total ' + (sum >= 0 ? '+' : '') + sum.toFixed(3) + '%' : '')
         + (_gateCapped ? ' · <span style="color:#e08a8a">list truncated</span>' : '')
         + '</div>'
-        + '<table><thead><tr><th>When (UTC)</th><th>Strategy</th><th>Side</th>'
+        + '<table><thead><tr><th>When (ET)</th><th>Strategy</th><th>Side</th>'
         + '<th>Farm</th><th>Farm P&L</th><th>%</th><th>Outcome</th></tr></thead><tbody>'
         + rows.map(r => {
             const un = r.status !== 'matched';

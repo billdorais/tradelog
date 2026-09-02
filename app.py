@@ -16615,12 +16615,27 @@ def api_gate_opportunity():
     _sample_cap = 400 if only_ticker else 60
     samples, samples_capped = [], False
 
+    # blocked_targets.ts is stored UTC (the matcher above reads it as such), but every
+    # other time this app shows a trader is ET — the gates, the windows and the day
+    # boundaries are all defined in market time. Converting here rather than in the
+    # browser keeps it market time regardless of where the page is opened from.
+    try:    _et_disp = ZoneInfo("America/New_York")
+    except Exception: _et_disp = _dt.timezone.utc
+
+    def _ts_et(raw):
+        try:
+            return (_dt.datetime.fromisoformat(raw)
+                    .replace(tzinfo=_dt.timezone.utc)
+                    .astimezone(_et_disp).strftime("%Y-%m-%d %H:%M"))
+        except Exception:
+            return (raw or "")[:16]      # unparseable: show it raw rather than blank
+
     def _sample(b, status, **extra):
         nonlocal samples_capped
         if len(samples) >= _sample_cap:
             samples_capped = True
             return
-        samples.append({"ts": (b.get("ts") or "")[:16], "account": b["account"],
+        samples.append({"ts": _ts_et(b.get("ts") or ""), "account": b["account"],
                         "gate": b["gate"], "ticker": b["ticker"], "side": b["side"],
                         "strategy": b["strategy"], "reason": b.get("reason"),
                         "status": status, **extra})
