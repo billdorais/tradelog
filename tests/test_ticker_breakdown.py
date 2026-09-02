@@ -406,17 +406,17 @@ def test_the_selected_symbol_survives_a_book_switch_when_it_traded_there():
 
 def test_the_strategy_filter_resets_on_a_book_switch():
     """Strategies are per book AND per ticker; a stale one would silently filter to
-    nothing."""
+    nothing. Kept on a range change only — see the sticky tests below."""
     html = _tk_html()
     i = html.index("async function refreshTickerList")
-    assert "stratSel').value = ''" in html[i:i + 1200]
+    assert "(resetStrategy || !held) ? '' : strat" in html[i:i + 1600]
 
 
 def test_changing_the_range_also_rebuilds_the_picker():
     """Totals are range-dependent, so the sort order is too."""
     html = _tk_html()
     i = html.index("function setDays")
-    assert "refreshTickerList()" in html[i:i + 400]
+    assert "refreshTickerList({" in html[i:i + 500]
 
 
 def test_the_book_choice_persists_across_a_reload():
@@ -429,7 +429,7 @@ def test_a_book_with_no_trades_clears_the_gate_and_sweep_panels():
     """Otherwise an empty book shows the previous book's numbers under its name."""
     html = _tk_html()
     i = html.index("if (!o) {")
-    block = html[i:i + 600]
+    block = html[i:i + 1400]
     assert "'gateCost'" in block and "'sweepOut'" in block
 
 
@@ -621,3 +621,49 @@ def test_the_caption_explains_the_two_subjects():
     i = html.index("function openGateDetail")
     block = html[i:i + 3600]
     assert "The effect on you is the" in block and "opposite" in block
+
+
+# ── The strategy filter is sticky across range changes ──────────────────────────
+
+def test_changing_the_date_range_keeps_the_strategy():
+    """Same book, same ticker, same strategy — only the window moved. Clearing it
+    threw away a deliberate filter every time 7d was compared against 30d."""
+    html = _tk_html()
+    i = html.index("function setDays")
+    assert "resetStrategy: false" in html[i:i + 500]
+
+
+def test_changing_the_book_still_clears_it():
+    """The strategy list is scoped to book AND ticker, so a stale one would filter
+    to nothing without saying why."""
+    html = _tk_html()
+    i = html.index("async function setAccount")
+    block = html[i:html.index("\n  }", i)]   # the function body only
+    assert "await refreshTickerList();" in block
+    assert "resetStrategy" not in block, "setAccount should use the clearing default"
+
+
+def test_changing_the_ticker_still_clears_it():
+    html = _tk_html()
+    i = html.index("  function onTicker() {")
+    assert "stratSel').value = ''" in html[i:i + 300]
+
+
+def test_a_held_strategy_is_dropped_if_its_ticker_is_gone():
+    """Keeping a strategy whose ticker no longer traded in the window would leave a
+    filter with nothing to filter."""
+    html = _tk_html()
+    i = html.index("async function refreshTickerList")
+    block = html[i:i + 1400]
+    assert "(resetStrategy || !held) ? '' : strat" in block
+
+
+def test_an_empty_result_names_the_filter_that_caused_it():
+    """A shorter window legitimately having no trades should read as an answer, not
+    a broken page — and there has to be a way back out."""
+    html = _tk_html()
+    i = html.index("if (!o) {")
+    block = html[i:i + 900]
+    assert "d.strategy" in block
+    assert "clearStrategy()" in block
+    assert "Show all strategies" in block

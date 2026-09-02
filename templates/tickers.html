@@ -202,7 +202,9 @@
     _days = d;
     document.querySelectorAll('.btn[data-days]').forEach(b =>
       b.classList.toggle('on', Number(b.dataset.days) === d));
-    refreshTickerList();   // totals — and so the sort order — are range-dependent
+    // Totals — and so the sort order — are range-dependent, but the strategy
+    // filter is not: hold it so 7d/30d/60d compare the same thing.
+    refreshTickerList({ resetStrategy: false });
   }
 
   function _range() {
@@ -241,9 +243,15 @@
 
   // Ticker-less call: the endpoint returns just the symbols that traded, scoped to
   // the selected book, so the picker only ever offers a selection with data behind it.
-  async function refreshTickerList() {
+  // resetStrategy: a BOOK or TICKER change invalidates the strategy filter, because
+  // the strategy list is scoped to both — a stale one would silently filter to
+  // nothing. A DATE-RANGE change does not: same book, same ticker, same strategy,
+  // just a different window. Clearing it there threw away a filter the user had
+  // deliberately set every time they compared 7d against 30d.
+  async function refreshTickerList({ resetStrategy = true } = {}) {
     const sel  = document.getElementById('tickerSel');
     const keep = sel.value;
+    const strat = document.getElementById('stratSel').value;
     try {
       const d = await fetch('/api/ticker/breakdown?' + _range()
                             + '&account=' + encodeURIComponent(_acct)).then(r => r.json());
@@ -252,8 +260,11 @@
       _populateTickerPicker(list);
       // Hold the symbol across a book switch when that book traded it too, so the
       // two books can be compared without re-finding the name each time.
-      if (keep && list.includes(keep)) sel.value = keep;
-      document.getElementById('stratSel').value = '';   // strategies are per book+ticker
+      const held = keep && list.includes(keep);
+      if (held) sel.value = keep;
+      // Keeping the strategy only makes sense while its ticker is still selected.
+      document.getElementById('stratSel').value =
+        (resetStrategy || !held) ? '' : strat;
       if (list.length) {
         await load();
       } else {
@@ -353,8 +364,15 @@
       : 'Every closed round-trip on the symbol, across the selected books.';
 
     if (!o) {
-      document.getElementById('tiles').innerHTML =
-        '<div class="empty">No closed trades for this selection.</div>';
+      // Name the filter that emptied it. Holding the strategy across a range change
+      // means a shorter window can legitimately have nothing — that should read as
+      // an answer, not as a broken page.
+      document.getElementById('tiles').innerHTML = d.strategy
+        ? '<div class="empty">No closed trades for <strong>' + _esc(d.strategy)
+          + '</strong> on ' + _esc(d.ticker || '') + ' in this window.'
+          + ' <a href="#" onclick="clearStrategy();return false" style="color:#7FE098">'
+          + 'Show all strategies</a></div>'
+        : '<div class="empty">No closed trades for this selection.</div>';
       // gateCost and sweepOut too, or a book with no trades keeps showing the
       // previous book's numbers under the new book's name.
       ['byStrategy','byBook','bySide','byExit','tradeList','gateCost','sweepOut']
@@ -414,6 +432,11 @@
             + `<td>${s.profit_factor === null ? '∞' : s.profit_factor}</td></tr>`;
         }).join('')
       + '</tbody></table>';
+  }
+
+  function clearStrategy() {
+    document.getElementById('stratSel').value = '';
+    load();
   }
 
   function pickStrategy(name) {
