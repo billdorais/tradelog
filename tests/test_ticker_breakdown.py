@@ -438,3 +438,73 @@ def test_the_sweep_falls_back_to_one_book_on_all_books():
     html = _tk_html()
     i = html.index("async function runSweep")
     assert "_acct || '2'" in html[i:i + 1500]
+
+
+# ── Gate drill-down ─────────────────────────────────────────────────────────────
+
+def test_every_block_produces_a_sample_not_just_the_matched_ones(blocks, monkeypatch):
+    """A drill-down showing 15 rows under a "22 blocks" heading looks like a
+    miscount, and hides exactly the cases worth understanding."""
+    monkeypatch.setattr(kairos, "_gates_without_control", lambda: {"daytype"})
+    d = _gc(blocks, "&ticker=AAPL")
+    assert len(d["samples"]) == d["total_blocks"] == 3
+
+
+def test_a_sample_says_why_it_could_not_be_priced(blocks, monkeypatch):
+    monkeypatch.setattr(kairos, "_gates_without_control", lambda: {"daytype"})
+    d = _gc(blocks, "&ticker=AAPL")
+    by = {s["gate"]: s["status"] for s in d["samples"]}
+    assert by["daytype"] == "unanswerable"
+    assert by["strikes"] in ("no_farm_match", "matched")
+
+
+def test_samples_carry_what_the_modal_needs(blocks):
+    d = _gc(blocks, "&ticker=AAPL")
+    s = d["samples"][0]
+    for k in ("ts", "account", "gate", "ticker", "side", "strategy", "status"):
+        assert k in s, k
+
+
+def test_truncation_is_reported_rather_than_silent(blocks):
+    """A silently short list reads as "that is all of them"."""
+    d = _gc(blocks, "&ticker=AAPL")
+    assert "samples_capped" in d and d["samples_capped"] is False
+
+
+def test_the_sample_cap_is_larger_when_scoped_to_one_ticker():
+    """Per-ticker is where the individual trades are the point."""
+    import inspect
+    src = inspect.getsource(kairos.api_gate_opportunity)
+    assert "_sample_cap = 400 if only_ticker else 60" in src
+
+
+def test_clicking_a_gate_row_opens_the_detail():
+    html = _tk_html()
+    assert "openGateDetail(" in html and 'id="gateModal"' in html
+    i = html.index("const _open =")
+    assert "b.account" in html[i:i + 300], "detail must be scoped to the book AND gate"
+
+
+def test_the_modal_filters_to_one_book_and_gate():
+    """The samples array spans every book; showing all of them under one book's
+    row would overstate that gate."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 600]
+    assert "s.account === account" in block and "s.gate === gate" in block
+
+
+def test_the_modal_keeps_the_pages_sign_convention():
+    """A farm WIN on a blocked setup is money the gate cost you — the same
+    convention as the summary table, or the two would contradict each other."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3000]
+    assert "r.pct > 0 ? 'neg' : 'pos'" in block
+
+
+def test_the_modal_can_be_dismissed_three_ways():
+    html = _tk_html()
+    assert "closeGateDetail()" in html
+    assert "event.target === this" in html, "clicking the backdrop should close it"
+    assert "e.key === 'Escape'" in html

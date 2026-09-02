@@ -166,6 +166,21 @@
     </div>
   </div>
 
+  <!-- Gate drill-down. Plain overlay rather than a library: one modal on one page. -->
+  <div id="gateModal" onclick="if (event.target === this) closeGateDetail()"
+       style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.62);z-index:900;
+              align-items:flex-start;justify-content:center;padding:60px 16px;overflow-y:auto">
+    <div style="background:#13161f;border:1px solid #2a2d3e;border-radius:10px;
+                max-width:1000px;width:100%;padding:16px 20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;
+                  gap:10px;margin-bottom:10px">
+        <div id="gateModalTitle" style="font-size:0.8rem;color:#f0a35e;font-weight:600"></div>
+        <button class="btn" onclick="closeGateDetail()">Close</button>
+      </div>
+      <div id="gateModalBody"></div>
+    </div>
+  </div>
+
 <script>
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');
@@ -451,6 +466,8 @@
       return;
     }
     if (d.error) { el.innerHTML = '<div class="warn">' + _esc(d.error) + '</div>'; return; }
+    _gateSamples = d.samples || [];
+    _gateCapped  = !!d.samples_capped;
     if (!d.total_blocks) {
       el.innerHTML = '<div class="empty">No gate blocks recorded for ' + _esc(t)
                    + ' in this window.</div>';
@@ -493,7 +510,10 @@
             const vcol = r.unanswerable || !r.matched ? '#8a7c52'
                        : /COST/i.test(vtxt) ? '#e08a8a' : '#7FE098';
             const verdict = `<span style="color:${vcol}">${_esc(vtxt)}</span>`;
-            return `<tr>
+            const _open = "openGateDetail('" + _esc(b.account) + "','"
+                        + _esc(r.gate || '') + "','" + _esc(b.label || b.account) + "')";
+            return `<tr style="cursor:pointer" onclick="${_open}"
+                        title="Show the individual blocked entries">
               <td>${_esc(r.gate || '')}${r.loose_matches
                     ? ` <span class="chip" title="matched a different strategy on the same ticker/day">${r.loose_matches} loose</span>` : ''}</td>
               <td>${r.blocked ?? 0}</td>
@@ -510,6 +530,72 @@
     }).join('')
       + '<div style="font-size:0.66rem;color:#5a5f70;margin-top:4px;line-height:1.5">'
       + (d.caveats || []).map(c => '· ' + _esc(c)).join('<br>') + '</div>';
+  }
+
+  // ── Gate drill-down ────────────────────────────────────────────────────────
+  // Clicking a gate row opens the individual blocked entries behind the count.
+  // Every block appears, including the ones with no counterfactual — a list that
+  // showed only the matched ones would read as a miscount and would hide exactly
+  // the cases worth understanding.
+  let _gateSamples = [];
+  let _gateCapped  = false;
+
+  const _STATUS_TEXT = {
+    matched:       'priced',
+    no_farm_match: 'the farm did not take it that day',
+    unanswerable:  'gate applies to the farms too — no counterfactual',
+    bad_timestamp: 'unreadable timestamp',
+  };
+
+  function openGateDetail(account, gate, label) {
+    const rows = (_gateSamples || []).filter(s => s.account === account && s.gate === gate);
+    const box  = document.getElementById('gateModal');
+    const body = document.getElementById('gateModalBody');
+    document.getElementById('gateModalTitle').textContent =
+      gate + ' · ' + label + ' · ' + rows.length + ' block' + (rows.length === 1 ? '' : 's');
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty">No detail recorded for these blocks.</div>';
+    } else {
+      const priced = rows.filter(r => r.status === 'matched');
+      const sum    = priced.reduce((a, r) => a + (r.pct || 0), 0);
+      body.innerHTML =
+        '<div style="font-size:0.7rem;color:#9aa0b5;margin-bottom:8px">'
+        + priced.length + ' of ' + rows.length + ' priced against the farm'
+        + (priced.length ? ' · total ' + (sum >= 0 ? '+' : '') + sum.toFixed(3) + '%' : '')
+        + (_gateCapped ? ' · <span style="color:#e08a8a">list truncated</span>' : '')
+        + '</div>'
+        + '<table><thead><tr><th>When (UTC)</th><th>Strategy</th><th>Side</th>'
+        + '<th>Farm</th><th>Farm P&L</th><th>%</th><th>Outcome</th></tr></thead><tbody>'
+        + rows.map(r => {
+            const un = r.status !== 'matched';
+            // Sign convention as everywhere else on this page: a farm WIN on a
+            // setup you blocked is money the gate cost you.
+            const pcl = un ? 'thin' : (r.pct > 0 ? 'neg' : 'pos');
+            return `<tr>
+              <td style="color:#888">${_esc(r.ts || '')}</td>
+              <td style="color:#9aa0b5">${_esc(r.strategy || '')}${
+                   r.loose ? ' <span class="chip" title="matched a different strategy on the same ticker and day">loose</span>' : ''}</td>
+              <td style="color:${r.side === 'short' ? '#e0a0a0' : '#a0c0e0'}">${_esc(r.side || '')}</td>
+              <td>${un ? '—' : _esc(r.farm || '')}${
+                   r.cross_farm ? ' <span class="chip" title="its own farm had no match that day">other farm</span>' : ''}</td>
+              <td class="${pcl}">${un ? '—' : _money(r.farm_pnl ?? 0)}</td>
+              <td class="${pcl}">${un ? '—' : (r.pct >= 0 ? '+' : '') + r.pct + '%'}</td>
+              <td style="text-align:right;font-size:0.7rem;color:${un ? '#8a7c52' : '#666'}">${
+                   _esc(_STATUS_TEXT[r.status] || r.status || '')}</td>
+            </tr>`;
+          }).join('')
+        + '</tbody></table>'
+        + '<div style="font-size:0.66rem;color:#5a5f70;margin-top:8px;line-height:1.5">'
+        + 'Farm P&L is the result the FARM got on that setup, at its own '
+        + 'equal-dollar size. The % is what transfers, since your book sizes '
+        + 'differently — and a positive % is money this gate '
+        + 'cost you.</div>';
+    }
+    box.style.display = 'flex';
+  }
+
+  function closeGateDetail() {
+    document.getElementById('gateModal').style.display = 'none';
   }
 
   // ── Trail sweep for the selected strategy ─────────────────────────────────
@@ -640,6 +726,10 @@
       },
     });
   }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeGateDetail();
+  });
 
   boot();
 </script>

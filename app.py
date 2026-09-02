@@ -16607,12 +16607,30 @@ def api_gate_opportunity():
     stats = defaultdict(lambda: defaultdict(
         lambda: {"blocked": 0, "matched": 0, "loose": 0, "pcts": [],
                  "dollars": 0.0, "wins": 0}))
-    samples = []
+    # Every block gets a sample row, not just the matched ones. A drill-down that
+    # shows 15 rows under a "22 blocks" heading looks like a bug and hides exactly
+    # the cases worth understanding — the ones with no counterfactual.
+    # The cap is per request and much larger when scoped to one ticker, where the
+    # whole point is to see the individual trades.
+    _sample_cap = 400 if only_ticker else 60
+    samples, samples_capped = [], False
+
+    def _sample(b, status, **extra):
+        nonlocal samples_capped
+        if len(samples) >= _sample_cap:
+            samples_capped = True
+            return
+        samples.append({"ts": (b.get("ts") or "")[:16], "account": b["account"],
+                        "gate": b["gate"], "ticker": b["ticker"], "side": b["side"],
+                        "strategy": b["strategy"], "reason": b.get("reason"),
+                        "status": status, **extra})
+
     for b in blocks:
         acct, g = b["account"], b["gate"]
         st = stats[acct][g]
         st["blocked"] += 1
         if g in _no_control:
+            _sample(b, "unanswerable")
             continue
         try:
             bt = _dt.datetime.fromisoformat(b["ts"]).replace(tzinfo=_dt.timezone.utc)
@@ -16621,9 +16639,11 @@ def api_gate_opportunity():
             # silently matched nothing after 20:00 ET, where the calendars diverge.
             bday = bt.date().isoformat()
         except Exception:
+            _sample(b, "bad_timestamp")
             continue
         cands = farm_by_key.get(((b["ticker"] or "").upper(), bday), [])
         if not cands:
+            _sample(b, "no_farm_match")
             continue
         # Price a book against the farm that shares its ENTRY MECHANISM. TV Refined
         # enters on TV alerts, so TV Farm is its counterfactual; Kairos Refined
@@ -16643,12 +16663,10 @@ def api_gate_opportunity():
         st["pcts"].append(pc)
         st["dollars"] += float(hit.get("pnl") or 0)
         st["wins"]    += 1 if float(hit.get("pnl") or 0) > 0 else 0
-        if len(samples) < 60:
-            samples.append({"ts": bt.strftime("%Y-%m-%d %H:%M"), "account": acct,
-                            "gate": g, "ticker": b["ticker"], "side": b["side"],
-                            "strategy": b["strategy"], "farm": hit.get("farm"),
-                            "farm_pnl": round(float(hit.get("pnl") or 0), 2),
-                            "pct": round(pc, 3), "loose": loose})
+        _sample(b, "matched", farm=hit.get("farm"),
+                farm_strategy=hit.get("strategy"),
+                farm_pnl=round(float(hit.get("pnl") or 0), 2),
+                pct=round(pc, 3), loose=loose, cross_farm=_cross)
 
     def _row(g, st, notional):
         n = st["matched"]
@@ -16699,7 +16717,7 @@ def api_gate_opportunity():
                     "ticker": only_ticker or None,
                     "accounts": accounts, "books": books,
                     "gates": gates, "total_blocks": len(blocks),
-                    "samples": samples, "farm_errors": farm_err,
+                    "samples": samples, "samples_capped": samples_capped, "farm_errors": farm_err,
                     "caveats": [
                         "Farms are equal-dollar sized; use avg % per trade, not farm $.",
                         "TV Refined is priced against TV Farm and Kairos Refined "
