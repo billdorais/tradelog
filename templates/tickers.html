@@ -128,8 +128,9 @@
 
     <div class="panel">
       <div class="band-q">What did the gates cost on this ticker?</div>
-      <div class="band-sub">Each blocked entry priced against the FARM, which is ungated and
-        usually took the same setup. A positive number means the gate SAVED money.</div>
+      <div class="band-sub">Each blocked entry priced against the farm running the SAME entry
+        mechanism, which is ungated and usually took the setup. If the farm MADE money on a
+        trade you blocked, the gate cost you that; if the farm lost, the gate saved you.</div>
       <div id="gateCost"></div>
     </div>
 
@@ -412,32 +413,58 @@
       return;
     }
 
-    const gates = (d.gates || []).slice().sort((a, b) => (a.est_dollars ?? 0) - (b.est_dollars ?? 0));
-    el.innerHTML =
-      '<table><thead><tr><th>Gate</th><th>Blocks</th><th>Matched on farm</th>'
-      + '<th>Avg % / trade</th><th>Est. $</th><th>Verdict</th></tr></thead><tbody>'
-      + gates.map(g => {
-          const est = g.est_dollars;
-          // "Unanswerable" is a real result: day-type runs on the farms too, so
-          // those blocks have no counterfactual. Reporting them as $0 would read
-          // as "the gate was free", which is a claim the data cannot make.
-          const noCtl = !g.matched || est === null || est === undefined;
-          const verdict = noCtl ? '<span style="color:#8a7c52">no control group</span>'
-                        : est >= 0 ? '<span class="pos">saved money</span>'
-                                   : '<span class="neg">cost money</span>';
-          return `<tr>
-            <td>${_esc(g.gate || '')}</td>
-            <td>${g.blocks ?? 0}</td>
-            <td>${g.matched ?? 0}</td>
-            <td class="${noCtl ? 'thin' : (g.avg_pct >= 0 ? 'pos' : 'neg')}">${
-                 noCtl ? '—' : (g.avg_pct >= 0 ? '+' : '') + g.avg_pct + '%'}</td>
-            <td class="${noCtl ? 'thin' : (est >= 0 ? 'pos' : 'neg')}">${
-                 noCtl ? '—' : _money(est)}</td>
-            <td style="text-align:right;font-size:0.72rem">${verdict}</td>
-          </tr>`;
-        }).join('')
-      + '</tbody></table>'
-      + '<div style="font-size:0.66rem;color:#5a5f70;margin-top:8px;line-height:1.5">'
+    // The payload is a MATRIX: books[] each carry rows[] (one per gate), and the
+    // top-level `gates` is just the union of NAMES for row order. Reading that name
+    // list as objects rendered five blank rows of zeros.
+    const books = (d.books || []).filter(b => (b.by_gate || []).some(r => r.blocked));
+    if (!books.length) {
+      el.innerHTML = '<div class="empty">No gate blocks recorded for ' + _esc(t)
+                   + ' in this window.</div>';
+      return;
+    }
+    el.innerHTML = books.map(b => {
+      const rows = (b.by_gate || []).filter(r => r.blocked)
+                     .sort((a, c) => (a.est_dollars ?? 0) - (c.est_dollars ?? 0));
+      const cross = rows.reduce((n, r) => n + (r.cross_farm || 0), 0);
+      return '<div style="margin-bottom:16px">'
+        + '<div style="font-size:0.72rem;color:#9aa0b5;margin-bottom:4px">'
+        + _esc(b.label || b.account)
+        + ' <span style="color:#666">vs ' + _esc(b.control_farm_label || 'any farm') + '</span>'
+        + (cross ? ' <span style="color:#8a7c52">· ' + cross
+                   + ' priced against the other farm (no match on its own)</span>' : '')
+        + '</div>'
+        + '<table><thead><tr><th>Gate</th><th>Blocks</th><th>Matched</th>'
+        + '<th>Avg % / trade</th><th>Est. $</th><th>Verdict</th></tr></thead><tbody>'
+        + rows.map(r => {
+            // "Unanswerable" is a real result: day-type runs on the farms too, so
+            // those blocks have no counterfactual. Showing $0 would read as "the
+            // gate was free", which is a claim the data cannot make.
+            const noCtl = r.unanswerable || !r.matched || r.est_dollars === null
+                                          || r.est_dollars === undefined;
+            const est = r.est_dollars;
+            // The endpoint already words the verdict, and its sign convention is the
+            // non-obvious one: a farm WIN on a blocked setup means the gate COST you.
+            // Recomputing it here is exactly how that got inverted.
+            const vtxt = r.verdict || '';
+            const vcol = r.unanswerable || !r.matched ? '#8a7c52'
+                       : /COST/i.test(vtxt) ? '#e08a8a' : '#7FE098';
+            const verdict = `<span style="color:${vcol}">${_esc(vtxt)}</span>`;
+            return `<tr>
+              <td>${_esc(r.gate || '')}${r.loose_matches
+                    ? ` <span class="chip" title="matched a different strategy on the same ticker/day">${r.loose_matches} loose</span>` : ''}</td>
+              <td>${r.blocked ?? 0}</td>
+              <td>${r.matched ?? 0}</td>
+              <td class="${noCtl ? 'thin' : (r.avg_pct > 0 ? 'neg' : 'pos')}">${
+                   noCtl ? '—' : (r.avg_pct >= 0 ? '+' : '') + r.avg_pct + '%'}</td>
+              <td class="${noCtl ? 'thin' : (est > 0 ? 'neg' : 'pos')}"
+                  title="What the farm made on the setups this gate blocked. Positive = money the gate cost you.">${
+                   noCtl ? '—' : _money(est)}</td>
+              <td style="text-align:right;font-size:0.72rem">${verdict}</td>
+            </tr>`;
+          }).join('')
+        + '</tbody></table></div>';
+    }).join('')
+      + '<div style="font-size:0.66rem;color:#5a5f70;margin-top:4px;line-height:1.5">'
       + (d.caveats || []).map(c => '· ' + _esc(c)).join('<br>') + '</div>';
   }
 

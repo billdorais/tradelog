@@ -233,12 +233,17 @@ def test_the_panel_asks_for_the_selected_ticker():
 
 def test_a_gate_with_no_control_group_is_not_reported_as_free():
     """day-type runs on the farms too, so those blocks have no counterfactual.
-    Rendering them as $0 would read as "the gate cost nothing"."""
+    Rendering them as $0 would read as "the gate cost nothing". The wording lives
+    on the server (see the verdict test below); what the page must guarantee is
+    that no NUMBER is shown for an unanswerable gate."""
+    import inspect
+    assert "no control group" in inspect.getsource(kairos.api_gate_opportunity)
     html = open("templates/tickers.html", encoding="utf-8").read()
     i = html.index("async function loadGateCost")
-    block = html[i:i + 3000]
-    assert "no control group" in block
-    assert "noCtl" in block
+    block = html[i:i + 4200]
+    assert "r.unanswerable" in block
+    # both the $ and % cells fall back to an em-dash rather than a figure
+    assert block.count("noCtl ? '") >= 2, "the $ and % cells must both blank out"
 
 
 # ── Trail sweep for the selected strategy ───────────────────────────────────────
@@ -278,3 +283,67 @@ def test_the_sweep_says_the_winner_is_in_sample():
     src = _sweep_src()
     assert "not a forecast" in src
     assert "noise" in src
+
+
+# ── Control group: each book vs the farm sharing its entry mechanism ────────────
+
+def test_each_curated_book_is_paired_with_its_own_farm():
+    """TV Refined enters on TV alerts and Kairos Refined via the engine. Pricing a
+    Kairos block against the TV farm measures the MECHANISM difference, not the
+    gate — and that difference ran -$728 over 30 days."""
+    import inspect
+    src = inspect.getsource(kairos.api_gate_opportunity)
+    assert '"alpaca2": "alpaca"' in src
+    assert '"alpaca3": "alpaca5"' in src
+
+
+def test_the_crew_books_are_deliberately_unpaired():
+    """Their picks carry per-pick entry tags, so neither farm is right for the whole
+    book and any single choice would be wrong half the time."""
+    import inspect
+    src = inspect.getsource(kairos.api_gate_opportunity)
+    i = src.index("_CONTROL_FARM_BY_BOOK = {")
+    mapping = src[i:src.index("}", i)]
+    assert "alpaca4" not in mapping and "alpaca6" not in mapping
+
+
+def test_falling_back_to_the_other_farm_is_counted_not_hidden():
+    """A cross-farm match is weaker evidence; it has to be visible as such."""
+    import inspect
+    src = inspect.getsource(kairos.api_gate_opportunity)
+    assert "cross_farm" in src
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert "priced against the other farm" in html
+
+
+def test_the_panel_reads_the_by_gate_rows_not_the_name_list():
+    """Top-level `gates` is a list of gate NAME strings for row order. Reading it as
+    objects rendered blank rows of zeros."""
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    i = html.index("async function loadGateCost")
+    block = html[i:i + 3500]
+    assert "b.by_gate" in block
+    assert "d.gates" not in block, "the name-only list is not the data"
+
+
+def test_the_panel_shows_which_farm_each_book_was_priced_against():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert "control_farm_label" in html
+
+
+def test_the_verdict_comes_from_the_server_not_recomputed():
+    """The sign convention is the non-obvious one — a farm WIN on a blocked setup
+    means the gate COST you. Recomputing it client-side inverted it once already."""
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    i = html.index("async function loadGateCost")
+    block = html[i:i + 3500]
+    assert "r.verdict" in block
+    assert "'saved money'" not in block and "'cost money'" not in block
+
+
+def test_the_subtitle_states_the_sign_convention_correctly():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    i = html.index("What did the gates cost on this ticker?")
+    block = html[i:i + 600]
+    assert "the gate cost you" in block
+    assert "A positive number means the gate SAVED money" not in block

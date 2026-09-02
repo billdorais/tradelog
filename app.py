@@ -16576,6 +16576,13 @@ def api_gate_opportunity():
 
     # Farm round-trips, fetched ONCE and shared across every book being priced,
     # over the SAME window the blocks were pulled from.
+    # Each curated book's control group is the farm running the SAME entry
+    # mechanism. The crew card already reasons this way ("TV Farm backs [TV] picks,
+    # Kairos Farm backs [Kairos]"); this makes the gate pricing agree.
+    # Crew Paper / Crew Live are deliberately absent: their picks are per-pick
+    # tagged, so neither farm is right for the whole book and any single choice
+    # would be wrong half the time.
+    _CONTROL_FARM_BY_BOOK = {"alpaca2": "alpaca", "alpaca3": "alpaca5"}
     farm_by_key = defaultdict(list)
     farm_err = []
     for _a in (ALPACA_ACCOUNTS or []):
@@ -16618,8 +16625,18 @@ def api_gate_opportunity():
         cands = farm_by_key.get(((b["ticker"] or "").upper(), bday), [])
         if not cands:
             continue
-        exact = [c for c in cands if (c.get("strategy") or "") == (b["strategy"] or "")]
-        hit, loose = (exact[0], False) if exact else (cands[0], True)
+        # Price a book against the farm that shares its ENTRY MECHANISM. TV Refined
+        # enters on TV alerts, so TV Farm is its counterfactual; Kairos Refined
+        # enters via the engine, so Kairos Farm is. Matching across them measures
+        # the mechanism difference instead of the gate — and that difference is not
+        # small: Engine-vs-TV ran -$728 over 30 days. Falls back to any farm when
+        # the preferred one has no round-trip, flagged so the caller can tell.
+        _pref = _CONTROL_FARM_BY_BOOK.get(acct)
+        _same = [c for c in cands if c.get("farm") == _pref] if _pref else []
+        _pool, _cross = (_same, False) if _same else (cands, bool(_pref))
+        exact = [c for c in _pool if (c.get("strategy") or "") == (b["strategy"] or "")]
+        hit, loose = (exact[0], False) if exact else (_pool[0], True)
+        st["cross_farm"] = st.get("cross_farm", 0) + (1 if _cross else 0)
         st["matched"] += 1
         st["loose"]   += 1 if loose else 0
         pc = _pct(hit)
@@ -16641,7 +16658,8 @@ def api_gate_opportunity():
         est = (round(sum(pc / 100.0 * notional for pc in st["pcts"]), 2)
                if (n and notional) else None)
         return {"gate": g, "blocked": st["blocked"], "matched": n,
-                "loose_matches": st["loose"], "unanswerable": g in _no_control,
+                "loose_matches": st["loose"], "cross_farm": st.get("cross_farm", 0),
+                "unanswerable": g in _no_control,
                 "farm_pnl": round(st["dollars"], 2) if n else 0.0,
                 "avg_pct": avg, "est_dollars": est,
                 "win_rate": round(st["wins"] / n * 100, 1) if n else 0.0,
@@ -16660,6 +16678,9 @@ def api_gate_opportunity():
                 sorted(stats.get(acct, {}).items(), key=lambda kv: -kv[1]["blocked"])]
         est_tot = [r["est_dollars"] for r in rows if r["est_dollars"] is not None]
         books.append({"account": acct, "label": label.get(acct, acct),
+                      "control_farm": _CONTROL_FARM_BY_BOOK.get(acct),
+                      "control_farm_label": label.get(_CONTROL_FARM_BY_BOOK.get(acct) or "",
+                                                      "any farm"),
                       "total_blocks": sum(r["blocked"] for r in rows),
                       "position_size": notional,
                       "position_size_source": ("override" if size_override else
@@ -16681,6 +16702,10 @@ def api_gate_opportunity():
                     "samples": samples, "farm_errors": farm_err,
                     "caveats": [
                         "Farms are equal-dollar sized; use avg % per trade, not farm $.",
+                        "TV Refined is priced against TV Farm and Kairos Refined "
+                        "against Kairos Farm, so the comparison holds the entry "
+                        "mechanism fixed. Crew books have per-pick entry sources, so "
+                        "they match any farm.",
                         "Exit params can differ per book, so a matched entry might not "
                         "have exited where the farm exited.",
                         "day-type / reversal / side gates apply to the farms too — no control group.",
