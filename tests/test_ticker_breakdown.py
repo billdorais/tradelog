@@ -612,15 +612,19 @@ def test_the_effect_amount_has_no_stray_sign():
     "saved you +$0.77"."""
     html = _tk_html()
     i = html.index("function openGateDetail")
-    block = html[i:i + 3000]
-    assert "Math.abs(r.farm_pnl ?? 0).toFixed(2)" in block
+    block = html[i:i + 4200]
+    assert "Math.abs(eff).toFixed(2)" in block
+    assert "_money(eff)" not in block
 
 
 def test_the_caption_explains_the_two_subjects():
+    """Farm P&L and Effect on you are different quantities in different dollars —
+    the caption has to say so, and say which one ties to the summary."""
     html = _tk_html()
     i = html.index("function openGateDetail")
-    block = html[i:i + 3600]
-    assert "The effect on you is the" in block and "opposite" in block
+    block = html[i:i + 4800]
+    assert "context, not your number" in block
+    assert "The sign flips because" in block
 
 
 # ── The strategy filter is sticky across range changes ──────────────────────────
@@ -667,3 +671,64 @@ def test_an_empty_result_names_the_filter_that_caused_it():
     assert "d.strategy" in block
     assert "clearStrategy()" in block
     assert "Show all strategies" in block
+
+
+# ── Modal net vs the overview ───────────────────────────────────────────────────
+
+def test_the_modal_states_a_net_in_the_same_words_as_the_rows():
+    """Five signed rows with two green ones read as "saved money" until you sum
+    them AND know that positive means bad. The net has to be stated."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3600]
+    assert "const netEff" in block and "const netCost" in block
+    assert "Net: " in block
+    assert "'cost you ' : 'saved you '" in block
+
+
+def test_the_net_line_shows_how_the_blocks_split():
+    """"2 saved, 3 cost" is the sentence the eye was trying to form."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3600]
+    assert "savedN" in block and "' saved, '" in block
+
+
+def test_row_effects_use_this_books_dollars_not_the_farms():
+    """The farm is equal-dollar sized, so its $ answers a different question. Showing
+    farm dollars here made the modal look like it disagreed with the summary, which
+    re-prices the same % at the book's own size."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3600]
+    assert "(r.pct / 100) * notional" in block
+    assert "Math.abs(eff).toFixed(2)" in html[i:i + 4200]
+
+
+def test_the_book_size_is_passed_into_the_modal():
+    html = _tk_html()
+    assert "b.position_size" in html
+    assert "openGateDetail(account, gate, label, notional)" in html
+
+
+def test_it_falls_back_to_farm_dollars_when_the_size_is_unknown():
+    """Better an approximate figure than a zero that reads as "no effect"."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3600]
+    assert "notional ? (r.pct / 100) * notional : (r.farm_pnl ?? 0)" in block
+
+
+def test_unpriced_blocks_are_counted_separately_in_the_header():
+    """They are not zero-effect; they are unmeasured."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3600]
+    assert "unpriced" in block
+
+
+def test_the_caption_says_which_number_ties_to_the_summary():
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 4800]
+    assert "summary table" in block

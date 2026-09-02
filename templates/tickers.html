@@ -534,7 +534,8 @@
                        : /COST/i.test(vtxt) ? '#e08a8a' : '#7FE098';
             const verdict = `<span style="color:${vcol}">${_esc(vtxt)}</span>`;
             const _open = "openGateDetail('" + _esc(b.account) + "','"
-                        + _esc(r.gate || '') + "','" + _esc(b.label || b.account) + "')";
+                        + _esc(r.gate || '') + "','" + _esc(b.label || b.account) + "',"
+                        + (b.position_size || 0) + ")";
             return `<tr style="cursor:pointer" onclick="${_open}"
                         title="Show the individual blocked entries">
               <td>${_esc(r.gate || '')}${r.loose_matches
@@ -570,7 +571,7 @@
     bad_timestamp: 'unreadable timestamp',
   };
 
-  function openGateDetail(account, gate, label) {
+  function openGateDetail(account, gate, label, notional) {
     const rows = (_gateSamples || []).filter(s => s.account === account && s.gate === gate);
     const box  = document.getElementById('gateModal');
     const body = document.getElementById('gateModalBody');
@@ -581,11 +582,25 @@
     } else {
       const priced = rows.filter(r => r.status === 'matched');
       const sum    = priced.reduce((a, r) => a + (r.pct || 0), 0);
+      const netEff  = notional ? (sum / 100) * notional
+                               : priced.reduce((a, r) => a + (r.farm_pnl || 0), 0);
+      const netCost = sum > 0;
+      const savedN  = priced.filter(r => r.pct < 0).length;
       body.innerHTML =
-        '<div style="font-size:0.7rem;color:#9aa0b5;margin-bottom:8px">'
-        + priced.length + ' of ' + rows.length + ' priced against the farm'
-        + (priced.length ? ' · total ' + (sum >= 0 ? '+' : '') + sum.toFixed(3) + '%' : '')
-        + (_gateCapped ? ' · <span style="color:#e08a8a">list truncated</span>' : '')
+        '<div style="font-size:0.74rem;margin-bottom:8px">'
+        + (priced.length
+            ? '<strong class="' + (netCost ? 'neg' : 'pos') + '">Net: '
+              + (netCost ? 'cost you ' : 'saved you ') + '$' + Math.abs(netEff).toFixed(2)
+              + '</strong>'
+              + '<span style="color:#666"> (' + (sum >= 0 ? '+' : '') + sum.toFixed(3)
+              + '% across ' + priced.length + ' priced'
+              + (savedN ? ' — ' + savedN + ' saved, ' + (priced.length - savedN) + ' cost' : '')
+              + ')</span>'
+            : '<span style="color:#9aa0b5">none of these could be priced</span>')
+        + (priced.length < rows.length
+            ? '<span style="color:#8a7c52"> · ' + (rows.length - priced.length)
+              + ' unpriced</span>' : '')
+        + (_gateCapped ? ' <span style="color:#e08a8a">· list truncated</span>' : '')
         + '</div>'
         + '<table><thead><tr><th>When (ET)</th><th>Strategy</th><th>Side</th>'
         + '<th>Farm</th><th>Farm P&L</th><th>%</th><th>Effect on you</th></tr></thead><tbody>'
@@ -597,6 +612,10 @@
             // render neutral and the effect gets its own coloured column, worded.
             const pcl = 'thin';
             const cost = un ? null : (r.pct > 0);
+            // Re-price the farm's % at this book's own size, exactly as the overview
+            // does. Farm dollars would answer a different question and make the two
+            // panels look like they disagree when they do not.
+            const eff = un ? 0 : (notional ? (r.pct / 100) * notional : (r.farm_pnl ?? 0));
             return `<tr>
               <td style="color:#888">${_esc(r.ts || '')}</td>
               <td style="color:#9aa0b5">${_esc(r.strategy || '')}${
@@ -609,15 +628,16 @@
               <td style="text-align:right;font-size:0.72rem">${un
                    ? `<span style="color:#8a7c52">${_esc(_STATUS_TEXT[r.status] || r.status || '')}</span>`
                    : `<span class="${cost ? 'neg' : 'pos'}">${
-                        cost ? 'cost you ' : 'saved you '}$${Math.abs(r.farm_pnl ?? 0).toFixed(2)}</span>`}</td>
+                        cost ? 'cost you ' : 'saved you '}$${Math.abs(eff).toFixed(2)}</span>`}</td>
             </tr>`;
           }).join('')
         + '</tbody></table>'
         + '<div style="font-size:0.66rem;color:#5a5f70;margin-top:8px;line-height:1.5">'
-        + 'Farm P&L and % are the FARM’s own result on the setup your gate '
-        + 'blocked, at the farm’s equal-dollar size. The effect on you is the '
-        + 'opposite: the farm making money there is money the gate cost you. Use '
-        + 'the % rather than the $, since your book sizes differently.</div>';
+        + 'Farm P&L is the FARM’s own result at its equal-dollar size — a different '
+        + 'position size to yours, so it is context, not your number. Effect on you '
+        + 'is that % re-priced at this book’s size, which is what the summary table '
+        + 'above adds up. The sign flips because the farm making money on a setup you '
+        + 'blocked is money the gate cost you.</div>';
     }
     box.style.display = 'flex';
   }
