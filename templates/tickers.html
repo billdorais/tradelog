@@ -565,12 +565,15 @@
         + (_gateCapped ? ' · <span style="color:#e08a8a">list truncated</span>' : '')
         + '</div>'
         + '<table><thead><tr><th>When (ET)</th><th>Strategy</th><th>Side</th>'
-        + '<th>Farm</th><th>Farm P&L</th><th>%</th><th>Outcome</th></tr></thead><tbody>'
+        + '<th>Farm</th><th>Farm P&L</th><th>%</th><th>Effect on you</th></tr></thead><tbody>'
         + rows.map(r => {
             const un = r.status !== 'matched';
-            // Sign convention as everywhere else on this page: a farm WIN on a
-            // setup you blocked is money the gate cost you.
-            const pcl = un ? 'thin' : (r.pct > 0 ? 'neg' : 'pos');
+            // Farm P&L and % describe the FARM's result. The effect on YOU is the
+            // opposite sign — a farm WIN on a setup you blocked is money the gate
+            // cost you — so those two things cannot share a colour. The farm figures
+            // render neutral and the effect gets its own coloured column, worded.
+            const pcl = 'thin';
+            const cost = un ? null : (r.pct > 0);
             return `<tr>
               <td style="color:#888">${_esc(r.ts || '')}</td>
               <td style="color:#9aa0b5">${_esc(r.strategy || '')}${
@@ -580,16 +583,18 @@
                    r.cross_farm ? ' <span class="chip" title="its own farm had no match that day">other farm</span>' : ''}</td>
               <td class="${pcl}">${un ? '—' : _money(r.farm_pnl ?? 0)}</td>
               <td class="${pcl}">${un ? '—' : (r.pct >= 0 ? '+' : '') + r.pct + '%'}</td>
-              <td style="text-align:right;font-size:0.7rem;color:${un ? '#8a7c52' : '#666'}">${
-                   _esc(_STATUS_TEXT[r.status] || r.status || '')}</td>
+              <td style="text-align:right;font-size:0.72rem">${un
+                   ? `<span style="color:#8a7c52">${_esc(_STATUS_TEXT[r.status] || r.status || '')}</span>`
+                   : `<span class="${cost ? 'neg' : 'pos'}">${
+                        cost ? 'cost you ' : 'saved you '}$${Math.abs(r.farm_pnl ?? 0).toFixed(2)}</span>`}</td>
             </tr>`;
           }).join('')
         + '</tbody></table>'
         + '<div style="font-size:0.66rem;color:#5a5f70;margin-top:8px;line-height:1.5">'
-        + 'Farm P&L is the result the FARM got on that setup, at its own '
-        + 'equal-dollar size. The % is what transfers, since your book sizes '
-        + 'differently — and a positive % is money this gate '
-        + 'cost you.</div>';
+        + 'Farm P&L and % are the FARM’s own result on the setup your gate '
+        + 'blocked, at the farm’s equal-dollar size. The effect on you is the '
+        + 'opposite: the farm making money there is money the gate cost you. Use '
+        + 'the % rather than the $, since your book sizes differently.</div>';
     }
     box.style.display = 'flex';
   }

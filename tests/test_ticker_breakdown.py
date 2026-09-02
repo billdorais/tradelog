@@ -494,13 +494,14 @@ def test_the_modal_filters_to_one_book_and_gate():
     assert "s.account === account" in block and "s.gate === gate" in block
 
 
-def test_the_modal_keeps_the_pages_sign_convention():
-    """A farm WIN on a blocked setup is money the gate cost you — the same
-    convention as the summary table, or the two would contradict each other."""
+def test_the_modal_and_the_summary_agree_on_what_is_bad():
+    """Both must treat a POSITIVE farm result as bad news for you, or a row could
+    read red in the summary and green in the drill-down of the same blocks."""
     html = _tk_html()
-    i = html.index("function openGateDetail")
-    block = html[i:i + 3000]
-    assert "r.pct > 0 ? 'neg' : 'pos'" in block
+    summary = html[html.index("async function loadGateCost"):html.index("function openGateDetail")]
+    modal   = html[html.index("function openGateDetail"):]
+    assert "est > 0 ? 'neg' : 'pos'" in summary      # summary: positive $ is red
+    assert "const cost = un ? null : (r.pct > 0);" in modal   # modal: positive % costs you
 
 
 def test_the_modal_can_be_dismissed_three_ways():
@@ -573,3 +574,50 @@ def test_an_unreadable_timestamp_is_shown_raw_not_blanked():
 def test_the_column_is_labelled_et():
     html = _tk_html()
     assert "When (ET)" in html and "When (UTC)" not in html
+
+
+# ── Colour convention in the drill-down ─────────────────────────────────────────
+
+def test_farm_figures_carry_no_good_bad_colour():
+    """Farm P&L and % describe the FARM's result; the effect on you is the opposite
+    sign. Colouring the farm number by your outcome put a green minus and a red plus
+    in the same table with nothing explaining why."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3000]
+    assert "const pcl = 'thin';" in block
+    assert "r.pct > 0 ? 'neg' : 'pos'" not in block, "farm cells must not be coloured"
+
+
+def test_the_effect_on_you_is_stated_in_words_beside_its_colour():
+    """Colour alone cannot carry an inverted convention."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3000]
+    assert "'cost you '" in block and "'saved you '" in block
+    assert "Effect on you" in block
+
+
+def test_a_farm_win_is_reported_as_money_the_gate_cost_you():
+    """The whole convention in one assertion: cost when the farm profited."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3000]
+    j = block.index("const cost = ")
+    assert "r.pct > 0" in block[j:j + 80], "cost-to-you must key off a POSITIVE farm result"
+
+
+def test_the_effect_amount_has_no_stray_sign():
+    """It is a magnitude next to the words "cost"/"saved" — _money() would render
+    "saved you +$0.77"."""
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3000]
+    assert "Math.abs(r.farm_pnl ?? 0).toFixed(2)" in block
+
+
+def test_the_caption_explains_the_two_subjects():
+    html = _tk_html()
+    i = html.index("function openGateDetail")
+    block = html[i:i + 3600]
+    assert "The effect on you is the" in block and "opposite" in block
