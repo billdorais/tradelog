@@ -147,9 +147,12 @@ def test_an_unknown_account_is_rejected(client):
 
 
 def test_the_page_renders_and_lists_only_configured_books(client):
-    """A hardcoded account list drifts the moment a book is added or removed."""
+    """From _ui_accounts(), so it cannot drift. /strategy-explorer hardcodes its
+    list and is already missing Crew Live."""
     html = client.get("/tickers").get_data(as_text=True)
-    assert html.count("<option value=\"2\">") == 1
+    assert html.count('data-acct="2"') == 1
+    assert html.count('data-acct="4"') == 1
+    assert 'data-acct="6"' not in html, "listed a book that is not configured"
     assert "Crew Paper" in html and "TV Refined" in html
 
 
@@ -347,3 +350,91 @@ def test_the_subtitle_states_the_sign_convention_correctly():
     block = html[i:i + 600]
     assert "the gate cost you" in block
     assert "A positive number means the gate SAVED money" not in block
+
+
+# ── Book-first control layout ───────────────────────────────────────────────────
+
+def _tk_html():
+    return open("templates/tickers.html", encoding="utf-8").read()
+
+
+def test_books_are_buttons_not_a_dropdown(client):
+    html = client.get("/tickers").get_data(as_text=True)
+    assert 'class="btn acct' in html
+    assert 'id="acctSel"' not in html, "the dropdown should be gone"
+    assert "setAccount('2')" in html and "setAccount('4')" in html
+
+
+def test_all_books_is_the_default_and_is_offered(client):
+    html = client.get("/tickers").get_data(as_text=True)
+    assert 'data-acct="" onclick="setAccount(\'\')"' in html
+    assert "let _acct = ''" in html
+
+
+def test_the_book_row_comes_before_the_ticker_picker(client):
+    """The book scopes everything below it, so the page should read top-down."""
+    html = client.get("/tickers").get_data(as_text=True)
+    assert html.index('class="btn acct') < html.index('id="tickerSel"')
+
+
+def test_a_live_book_is_marked_as_real_money(client, monkeypatch):
+    monkeypatch.setattr(kairos, "_ui_accounts", lambda: [
+        {"num": "6", "tag": "alpaca6", "label": "Crew Live", "color": "#E8A0BF",
+         "paper": False, "curated": True}])
+    html = client.get("/tickers").get_data(as_text=True)
+    assert 'title="real money"' in html
+
+
+def test_switching_books_rebuilds_the_ticker_list_and_totals():
+    """Ranking one book's tickers by another book's P&L is exactly the mistake this
+    page exists to avoid, so the picker is rebuilt rather than refiltered."""
+    html = _tk_html()
+    i = html.index("async function setAccount")
+    assert "refreshTickerList()" in html[i:i + 800]
+    j = html.index("async function refreshTickerList")
+    block = html[j:j + 1200]
+    assert "'&account=' + encodeURIComponent(_acct)" in block
+    assert "_tickerTotals = d.ticker_totals" in block
+
+
+def test_the_selected_symbol_survives_a_book_switch_when_it_traded_there():
+    """So two books can be compared on one name without re-finding it each time."""
+    html = _tk_html()
+    i = html.index("async function refreshTickerList")
+    assert "list.includes(keep)" in html[i:i + 1200]
+
+
+def test_the_strategy_filter_resets_on_a_book_switch():
+    """Strategies are per book AND per ticker; a stale one would silently filter to
+    nothing."""
+    html = _tk_html()
+    i = html.index("async function refreshTickerList")
+    assert "stratSel').value = ''" in html[i:i + 1200]
+
+
+def test_changing_the_range_also_rebuilds_the_picker():
+    """Totals are range-dependent, so the sort order is too."""
+    html = _tk_html()
+    i = html.index("function setDays")
+    assert "refreshTickerList()" in html[i:i + 400]
+
+
+def test_the_book_choice_persists_across_a_reload():
+    html = _tk_html()
+    assert "localStorage.setItem('ticker_acct'" in html
+    assert "localStorage.getItem('ticker_acct')" in html
+
+
+def test_a_book_with_no_trades_clears_the_gate_and_sweep_panels():
+    """Otherwise an empty book shows the previous book's numbers under its name."""
+    html = _tk_html()
+    i = html.index("if (!o) {")
+    block = html[i:i + 600]
+    assert "'gateCost'" in block and "'sweepOut'" in block
+
+
+def test_the_sweep_falls_back_to_one_book_on_all_books():
+    """/api/strategy/sweep replays a single account's fills; "all" is not a book."""
+    html = _tk_html()
+    i = html.index("async function runSweep")
+    assert "_acct || '2'" in html[i:i + 1500]

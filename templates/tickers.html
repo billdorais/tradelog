@@ -65,6 +65,19 @@
   </header>
 
   <div class="content">
+    <!-- Book first. The ticker list, its P&L totals and therefore the sort order all
+         describe the SELECTED book, so picking it first is the order the page reads in:
+         choose a book, then find its worst names. -->
+    <div class="panel" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px">
+      <span style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-right:4px">Book</span>
+      <button class="btn acct on" data-acct="" onclick="setAccount('')">All books</button>
+      {% for a in accounts %}
+      <button class="btn acct" data-acct="{{ a.num }}" onclick="setAccount('{{ a.num }}')">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{{ a.color }};margin-right:5px;vertical-align:middle"></span>{{ a.label }}{% if not a.paper %} <span style="color:#E8A0BF;font-size:0.68rem" title="real money">&#9679;</span>{% endif %}
+      </button>
+      {% endfor %}
+    </div>
+
     <div class="panel" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <select class="f" id="tickerSel" onchange="onTicker()" style="min-width:160px">
         <option value="">Loading…</option>
@@ -80,12 +93,6 @@
            several (R3S3 and R4S4, breakout and reversal) that disagree. -->
       <select class="f" id="stratSel" onchange="load()" style="min-width:240px">
         <option value="">All strategies</option>
-      </select>
-      <!-- Rendered from _ui_accounts() so it lists exactly the CONFIGURED books,
-           in UI order — a hardcoded list drifts the moment an account is added. -->
-      <select class="f" id="acctSel" onchange="load()">
-        <option value="">All books</option>
-        {% for a in accounts %}<option value="{{ a.num }}">{{ a.label }}</option>{% endfor %}
       </select>
       <span style="width:1px;height:18px;background:#2a2d3e"></span>
       <button class="btn" data-days="7"  onclick="setDays(7)">7d</button>
@@ -180,7 +187,7 @@
     _days = d;
     document.querySelectorAll('.btn[data-days]').forEach(b =>
       b.classList.toggle('on', Number(b.dataset.days) === d));
-    load();
+    refreshTickerList();   // totals — and so the sort order — are range-dependent
   }
 
   function _range() {
@@ -189,20 +196,55 @@
     return 'from_date=' + _fmt(from) + '&to_date=' + _fmt(to);
   }
 
+  let _acct = '';           // '' = every configured book
   let _tickerTotals = {};   // { SYM: {pnl, trades} } — cached so re-sorting is instant
 
   async function boot() {
     // Restore last sort choice so a refresh keeps the picker view the user picked.
     const savedSort = localStorage.getItem('ticker_sort_mode');
     if (savedSort) document.getElementById('tickerSortSel').value = savedSort;
-    // No ticker → the endpoint returns just the list that actually traded, so the
-    // picker only ever offers symbols with data behind them.
+    const savedAcct = localStorage.getItem('ticker_acct');
+    if (savedAcct !== null) _acct = savedAcct;
+    _syncAcctButtons();
+    await refreshTickerList();
+  }
+
+  function _syncAcctButtons() {
+    document.querySelectorAll('.btn.acct').forEach(b =>
+      b.classList.toggle('on', (b.dataset.acct || '') === _acct));
+  }
+
+  async function setAccount(num) {
+    _acct = String(num || '');
+    try { localStorage.setItem('ticker_acct', _acct); } catch (_) {}
+    _syncAcctButtons();
+    // The list, the totals and therefore the sort all belong to this book, so the
+    // picker has to be rebuilt — not just refiltered. Ranking one book's tickers by
+    // another book's P&L is the mistake this page exists to avoid.
+    await refreshTickerList();
+  }
+
+  // Ticker-less call: the endpoint returns just the symbols that traded, scoped to
+  // the selected book, so the picker only ever offers a selection with data behind it.
+  async function refreshTickerList() {
+    const sel  = document.getElementById('tickerSel');
+    const keep = sel.value;
     try {
-      const d = await fetch('/api/ticker/breakdown?' + _range()).then(r => r.json());
+      const d = await fetch('/api/ticker/breakdown?' + _range()
+                            + '&account=' + encodeURIComponent(_acct)).then(r => r.json());
       _tickerTotals = d.ticker_totals || {};
       const list = d.tickers || [];
       _populateTickerPicker(list);
-      if (list.length) load();
+      // Hold the symbol across a book switch when that book traded it too, so the
+      // two books can be compared without re-finding the name each time.
+      if (keep && list.includes(keep)) sel.value = keep;
+      document.getElementById('stratSel').value = '';   // strategies are per book+ticker
+      if (list.length) {
+        await load();
+      } else {
+        _data = null;
+        render();
+      }
     } catch (e) {
       document.getElementById('warnBox').innerHTML =
         '<div class="panel warn">Could not load tickers: ' + _esc(String(e)) + '</div>';
@@ -258,7 +300,7 @@
     const t = document.getElementById('tickerSel').value;
     if (!t) return;
     const qs = '?ticker=' + encodeURIComponent(t) + '&' + _range()
-             + '&account='  + encodeURIComponent(document.getElementById('acctSel').value || '')
+             + '&account='  + encodeURIComponent(_acct)
              + '&strategy=' + encodeURIComponent(document.getElementById('stratSel').value || '');
     let d;
     try {
@@ -298,8 +340,10 @@
     if (!o) {
       document.getElementById('tiles').innerHTML =
         '<div class="empty">No closed trades for this selection.</div>';
-      ['byStrategy','byBook','bySide','byExit','tradeList'].forEach(id =>
-        document.getElementById(id).innerHTML = '');
+      // gateCost and sweepOut too, or a book with no trades keeps showing the
+      // previous book's numbers under the new book's name.
+      ['byStrategy','byBook','bySide','byExit','tradeList','gateCost','sweepOut']
+        .forEach(id => { const n = document.getElementById(id); if (n) n.innerHTML = ''; });
       if (_chart) { _chart.destroy(); _chart = null; }
       return;
     }
@@ -499,7 +543,7 @@
         body: JSON.stringify({
           strategy:  strat,
           from_date: _fmt(from), to_date: _fmt(to),
-          account:   document.getElementById('acctSel').value || '2',
+          account:   _acct || '2',   // sweeps replay one book's fills
           trail_min:  parseFloat(document.getElementById('swMin').value)  || 0.10,
           trail_max:  parseFloat(document.getElementById('swMax').value)  || 0.70,
           trail_step: parseFloat(document.getElementById('swStep').value) || 0.05,
