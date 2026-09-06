@@ -444,9 +444,11 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
 
             # ── Format comparison table ──────────────────────────────────────
             lines = ["=== SIGNAL ROUTER STOPS vs SWEEP RESULTS ===", ""]
+            stale_any = thin_any = False
             lines.append(f"{'Type':<18} {'SR Trail':>9} {'SR Trig':>9} {'SR Hold':>8} | "
-                         f"{'Sweep Trail':>11} {'Sweep Trig':>11} {'Δ vs SR':>9} {'Sweep Date'}")
-            lines.append("-" * 90)
+                         f"{'Sweep Trail':>11} {'Sweep Trig':>11} {'Δ vs SR':>9} "
+                         f"{'Trades':>7} {'Age':>6}  {'Sweep Date'}")
+            lines.append("-" * 108)
 
             for tl in sorted(sr.keys()):
                 stops = sr[tl]
@@ -474,12 +476,45 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                         gap = "≈ aligned"
                 sw_delta = f"${sw['delta']:.2f}" if sw.get("delta") is not None else "—"
 
+                # Sample size and age were the two facts the table withheld, and they
+                # are the two that decide whether a sweep result means anything.
+                _n   = sw.get("trades")
+                _age = _sweep_age_weeks(sw_date) if sw.get("trail") else None
+                n_txt   = f"{_n}" if _n else "—"
+                age_txt = f"{_age}w" if _age is not None else "—"
+                marks = []
+                if _age is not None and _age >= SWEEP_STALE_WEEKS:
+                    marks.append("STALE")
+                    stale_any = True
+                if _n and _n < SWEEP_MIN_TRADES:
+                    marks.append("THIN")
+                    thin_any = True
+                if marks:
+                    gap = (gap + "  " if gap else "") + "!! " + "/".join(marks)
+
                 lines.append(f"{tl:<18} {sr_trail:>9} {sr_trigger:>9} {sr_hold:>8} | "
-                             f"{sw_trail:>11} {sw_trigger:>11} {sw_delta:>9}   {sw_date}  {gap}")
+                             f"{sw_trail:>11} {sw_trigger:>11} {sw_delta:>9} "
+                             f"{n_txt:>7} {age_txt:>6}   {sw_date}  {gap}")
 
             lines.append("")
-            lines.append("Note: Δ vs SR = sweep P&L improvement over current SR settings. "
-                         "Gap = difference between sweep-optimal trail and current configured trail.")
+            lines.append("Note: Δ vs SR = sweep P&L improvement over current SR settings, TOTAL over "
+                         "the sweep window — not per trade. Gap = sweep-optimal trail minus the "
+                         "configured trail.")
+            lines.append(
+                "READ THIS BEFORE RECOMMENDING A PARAMETER CHANGE. A sweep picks the best value ON "
+                "THE SAMPLE IT SCORES, so its winner is in-sample by construction and a small Δ is "
+                "noise, not an edge. Two things decide whether a row can support a change: AGE (an "
+                f"old sweep describes a regime that may be gone; >= {SWEEP_STALE_WEEKS}w is marked "
+                f"STALE) and TRADES (< {SWEEP_MIN_TRADES} is marked THIN and cannot support one at "
+                "all). A row marked STALE or THIN is CONTEXT ONLY — say the sweep needs re-running "
+                "rather than recommending its number.")
+            if stale_any or thin_any:
+                _w = []
+                if stale_any: _w.append(f"at least one sweep is {SWEEP_STALE_WEEKS}+ weeks old")
+                if thin_any:  _w.append(f"at least one ran on under {SWEEP_MIN_TRADES} trades")
+                lines.append("!! " + "; ".join(_w).capitalize()
+                             + ". Use the trail_sweep tool to re-run the one that matters "
+                               "rather than reasoning from the stale figure.")
             return "\n".join(lines)
 
         def _fmt_engine(data: dict) -> str:
@@ -1561,6 +1596,30 @@ _CREW_TOOLS = [
             "from_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
             "to_date": {"type": "string", "description": "YYYY-MM-DD (optional)"}}},
     },
+    {
+        "name": "trail_sweep",
+        "description": "Re-run the trailing-stop sweep for ONE strategy on the CURRENT window, "
+                       "replaying that strategy's own Alpaca fills at each trail value. Use it "
+                       "when the STOPS vs SWEEP table shows a row marked STALE or THIN and the "
+                       "answer would actually change a recommendation — not routinely. It is "
+                       "deliberately per-strategy: a sweep fetches 1-minute bars for every "
+                       "(ticker, day) it replays, so sweeping the whole book at once is a burst "
+                       "of broker requests, and different bands want different trails anyway so "
+                       "an aggregate answer averages them away. "
+                       "The question it answers is NOT 'what is optimal' but 'is the trail we are "
+                       "RUNNING still defensible' — it returns the current wired trail, the best "
+                       "on this window, and the gap between them. The winner is chosen on the "
+                       "same trades it is scored on, so treat a gap smaller than the per-trade "
+                       "spread as noise and say so rather than recommending a change.",
+        "input_schema": {"type": "object", "properties": {
+            "strategy": {"type": "string", "description": "full slug, e.g. NVDA_CAM_BREAKOUT_R3S3_V02_5MIN"},
+            "account":  {"type": "string", "description": "book to replay, default 2 (TV Refined)"},
+            "from_date": {"type": "string", "description": "YYYY-MM-DD (optional; defaults to the report window)"},
+            "to_date":   {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            "trail_min": {"type": "number", "description": "sweep floor %, default 0.10"},
+            "trail_max": {"type": "number", "description": "sweep ceiling %, default 0.70"}},
+            "required": ["strategy"]},
+    },
 ]
 
 def _run_crew_tool(name: str, args: dict) -> str:
@@ -1572,6 +1631,47 @@ def _run_crew_tool(name: str, args: dict) -> str:
         def _get(path):
             with _kairos.app.test_client() as _c:
                 return _c.get(path).get_json() or {}
+        if name == "trail_sweep":
+            strat = (args.get("strategy") or "").strip()
+            if not strat:
+                return json.dumps({"error": "strategy required"})
+            body = {"strategy": strat,
+                    "account":   str(args.get("account") or "2"),
+                    "trail_min": float(args.get("trail_min") or 0.10),
+                    "trail_max": float(args.get("trail_max") or 0.70),
+                    "trail_step": 0.05}
+            for k in ("from_date", "to_date"):
+                if args.get(k):
+                    body[k] = args[k]
+            with _kairos.app.test_client() as _c:
+                d = _c.post("/api/strategy/sweep", json=body).get_json() or {}
+            if d.get("error"):
+                return json.dumps({"error": d["error"], "strategy": strat})
+            rows = d.get("results") or []
+            best = rows[0] if rows else {}
+            n    = d.get("trades") or best.get("trades") or 0
+            cur  = d.get("sr_trail")
+            gain = best.get("delta_vs_sr")
+            # Frame the answer as "is the current setting still defensible", which is
+            # the decision, rather than "here is the optimum", which invites fitting a
+            # fresh best value to every 45-day window.
+            per_trade = (gain / n) if (gain is not None and n) else None
+            return json.dumps({
+                "strategy": strat, "trades": n,
+                "current_trail": cur, "current_total": d.get("sr_total"),
+                "best_trail": best.get("trail"), "best_total": best.get("total_pnl"),
+                "gain_vs_current_total": gain,
+                "gain_vs_current_per_trade": round(per_trade, 4) if per_trade is not None else None,
+                "grid": [{"trail": r.get("trail"), "total_pnl": r.get("total_pnl"),
+                          "delta_vs_sr": r.get("delta_vs_sr"),
+                          "improved": r.get("improved"), "worse": r.get("worse")}
+                         for r in rows[:14]],
+                "caveat": ("The best trail here is chosen on the SAME trades it is scored on, so it "
+                           "is in-sample by construction. Judge the gap PER TRADE against the "
+                           "spread of individual trade outcomes: if it is small, the current trail "
+                           "is still defensible and you should say so rather than recommend a "
+                           f"change. {n} trades is the whole basis for this answer."),
+            })[:6000]
         if name == "engine_vs_tv":
             days = int(args.get("days") or 30)
             d = _get(f"/api/engine_pilot/compare?days={days}")
@@ -1976,6 +2076,25 @@ CREW_AUDITION_SLOTS  = max(0, int(os.environ.get("CREW_AUDITION_SLOTS", "3")))
 CREW_CORE_MIN_TRADES = max(1, int(os.environ.get("CREW_CORE_MIN_TRADES", "10")))
 # Auditions trade smaller: they are hypotheses, not conclusions.
 CREW_AUDITION_SIZE_PCT = max(1, min(100, int(os.environ.get("CREW_AUDITION_SIZE_PCT", "50"))))
+
+
+# A sweep's authority decays. The crew was reading W24 numbers 10+ weeks later with
+# nothing in the table saying so — it had to notice on its own, and the sample size
+# behind each figure was captured but never printed, so a sweep on 3 trades looked
+# exactly as authoritative as one on 40.
+SWEEP_STALE_WEEKS = int(os.environ.get("SWEEP_STALE_WEEKS", "6"))
+SWEEP_MIN_TRADES  = int(os.environ.get("SWEEP_MIN_TRADES", "12"))
+
+
+def _sweep_age_weeks(week_str):
+    """Whole weeks between an ISO week label ('2026-W24') and now. None if unparseable."""
+    import datetime as _d
+    try:
+        y, w = str(week_str).split("-W")
+        then = _d.date.fromisocalendar(int(y), int(w), 1)
+    except Exception:
+        return None
+    return max(0, (_d.date.today() - then).days // 7)
 
 _STRAT_SLUG_RE = re.compile(
     r'[A-Z][A-Z0-9]*_CAM_(?:BREAKOUT|REVERSAL)_(?:R3S3|R4S4)_V\d+_5MIN', re.I)

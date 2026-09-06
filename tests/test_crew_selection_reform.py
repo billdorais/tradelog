@@ -338,3 +338,77 @@ def test_the_ordering_rule_is_stated_in_the_block():
     out = _leaderboard({"A_CAM_BREAKOUT_R3S3_V02_5MIN": {"trades": 5, "total_pnl": 10.0,
                                                          "win_rate": 50}})
     assert "sorted by P&L PER TRADE" in out
+
+
+# ── 6. sweep staleness and the sweep tool ───────────────────────────────────────
+
+def test_sweep_age_is_computed_from_the_iso_week():
+    import datetime as _d
+    y, w, _ = _d.date.today().isocalendar()
+    assert crew._sweep_age_weeks(f"{y}-W{w:02d}") == 0
+    assert crew._sweep_age_weeks("2026-W24") >= 10
+    assert crew._sweep_age_weeks("garbage") is None
+    assert crew._sweep_age_weeks("") is None
+
+
+def test_the_stops_table_shows_trade_count_and_age():
+    """Both were withheld: the count was captured and never printed, and the crew
+    had to work out "10+ weeks old" from a bare week label."""
+    src = _card_src()
+    i = src.index("SIGNAL ROUTER STOPS vs SWEEP RESULTS")
+    block = src[i:i + 4000]
+    assert "'Trades':>7" in block and "'Age':>6" in block
+    assert "_sweep_age_weeks(sw_date)" in block
+
+
+def test_stale_and_thin_sweeps_are_marked():
+    src = _card_src()
+    i = src.index("SIGNAL ROUTER STOPS vs SWEEP RESULTS")
+    block = src[i:i + 4000]
+    assert '"STALE"' in block and '"THIN"' in block
+    assert "SWEEP_STALE_WEEKS" in block and "SWEEP_MIN_TRADES" in block
+
+
+def test_the_footer_forbids_acting_on_a_marked_row():
+    """A $334.99 "improvement" on 4 trades from 12 weeks ago reads as compelling
+    unless something says otherwise."""
+    src = _card_src()
+    assert "CONTEXT ONLY" in src
+    assert "in-sample by construction" in src
+    assert "not per trade" in src
+
+
+def test_a_trail_sweep_tool_exists_and_takes_one_strategy():
+    """Per-strategy on purpose: a sweep fetches 1-min bars per (ticker, day), so
+    sweeping the book at once is the request burst that caused the 08-24 429s."""
+    src = inspect.getsource(crew)
+    i = src.index('"name": "trail_sweep"')
+    block = src[i:i + 2400]
+    assert '"required": ["strategy"]' in block
+    # The rationale wraps across source lines, so match a fragment that survives it.
+    assert "sweeping the whole book at once is a burst" in block
+    assert "1-minute bars for every" in block
+
+
+def test_the_tool_frames_the_question_as_defensibility_not_optimality():
+    """Asking "what is optimal" every month fits a fresh best value to each window."""
+    src = inspect.getsource(crew)
+    i = src.index('"name": "trail_sweep"')
+    assert "still defensible" in src[i:i + 1800]
+
+
+def test_the_tool_returns_the_gap_per_trade_and_says_it_is_in_sample():
+    src = inspect.getsource(crew._run_crew_tool)
+    i = src.index('name == "trail_sweep"')
+    block = src[i:i + 2600]
+    assert "gain_vs_current_per_trade" in block
+    assert "current_trail" in block and "best_trail" in block
+    assert "in-sample by construction" in block
+
+
+def test_the_tool_reports_a_sweep_error_rather_than_a_silent_empty():
+    src = inspect.getsource(crew._run_crew_tool)
+    i = src.index('name == "trail_sweep"')
+    block = src[i:i + 2600]
+    assert 'd.get("error")' in block
+    assert '"strategy required"' in block
