@@ -213,8 +213,11 @@
     <span style="font-size:0.72rem;color:#555;margin-right:4px">Kairos balance:</span>
     <select id="kairosTarget"
             style="background:#13161f;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:5px 8px;font-size:0.78rem;font-family:inherit;cursor:pointer">
-      <option value="9" selected>Balanced (~9 of 18 Kairos)</option>
-      <option value="5">Refined-led (≥5 Kairos)</option>
+      <!-- Default is "none": every other mode is a FLOOR with no ceiling, so a target
+           the evidence cannot argue down. -->
+      <option value="none" selected>No quota — evidence decides</option>
+      <option value="9">Balanced (~half Kairos)</option>
+      <option value="5">Refined-led (Kairos floor)</option>
       <option value="max">Max Kairos (all the farm supports)</option>
     </select>
     <span style="font-size:0.68rem;color:#555">how many picks to earn on Kairos engine entries when the Kairos data supports them</span>
@@ -958,7 +961,7 @@
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ topic: _topic, crew_type: _crewMode, ..._getDateRange(),
-                                  kairos_target: (document.getElementById('kairosTarget')?.value || '9') }),
+                                  kairos_target: (document.getElementById('kairosTarget')?.value || 'none') }),
       });
       if (!res.ok) { setStatus('Error: ' + res.status); return; }
 
@@ -1383,6 +1386,30 @@
            + 'with at least 3 trades on both sides. These were wired as tagged &mdash; '
            + 'change the tag in the report and re-wire if that is not what you intended.</div>'
            + rows + '</div>';
+    }
+
+    // Side-gate conflicts: a pick wired to BOTH sides whose own record says one side
+    // bleeds. The crew's analysis has been saying this in prose while the picks block
+    // wired `both` anyway; this is the reconciliation.
+    const sides = d.side_conflicts || [];
+    if (sides.length) {
+      html += '<div style="margin-top:10px;border:1px solid #3a3520;border-radius:6px;'
+           + 'background:rgba(242,231,172,0.06);padding:9px 11px">'
+           + '<div style="color:#F2E7AC;font-size:0.74rem;font-weight:600;margin-bottom:4px">'
+           + '&#9888; ' + sides.length + ' pick' + (sides.length === 1 ? '' : 's')
+           + ' wired to BOTH sides where one side bleeds</div>'
+           + '<div style="color:#8a7c52;font-size:0.66rem;line-height:1.5;margin-bottom:4px">'
+           + 'Wired as tagged. Gate the side in the report and re-wire to act on it.</div>'
+           + sides.map(function (c) {
+               return '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;'
+                 + 'padding:3px 0;border-top:1px solid rgba(242,199,107,0.12)">'
+                 + '<span style="color:#e0e0e0;font-size:0.74rem">' + esc(c.strategy) + '</span>'
+                 + '<span style="font-size:0.62rem;color:#7FE098">keep ' + esc(c.best_side) + '</span>'
+                 + '<span style="font-size:0.62rem;color:#666">' + esc(c.level) + '</span>'
+                 + '<span style="margin-left:auto;font-size:0.64rem;color:#8a7c52">'
+                 + esc(c.detail || '') + '</span></div>';
+             }).join('')
+           + '</div>';
     }
 
     // An unreadable book is not a clean bill of health.

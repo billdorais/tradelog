@@ -291,9 +291,14 @@ def test_scorecard_rows_carry_the_reports_entry_tag(monkeypatch):
              {"strategy": "CCC_CAM_BREAKOUT_R3S3", "side": "both"}]          # untagged
     monkeypatch.setattr(crew, "_parse_picks_block", lambda *A, **K: picks, raising=False)
     src = inspect_source(crew._pick_scorecard)
-    assert '"entry": (p.get("entry") or "tv")' in src, "entry tag not carried into rows"
-    assert src.count('"entry": (p.get("entry") or "tv")') == 2, \
-        "traded and untraded rows must both carry it"
+    # The expression was hoisted into _mech once proxy grading added a third row
+    # branch. What matters is that EVERY branch emits an entry, none defaults to
+    # blank, and the fallback is the report's own tag rather than live wiring.
+    assert '(p.get("entry") or "tv")' in src, "entry tag not carried into rows"
+    n_rows  = src.count('rows.append({')
+    n_entry = src.count('"entry": _mech') + src.count('"entry": (p.get("entry") or "tv")')
+    assert n_rows >= 3, f"expected traded / proxy / ungraded branches, found {n_rows}"
+    assert n_entry == n_rows, f"{n_rows} row branches, {n_entry} carry an entry tag"
 
 
 def inspect_source(fn):
