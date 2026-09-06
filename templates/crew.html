@@ -1412,6 +1412,45 @@
            + '</div>';
     }
 
+    // Tier conflicts: the card's tier drives SIZING, so a pick mislabelled core is
+    // wired at full size on a sample that has not earned it.
+    const tiers = d.tier_conflicts || [];
+    if (tiers.length) {
+      html += '<div style="margin-top:10px;border:1px solid #4a3d1c;border-radius:6px;'
+           + 'background:rgba(242,199,107,0.06);padding:9px 11px">'
+           + '<div style="color:#F2C76B;font-size:0.74rem;font-weight:600;margin-bottom:4px">'
+           + '&#9888; Tier rules not met on ' + tiers.length + ' item'
+           + (tiers.length === 1 ? '' : 's') + '</div>'
+           + '<div style="color:#8a7c52;font-size:0.66rem;line-height:1.5;margin-bottom:4px">'
+           + 'Wired as tagged. Tier sets position size, so a core label on a thin sample '
+           + 'is a sizing decision, not a description.</div>'
+           + tiers.map(function (c) {
+               return '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;'
+                 + 'padding:3px 0;border-top:1px solid rgba(242,199,107,0.12)">'
+                 + '<span style="color:#e0e0e0;font-size:0.74rem">'
+                 + esc(c.strategy || 'roster') + '</span>'
+                 + '<span style="font-size:0.62rem;color:#F2C76B">' + esc(c.kind) + '</span>'
+                 + '<span style="margin-left:auto;font-size:0.64rem;color:#8a7c52">'
+                 + esc(c.note || '') + '</span></div>';
+             }).join('')
+           + '</div>';
+    }
+
+    // The card and the picks block disagreeing does not change what traded — the
+    // block is authoritative — but the card is the half a human reads.
+    const tagmm = d.card_tag_mismatches || [];
+    if (tagmm.length) {
+      html += '<div style="margin-top:8px;font-size:0.68rem;color:#c98b8b">'
+           + '&#9888; ' + tagmm.length + ' card row'
+           + (tagmm.length === 1 ? '' : 's')
+           + ' disagree with the picks block that was actually wired: '
+           + tagmm.map(function (m) {
+               return esc(m.strategy) + ' (card [' + esc(m.card_says.toUpperCase())
+                    + '], wired [' + esc(m.wired.toUpperCase()) + '])';
+             }).join(', ')
+           + '. The block is what traded.</div>';
+    }
+
     // An unreadable book is not a clean bill of health.
     const un = (d.entry_check && d.entry_check.unreadable) || [];
     if (un.length) {

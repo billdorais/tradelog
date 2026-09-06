@@ -696,12 +696,31 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                 f"Net P&L: ${sc.get('total_pnl', 0):.2f}",
                 "",
             ]
+            _fwd = sc.get("days_forward")
             if sc.get("n_proxy"):
                 lines.append(f"Proxy-graded on the farms (no book trades): {sc.get('n_proxy')} picks | "
                              f"{sc.get('n_proxy_positive')} positive | "
                              f"${sc.get('proxy_pnl', 0):.2f}")
             if sc.get("n_ungraded"):
                 lines.append(f"Still ungraded (no book AND no farm trades): {sc.get('n_ungraded')}")
+            # Say why an empty scorecard is empty. Without this the reader cannot tell
+            # "the picks failed" from "there has not been time for a trade yet", and
+            # those call for opposite responses.
+            if not sc.get("n_traded") and not sc.get("n_proxy"):
+                if _fwd is not None and _fwd <= 1:
+                    lines.append(
+                        f"NOTHING IS GRADEABLE YET: the previous card was filed {_fwd} day(s) "
+                        f"ago, so there has been no forward window for a trade to happen in — "
+                        f"on the book OR on the farms. This is a TIMING fact, not a result. Do "
+                        f"NOT describe the selection method as untested-and-therefore-fine, and "
+                        f"do not speculate about what the farms would have said: say the window "
+                        f"is too short and move on.")
+                else:
+                    lines.append(
+                        f"NOTHING GRADED over {_fwd if _fwd is not None else '?'} days: no book "
+                        f"trades AND no farm trades on any pick, curated hours. With a real "
+                        f"window elapsed that is itself a finding — the roster may be gated out "
+                        f"of the market rather than merely unlucky. Say so.")
             lines.append("")
             for r in sc.get("picks", []):
                 if r.get("trades"):
@@ -1310,7 +1329,13 @@ def _pick_scorecard(prev_report=None):
             else:
                 rows.append({"strategy": p["strategy"], "side": p.get("side", "both"),
                              "entry": _mech, "trades": 0, "pnl": None, "win_rate": None})
+    import datetime as _sd
+    try:
+        _days_fwd = (_sd.date.today() - _sd.date.fromisoformat(since)).days
+    except Exception:
+        _days_fwd = None
     return {"report_week": prev_report.get("week"), "since": since,
+            "days_forward": _days_fwd,
             "n_picks": len(picks), "n_traded": traded, "n_positive": positive,
             "total_pnl": round(total, 2), "picks": rows,
             # Kept SEPARATE from the book totals on purpose: mixing a proxy into the
@@ -2979,12 +3004,26 @@ def api_crew_wire_to_router():
                      else {"conflicts": []})
     except Exception as _sc_err:
         _side_chk = {"conflicts": [], "error": str(_sc_err)}
+    try:
+        _tier_chk = (_tier_conflicts(_app_chk, picks) if _app_chk
+                     else {"conflicts": []})
+    except Exception as _tc_err:
+        _tier_chk = {"conflicts": [], "error": str(_tc_err)}
+    try:
+        # Only the report path has a document to compare against; snapshot/hybrid
+        # wires have no card and nothing to disagree with.
+        _tag_mm = (_card_block_tag_mismatches(report, picks)
+                   if source not in ("snapshot", "hybrid") else [])
+    except Exception:
+        _tag_mm = []
 
     return jsonify({
         "created": created, "updated": updated,
         "deleted": deleted, "deferred_open_position": deferred,
         "entry_conflicts": _entry_chk.get("conflicts") or [],
         "side_conflicts": _side_chk.get("conflicts") or [],
+        "tier_conflicts": _tier_chk.get("conflicts") or [],
+        "card_tag_mismatches": _tag_mm,
         "entry_check": {k: v for k, v in _entry_chk.items() if k != "conflicts"},
         "sizing_conflict": parsed.get("sizing_conflict"),
         "live_mirror": {"enabled": _mirror_on and _live_size > 0,
@@ -3180,6 +3219,118 @@ def _side_gate_conflicts(app_obj, picks, account="4"):
 
     out.sort(key=lambda c: 0 if c["level"] == "strategy" else 1)
     return {"conflicts": out}
+
+
+# ── Tier conflicts ──────────────────────────────────────────────────────────────
+# The card states the tier rules and the crew broke both on the first run: 5
+# auditions against a cap of 3, and MSFT (4 live trades) and PLTR (6) labelled CORE
+# against a 10-trade bar. It said so openly — "4t is thin for CORE bar, treating as
+# borderline CORE" — but the tier drives SIZING, so "borderline" is the difference
+# between 50% and 100% of position size on a name with four trades behind it.
+#
+# A rule that lives only in the prompt is a suggestion. This checks it against the
+# book's own trade counts at wire time, which is where the sizing is decided.
+
+def _tier_conflicts(app_obj, picks, account="4"):
+    """Picks whose tier the book's own record does not support.
+
+    over_cap  — more auditions than CREW_AUDITION_SLOTS allows.
+    core_thin — labelled core on fewer than CREW_CORE_MIN_TRADES live round-trips.
+
+    Trade counts come from the account being wired, never from the report's prose:
+    the prose is the claim under test.
+    """
+    counts, unreadable = {}, False
+    try:
+        with app_obj.test_client() as c:
+            d = c.get(f"/api/alpaca/analysis?account={account}").get_json() or {}
+        if d.get("fills_unavailable"):
+            unreadable = True
+        counts = {k.upper(): int(v.get("trades") or 0)
+                  for k, v in (d.get("per_strategy") or {}).items()}
+    except Exception as e:
+        return {"conflicts": [], "unreadable": True, "error": str(e)[:120]}
+
+    out = []
+    if not unreadable:
+        for p_ in picks:
+            if (p_.get("tier") or "core") != "core":
+                continue
+            slug = (p_.get("strategy") or "").upper()
+            n = counts.get(slug, 0)
+            if n < CREW_CORE_MIN_TRADES:
+                out.append({
+                    "strategy": slug, "kind": "core_thin", "trades": n,
+                    "required": CREW_CORE_MIN_TRADES,
+                    "note": (f"wired CORE at full size on {n} live trade"
+                             f"{'' if n == 1 else 's'}; the bar is "
+                             f"{CREW_CORE_MIN_TRADES}"),
+                })
+
+    n_aud = sum(1 for p_ in picks if (p_.get("tier") or "core") == "audition")
+    if n_aud > CREW_AUDITION_SLOTS:
+        out.append({
+            "strategy": None, "kind": "over_cap",
+            "auditions": n_aud, "allowed": CREW_AUDITION_SLOTS,
+            "note": (f"{n_aud} auditions on a {CREW_AUDITION_SLOTS}-slot cap — the card "
+                     f"is carrying more unproven names than intended"),
+        })
+    return {"conflicts": out, "unreadable": unreadable}
+
+
+# ── Card vs picks-block disagreement ────────────────────────────────────────────
+# On the first Top-10 run, two picks carried a leading tag that their OWN reasoning
+# then overturned: SMH read "both [Kairos]" and concluded "GUARDRAIL ... TAG [TV]";
+# GLD_REVERSAL read "both [TV]" and concluded "TAG [Kairos]". The picks block was
+# right both times, so the WIRE was correct — but the card is what a human reads,
+# and it said the opposite of what got wired.
+#
+# The prompt already forbids this ("Do not write one tag then argue another"), which
+# is exactly why it needs a check: the rule was stated and broken on the first run.
+
+_CARD_TAG_RE = re.compile(r"\[(TV|Kairos)\]", re.I)
+
+
+def _card_block_tag_mismatches(report, picks):
+    """Picks whose Top-N card line leads with a different [TV]/[Kairos] tag than the
+    authoritative picks block wired.
+
+    The block wins — it is what the wire reads — so this never changes a decision.
+    It reports that the human-readable half of the report is misleading.
+    """
+    text = report or ""
+    # The card row is everything before the picks fence; searching the whole report
+    # would match the Changes table and the prose sections too.
+    fence = text.find("```picks")
+    card = text[:fence] if fence > 0 else text
+    if not card:
+        return []
+
+    by_slug = {}
+    for line in card.replace("<br>", "\n").splitlines():
+        m = _STRAT_SLUG_RE.search(line)
+        if not m:
+            continue
+        slug = m.group(0).upper()
+        if slug in by_slug:
+            continue                      # first mention is the card's own row
+        # The tag that LEADS the line is the claim; later ones are reasoning.
+        tail = line[m.end():]
+        t = _CARD_TAG_RE.search(tail[:160])
+        if t:
+            by_slug[slug] = t.group(1).lower()
+
+    out = []
+    for p_ in picks:
+        slug = (p_.get("strategy") or "").upper()
+        wired = (p_.get("entry") or "tv").lower()
+        claimed = by_slug.get(slug)
+        if claimed and claimed != wired:
+            out.append({"strategy": slug, "card_says": claimed, "wired": wired,
+                        "note": (f"the card row leads with [{claimed.upper()}] but the "
+                                 f"picks block wired [{wired.upper()}] — the block is "
+                                 f"what traded")})
+    return out
 
 @crew_bp.route("/api/crew/knowledge", methods=["GET"])
 def api_crew_knowledge_get():

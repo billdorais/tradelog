@@ -412,3 +412,168 @@ def test_the_tool_reports_a_sweep_error_rather_than_a_silent_empty():
     block = src[i:i + 2600]
     assert 'd.get("error")' in block
     assert '"strategy required"' in block
+
+
+# ── 7. what the first Top-10 run exposed ────────────────────────────────────────
+# Card (8), 2026-09-06: 5 auditions against a 3-slot cap; MSFT (4 live trades) and
+# PLTR (6) labelled CORE against a 10-trade bar; two card rows leading with a tag
+# their own reasoning overturned. Every rule was in the prompt and broken anyway.
+
+_BOOK_COUNTS = {"NVDA_CAM_BREAKOUT_R3S3_V02_5MIN": 16,
+                "MSFT_CAM_REVERSAL_R3S3_V02_5MIN": 4,
+                "PLTR_CAM_BREAKOUT_R3S3_V02_5MIN": 6,
+                "IWM_CAM_REVERSAL_R3S3_V02_5MIN": 11}
+
+
+def _tier_app(counts=None, unavailable=False):
+    payload = {"per_strategy": {k: {"trades": v}
+                                for k, v in (counts or _BOOK_COUNTS).items()}}
+    if unavailable:
+        payload["fills_unavailable"] = ["Crew Paper"]
+    return _StubApp(payload=payload)
+
+
+def _core(slug):
+    return {"strategy": slug, "side": "both", "entry": "tv", "tier": "core"}
+
+
+def _aud(slug):
+    return {"strategy": slug, "side": "both", "entry": "tv", "tier": "audition"}
+
+
+def test_a_core_label_below_the_bar_is_flagged():
+    """The tier drives SIZING, so "borderline CORE" on 4 trades is a decision to
+    wire at full size, not a description."""
+    out = crew._tier_conflicts(_tier_app(), [_core("MSFT_CAM_REVERSAL_R3S3_V02_5MIN")])
+    c = out["conflicts"][0]
+    assert c["kind"] == "core_thin" and c["trades"] == 4
+    assert c["required"] == crew.CREW_CORE_MIN_TRADES
+    assert "full size" in c["note"]
+
+
+def test_a_core_label_that_clears_the_bar_is_not_flagged():
+    assert crew._tier_conflicts(
+        _tier_app(), [_core("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN")])["conflicts"] == []
+
+
+def test_exceeding_the_audition_cap_is_flagged_once_for_the_roster():
+    """It is a property of the card, not of any one pick."""
+    picks = [_aud(f"A{i}_CAM_BREAKOUT_R3S3_V02_5MIN")
+             for i in range(crew.CREW_AUDITION_SLOTS + 2)]
+    c = [x for x in crew._tier_conflicts(_tier_app(), picks)["conflicts"]
+         if x["kind"] == "over_cap"]
+    assert len(c) == 1
+    assert c[0]["auditions"] == crew.CREW_AUDITION_SLOTS + 2
+    assert c[0]["strategy"] is None
+
+
+def test_auditions_are_never_checked_against_the_core_bar():
+    """An audition on 2 trades is the point of the tier, not a violation."""
+    out = crew._tier_conflicts(_tier_app(), [_aud("MS_CAM_REVERSAL_R3S3_V02_5MIN")])
+    assert [c for c in out["conflicts"] if c["kind"] == "core_thin"] == []
+
+
+def test_an_untiered_pick_defaults_to_core_and_is_checked():
+    """Older reports carry no tier column; defaulting to core must not exempt them
+    from the bar, or the default becomes a loophole."""
+    out = crew._tier_conflicts(_tier_app(),
+                               [{"strategy": "MSFT_CAM_REVERSAL_R3S3_V02_5MIN",
+                                 "side": "both", "entry": "tv"}])
+    assert out["conflicts"][0]["kind"] == "core_thin"
+
+
+def test_an_unreadable_book_suppresses_the_core_check_not_the_cap():
+    """Trade counts are unknown, so no core claim can be tested — but the audition
+    cap is arithmetic on the card and still holds."""
+    picks = [_core("MSFT_CAM_REVERSAL_R3S3_V02_5MIN")] + \
+            [_aud(f"A{i}_CAM_BREAKOUT_R3S3_V02_5MIN")
+             for i in range(crew.CREW_AUDITION_SLOTS + 1)]
+    out = crew._tier_conflicts(_tier_app(unavailable=True), picks)
+    kinds = {c["kind"] for c in out["conflicts"]}
+    assert out["unreadable"] is True
+    assert "core_thin" not in kinds and "over_cap" in kinds
+
+
+def test_the_wire_reports_tier_conflicts_without_refusing():
+    src = inspect.getsource(crew.api_crew_wire_to_router)
+    assert '"tier_conflicts"' in src
+    i = src.index("_tier_conflicts")
+    assert "409" not in src[i:], "the tier check must warn, not block"
+
+
+# ── card row vs picks block ─────────────────────────────────────────────────────
+
+CARD = """| **Top 10 to run** | 1. NVDA_CAM_BREAKOUT_R3S3_V02_5MIN — both [TV] (CORE)<br>
+2. SMH_CAM_REVERSAL_R3S3_V02_5MIN — both [Kairos] (GUARDRAIL: Kairos Farm takeable
+is negative — TAG [TV]; AUDITION)<br>
+3. GLD_CAM_REVERSAL_R3S3_V02_5MIN — both [TV] (Kairos Farm stronger; TAG [Kairos]) |
+
+```picks
+NVDA_CAM_BREAKOUT_R3S3_V02_5MIN | both | TV | core
+SMH_CAM_REVERSAL_R3S3_V02_5MIN | both | TV | audition
+GLD_CAM_REVERSAL_R3S3_V02_5MIN | both | Kairos | audition
+```"""
+
+
+def test_a_card_row_contradicting_its_own_picks_block_is_flagged():
+    """Both happened on the first run. The block is authoritative so the WIRE was
+    right — but the card is the half a human reads."""
+    picks = crew._parse_picks_block(CARD)
+    mm = {m["strategy"][:3]: (m["card_says"], m["wired"])
+          for m in crew._card_block_tag_mismatches(CARD, picks)}
+    assert mm == {"SMH": ("kairos", "tv"), "GLD": ("tv", "kairos")}
+
+
+def test_an_agreeing_row_is_not_flagged():
+    picks = crew._parse_picks_block(CARD)
+    assert not any(m["strategy"].startswith("NVDA")
+                   for m in crew._card_block_tag_mismatches(CARD, picks))
+
+
+def test_only_the_leading_tag_counts_not_the_reasoning():
+    """Every row mentions both tags while arguing; the one that LEADS is the claim."""
+    src = inspect.getsource(crew._card_block_tag_mismatches)
+    assert "tail[:160]" in src
+
+
+def test_the_changes_table_is_not_mistaken_for_the_card():
+    """It lists the same slugs with their own tags; searching the whole report would
+    flag rows that are not claims about the roster."""
+    src = inspect.getsource(crew._card_block_tag_mismatches)
+    assert 'text.find("```picks")' in src
+
+
+def test_a_wire_with_no_report_is_not_checked():
+    """snapshot / hybrid have no card to disagree with."""
+    src = inspect.getsource(crew.api_crew_wire_to_router)
+    i = src.index("_card_block_tag_mismatches")
+    assert 'source not in ("snapshot", "hybrid")' in src[i - 200:i + 200]
+
+
+# ── the empty scorecard explains itself ─────────────────────────────────────────
+
+def test_a_same_day_scorecard_says_the_window_is_too_short():
+    """It printed "0/10 traded" and nothing else, so the crew filled the silence
+    with prose about farm records it never received."""
+    src = _card_src()
+    assert "NOTHING IS GRADEABLE YET" in src
+    assert "TIMING fact, not a result" in src
+    assert "do not speculate" in src
+
+
+def test_a_real_window_with_no_trades_is_reported_as_a_finding():
+    """Zero trades after three weeks means something different from zero trades
+    after one day, and the two call for opposite responses."""
+    src = _card_src()
+    assert "NOTHING GRADED over" in src
+    assert "gated out" in src
+
+
+def test_the_scorecard_carries_the_window_length():
+    assert "days_forward" in inspect.getsource(crew._pick_scorecard)
+
+
+def test_the_ui_surfaces_both_new_checks():
+    html = open("templates/crew.html", encoding="utf-8").read()
+    assert "tier_conflicts" in html and "Tier rules not met" in html
+    assert "card_tag_mismatches" in html and "block is what traded" in html
