@@ -3674,6 +3674,12 @@ _SELECTION_CURVE_SOURCES = {"tv": "1", "kairos": "5"}
 
 # Books the crew's picks are actually wired to (Crew Paper, Crew Live).
 _CREW_BOOKS = {"4", "6"}
+# Books source=actual may read. The crew's picks also trade in the two Refined books
+# — often with far more volume than Crew Paper, which took ZERO trades on the last
+# card's forward window — so those are the bigger sample for judging a selection.
+# The farms stay out: they are the ungated counterfactual behind source=farm, and
+# mixing them in here would relabel a control group as a result.
+_ACTUAL_BOOKS = {"2", "3", "4", "6"}
 
 
 def _selection_picks(report_text, default_entry="tv"):
@@ -3731,9 +3737,17 @@ def api_crew_selection_curve():
     hours     = (request.args.get("hours") or "curated").strip().lower()
     source    = (request.args.get("source") or "farm").strip().lower()
     actual    = source == "actual"
-    book      = (request.args.get("account") or "4").strip()
-    if actual and book not in _CREW_BOOKS:
-        return jsonify({"error": f"Account {book} is not a crew book."}), 400
+    # Comma list so several books can be combined — the picks are one roster, and
+    # asking how it traded should not force you to read it one account at a time.
+    _raw_books = (request.args.get("account") or "4").strip()
+    books_req  = [b.strip() for b in _raw_books.split(",") if b.strip()]
+    if actual:
+        bad = [b for b in books_req if b not in _ACTUAL_BOOKS]
+        if bad or not books_req:
+            return jsonify({"error": f"Not a readable book: {', '.join(bad) or '(none given)'}. "
+                                     f"Allowed: {', '.join(sorted(_ACTUAL_BOOKS))} "
+                                     f"(the farms are the control group — use source=farm)."}), 400
+    book = books_req[0] if books_req else "4"
 
     try:
         conn = _kairos.get_db(); cur = conn.cursor()
@@ -3767,7 +3781,8 @@ def api_crew_selection_curve():
 
     # farm: one audition pool per mechanism, each holding only its own picks.
     # actual: ONE book holding every pick; the mechanism comes from the pick's tag.
-    plan = [(None, book)] if actual else sorted(_SELECTION_CURVE_SOURCES.items())
+    plan = ([(None, b) for b in books_req] if actual
+            else sorted(_SELECTION_CURVE_SOURCES.items()))
 
     # The crew book already trades inside its gates, so filtering its real fills by
     # curated hours would drop nothing and imply a filter that is not doing work.
@@ -3780,13 +3795,19 @@ def api_crew_selection_curve():
         wanted = dict(by_entry[entry]) if entry else {
             **by_entry["tv"], **by_entry["kairos"]}
         for _k in (["tv", "kairos"] if entry is None else [entry]):
-            per_src[_k]["account"] = acct
+            per_src[_k].setdefault("accounts", [])
+            if acct not in per_src[_k]["accounts"]:
+                per_src[_k]["accounts"].append(acct)
+            per_src[_k]["account"] = ",".join(per_src[_k]["accounts"])
         if not wanted:
             continue
         try:
             _b, _tag, _label, _fills_fn = _kairos._alpaca_account_ctx(acct)
             for _k in (["tv", "kairos"] if entry is None else [entry]):
-                per_src[_k]["label"] = _label
+                per_src[_k].setdefault("labels", [])
+                if _label not in per_src[_k]["labels"]:
+                    per_src[_k]["labels"].append(_label)
+                per_src[_k]["label"] = " + ".join(per_src[_k]["labels"])
             fills = _fills_fn()
         except Exception:
             fills = None
@@ -3816,7 +3837,7 @@ def api_crew_selection_curve():
                     continue
             kept.append({"time": c.get("exit_time"), "pnl": round(c.get("pnl") or 0, 2),
                          "ticker": c.get("ticker"), "strategy": strat,
-                         "side": side.lower(),
+                         "side": side.lower(), "account": acct, "book": _label,
                          "entry": entry or entry_of_pick.get(strat, "tv")})
 
     kept.sort(key=lambda t: t["time"] or "")
@@ -3835,6 +3856,14 @@ def api_crew_selection_curve():
         per_src[t["entry"]]["trades"] += 1
         per_src[t["entry"]]["pnl"] = round(per_src[t["entry"]]["pnl"] + t["pnl"], 2)
 
+    _by_book = {}
+    for t in kept:
+        _b = _by_book.setdefault(t.get("book") or t.get("account") or "?",
+                                 {"trades": 0, "pnl": 0.0, "wins": 0})
+        _b["trades"] += 1
+        _b["pnl"] = round(_b["pnl"] + t["pnl"], 2)
+        _b["wins"] += 1 if t["pnl"] > 0 else 0
+
     wins = sum(1 for t in kept if t["pnl"] > 0)
     return jsonify({
         "week": _week, "created_at": _created,
@@ -3843,12 +3872,16 @@ def api_crew_selection_curve():
         "hours_windows": ["%s-%s" % (a, b) for a, b in windows] if windows else [],
         "picks": picks, "pick_count": len(picks),
         "curve": curve, "per_strategy": per_strategy, "by_entry": per_src,
+        # A combined chart has to be decomposable, or "the picks made $X across two
+        # books" hides one book carrying the other.
+        "by_book": _by_book,
         "trades": len(kept), "wins": wins,
         "win_rate": round(wins / len(kept) * 100, 1) if kept else None,
         "total_pnl": round(cum, 2) if kept else 0.0,
         "fills_unavailable": unavail,
         "source": "actual" if actual else "farm",
-        "account": book if actual else None,
+        "account": ",".join(books_req) if actual else None,
+        "accounts": books_req if actual else [],
         "in_sample": not actual,
         "caveat": (
             ("REAL FILLS from the crew book — not a simulation. Each pick only has trades "

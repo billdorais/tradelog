@@ -253,10 +253,34 @@ def test_farm_mode_is_unchanged_by_the_new_parameter(seeded_actual):
     assert d["source"] == "farm" and d["in_sample"] is True
 
 
-def test_only_a_real_crew_book_can_be_read(seeded_actual):
-    """Pointing this at a farm would quietly relabel simulated fills as real."""
-    code, d = _get(seeded_actual, "?source=actual&account=1")
-    assert code == 400 and "crew book" in d["error"]
+def test_a_farm_cannot_be_read_as_an_actual_book(seeded_actual):
+    """The farms are the ungated counterfactual behind source=farm; reading them
+    here would relabel a control group as a result."""
+    for farm in ("1", "5", "2,5"):
+        code, d = _get(seeded_actual, f"?source=actual&account={farm}")
+        assert code == 400, farm
+        assert "control group" in d["error"]
+
+
+def test_the_curated_books_are_readable_as_actual(seeded_actual):
+    """The crew's picks trade in TV Refined and Kairos Refined too, usually with
+    more volume than Crew Paper — that is the bigger sample for judging them."""
+    for acct in ("2", "3", "4", "6"):
+        code, _ = _get(seeded_actual, f"?source=actual&account={acct}")
+        assert code == 200, acct
+
+
+def test_an_omitted_account_defaults_to_crew_paper(seeded_actual):
+    """Unchanged contract: the crew's own book is the sensible default."""
+    for qs in ("?source=actual", "?source=actual&account="):
+        code, d = _get(seeded_actual, qs)
+        assert code == 200 and d["accounts"] == ["4"], qs
+
+
+def test_several_books_can_be_combined(seeded_actual):
+    """One roster should not have to be read one account at a time."""
+    code, d = _get(seeded_actual, "?source=actual&account=2,3")
+    assert code == 200 and d["accounts"] == ["2", "3"]
 
 
 def test_crew_live_is_selectable(seeded_actual):
@@ -277,3 +301,100 @@ def test_book_chart_is_present_and_defaults_to_crew_paper():
     assert 'id="bookPerfSection"' in html
     assert "let _bookAcct  = '4';" in html
     assert "source=actual" in html
+
+
+# ── combining books, and a shared custom window ─────────────────────────────────
+
+def test_combined_books_sum_and_stay_decomposable(seeded_actual):
+    """"The picks made $X across two books" hides one book carrying the other, so a
+    combined chart has to break back down."""
+    _, one = _get(seeded_actual, "?source=actual&account=4")
+    _, two = _get(seeded_actual, "?source=actual&account=4,6")
+    assert two["trades"] >= one["trades"]
+    assert "by_book" in two
+    assert sum(b["trades"] for b in two["by_book"].values()) == two["trades"]
+    assert round(sum(b["pnl"] for b in two["by_book"].values()), 2) == two["total_pnl"]
+
+
+def test_each_trade_names_the_book_it_came_from(seeded_actual):
+    """`trades` is the COUNT; the rows are the curve points."""
+    _, d = _get(seeded_actual, "?source=actual&account=4")
+    assert d["curve"], "no trades to check"
+    assert all(p.get("book") and p.get("account") for p in d["curve"])
+
+
+def test_a_farm_in_a_combined_list_rejects_the_whole_request(seeded_actual):
+    """Silently dropping the farm would quietly answer a different question."""
+    code, d = _get(seeded_actual, "?source=actual&account=2,5")
+    assert code == 400 and "5" in d["error"]
+
+
+def test_the_mechanism_split_names_every_book_it_read(seeded_actual):
+    """by_entry is keyed by MECHANISM, so with several books the label has to
+    accumulate rather than be overwritten by whichever ran last."""
+    _, d = _get(seeded_actual, "?source=actual&account=4,6")
+    labels = [v.get("label") for v in d["by_entry"].values() if v.get("label")]
+    assert any(" + " in (l or "") for l in labels)
+
+
+# ── UI ──────────────────────────────────────────────────────────────────────────
+
+def _crew():
+    return open("templates/crew.html", encoding="utf-8").read()
+
+
+def test_the_refined_books_are_offered_individually_and_combined():
+    html = _crew()
+    for acct in ("'2'", "'3'", "'2,3'"):
+        assert f"setBookAcct({acct})" in html
+    assert "Refined (both)" in html
+
+
+def test_a_custom_range_is_offered():
+    html = _crew()
+    assert 'id="selFrom"' in html and 'id="selTo"' in html
+    assert "setCustomRange()" in html
+
+
+def test_one_helper_builds_the_window_for_both_panels():
+    """Two charts on one screen showing different windows would be read as one, and
+    anything building its own from/to can drift."""
+    html = _crew()
+    assert "function _rangeQS()" in html
+    i = html.index("async function loadSelectionCurve")
+    j = html.index("async function loadBookCurve")
+    assert "_rangeQS()" in html[i:j]
+    assert "_rangeQS()" in html[j:j + 1500]
+    # neither panel rolls its own dates any more
+    assert "from.setDate(to.getDate() - _selDays)" not in html[i:j]
+
+
+def test_a_custom_range_overrides_the_day_buttons_and_can_be_cleared():
+    html = _crew()
+    i = html.index("function setCustomRange")
+    block = html[i:i + 900]
+    assert "_selRange = { from: f, to: t }" in block
+    assert "clearCustomRange" in html
+    j = html.index("function setSelDays")
+    assert "_selRange = null" in html[j:j + 500], "a day button must clear the range"
+
+
+def test_half_a_range_does_not_take_effect():
+    """One date is not a window; guessing the other end would silently show a
+    period nobody asked for."""
+    html = _crew()
+    i = html.index("function setCustomRange")
+    assert "if (!f || !t)" in html[i:i + 900]
+
+
+def test_a_reversed_range_is_refused():
+    html = _crew()
+    i = html.index("function setCustomRange")
+    assert "f > t" in html[i:i + 900]
+
+
+def test_the_empty_state_names_the_window_it_searched():
+    """"No trades" means something different over 7 days than over 90."""
+    html = _crew()
+    assert "_rangeLabel()" in html
+    assert "No trades on this book over" in html
