@@ -17,6 +17,8 @@ os.environ.setdefault("WEBHOOK_TOKEN", "test-token")
 for _k in ("ALPACA_KEY", "COINBASE_KEY", "IB_HOST", "IB_HOST_LIVE", "DATABASE_URL"):
     os.environ.pop(_k, None)
 
+import pytest
+
 import app as a
 
 
@@ -121,3 +123,47 @@ def test_expectancy_pct_independent_of_share_count(monkeypatch):
     big   = next(iter(a._compute_strategy_stats(days=3650, fills_fn=_mk(100), gate_as=None).values()))
     assert abs(small["expectancy_pct"] - big["expectancy_pct"]) < 1e-6   # size-independent
     assert big["total_pnl"] == small["total_pnl"] * 10                    # dollars are not
+
+
+# ── PF with no losses is an absence of evidence, not proof of quality ────────
+
+def test_a_flawless_small_sample_no_longer_maxes_profit_factor():
+    """PF is None exactly when gross_loss == 0. Scoring that a flat 1.0 meant a
+    5-for-5 name maxed BOTH the 30% PF term and the 10% win-rate term — 40% of its
+    score decided by five trades, indistinguishable from a real 2.5 PF over forty."""
+    lucky = {"sharpe": 1.0, "profit_factor": None, "win_rate": 100.0, "trades": 5,
+             "expectancy_pct": 0.05}
+    pf_term = a._REFINED_SCORE_WEIGHTS["profit_factor"]
+    # 5 of the 7-trade saturation → 5/7 of the PF weight, not all of it.
+    assert a._composite_score(lucky, 0) == pytest.approx(
+        a._composite_score({**lucky, "profit_factor": None, "trades": 5}, 0))
+    full = a._composite_score({**lucky, "trades": 7}, 0)
+    assert full - a._composite_score(lucky, 0) == pytest.approx(
+        pf_term * (1 - 5 / 7) + a._REFINED_SCORE_WEIGHTS["trades"] * (1 - 5 / 7), abs=1e-4)   # _composite_score rounds to 4dp
+
+
+def test_a_flawless_full_sample_still_earns_full_credit():
+    """The fix must not punish a genuinely clean record — at saturation it is
+    identical to the old behaviour."""
+    clean = {"sharpe": 1.0, "profit_factor": None, "win_rate": 100.0, "trades": 7,
+             "expectancy_pct": 0.05}
+    priced = a._composite_score(clean, 0)
+    assert priced == a._composite_score({**clean, "profit_factor": 2.5}, 0)
+
+
+def test_a_real_profit_factor_beats_a_lucky_streak_at_equal_sample():
+    """The distortion this removes: at the eligibility floor, five wins used to
+    outrank a strategy with a real, measured payoff ratio."""
+    lucky = {"sharpe": 1.0, "profit_factor": None, "win_rate": 100.0, "trades": 5,
+             "expectancy_pct": 0.05}
+    real  = {**lucky, "profit_factor": 2.5, "win_rate": 60.0}
+    assert a._composite_score(real, 0) > a._composite_score(lucky, 0)
+
+
+def test_no_losses_with_a_thin_sample_is_heavily_discounted():
+    one = {"sharpe": None, "profit_factor": None, "win_rate": 100.0, "trades": 1,
+           "expectancy_pct": 0.0}
+    # 1/7 of both the PF and trades weights, plus the full win-rate term.
+    w = a._REFINED_SCORE_WEIGHTS
+    assert a._composite_score(one, 0) == pytest.approx(
+        (w["profit_factor"] + w["trades"]) / 7 + w["win_rate"], abs=1e-4)   # _composite_score rounds to 4dp

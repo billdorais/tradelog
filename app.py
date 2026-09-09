@@ -9616,19 +9616,26 @@ def _composite_score(stats, max_pnl):
 
     Weights: Sharpe 30% · PF 30% · Expectancy 15% · Win rate 10% · Trades 15%
       - sharpe:        sharpe / 3.5, capped at 1.0; negative → 0; None → 0
-      - profit_factor: pf / 2.5, capped at 1.0; None (no losses) → 1.0
+      - profit_factor: pf / 2.5, capped at 1.0; None (no losses) → trades_norm
       - expectancy:    mean % return on notional / 0.15, capped at 1.0; negative → 0
       - win_rate:      win_rate / 100
       - trades:        trades / 7, capped at 1.0
     """
+    trades_norm = min((stats.get("trades") or 0) / _REFINED_TRADES_SATURATION, 1.0)
+
     sh = stats.get("sharpe")
     sh_norm     = 0.0 if sh is None else max(min(sh / _REFINED_SHARPE_SATURATION, 1.0), 0.0)
     pf = stats.get("profit_factor")
-    pf_norm     = 1.0 if pf is None else max(min(pf / _REFINED_PF_SATURATION, 1.0), 0.0)
+    # PF is None exactly when gross_loss == 0 — no losing trades AT ALL. That used
+    # to score a flat 1.0, the same as a genuine 2.5 PF over forty trades, so a
+    # 5-for-5 name maxed BOTH this 30% term and the 10% win-rate term: 40% of its
+    # score decided by five trades. No losses is not evidence of a great payoff
+    # ratio, it is an ABSENCE of evidence about the loss side, so credit it in
+    # proportion to how much sample there is to believe.
+    pf_norm     = trades_norm if pf is None else max(min(pf / _REFINED_PF_SATURATION, 1.0), 0.0)
     exp_norm    = max(min((stats.get("expectancy_pct") or 0.0)
                           / _REFINED_EXPECTANCY_SATURATION, 1.0), 0.0)
     win_norm    = max(min((stats.get("win_rate") or 0) / 100.0, 1.0), 0.0)
-    trades_norm = min((stats.get("trades") or 0) / _REFINED_TRADES_SATURATION, 1.0)
 
     w = _REFINED_SCORE_WEIGHTS
     return round(
@@ -9639,6 +9646,44 @@ def _composite_score(stats, max_pnl):
         w["trades"]        * trades_norm,
         4,
     )
+
+
+# Most slots one underlying may hold in a top-N. The score ranks names in
+# isolation — nothing in it can see that SPY R3S3 long, SPY R4S4 long and SPY R4S4
+# short are three bets on one instrument. The 2026-09-09 TV snapshot put SPY x3,
+# IWM x3 and GLD x2 into 18 slots: 8 of 18 on three underlyings, several the same
+# level pair in both directions. Correlated names also make the book's realised
+# variance far worse than the per-strategy stats imply.
+_REFINED_MAX_PER_TICKER = int(os.environ.get("REFINED_MAX_PER_TICKER", "2") or 2)
+
+
+def _apply_ticker_cap(scored, n, cap=None):
+    """Take the top `n` of an already score-sorted list, at most `cap` per ticker.
+
+    Backfills from the names the cap displaced if there are not enough distinct
+    underlyings to fill `n` — a diversification preference must not silently shrink
+    the book, which would be a far bigger change than the one intended.
+
+    Returns (selected, displaced_names) so the snapshot can show what the cap cost.
+    """
+    cap = _REFINED_MAX_PER_TICKER if cap is None else cap
+    if cap <= 0:
+        return scored[:n], []
+    taken, held, per = [], [], {}
+    for row in scored:
+        if len(taken) >= n:
+            break
+        tk = (row[0] or "").split("_", 1)[0].upper()
+        if per.get(tk, 0) < cap:
+            per[tk] = per.get(tk, 0) + 1
+            taken.append(row)
+        else:
+            held.append(row)                          # passed over by the cap
+    if len(taken) < n and held:
+        fill = held[:n - len(taken)]                  # not enough distinct tickers
+        taken.extend(fill)
+        held = held[len(fill):]
+    return taken[:n], [r[0] for r in held]
 
 
 # Refined sizing: per-strategy dollar target by composite-score band.
@@ -9896,7 +9941,13 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
         key=lambda x: x[2],
         reverse=True,
     )
-    top_scored = scored[:n]
+    # Cap per underlying so the book cannot fill up with one instrument's level
+    # pairs. Backfills if there are not enough distinct tickers, so this changes
+    # the MIX and never the size.
+    top_scored, _capped_out = _apply_ticker_cap(scored, n)
+    if _capped_out:
+        log.info("Refined: ticker cap (max %d/ticker) displaced %d: %s",
+                 _REFINED_MAX_PER_TICKER, len(_capped_out), _capped_out)
     top        = [name for name, _, _ in top_scored]
     _top_names = {name for name, _, _ in top_scored}
 
@@ -10230,7 +10281,10 @@ def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
         ((name, stats, _blended_score(name, stats)) for name, stats in candidates.items()),
         key=lambda x: x[2], reverse=True,
     )
-    top_scored = scored[:n]
+    top_scored, _capped_out = _apply_ticker_cap(scored, n)
+    if _capped_out:
+        log.info("Kairos Refined: ticker cap (max %d/ticker) displaced %d: %s",
+                 _REFINED_MAX_PER_TICKER, len(_capped_out), _capped_out)
     top        = [name for name, _, _ in top_scored]
     _top_names = {name for name, _, _ in top_scored}
 
