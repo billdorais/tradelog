@@ -8852,8 +8852,13 @@ def strategies():
 
 @app.route("/recap")
 def recap_page():
-    """Weekly Crew Paper recap — the show outline, with the numbers filled in."""
-    return render_template("recap.html")
+    """Weekly crew-book recap — the show outline, with the numbers filled in.
+
+    Books come from _ui_accounts() so a deploy without ALPACA_KEY6 renders no Crew
+    Live tab, rather than a tab that fetches an account the server does not have.
+    """
+    _crew = [a for a in _ui_accounts() if a["num"] in ("4", "6")]
+    return render_template("recap.html", books=_crew)
 
 
 @app.route("/strategy-explorer")

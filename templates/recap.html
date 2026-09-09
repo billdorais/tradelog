@@ -158,6 +158,16 @@
 
   <div class="content">
     <div class="bar">
+      {% if books|length > 1 %}
+      {% for b in books %}
+      <button class="btn book-tab{% if loop.first %} on{% endif %}" id="bk_{{ b.num }}"
+              data-acct="{{ b.num }}" onclick="setBook('{{ b.num }}')">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;
+                     background:{{ b.color }};margin-right:5px;vertical-align:middle"></span>{{ b.label }}{% if not b.paper %} <span style="color:#E8A0BF" title="real money">&#9679;</span>{% endif %}
+      </button>
+      {% endfor %}
+      <span style="width:1px;height:18px;background:#2a2d3e;margin:0 4px"></span>
+      {% endif %}
       <button class="btn" id="p_last_week"  onclick="setPeriod('last_week')">Last week</button>
       <button class="btn" id="p_this_week"  onclick="setPeriod('this_week')">This week</button>
       <button class="btn" id="p_last_month" onclick="setPeriod('last_month')">Last month</button>
@@ -238,6 +248,33 @@
 
   function setPeriod(p) { period = p; load(); }
 
+  // Which book the whole page describes. Every panel below has to follow it —
+  // a period control that switched books but left the gate tables on Crew Paper
+  // would put two accounts' numbers on one screen under one heading.
+  let acct = (function () {
+    try { return localStorage.getItem('recap_acct') || '4'; } catch (_) { return '4'; }
+  })();
+
+  function acctTag() { return 'alpaca' + acct; }
+
+  function setBook(n) {
+    acct = String(n);
+    try { localStorage.setItem('recap_acct', acct); } catch (_) {}
+    document.querySelectorAll('.book-tab').forEach(b =>
+      b.classList.toggle('on', b.dataset.acct === acct));
+    GATE_DOCS = null;          // gate state is per account — see _account_gate_overrides
+    load();
+  }
+
+  function _syncBookTabs() {
+    const tabs = document.querySelectorAll('.book-tab');
+    if (!tabs.length) return;
+    // A stored book that is no longer configured would fetch an account the server
+    // does not have; fall back to the first tab that exists.
+    if (![...tabs].some(b => b.dataset.acct === acct)) acct = tabs[0].dataset.acct;
+    tabs.forEach(b => b.classList.toggle('on', b.dataset.acct === acct));
+  }
+
   async function load() {
     for (const p of PERIODS) {
       const b = document.getElementById('p_' + p);
@@ -246,7 +283,7 @@
     document.getElementById('meta').textContent = 'loading…';
     document.getElementById('body').innerHTML = '';
     try {
-      const d = await fetch(`/api/recap?period=${period}`).then(r => r.json());
+      const d = await fetch(`/api/recap?period=${period}&account=${acct}`).then(r => r.json());
       if (d.error) {
         document.getElementById('meta').textContent = d.error;
         document.getElementById('body').innerHTML = `<div class="panel"><div class="empty">${esc(d.error)}</div></div>`;
@@ -518,7 +555,7 @@
     try {
       // Same window as the rest of the page — a rolling ?days= cannot express
       // "last week", so the Refusal was pricing a different period than it reported.
-      const d = await fetch('/api/signals/gate_opportunity?account=alpaca4'
+      const d = await fetch(`/api/signals/gate_opportunity?account=${acctTag()}`
                             + `&from=${DATA.from}&to=${DATA.to}`).then(r => r.json());
       GATES = d;
       const bk = (d.books || [])[0];
@@ -706,7 +743,7 @@
       const el = document.getElementById('mc' + i);
       try {
         const d = await fetch(`/api/strategy/day_charts?strategy=${encodeURIComponent(p.name)}`
-                              + `&account=4&from=${p.chart_date}&to=${p.chart_date}&limit=1`)
+                              + `&account=${acct}&from=${p.chart_date}&to=${p.chart_date}&limit=1`)
                         .then(r => r.json());
         const ss = (d.sessions || [])[0];
         if (!ss || !(ss.bars || []).length) { el.innerHTML = '<div class="empty">No bars.</div>'; return; }
@@ -841,7 +878,7 @@
   // different rule on a different book.
   async function loadGateDocs() {
     try {
-      GATE_DOCS = await fetch('/api/gates/docs?account=alpaca4').then(r => r.json());
+      GATE_DOCS = await fetch(`/api/gates/docs?account=${acctTag()}`).then(r => r.json());
     } catch (e) {
       GATE_DOCS = null;      // modals degrade to a short message; the page still works
     }
@@ -961,6 +998,7 @@
     document.body.removeChild(ta);
   }
 
+  _syncBookTabs();   // a stored book may no longer be configured
   load();
 </script>
 </body>
