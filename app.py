@@ -9785,12 +9785,17 @@ def _compute_refined_qty(score, last_price):
 def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
-    Ranking uses a weighted composite score (Sharpe 35% · PF 30% · Win 20% · Trades 15%)
-    blended with a 10-day recency score (60% primary + 40% recent) when the strategy
-    has at least 2 trades in the recent window. Net-negative strategies are filtered out.
+    Ranking uses the weighted composite score in _REFINED_SCORE_WEIGHTS (Sharpe 30%
+    · PF 30% · Expectancy 15% · Win 10% · Trades 15%), blended with a 10-day recency
+    score (60% primary + 40% recent) when the strategy has at least 2 trades AND
+    positive P&L in the recent window. Net-negative strategies are filtered out.
+
+    The blend only ever ADDS: a strategy with no recent activity keeps its full
+    window score untouched, so staleness costs nothing. A name that stopped trading
+    two weeks ago can still rank first on 45-day-old evidence.
 
     from_date (YYYY-MM-DD) anchors the ranking window; falls back to a rolling
-    `days`-day window when not provided. Default is 30 days — wide enough that the
+    `days`-day window when not provided. Default is 45 days — wide enough that the
     day-type gate (which cuts breakout trade frequency) still leaves strategies with
     enough trades to clear the eligibility floor."""
     global _refined_last_run, _refined_last_result
