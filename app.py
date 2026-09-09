@@ -1997,6 +1997,38 @@ def _manual_halted_for(tag):
         return bool(_manual_halt.get(tag))
 
 
+def _realized_daily_stats(fills_fn):
+    """Today's realized round-trips: dollars AND the count behind them.
+
+    The count has to be derived from the SAME pairing that produces the dollars,
+    or a card can show a P&L and a trade count that disagree about what happened.
+    _realized_daily_pnl was already doing this work and discarding the list.
+
+    Win/loss follows the convention _strategy_breakdown and the recap use: a scratch
+    (0.00) round-trip counts as a LOSS, so win-rate here agrees with every other
+    surface rather than quietly using a kinder rule on the dashboard.
+
+    Returns None on failure -- NOT a zeroed dict, which would render as a confident
+    "0 trades" for a book whose fills merely failed to fetch."""
+    try:
+        _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        from datetime import timedelta as _td
+        _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
+    try:
+        paired = _pair_alpaca_fills_lifo(fills_fn(), from_date=_today, to_date=_today)
+        rts    = paired.get("closed_clean") or []
+        pnls   = [float(t.get("pnl") or 0) for t in rts]
+        wins   = sum(1 for p in pnls if p > 0)
+        return {"pnl":    round(sum(pnls), 2),
+                "trades": len(pnls),
+                "wins":   wins,
+                "losses": len(pnls) - wins}
+    except Exception as _e:
+        log.debug("Realized daily stats calc failed: %s", _e)
+        return None
+
+
 def _realized_daily_pnl(fills_fn):
     """Realized P&L for today (ET) — computed IDENTICALLY to the analysis endpoint /
     equity chart so the NET P&L card always agrees with the chart: filter fills to
@@ -2005,18 +2037,8 @@ def _realized_daily_pnl(fills_fn):
     a huge bogus round-trip (Kairos Farm showed -$243 vs a real -$50). closed_clean
     drops those (and cross-day carries) the same way the chart does, so card == chart.
     Returns None on failure so the profit-lock loop skips rather than misreading $0."""
-    try:
-        _today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-    except Exception:
-        from datetime import timedelta as _td
-        _today = (datetime.now(timezone.utc) - _td(hours=4)).date().isoformat()
-    try:
-        fills  = fills_fn()
-        paired = _pair_alpaca_fills_lifo(fills, from_date=_today, to_date=_today)
-        return round(sum(float(t.get("pnl") or 0) for t in paired.get("closed_clean", [])), 2)
-    except Exception as _e:
-        log.debug("Realized daily P&L calc failed: %s", _e)
-        return None
+    st = _realized_daily_stats(fills_fn)
+    return None if st is None else st["pnl"]
 
 
 def _persist_risk_day_state():
@@ -3631,10 +3653,11 @@ def api_alpaca_account():
         try:
             # Today-scoped fills only — NOT the 90-day shared cache, which grows until
             # a cold fetch exceeds its TTL and stalls the dashboard for minutes.
-            daily_pnl = _realized_daily_pnl(lambda: _get_today_fills_n(account))
+            _dstats  = _realized_daily_stats(lambda: _get_today_fills_n(account))
+            daily_pnl = None if _dstats is None else _dstats["pnl"]
         except Exception as _e:
             log.debug("api_alpaca_account: %s realized daily_pnl failed: %s", broker_tag, _e)
-            daily_pnl = None
+            _dstats, daily_pnl = None, None
         return jsonify({
             "buying_power":     round(bp, 2),
             "equity":           round(equity, 2),
@@ -3642,6 +3665,11 @@ def api_alpaca_account():
             "open_positions":   len(pos_list),
             "unrealized_pnl":   round(total_upnl, 2),
             "daily_pnl":        round(daily_pnl, 2) if daily_pnl is not None else None,
+            # The count that produced daily_pnl. Without it a book that took no
+            # trades is indistinguishable from one that traded to a flat $0.00.
+            "daily_trades":     None if _dstats is None else _dstats["trades"],
+            "daily_wins":       None if _dstats is None else _dstats["wins"],
+            "daily_losses":     None if _dstats is None else _dstats["losses"],
             "positions":        pos_list,
             "min_buying_power": MIN_BUYING_POWER,
         })

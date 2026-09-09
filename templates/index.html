@@ -4448,14 +4448,31 @@
           }
           if (d.daily_pnl == null) {
             el.textContent = '—'; el.style.color = '#666';
-            if (sub) sub.textContent = 'no closed trades today';
+            if (sub) sub.textContent = "today's fills unavailable";
             return;
           }
           el.textContent = money(d.daily_pnl);
           el.style.color = d.daily_pnl < 0 ? '#ef5350' : (d.daily_pnl > 0 ? '#7FE098' : '#fff');
           if (sub) {
             const u = d.unrealized_pnl || 0;
-            sub.innerHTML = `${d.open_positions || 0} open · ${money(u)} unreal.`;
+            // The record behind the dollars. A book that took NO trades and one that
+            // traded to a flat $0.00 render the same headline, so the count is what
+            // separates "quiet day" from "round-trips that cancelled out".
+            const n = d.daily_trades;
+            let rec = '';
+            if (n === 0) {
+              rec = '<span style="color:#666">no closed trades yet</span>';
+            } else if (n != null) {
+              const w = d.daily_wins || 0, l = d.daily_losses || 0;
+              // Scratches count as losses here, matching the recap and the strategy
+              // breakdown -- the dashboard must not use a kinder rule than the report.
+              const wr = Math.round(w / n * 100);
+              rec = `${n} trade${n === 1 ? '' : 's'} · `
+                  + `<span style="color:#7FE098">${w}W</span> / `
+                  + `<span style="color:#ef5350">${l}L</span> · ${wr}%`;
+            }
+            sub.innerHTML = (rec ? rec + '<br>' : '')
+                          + `${d.open_positions || 0} open · ${money(u)} unreal.`;
           }
         } catch (e) {
           el.textContent = '—'; el.style.color = '#666';

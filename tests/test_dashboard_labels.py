@@ -20,16 +20,34 @@ def _switch_tab_block(html):
     return html[i:end]
 
 
-def test_no_pnl_today_is_not_reported_as_unconfigured():
-    """A normal Saturday — market shut, no fills, daily_pnl null — rendered all
-    three curated books as "not configured", which reads as an outage."""
-    html = _index()
+def _glance_block(html):
+    """The loadGlancePnl body, bounded by the next function rather than a fixed
+    slice — a magic window stops covering the code it was written for."""
     i = html.index("async function loadGlancePnl")
-    block = html[i:i + 2200]
-    assert "no closed trades today" in block, "quiet day still reads as unconfigured"
+    end = html.index("    async function ", i + 10)
+    return html[i:end]
+
+
+def test_a_quiet_day_is_not_reported_as_unconfigured():
+    """A normal Saturday — market shut, no fills — rendered all three curated books
+    as "not configured", which reads as an outage.
+
+    A quiet day does NOT arrive as daily_pnl null: the pairing returns cleanly with
+    zero round-trips, so daily_pnl is 0 and the card takes the normal path. What
+    marks it as quiet is the trade COUNT, so that is what this now checks."""
+    block = _glance_block(_index())
+    assert "no closed trades yet" in block, "quiet day still reads as unconfigured"
     assert "if (d.error) {" in block
     assert "if (d.daily_pnl == null) {" in block
     assert "d.error || d.daily_pnl == null" not in block, "the two states are still conflated"
+
+
+def test_the_null_branch_describes_the_fetch_not_the_market():
+    """daily_pnl is null ONLY when the fills failed to pair. Captioning that "no
+    closed trades today" asserts something about the market that the app has no
+    evidence for — it is an absence of data, not an absence of trading."""
+    block = _glance_block(_index())
+    assert "no closed trades today" not in block
 
 
 def test_exec_list_is_coerced_before_filtering():
