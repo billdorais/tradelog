@@ -16064,8 +16064,32 @@ def _build_recap(account="4", frm="", to="", period=""):
         d = (t.get("date") or (t.get("entry_time") or "")[:10])
         if d:
             by_day[d] = round(by_day.get(d, 0.0) + float(t.get("pnl") or 0), 2)
+    # Equity is a live broker read, so it fails independently of everything else in
+    # the recap — a broker wobble must cost the % line, not the whole page.
+    _equity, _equity_err = None, None
+    try:
+        _eq_raw = rec["broker"].account_equity()
+        _equity = float(_eq_raw) if _eq_raw is not None else None
+    except Exception as _ee:
+        _equity_err = str(_ee)[:120]
+        log.debug("recap equity read failed for %s: %s", ACCT, _ee)
+
+    _pnl_total = round(sum(pnls), 2)
+    _equity_start = _pct_return = None
+    if _equity is not None:
+        _start = _equity - _pnl_total
+        # A start at or below zero cannot be a denominator, and would come from a
+        # window whose P&L exceeds present equity — a funding change, not a return.
+        if _start > 0:
+            _equity_start = round(_start, 2)
+            _pct_return = round(_pnl_total / _start * 100, 2)
+
     book = {
-        "pnl":      round(sum(pnls), 2),
+        "equity": None if _equity is None else round(_equity, 2),
+        "equity_start_est": _equity_start,
+        "pct_return": _pct_return,
+        "equity_error": _equity_err,
+        "pnl":      _pnl_total,
         "trades":   len(rts),
         "win_rate": round(len(wins) / len(pnls) * 100, 1) if pnls else 0.0,
         "n_strategies_traded": len(strategies),

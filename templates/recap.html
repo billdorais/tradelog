@@ -320,13 +320,31 @@
     document.getElementById('body').innerHTML = `
       <div class="panel">
         <div class="band-q">1 · The book</div>
-        <div class="band-sub">Crew Paper only — one book, one narrative. <b>Paper money.</b>
+        <div class="band-sub">${esc(d.label || 'This book')} — one book, one narrative.
+          ${d.account === '6' ? '<b style="color:#E8A0BF">Real money.</b>' : '<b>Paper money.</b>'}
           Cumulative P&amp;L from closed trades over the selected period.</div>
         <div class="eq-wrap"><canvas id="eq"></canvas></div>
         <div class="tiles">
           <div class="tile"><div class="k">Week P&amp;L</div>
             <div class="v ${cls(b.pnl)}">${money(b.pnl)}</div>
             <div class="s">${b.trades} trade${b.trades === 1 ? '' : 's'}</div></div>
+          <!-- Return on the equity that produced it. Dollars alone are not
+               comparable across books: the same $50 is a very different result on
+               Crew Live's balance than on Crew Paper's. -->
+          <div class="tile" title="${b.pct_return === null || b.pct_return === undefined
+                ? 'Account equity could not be read, so no percentage is shown.'
+                : 'Period P&L divided by the equity at the START of the window, estimated as '
+                  + 'current equity minus the window P&L. Exact unless money was added or '
+                  + 'withdrawn inside the window.'}">
+            <div class="k">Return on equity</div>
+            <div class="v ${b.pct_return === null || b.pct_return === undefined ? '' : cls(b.pct_return)}">${
+              b.pct_return === null || b.pct_return === undefined
+                ? '—'
+                : (b.pct_return >= 0 ? '+' : '') + b.pct_return.toFixed(2) + '%'}</div>
+            <div class="s">${
+              b.pct_return === null || b.pct_return === undefined
+                ? (b.equity_error ? 'equity unavailable' : 'no equity reading')
+                : 'on ~' + money(b.equity_start_est) + ' at period start'}</div></div>
           <div class="tile tile-split">
             <div class="tile-left"><div class="k">Win rate</div>
               <div class="v">${b.trades === 0 ? '—' : b.win_rate.toFixed(1) + '%'}</div>

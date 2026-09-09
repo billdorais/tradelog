@@ -47,5 +47,8 @@ def test_recap_tiles_are_siblings_not_nested():
             if depth == 1 and 'class="tile' in tok:
                 top_level_tiles += 1
             depth += 1
-    assert top_level_tiles == 7, f"expected 7 sibling tiles, found {top_level_tiles}"
+    # 8 since the return-on-equity tile joined the row. The COUNT is incidental —
+    # the guarantee is that each is a sibling, which the depth assertion below is
+    # what actually enforces.
+    assert top_level_tiles == 8, f"expected 8 sibling tiles, found {top_level_tiles}"
     assert depth == 1, f".tiles should still be open before the gate pills, depth={depth}"
