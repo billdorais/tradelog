@@ -172,9 +172,15 @@
       <button class="btn" id="p_this_week"  onclick="setPeriod('this_week')">This week</button>
       <button class="btn" id="p_last_month" onclick="setPeriod('last_month')">Last month</button>
       <button class="btn" id="p_this_month" onclick="setPeriod('this_month')">This month</button>
+      <button class="btn" id="p_inception"  onclick="setPeriod('inception')"
+              title="Every trade the fill history still reaches">From start</button>
       <span class="meta" id="meta">loading…</span>
       <button class="btn btn-copy" style="margin-left:auto" onclick="copyScript()">📋 Copy script</button>
     </div>
+
+    <div id="histWarn" style="display:none;margin:0 0 10px;padding:8px 11px;
+         border:1px solid #6b5b2a;background:#241f12;border-radius:6px;
+         color:#d9c08a;font-size:12px;line-height:1.5"></div>
 
     <div id="body"></div>
   </div>
@@ -290,7 +296,16 @@
         return;
       }
       DATA = d;
+      const _bk = d.book || {};
       document.getElementById('meta').textContent = `${d.label} · ${d.week_label}`;
+      const _warn = document.getElementById('histWarn');
+      if (_warn) {
+        _warn.style.display = _bk.history_clipped ? '' : 'none';
+        _warn.textContent = _bk.history_clipped
+          ? `⚠ This book was trading before ${_bk.first_date}. Broker fill history `
+            + `only reaches back so far, so this is a partial record — not the whole account.`
+          : '';
+      }
       render();
       drawDials();          // win-rate gauge, PF ring, win/loss bar
       drawEquity();         // cumulative P&L, same period as everything else

@@ -16020,7 +16020,14 @@ def _build_recap(account="4", frm="", to="", period=""):
     to     = (to or "").strip()
     period = (period or "").strip().lower() or "last_week"
 
-    if frm and to:
+    inception = (not (frm and to)) and period == "inception"
+    if inception:
+        # Leave the start OPEN and let the pairing return everything the fill window
+        # holds; the real first date is not knowable until the trades come back, so
+        # it is filled in below rather than guessed at here.
+        frm, to = "", today_et.isoformat()
+        week_label = "Since first trade"
+    elif frm and to:
         week_label = f"{frm} -> {to}"
     elif period in ("this_month", "last_month"):
         # Full calendar month, ET. day=28 + 4 days always lands in the next month,
@@ -16050,6 +16057,30 @@ def _build_recap(account="4", frm="", to="", period=""):
     except Exception as e:
         log.warning("recap pairing failed: %s", e)
         return {"error": str(e)[:200]}
+
+    # "Since first trade" can only mean "since the oldest fill still fetchable".
+    # get_fills() reaches back FILLS_LOOKBACK_DAYS and no further, so for a book that
+    # started before that floor the earliest trade here is the WINDOW edge, not the
+    # book's inception — and it would silently creep forward a day at a time as the
+    # window rolls. Detect that and say so instead of captioning a half-history "from
+    # start". The grace covers a weekend: a book whose oldest visible trade sits right
+    # against the floor cannot be distinguished from one clipped by it.
+    first_date = last_date = None
+    history_clipped = False
+    if inception:
+        from brokers.alpaca_broker import FILLS_LOOKBACK_DAYS
+        _days = [d for d in ((t.get("date") or (t.get("entry_time") or "")[:10])
+                             for t in rts) if d]
+        if _days:
+            first_date, last_date = min(_days), max(_days)
+            _floor = (today_et - _dt.timedelta(days=FILLS_LOOKBACK_DAYS)).isoformat()
+            _grace = (today_et - _dt.timedelta(days=FILLS_LOOKBACK_DAYS - 3)).isoformat()
+            history_clipped = first_date <= _grace
+            frm = first_date
+            week_label = (f"Since {first_date} (limit of fill history)"
+                          if history_clipped else f"Since first trade ({first_date})")
+        else:
+            week_label = "Since first trade (no trades on record)"
 
     strategies = _strategy_breakdown(rts) if rts else []
     pnls = [float(t.get("pnl") or 0) for t in rts]
@@ -16085,6 +16116,11 @@ def _build_recap(account="4", frm="", to="", period=""):
             _pct_return = round(_pnl_total / _start * 100, 2)
 
     book = {
+        # first_date is what the window actually covers; history_clipped says whether
+        # that IS the book's start or merely as far back as the fills reach.
+        "first_date":      first_date,
+        "last_date":       last_date,
+        "history_clipped": history_clipped,
         "equity": None if _equity is None else round(_equity, 2),
         "equity_start_est": _equity_start,
         "pct_return": _pct_return,
@@ -16301,7 +16337,7 @@ def api_recap():
 
       ?account=4   which book (default 4)
       ?from=&to=   explicit ET dates
-      ?period=this_week|last_week|this_month|last_month
+      ?period=this_week|last_week|this_month|last_month|inception
       ?week=this   legacy alias for period=this_week
     """
     period = (request.args.get("period") or "").strip().lower()

@@ -5,6 +5,12 @@ from datetime import datetime, timezone, date, timedelta
 
 log = logging.getLogger(__name__)
 
+# How far back get_fills() reaches. This is a HARD FLOOR on anything derived from
+# fill history — a book that started trading earlier than this cannot have its true
+# first date observed, only the oldest fill still inside the window. Callers that
+# report an inception date must compare against this and say so when they hit it.
+FILLS_LOOKBACK_DAYS = 90
+
 
 
 # ── Alpaca rate limiting (429 / 42910000) ───────────────────────────────────
@@ -1407,7 +1413,7 @@ class AlpacaBroker:
             log.error("Alpaca get_portfolio_history failed: %s", e, exc_info=True)
             return []
 
-    def get_fills(self, days=90, raise_on_error=False):
+    def get_fills(self, days=FILLS_LOOKBACK_DAYS, raise_on_error=False):
         """Return filled and partially-filled orders for the last `days` days.
 
         Returns one row per order with the order's actual filled_qty / filled_avg_price.
