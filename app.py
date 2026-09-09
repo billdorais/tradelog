@@ -7544,8 +7544,13 @@ def api_backtest_gap_fill():
 
 
 def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
-                            min_trades=5, max_folds=12):
-    """Does ranking farm strategies on past P&L predict FORWARD P&L?
+                            min_trades=5, max_folds=12, ranker="pnl"):
+    """Does ranking farm strategies on a past window predict FORWARD performance?
+
+    `ranker` selects the ranking rule from _SELECTION_RANKERS. Note the historical
+    default is "pnl" — summed % return — which is NOT the production composite
+    score. The t=0.35 figure quoted around this codebase was measured on that
+    baseline, so it never tested the scorer the snapshots actually use.
 
     The whole 2x2 design rests on that assumption, and a hindsight-filtered equity
     curve cannot test it — picking the best 20 of 160 after the fact produces a
@@ -7615,8 +7620,11 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
         eligible = {st: v for st, v in rank_by.items() if len(v) >= min_trades}
         if not eligible or not fwd_by:
             continue
+        # `ranker` decides HOW the past window is ranked; everything downstream is
+        # identical, so two rankers on the same folds differ only in their picks.
+        _rank_fn = _SELECTION_RANKERS.get(ranker, _SELECTION_RANKERS["pnl"])
         picked = {st for st, _ in sorted(eligible.items(),
-                                         key=lambda kv: -sum(kv[1]))[:n]}
+                                         key=lambda kv: -_rank_fn(kv[1]))[:n]}
         p_seq = [x for st, v in fwd_by.items() if st in picked for x in v]
         r_seq = [x for st, v in fwd_by.items() if st not in picked for x in v]
         if not p_seq or not r_seq:
@@ -7703,6 +7711,85 @@ def _selection_walk_forward(round_trips, rank_days=30, fwd_days=14, n=20,
             "only picking the best of a losing pool, not creating a winner.",
         ],
     }
+
+
+@app.route("/api/backtest/score_shootout", methods=["POST"])
+def api_score_shootout():
+    """Run every ranker over the SAME walk-forward folds and report the spread.
+
+    The scoring question is empirical and the machinery to answer it already
+    existed — it was just hardwired to one ranker. This runs them side by side so a
+    scoring change is judged on whether it predicts, not on whether the reasoning
+    sounds right.
+
+    Ordered by `t_stat` — spread alone can be large and meaningless on three folds.
+    Spread is forward avg % per trade of the picked cohort MINUS the unpicked
+    control. The number to beat is whatever "pnl" scores on your own history,
+    because that is the baseline the familiar t=0.35 figure came from.
+
+    Body: {account: "1"|"5", rank_days, fwd_days, n, min_trades, rankers:[...]}
+    """
+    data = request.get_json(silent=True) or {}
+    acct = str(data.get("account") or "1")
+
+    def _int(k, dflt, lo, hi):
+        try:    return max(lo, min(hi, int(data.get(k) or dflt)))
+        except (TypeError, ValueError): return dflt
+
+    rank_days  = _int("rank_days", 45, 5, 180)
+    fwd_days   = _int("fwd_days",  14, 3, 90)
+    n          = _int("n",         20, 1, 200)
+    min_trades = _int("min_trades", 5, 1, 50)
+    want = [r for r in (data.get("rankers") or list(_SELECTION_RANKERS))
+            if r in _SELECTION_RANKERS]
+    if not want:
+        return jsonify({"error": f"no known rankers; have {sorted(_SELECTION_RANKERS)}"}), 400
+
+    rec = ACCOUNTS_BY_NUM.get(acct)
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": f"account {acct} not configured"}), 400
+    try:
+        rts = _pair_alpaca_fills_lifo(rec["fills_fn"]()).get("closed_clean", [])
+    except Exception as e:
+        log.error("score_shootout fills failed: %s", e, exc_info=True)
+        return jsonify({"error": str(e)[:300]}), 500
+
+    results = {}
+    for r in want:
+        try:
+            out = _selection_walk_forward(rts, rank_days=rank_days, fwd_days=fwd_days,
+                                          n=n, min_trades=min_trades, ranker=r)
+        except Exception as e:
+            out = {"error": str(e)[:200]}
+        results[r] = out
+
+    ok = {r: o for r, o in results.items() if not o.get("error")}
+    ranked = sorted(ok.items(), key=lambda kv: -(kv[1].get("t_stat") or 0))
+    return jsonify({
+        "account": acct, "label": rec.get("label", acct),
+        "rank_days": rank_days, "fwd_days": fwd_days, "n": n, "min_trades": min_trades,
+        "results": results,
+        "leaderboard": [
+            {"ranker": r,
+             "t_stat":               o.get("t_stat"),
+             "significant":          o.get("significant"),
+             "weighted_spread_pct":  o.get("weighted_spread_pct"),
+             "mean_spread_pct":      o.get("mean_spread_pct"),
+             "picked_avg_pct":       o.get("picked_avg_pct"),
+             "unpicked_avg_pct":     o.get("unpicked_avg_pct"),
+             "folds":                o.get("fold_count"),
+             "folds_positive":       o.get("folds_with_positive_spread"),
+             "verdict":              o.get("verdict")}
+            for r, o in ranked],
+        "caveats": [
+            "Every ranker sees identical folds, so the only difference is the "
+            "ranking rule.",
+            "'pnl' is the historical baseline — it is what the familiar t=0.35 "
+            "figure was measured on, NOT the production composite score.",
+            "A few folds of a weak signal is mostly noise. Prefer the weighted "
+            "mean and the folds-positive count over any single fold.",
+        ],
+    })
 
 
 @app.route("/api/backtest/selection_test", methods=["POST"])
@@ -9646,6 +9733,122 @@ def _composite_score(stats, max_pnl):
         w["trades"]        * trades_norm,
         4,
     )
+
+
+# ── Score v3: shrink small samples instead of rewarding them ────────────────
+# v2 treats sample size as a BONUS TERM (trades/7, 15% of the score). That is the
+# wrong shape twice over: it saturates just above the eligibility floor of 5, so
+# the entire eligible band earns 71-100% of it and it differentiates almost
+# nothing; and it does nothing to stop a 5-trade name posting an extreme ratio on
+# the other 85%.
+#
+# v3 drops the term and shrinks every RATIO toward a neutral prior by n/(n+k).
+# A thin sample then cannot post an extreme score on any component — which is the
+# same defence the PF-is-None fix applies, generalised. Sample size stops being
+# something a strategy earns points for and becomes how much its evidence counts.
+#
+# Sharpe also moves to the same units as expectancy. v2 computes it on
+# DOLLARS-PER-SHARE, so a $1,000 stock's swings dwarf a $20 stock's and the term is
+# not scale-free across tickers the way the rest of the score is.
+_V3_SHRINK_K = float(os.environ.get("REFINED_SHRINK_K", "5") or 5)
+
+# Neutral priors — what a component is worth before its own evidence moves it.
+# PF 1.0 (breakeven) / 2.5 saturation, win rate 50%, expectancy and Sharpe 0.
+_V3_PRIORS = {"profit_factor": 1.0 / _REFINED_PF_SATURATION, "win_rate": 0.5,
+              "expectancy": 0.0, "sharpe": 0.0}
+
+
+def _v3_shrink(value_norm, prior, n, k=None):
+    """Pull a normalised component toward its prior by n/(n+k).
+
+    n=0  -> the prior, learned nothing.  n>>k -> the observed value.
+    At the k=5 default a 5-trade sample counts half its own evidence.
+    """
+    k = _V3_SHRINK_K if k is None else k
+    w = n / (n + k) if (n + k) > 0 else 0.0
+    return prior + w * (value_norm - prior)
+
+
+_V3_SCORE_WEIGHTS = {
+    "sharpe":        0.30,
+    "profit_factor": 0.30,
+    "expectancy":    0.20,   # +0.05, funded by dropping the trades bonus
+    "win_rate":      0.20,   # +0.10, same source
+}
+
+
+def _composite_score_v3(stats, max_pnl=0):
+    """Shrunk composite in [0, 1]. Same inputs as v2, no trades term.
+
+    Sharpe prefers `sharpe_pct` (computed on % of notional) and falls back to the
+    dollar-per-share `sharpe` when a caller has not supplied it, so this stays
+    usable against stats built by older code paths.
+    """
+    n  = float(stats.get("trades") or 0)
+    sh = stats.get("sharpe_pct")
+    if sh is None:
+        sh = stats.get("sharpe")
+    sh_norm = 0.0 if sh is None else max(min(sh / _REFINED_SHARPE_SATURATION, 1.0), 0.0)
+
+    pf = stats.get("profit_factor")
+    # No losses is an absence of evidence about the loss side, not proof of a great
+    # payoff ratio — shrinkage handles it here rather than a special case.
+    pf_norm = _V3_PRIORS["profit_factor"] if pf is None \
+        else max(min(pf / _REFINED_PF_SATURATION, 1.0), 0.0)
+
+    exp_norm = max(min((stats.get("expectancy_pct") or 0.0)
+                       / _REFINED_EXPECTANCY_SATURATION, 1.0), 0.0)
+    win_norm = max(min((stats.get("win_rate") or 0) / 100.0, 1.0), 0.0)
+
+    w = _V3_SCORE_WEIGHTS
+    return round(
+        w["sharpe"]        * _v3_shrink(sh_norm,  _V3_PRIORS["sharpe"],     n) +
+        w["profit_factor"] * _v3_shrink(pf_norm,  _V3_PRIORS["profit_factor"], n) +
+        w["expectancy"]    * _v3_shrink(exp_norm, _V3_PRIORS["expectancy"], n) +
+        w["win_rate"]      * _v3_shrink(win_norm, _V3_PRIORS["win_rate"],   n),
+        4,
+    )
+
+
+def _stats_from_pct_series(pcts):
+    """Build the stat dict the scorers consume from a list of per-trade % returns.
+
+    Used by the walk-forward comparison so v2 and v3 are scored on exactly the same
+    trades — the only thing that differs between them is the scorer.
+    """
+    n = len(pcts)
+    if not n:
+        return {"trades": 0}
+    wins   = [p for p in pcts if p > 0]
+    losses = [p for p in pcts if p < 0]
+    gw, gl = sum(wins), -sum(losses)
+    mean   = sum(pcts) / n
+    if n >= 2:
+        var = sum((p - mean) ** 2 for p in pcts) / (n - 1)
+        sd  = var ** 0.5
+        sharpe_pct = round(mean / sd, 4) if sd > 0 else None
+    else:
+        sharpe_pct = None
+    return {
+        "trades":         n,
+        "win_rate":       round(len(wins) / n * 100, 1),
+        "profit_factor":  round(gw / gl, 4) if gl > 0 else None,
+        "expectancy_pct": round(mean, 4),
+        "total_pnl":      round(sum(pcts), 4),
+        "sharpe_pct":     sharpe_pct,
+        "sharpe":         sharpe_pct,
+    }
+
+
+# Rankers the walk-forward test can compare. Each takes a list of per-trade %
+# returns and returns a sort key, higher = better.
+_SELECTION_RANKERS = {
+    # The baseline the t=0.35 figure was actually measured on — NOT the production
+    # scorer. Worth keeping visible precisely because that was easy to conflate.
+    "pnl": lambda pcts: sum(pcts),
+    "v2":  lambda pcts: _composite_score(_stats_from_pct_series(pcts), 0),
+    "v3":  lambda pcts: _composite_score_v3(_stats_from_pct_series(pcts)),
+}
 
 
 # Most slots one underlying may hold in a top-N. The score ranks names in
