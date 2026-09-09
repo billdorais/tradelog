@@ -10145,9 +10145,10 @@ def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
     """Kairos Refined snapshot — mirrors _do_refresh_refined but sourced from
     Kairos Farm (acct5) fills. Shares TV's 45-day ranking window and composite
     score, so TV-vs-Kairos comparisons (and the crew's [TV]/[Kairos] tagging) are
-    apples-to-apples. The min_trades floor is deliberately LOWER than TV's (4 vs 5):
-    when the takeable filter shrank the denominator each book got relief in
-    proportion to how starved it was — TV was filling 5 of 20 slots, Kairos 9 of 20.
+    apples-to-apples. The min_trades floor MATCHES TV's (both 5, set 2026-08-21 and
+    pinned by test_min_trade_floors_are_pinned) so the books are judged on the same
+    bar. It was briefly 4 during the takeable-filter era, when each book got floor
+    relief in proportion to how starved it was; that filter was reverted.
 
     VIEW-ONLY for now: computes the leaderboard + on-deck + persists to
     KAIROS_REFINED_LAST_RESULT + kairos_refined_history, but does NOT touch
