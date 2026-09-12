@@ -69,22 +69,32 @@ def test_recap_defaults_to_crew_paper():
     assert "4" in r.get_json()["error"]      # asked for acct4 without being told to
 
 
-def test_defaults_to_last_month(monkeypatch, crew):
-    """The default landing window is the last COMPLETE calendar month.
+def test_defaults_to_this_month(monkeypatch, crew):
+    """The default landing window is the month IN PROGRESS.
 
-    It was the last completed week, on the reasoning that a recap is written about
-    the week just ended. A month is the period the book is actually judged over --
-    crew selection runs monthly -- and a week of a thin book is mostly noise."""
+    It was the last completed week, then last month. A month is the period the book
+    is judged over -- crew selection runs monthly -- and the current one answers
+    "how am I doing" without a click. Note this window is partial by construction:
+    on the 2nd it holds one session, so early-month figures are thin by nature
+    rather than by error."""
     _with(monkeypatch, [])
     d = _client().get("/api/recap").get_json()
     today = dt.date.today()
-    first_this = today.replace(day=1)
-    last_prev  = first_this - dt.timedelta(days=1)
+    nxt = (today.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+    assert d["from"] == today.replace(day=1).isoformat()
+    assert d["to"] == (nxt - dt.timedelta(days=1)).isoformat()
+    assert d["week_label"].startswith("This month")
+    assert dt.date.fromisoformat(d["from"]).day == 1           # whole month
+    assert (dt.date.fromisoformat(d["to"]) + dt.timedelta(days=1)).day == 1
+
+
+def test_last_month_is_still_reachable(monkeypatch, crew):
+    _with(monkeypatch, [])
+    d = _client().get("/api/recap?period=last_month").get_json()
+    last_prev = dt.date.today().replace(day=1) - dt.timedelta(days=1)
     assert d["from"] == last_prev.replace(day=1).isoformat()
     assert d["to"] == last_prev.isoformat()
     assert d["week_label"].startswith("Last month")
-    assert dt.date.fromisoformat(d["from"]).day == 1           # whole month
-    assert (dt.date.fromisoformat(d["to"]) + dt.timedelta(days=1)).day == 1
 
 
 def test_last_week_is_still_reachable(monkeypatch, crew):
