@@ -16309,7 +16309,7 @@ def _build_recap(account="4", frm="", to="", period=""):
 
     frm    = (frm or "").strip()
     to     = (to or "").strip()
-    period = (period or "").strip().lower() or "last_week"
+    period = (period or "").strip().lower() or "last_month"
 
     inception = (not (frm and to)) and period == "inception"
     if inception:
@@ -16633,7 +16633,8 @@ def api_recap():
     """
     period = (request.args.get("period") or "").strip().lower()
     if not period:
-        period = "this_week" if (request.args.get("week") or "").lower() == "this" else "last_week"
+        _wk = (request.args.get("week") or "").strip().lower()
+        period = {"this": "this_week", "last": "last_week"}.get(_wk, "last_month")
     out = _build_recap(account=(request.args.get("account") or "4"),
                        frm=request.args.get("from") or "",
                        to=request.args.get("to") or "",

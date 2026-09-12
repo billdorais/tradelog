@@ -212,13 +212,13 @@
   <div class="toast" id="toast"></div>
 
 <script>
-  let DATA = null, GATES = null, GATE_DOCS = null, period = 'last_week';
+  let DATA = null, GATES = null, GATE_DOCS = null, period = 'last_month';
   let eqChart = null;          // Chart.js equity curve
   const miniCharts = [];       // lightweight-charts instances, destroyed on reload
   const SESSIONS   = [];       // [{pick, ss}] per card — the modal reuses this, no refetch
   let modalChart = null;
   const dials = {};            // canvasId -> Chart, destroyed before each redraw
-  const PERIODS = ['last_week', 'this_week', 'last_month', 'this_month'];
+  const PERIODS = ['last_week', 'this_week', 'last_month', 'this_month', 'inception'];
 
   function toggleNavMenu() {
     const m = document.getElementById('navMenu');

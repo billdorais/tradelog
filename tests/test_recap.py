@@ -69,10 +69,29 @@ def test_recap_defaults_to_crew_paper():
     assert "4" in r.get_json()["error"]      # asked for acct4 without being told to
 
 
-def test_defaults_to_the_last_completed_week(monkeypatch, crew):
-    """You record a recap ABOUT the week that just ended, so that is the default."""
+def test_defaults_to_last_month(monkeypatch, crew):
+    """The default landing window is the last COMPLETE calendar month.
+
+    It was the last completed week, on the reasoning that a recap is written about
+    the week just ended. A month is the period the book is actually judged over --
+    crew selection runs monthly -- and a week of a thin book is mostly noise."""
     _with(monkeypatch, [])
     d = _client().get("/api/recap").get_json()
+    today = dt.date.today()
+    first_this = today.replace(day=1)
+    last_prev  = first_this - dt.timedelta(days=1)
+    assert d["from"] == last_prev.replace(day=1).isoformat()
+    assert d["to"] == last_prev.isoformat()
+    assert d["week_label"].startswith("Last month")
+    assert dt.date.fromisoformat(d["from"]).day == 1           # whole month
+    assert (dt.date.fromisoformat(d["to"]) + dt.timedelta(days=1)).day == 1
+
+
+def test_last_week_is_still_reachable(monkeypatch, crew):
+    """Changing the DEFAULT must not remove the window -- the weekly recap is still
+    what the Copy-script button is used for."""
+    _with(monkeypatch, [])
+    d = _client().get("/api/recap?period=last_week").get_json()
     mon = _last_week_monday()
     assert d["from"] == mon.isoformat()
     assert d["to"] == (mon + dt.timedelta(days=6)).isoformat()

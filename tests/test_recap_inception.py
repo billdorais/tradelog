@@ -132,3 +132,13 @@ def test_return_on_equity_still_computed_over_the_inception_window(monkeypatch):
     b = _recap(monkeypatch, _floor() + _dt.timedelta(days=30))["book"]
     assert b["pnl"] == 300.0
     assert b["equity_start_est"] == 7200.0        # 7500 now - 300 earned
+
+
+def test_the_from_start_tab_can_show_as_selected(monkeypatch):
+    """Every period the page can hold must appear in PERIODS, or its tab never takes
+    the `on` class and the page sits on a window whose button looks unselected."""
+    html = open("templates/recap.html", encoding="utf-8").read()
+    i = html.index("const PERIODS")
+    periods = html[i:html.index("]", i)]
+    for p in ("last_week", "this_week", "last_month", "this_month", "inception"):
+        assert f"'{p}'" in periods, f"{p} has a tab but never highlights"
