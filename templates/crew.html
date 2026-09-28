@@ -315,6 +315,24 @@
   </div>
 
   <!-- Selection Replay — how the crew's current picks would have run over a past window -->
+  <div id="rosterSection" style="margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <span class="section-label" style="margin:0">&#127919; Roster Readiness</span>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:0.78rem;color:#888">
+        roster
+        <input id="rrRoster" type="number" min="1" max="30" style="width:56px;background:#0f1219;
+               color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 6px;font-family:inherit"
+               onchange="loadRosterReadiness()">
+        auditions
+        <input id="rrAud" type="number" min="0" max="30" style="width:56px;background:#0f1219;
+               color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 6px;font-family:inherit"
+               onchange="loadRosterReadiness()">
+        <button class="sel-days" onclick="loadRosterReadiness()">Refresh</button>
+      </div>
+    </div>
+    <div id="rosterBody" style="font-size:0.82rem;color:#666">Loading&hellip;</div>
+  </div>
+
   <div id="selReplaySection" style="margin-top:20px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
       <span class="section-label" style="margin:0">📈 Selection Replay</span>
@@ -1632,6 +1650,83 @@
     loadSelectionCurve();
     loadBookCurve();
   });
+
+  // ── Roster readiness ──────────────────────────────────────────────────────
+  // Roster size gets argued from a feeling about how many names are too many. The
+  // book already knows: a core slot costs CREW_CORE_MIN_TRADES live round-trips,
+  // so the earned pool is countable. Change the inputs to see what a size implies.
+  async function loadRosterReadiness() {
+    const host = document.getElementById('rosterBody');
+    if (!host) return;
+    const rEl = document.getElementById('rrRoster'), aEl = document.getElementById('rrAud');
+    const qs = [];
+    if (rEl && rEl.value) qs.push('roster=' + encodeURIComponent(rEl.value));
+    if (aEl && aEl.value) qs.push('auditions=' + encodeURIComponent(aEl.value));
+    host.textContent = 'Loading…';
+    try {
+      const d = await fetch('/api/crew/roster_readiness?account=4'
+                            + (qs.length ? '&' + qs.join('&') : '')).then(r => r.json());
+      if (d.error) { host.innerHTML = `<span style="color:#e08a8a">${esc(d.error)}</span>`; return; }
+      if (rEl && !rEl.value) rEl.value = d.proposed.roster;
+      if (aEl && !aEl.value) aEl.value = d.proposed.auditions;
+
+      const money = v => v == null ? '—' : (v < 0 ? '-$' : '+$') + Math.abs(v).toFixed(2);
+      const cls   = v => v == null ? '' : (v < 0 ? 'color:#e08a8a' : 'color:#7FE098');
+      const ap    = d.at_proposed;
+
+      const row = (r, i, inCore) => `<tr style="${inCore ? '' : 'opacity:0.55'}">
+        <td style="color:#666;padding:3px 8px">${inCore ? i + 1 : '·'}</td>
+        <td style="padding:3px 8px;font-family:ui-monospace,monospace;font-size:0.76rem">${esc(r.strategy.replace(/_V02_5MIN$/, ''))}</td>
+        <td style="padding:3px 8px">${r.trades}</td>
+        <td style="padding:3px 8px;${cls(r.per_trade)}">${money(r.per_trade)}</td>
+        <td style="padding:3px 8px;${cls(r.total_pnl)}">${money(r.total_pnl)}</td>
+        <td style="padding:3px 8px;color:#888">${r.win_rate == null ? '—' : r.win_rate + '%'}</td></tr>`;
+
+      const tbl = (rows, head) => !rows.length ? '' : `
+        <div style="color:#666;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;margin:12px 0 4px">${head}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+          <thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">
+            <th style="text-align:left;padding:3px 8px">#</th><th style="text-align:left;padding:3px 8px">Strategy</th>
+            <th style="text-align:left;padding:3px 8px">Trades</th><th style="text-align:left;padding:3px 8px">Per trade</th>
+            <th style="text-align:left;padding:3px 8px">Total</th><th style="text-align:left;padding:3px 8px">Win%</th>
+          </tr></thead><tbody>${rows}</tbody></table>`;
+
+      const coreNames = new Set(ap.core.map(r => r.strategy));
+      const earnedRows = d.earned.map((r, i) => row(r, i, coreNames.has(r.strategy))).join('');
+      const thinRows   = d.thin.map((r, i) => row(r, i, false)).join('');
+
+      const spread = `<div style="margin-top:10px;font-size:0.76rem;color:#888">
+        <b style="color:#ccc">At roster ${d.proposed.roster}</b> — ${d.proposed.core_slots} core +
+        ${d.proposed.auditions} audition${d.proposed.auditions === 1 ? '' : 's'} ·
+        ${ap.distinct_tickers} ticker${ap.distinct_tickers === 1 ? '' : 's'} ·
+        ${ap.distinct_bands} band${ap.distinct_bands === 1 ? '' : 's'} ·
+        ${ap.distinct_setups} setup${ap.distinct_setups === 1 ? '' : 's'}
+        <span style="color:#666"> (${Object.entries(ap.tickers).map(([k, v]) => k + (v > 1 ? '×' + v : '')).join(', ') || '—'})</span>
+      </div>`;
+
+      const warn = !d.warnings.length ? '' : `<div style="margin-top:10px">` +
+        d.warnings.map(w => `<div style="font-size:0.78rem;color:#f0a35e;background:rgba(240,163,94,0.07);
+             border:1px solid #4a3a22;border-radius:6px;padding:7px 10px;margin-bottom:6px">! ${esc(w)}</div>`).join('') +
+        `</div>`;
+
+      const untr = !d.untraded.length ? '' : `<div style="margin-top:10px;font-size:0.76rem;color:#888">
+        <b style="color:#ccc">${d.untraded.length} pick${d.untraded.length === 1 ? '' : 's'} on the current card never traded</b>
+        <span style="color:#666"> — a wiring or gating question, not a performance one: </span>
+        ${d.untraded.map(u => esc(u.strategy.split('_')[0])).join(', ')}</div>`;
+
+      host.innerHTML = `
+        <div style="font-size:0.86rem;color:#ccc">${esc(d.verdict)}</div>
+        ${warn}${spread}
+        ${tbl(earnedRows, `Earned — ${d.bar}+ live round-trips (dimmed = below the line at this roster)`)}
+        ${tbl(thinRows, 'Thin — traded, but not enough sample yet')}
+        ${untr}
+        <div style="margin-top:10px;font-size:0.7rem;color:#555;line-height:1.5">${d.caveats.map(esc).join(' ')}</div>`;
+    } catch (e) {
+      host.innerHTML = `<span style="color:#e08a8a">failed: ${esc(e)}</span>`;
+    }
+  }
+  loadRosterReadiness();
+
 </script>
 </body>
 </html>

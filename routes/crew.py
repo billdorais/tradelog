@@ -3227,6 +3227,173 @@ def _side_gate_conflicts(app_obj, picks, account="4"):
 # against a 10-trade bar. It said so openly — "4t is thin for CORE bar, treating as
 # borderline CORE" — but the tier drives SIZING, so "borderline" is the difference
 # between 50% and 100% of position size on a name with four trades behind it.
+
+
+@crew_bp.route("/api/crew/roster_readiness")
+def api_crew_roster_readiness():
+    """Which strategies have EARNED a core slot, and what a given roster size would
+    actually look like.
+
+    Roster size is usually argued from a feeling about how many names are "too
+    many". The book already knows: a core slot costs CREW_CORE_MIN_TRADES live
+    round-trips, so the earned pool is countable. If it is smaller than the core
+    slots a roster implies, that roster can only be filled by padding with
+    auditions — the exact failure the tier split replaced.
+
+    Counts come from the account being wired, never from the report's prose, and
+    from the same endpoint _tier_conflicts uses so the two cannot disagree.
+
+    ?account=4  ?roster=6  ?auditions=2
+    """
+    import app as _kairos
+
+    acct = (request.args.get("account") or "4").strip()
+
+    def _int(name, dflt, lo, hi):
+        try:    return max(lo, min(hi, int(request.args.get(name) or dflt)))
+        except (TypeError, ValueError): return dflt
+
+    roster    = _int("roster",    CREW_ROSTER_SIZE,    1, 50)
+    auditions = _int("auditions", CREW_AUDITION_SLOTS, 0, 50)
+    auditions = min(auditions, roster)
+    core_slots = roster - auditions
+
+    rec = (_kairos.ACCOUNTS_BY_NUM or {}).get(acct)
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": f"account {acct} is not configured"}), 400
+
+    try:
+        with _kairos.app.test_client() as c:
+            d = c.get(f"/api/alpaca/analysis?account={acct}").get_json() or {}
+    except Exception as e:
+        return jsonify({"error": f"could not read the book: {str(e)[:150]}"}), 500
+    if d.get("fills_unavailable"):
+        return jsonify({"error": "the book's fills are unavailable right now — "
+                                 "readiness would understate every trade count"}), 503
+
+    per_strategy = d.get("per_strategy") or {}
+
+    def _row(slug, st):
+        n  = int(st.get("trades") or 0)
+        tp = float(st.get("total_pnl") or 0)
+        return {
+            "strategy":   slug,
+            "ticker":     slug.split("_", 1)[0].upper(),
+            # Band groups the level pair with the setup (BREAKOUT_R4S4), which is
+            # the unit a regime call actually lands on.
+            "band":       _kairos._strategy_band(slug) or "?",
+            "trades":     n,
+            "total_pnl":  round(tp, 2),
+            # Per TRADE, not total. A total on a rotating roster partly measures how
+            # many days a name held a slot — the same reason the leaderboards moved.
+            "per_trade":  round(tp / n, 2) if n else None,
+            "win_rate":   st.get("win_rate"),
+            "profit_factor": st.get("profit_factor"),
+        }
+
+    rows   = [_row(k.upper(), v) for k, v in per_strategy.items()]
+    earned = sorted((r for r in rows if r["trades"] >= CREW_CORE_MIN_TRADES),
+                    key=lambda r: -(r["per_trade"] or 0))
+    thin   = sorted((r for r in rows if 0 < r["trades"] < CREW_CORE_MIN_TRADES),
+                    key=lambda r: -r["trades"])
+
+    # Names on the CURRENT card that the book has never traded. Kept separate from
+    # `thin`: never-traded is a wiring or gating question, not a performance one.
+    untraded, card_week = [], None
+    try:
+        conn = _kairos.get_db(); cur = conn.cursor()
+        cur.execute("SELECT week, report FROM crew_reports ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            card_week = row[0] if _kairos.DATABASE_URL else row["week"]
+            _report   = row[1] if _kairos.DATABASE_URL else row["report"]
+            for p_ in (_selection_picks(_report) or []):
+                slug = (p_.get("strategy") or "").upper()
+                if slug and slug not in per_strategy and \
+                        slug not in {r["strategy"] for r in rows}:
+                    untraded.append({"strategy": slug,
+                                     "ticker": slug.split("_", 1)[0].upper(),
+                                     "band": _kairos._strategy_band(slug) or "?",
+                                     "entry": p_.get("entry"), "side": p_.get("side")})
+    except Exception as e:
+        _kairos.log.debug("roster_readiness: card read failed: %s", e)
+
+    # What the proposed roster would actually hold.
+    picked = earned[:core_slots]
+    from collections import Counter
+    tick_ct = Counter(r["ticker"] for r in picked)
+    band_ct = Counter(r["band"]   for r in picked)
+    # Setup is coarser than band and catches what band cannot: BREAKOUT_R3S3 and
+    # BREAKOUT_R4S4 are two bands but ONE directional premise, so a core that looks
+    # spread across bands can still be a single bet on breakouts working.
+    setup_ct = Counter(r["band"].split("_", 1)[0] for r in picked)
+
+    warnings = []
+    if len(earned) < core_slots:
+        warnings.append(
+            f"only {len(earned)} name{'' if len(earned) == 1 else 's'} ha"
+            f"{'s' if len(earned) == 1 else 've'} earned a core slot, but a "
+            f"{roster}-name roster with {auditions} audition"
+            f"{'' if auditions == 1 else 's'} needs {core_slots}. The gap would be "
+            f"filled with unproven names at full size — raise the auditions, lower "
+            f"the roster, or wait for more evidence.")
+    if picked and tick_ct.most_common(1)[0][1] > 2:
+        tk, n = tick_ct.most_common(1)[0]
+        warnings.append(f"{tk} would hold {n} of {len(picked)} core slots — the crew "
+                        f"card has no per-ticker cap, unlike the refined snapshot.")
+    if picked and band_ct.most_common(1)[0][1] > max(2, len(picked) // 2):
+        bd, n = band_ct.most_common(1)[0]
+        warnings.append(f"{n} of {len(picked)} core slots are {bd} — that is one "
+                        f"regime call, not a portfolio.")
+    if picked and len(setup_ct) == 1 and len(picked) >= 3:
+        warnings.append(f"all {len(picked)} core slots are {setup_ct.most_common(1)[0][0]} "
+                        f"setups — spread across level pairs, but still one premise. "
+                        f"If that premise stops working the whole core stalls together.")
+    if picked and len(tick_ct) < 3:
+        warnings.append(f"only {len(tick_ct)} distinct underlying"
+                        f"{'' if len(tick_ct) == 1 else 's'} across the core.")
+
+    if not earned:
+        verdict = (f"No name has {CREW_CORE_MIN_TRADES}+ live round-trips yet. Every "
+                   f"slot would be an audition — which is honest, but means the tier "
+                   f"split is not doing any work at this roster size.")
+    elif len(earned) < core_slots:
+        verdict = (f"The book supports about {len(earned)} core name"
+                   f"{'' if len(earned) == 1 else 's'}, not {core_slots}. A roster of "
+                   f"{len(earned) + auditions} would be fully earned.")
+    else:
+        verdict = (f"{len(earned)} names have earned a core slot — enough to fill "
+                   f"{core_slots} and leave {len(earned) - core_slots} on the bench.")
+
+    return jsonify({
+        "account": acct, "label": rec.get("label", acct),
+        "bar": CREW_CORE_MIN_TRADES,
+        "current":  {"roster": CREW_ROSTER_SIZE, "auditions": CREW_AUDITION_SLOTS,
+                     "core_slots": max(0, CREW_ROSTER_SIZE - CREW_AUDITION_SLOTS)},
+        "proposed": {"roster": roster, "auditions": auditions, "core_slots": core_slots},
+        "earned": earned, "thin": thin, "untraded": untraded,
+        "card_week": card_week,
+        "at_proposed": {
+            "core": picked,
+            "tickers": dict(tick_ct.most_common()),
+            "bands":   dict(band_ct.most_common()),
+            "setups": dict(setup_ct.most_common()),
+            "distinct_tickers": len(tick_ct), "distinct_bands": len(band_ct),
+            "distinct_setups": len(setup_ct),
+        },
+        "verdict": verdict, "warnings": warnings,
+        "caveats": [
+            f"Earned = {CREW_CORE_MIN_TRADES}+ closed round-trips on this book, the "
+            f"same bar the wire checks. It is a sample-size test, not a profit test.",
+            "Ranked on per-trade P&L. Crew wires every pick at one notional, so "
+            "per-trade dollars are comparable within this book — but not against a "
+            "book on a different size.",
+            "Never-traded picks are listed separately: that is a wiring or gating "
+            "question, not a performance one.",
+        ],
+    })
+
 #
 # A rule that lives only in the prompt is a suggestion. This checks it against the
 # book's own trade counts at wire time, which is where the sizing is decided.
