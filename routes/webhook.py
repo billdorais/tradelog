@@ -639,6 +639,16 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             if not _ths or not _the:
                 _kept_hours.append(_bt)
                 continue
+            # A book-level "trade all day" exemption has to beat the RULE's window
+            # too, not just the account's. This filter runs first, so without this
+            # the exemption is unreachable: the target is dropped here and the
+            # account gate never sees it. Resolved via _routing_broker_to_tag
+            # directly (not _alpaca_broker_name, which falls back to "alpaca" for
+            # IB/Coinbase and would apply one book's exemptions to another broker).
+            _bt_tag = app._routing_broker_to_tag(_bt[0])
+            if _bt_tag and ticker and                     str(ticker).strip().upper() in app._hours_exempt_tickers(_bt_tag):
+                _kept_hours.append(_bt)
+                continue
             try:
                 _now_t = datetime.now(ZoneInfo(_thtz)).strftime("%H:%M")
                 if _ths <= _now_t < _the:

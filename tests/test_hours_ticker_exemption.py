@@ -154,3 +154,44 @@ def test_the_gate_reference_is_unchanged_without_exemptions(monkeypatch, crew_wi
 def test_the_hours_rule_text_mentions_the_escape_hatch():
     rule = " ".join(a._GATE_RULES["hours"]["rule"])
     assert "exempted" in rule.lower()
+
+
+# ── the exemption must clear BOTH gates ─────────────────────────────────────
+
+def test_the_exemption_also_beats_the_rules_own_hours_node():
+    """The gap that made the first version unusable.
+
+    Crew rules carry their own trading_hours node (09:35-15:55 on the card). That
+    filter runs BEFORE the account gate, so an exempt ticker was dropped there and
+    the exemption was unreachable — the field would have looked wired and done
+    nothing."""
+    import inspect
+    from routes import webhook as w
+    src = inspect.getsource(w)
+    i = src.index("Per-target trading hours check")
+    block = src[i:i + 2200]
+    assert "_hours_exempt_tickers" in block, "the rule filter must consult the exemption"
+    assert "_routing_broker_to_tag(_bt[0])" in block
+
+
+def test_the_rule_filter_resolves_the_tag_without_the_alpaca_fallback():
+    """_alpaca_broker_name falls back to "alpaca" for IB/Coinbase, which would
+    apply the TV Farm book's exemptions to an entirely different broker."""
+    import inspect
+    from routes import webhook as w
+    src = inspect.getsource(w)
+    i = src.index("Per-target trading hours check")
+    block = src[i:i + 2200]
+    assert "_alpaca_broker_name(_bt[0])" not in block
+
+
+def test_a_midday_pause_still_binds_for_everything_else(monkeypatch):
+    """The real Crew config is two windows with a midday gap (09:35-10:00,
+    12:00-15:55). The exemption is surgical: SPY ignores the gap, NVDA does not."""
+    monkeypatch.setattr(a, "_account_hours_windows",
+                        lambda tag: [("09:35", "10:00"), ("12:00", "15:55")])
+    _exempt(monkeypatch, ["SPY"])
+    assert a._account_hours_ok("alpaca4", now_et=_et(11, 0), ticker="NVDA") is False
+    assert a._account_hours_ok("alpaca4", now_et=_et(11, 0), ticker="SPY")  is True
+    assert a._account_hours_ok("alpaca4", now_et=_et(9, 45), ticker="NVDA") is True
+    assert a._account_hours_ok("alpaca4", now_et=_et(13, 0), ticker="NVDA") is True
