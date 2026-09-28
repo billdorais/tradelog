@@ -319,6 +319,7 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
       <span class="section-label" style="margin:0">&#127919; Roster Readiness</span>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:0.78rem;color:#888">
+        <span style="color:#666;font-style:italic">preview</span>
         roster
         <input id="rrRoster" type="number" min="1" max="30" style="width:56px;background:#0f1219;
                color:#ccc;border:1px solid #2a2d3e;border-radius:6px;padding:3px 6px;font-family:inherit"
@@ -1737,7 +1738,26 @@
         <span style="color:#666"> — a wiring or gating question, not a performance one: </span>
         ${d.untraded.map(u => esc(u.strategy.split('_')[0])).join(', ')}</div>`;
 
+      // The inputs above are a calculator, not a setting. The crew builds its
+      // prompt from env vars read at import, so a preview that differs from the
+      // live config has to say so — otherwise you tune a number here, run the
+      // crew, and get the old roster back with no indication why.
+      const drift = (d.current.roster !== d.proposed.roster ||
+                     d.current.auditions !== d.proposed.auditions)
+        ? `<div style="font-size:0.78rem;color:#f0a35e;background:rgba(240,163,94,0.07);
+                  border:1px solid #4a3a22;border-radius:6px;padding:8px 11px;margin-bottom:10px">
+             <b>Preview only.</b> The crew is still configured for
+             <b>${d.current.roster} / ${d.current.auditions} auditions</b> and will use that on its
+             next run. To apply this, set
+             <code style="color:#ccc">CREW_ROSTER_SIZE=${d.proposed.roster}</code> and
+             <code style="color:#ccc">CREW_AUDITION_SLOTS=${d.proposed.auditions}</code>
+             in the environment and redeploy — they are read at startup.
+           </div>`
+        : `<div style="font-size:0.72rem;color:#555;margin-bottom:8px">Matches the live config
+             (${d.current.roster} / ${d.current.auditions} auditions).</div>`;
+
       host.innerHTML = `
+        ${drift}
         <div style="font-size:0.86rem;color:#ccc">${esc(d.verdict)}</div>
         ${warn}${spread}
         ${rollups}

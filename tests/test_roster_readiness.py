@@ -317,3 +317,45 @@ def test_the_panel_renders_all_three_rollups():
     assert "By entry mechanism" in block
     assert "By setup" in block and "By band" in block
     assert "CURRENT rules" in block, "the attribution limit must be on screen"
+
+
+# ── the panel is a calculator, not a setting ────────────────────────────────
+
+def test_the_response_reports_the_live_config_alongside_the_preview(book, entries):
+    """Without `current`, the UI cannot tell you that what you are looking at is
+    not what the crew will do."""
+    book["per_strategy"] = {"A_CAM_BREAKOUT_R3S3": _st(20, 100.0)}
+    d, _ = _get(roster=6, auditions=2)
+    assert d["proposed"]["roster"] == 6 and d["proposed"]["auditions"] == 2
+    assert d["current"]["roster"]    == C.CREW_ROSTER_SIZE
+    assert d["current"]["auditions"] == C.CREW_AUDITION_SLOTS
+
+
+def test_previewing_changes_nothing(book, entries, monkeypatch):
+    """The endpoint is a GET and must stay one. If it ever wrote the roster, a
+    page load would silently reconfigure the crew."""
+    before = (C.CREW_ROSTER_SIZE, C.CREW_AUDITION_SLOTS)
+    book["per_strategy"] = {"A_CAM_BREAKOUT_R3S3": _st(20, 100.0)}
+    monkeypatch.setattr(C, "_save_setting",
+                        lambda *a_, **k: pytest.fail("readiness must not write settings"),
+                        raising=False)
+    _get(roster=3, auditions=0)
+    assert (C.CREW_ROSTER_SIZE, C.CREW_AUDITION_SLOTS) == before
+
+
+def test_the_panel_warns_when_the_preview_differs_from_the_live_config():
+    """The trap this closes: tune the numbers here, run the crew, get the old
+    roster back with nothing on screen explaining why."""
+    src = open("templates/crew.html", encoding="utf-8").read()
+    i = src.index("async function loadRosterReadiness")
+    block = src[i:src.index("loadRosterReadiness();", i)]
+    assert "Preview only" in block
+    assert "CREW_ROSTER_SIZE=" in block and "CREW_AUDITION_SLOTS=" in block
+    assert "read at startup" in block, "env vars need a redeploy — say so"
+    assert "Matches the live config" in block, "and confirm when it does match"
+
+
+def test_the_inputs_are_labelled_as_a_preview():
+    src = open("templates/crew.html", encoding="utf-8").read()
+    i = src.index('id="rosterSection"')
+    assert "preview" in src[i:i + 1200].lower()
