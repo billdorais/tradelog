@@ -4096,6 +4096,10 @@ def risk_status():
         # duplicated in JS so the UI cannot disagree with the router about who
         # inherits what.
         "gate_mirror":            _GATE_MIRROR,
+        # tag -> display label, so the UI never has to show a raw tag. Every other
+        # surface says "Crew Live"; a warning that says "alpaca6" reads like a leak.
+        "account_labels":         {a["tag"]: a.get("label", a["tag"])
+                                   for a in (ALPACA_ACCOUNTS or [])},
         # Effective per-ticker hours exemptions, mirror already applied — the UI
         # needs the RESOLVED answer, not the raw override map.
         "hours_exempt_by_account": {a["tag"]: sorted(_hours_exempt_tickers(a["tag"]))

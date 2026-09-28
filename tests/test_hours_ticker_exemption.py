@@ -267,3 +267,22 @@ def test_the_server_mapping_the_client_copies(monkeypatch, value, tag):
         {"tag": "alpaca4", "target_paper": "alpaca-paper-4", "target_live": "alpaca-live-4"},
         {"tag": "alpaca6", "target_paper": "alpaca-paper-6", "target_live": "alpaca-live-6"}])
     assert a._routing_broker_to_tag(value) == tag
+
+
+def test_the_ui_is_given_account_labels_not_just_tags(monkeypatch):
+    """The exemption warning said "exempt on alpaca6". Every other surface says
+    "Crew Live" — a raw tag in user-facing copy reads like an internal leak."""
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"num": "4", "tag": "alpaca4", "label": "Crew Paper"},
+        {"num": "6", "tag": "alpaca6", "label": "Crew Live"}])
+    a.app.config["TESTING"] = True
+    labels = a.app.test_client().get("/api/risk/status").get_json()["account_labels"]
+    assert labels["alpaca6"] == "Crew Live"
+    assert labels["alpaca4"] == "Crew Paper"
+
+
+def test_both_exemption_warnings_render_the_label():
+    src = open("templates/routing.html", encoding="utf-8").read()
+    assert "function acctLabel(tag)" in src
+    assert src.count("acctLabel(_xt)") == 2, "the chip note AND the modal warning"
+    assert "escHtml(_xt)" not in src, "no surface should print the bare tag"

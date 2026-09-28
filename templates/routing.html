@@ -1437,6 +1437,7 @@
       _HOURS_EXEMPT = {};
       for (const [tag, list] of Object.entries(data.hours_exempt_by_account || {}))
         _HOURS_EXEMPT[tag] = new Set((list || []).map(t => String(t).toUpperCase()));
+      _ACCT_LABELS = data.account_labels || {};
 
       // Crew Paper (acct4) entry-gate overrides — populate the section's fields, but
       // never while the user is editing them (the 5s poll would wipe their input).
@@ -2319,6 +2320,9 @@
   }
 
   let _HOURS_EXEMPT = {};      // tag -> Set(tickers), from the risk poll
+  let _ACCT_LABELS  = {};      // tag -> "Crew Live"; never show a bare tag
+
+  function acctLabel(tag) { return _ACCT_LABELS[tag] || tag; }
 
   // Broker node value -> account tag. Mirrors _routing_broker_to_tag in app.py:
   // bare alpaca / alpaca-paper / alpaca-live are slot 1, numbered suffixes are
@@ -2364,7 +2368,7 @@
         value = 'all day';
         exemptNote = `<div style="font-size:0.6rem;color:#f0a35e;margin-top:2px"
                            title="This ticker is on the book's Trade-all-day list, so it ignores this window. Change it in Risk Guard → Crew — Entry Gates.">
-                        ↪ book exempt · ${escHtml(_xt)}
+                        ↪ book exempt · ${escHtml(acctLabel(_xt))}
                       </div>`;
       }
     }
@@ -3210,7 +3214,7 @@
             if (!_xt) return '';
             return `<p style="font-size:0.78rem;color:#f0a35e;background:rgba(240,163,94,0.08);
                               border:1px solid #4a3a22;border-radius:6px;padding:8px 11px;line-height:1.5">
-                      <b>This ticker is exempt on ${escHtml(_xt)}</b> — it trades all day and ignores
+                      <b>This ticker is exempt on ${escHtml(acctLabel(_xt))}</b> — it trades all day and ignores
                       this window entirely. Editing the times here will not change that.
                       Remove it from <b>Risk Guard → Crew — Entry Gates → Trade all day</b> first.
                     </p>`;
