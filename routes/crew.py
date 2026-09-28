@@ -611,6 +611,42 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             kairos_snap_rank,
             "KAIROS REFINED SNAPSHOT — LEADERBOARD RANK (the Analysis-page snapshot; acct3 trades this)",
             "[Kairos]")
+        def _fmt_hours_split() -> str:
+            """The hours gate priced against the ungated farms.
+
+            The farms trade all day, so their out-of-window fills answer "should this
+            name be exempt from the window?" with evidence instead of preference.
+            """
+            try:    hs = _hours_split_data(45)
+            except Exception as e:
+                return f"=== HOURS GATE — IN vs OUT OF WINDOW ===\n(unavailable: {e})"
+            if hs.get("error"):
+                return ""
+            rows = [r for r in hs.get("strategies", []) if not r["thin"]]
+            if not rows:
+                return ("=== HOURS GATE — IN vs OUT OF WINDOW ===\n"
+                        "No strategy has enough trades on BOTH sides of the window yet. "
+                        "Do not recommend an all-day exemption for anything.")
+            w = ", ".join(f"{x['start']}-{x['end']}" for x in hs["windows"])
+            out = ["=== HOURS GATE — IN vs OUT OF WINDOW (farm fills, last "
+                   f"{hs['days']}d) ===",
+                   f"Curated windows: {w} ET. The FARMS trade all day and run no gates, "
+                   f"so 'outside' is what the hours gate refuses.",
+                   f"A verdict needs {hs['min_side']}+ trades each side; thinner names "
+                   f"are omitted entirely.", ""]
+            for r in rows:
+                out.append(
+                    f"{r['strategy']} [{r['mechanism']}] | "
+                    f"IN {r['inside']['trades']}t @ ${r['inside']['per_trade']}/t | "
+                    f"OUT {r['outside']['trades']}t @ ${r['outside']['per_trade']}/t | "
+                    f"delta ${r['delta_per_trade']}/t -> {r['verdict']}")
+            tot = hs["totals"]
+            out += ["", f"BOOK-WIDE: inside {tot['inside']['trades']}t @ "
+                        f"${tot['inside']['per_trade']}/t vs outside "
+                        f"{tot['outside']['trades']}t @ ${tot['outside']['per_trade']}/t"]
+            return "\n".join(out)
+
+        hours_split_block = _fmt_hours_split()
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
         engine_block   = _fmt_engine(engine_data)
@@ -1025,7 +1061,8 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 + f"{tv_snap_block}\n\n"
                 f"{kairos_snap_block}\n\n"
                 f"{card_block}\n\n"
-                f"{journal_block}\n\n"
+                + (f"{hours_split_block}\n\n" if hours_split_block else "")
+                + f"{journal_block}\n\n"
                 + (f"{stops_block}\n\n" if stops_block else "")
                 + (f"{engine_block}\n\n" if engine_block else "")
                 + (f"KNOWLEDGE BASE — Camarilla theory and validated trading observations:\n\n{knowledge_block}\n\n" if knowledge_block else "")
@@ -1188,15 +1225,28 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "(breakouts likely lead the edge, reversals are the new/risky part). If there isn't "
                 "enough data yet, say so plainly and state exactly what you'd want to see before "
                 "judging — do NOT over-read a few trades or a single good/bad day.\n\n"
-                "5. **Risk Observations** — Concentration, drawdown patterns, or ticker "
+                "5. **Trading Hours — All Day or Gated?** — Using the HOURS GATE block "
+                "ONLY. For each name you are picking, say whether it should keep the "
+                "curated windows or be exempted to trade all day, and give the "
+                "in-vs-out per-trade figures you based it on. Recommend an exemption "
+                "ONLY where the farm made MORE per trade outside the windows than "
+                "inside — a name that is merely profitable outside is not a reason to "
+                "widen its hours, because the window is also what keeps position count "
+                "down. Names absent from that block do not have enough trades on both "
+                "sides: say so and recommend nothing for them. End with a single line "
+                "'ALL-DAY CANDIDATES: TICKER, TICKER' (or 'ALL-DAY CANDIDATES: none') "
+                "— these are applied per TICKER on the book, not per strategy, so name "
+                "tickers and expect the exemption to cover every strategy on that "
+                "symbol.\n\n"
+                "6. **Risk Observations** — Concentration, drawdown patterns, or ticker "
                 "exposure worth flagging for a live account (note: leverage up to 4x intraday is "
                 "now available from $2k equity, so sizing discipline matters more).\n\n"
-                "6. **This Week's Focus** — One specific, testable action item. If you gave "
+                "7. **This Week's Focus** — One specific, testable action item. If you gave "
                 "advice last week, note whether it played out and whether it should continue.\n\n"
                 "Be direct. Cite strategy names and numbers. 'Hold steady' is valid when warranted."
             ),
             expected_output=(
-                "A professional 6-section advisory report with specific strategy names, "
+                "A professional 7-section advisory report with specific strategy names, "
                 "numbers-backed recommendations, an honest read on the engine-vs-TV pilot, "
                 "and one concrete next-week action item."
             ),
@@ -3957,6 +4007,138 @@ def _entry_hhmm_et(iso_ts):
                   .astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
     except Exception:
         return None
+
+
+# Enough trades on EACH side before a split is allowed to mean anything. Below
+# this it is reported but never given a verdict: the whole point is to avoid
+# recommending an all-day exemption off three lucky afternoon fills.
+HOURS_SPLIT_MIN_SIDE = max(3, int(os.environ.get("CREW_HOURS_SPLIT_MIN", "8")))
+
+
+@crew_bp.route("/api/crew/hours_split")
+def api_crew_hours_split():
+    """HTTP wrapper — the computation lives in _hours_split_data so the crew prompt
+    can use exactly the same numbers the page shows."""
+    try:    days = max(5, min(365, int(request.args.get("days") or 45)))
+    except (TypeError, ValueError): days = 45
+    out = _hours_split_data(days)
+    return (jsonify(out), 400) if out.get("error") else jsonify(out)
+
+
+def _hours_split_data(days=45):
+    """What each strategy earned INSIDE the curated windows versus OUTSIDE them.
+
+    The farms are ungated, so their out-of-window fills are the natural control
+    for the hours gate: the same strategy, the same period, the only difference
+    being the hours the curated books refuse to trade. That makes "should this name
+    trade all day?" an answerable question rather than a preference.
+
+    Each strategy is measured against the farm sharing its ENTRY MECHANISM — TV
+    picks against TV Farm, Kairos picks against Kairos Farm. Comparing a TV pick to
+    engine fills would measure the mechanism, not the hours.
+
+    """
+    import app as _kairos
+
+    windows = _curated_windows()
+    if not windows:
+        return {"error": "no curated trading windows are configured — every hour is "
+                         "already in-window, so there is nothing to compare"}
+
+    entry_map = _entry_source_by_strategy(_kairos)
+
+    import datetime as _dt
+    frm = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)).strftime("%Y-%m-%d")
+
+    # One pass per farm, keyed by the mechanism it represents.
+    per = {}
+    for mech, acct in sorted(_SELECTION_CURVE_SOURCES.items()):
+        rec = (_kairos.ACCOUNTS_BY_NUM or {}).get(acct)
+        if not rec or rec.get("broker") is None:
+            continue
+        try:
+            rts = _kairos._pair_alpaca_fills_lifo(
+                rec["fills_fn"](), from_date=frm,
+                signal_lookup=_kairos._build_signal_lookup_for_alpaca()
+            ).get("closed_clean", [])
+        except Exception as e:
+            _kairos.log.warning("hours_split: %s farm unreadable: %s", mech, e)
+            continue
+        for t in rts:
+            slug = (t.get("strategy") or "").upper()
+            if not slug:
+                continue
+            hhmm = _entry_hhmm_et(t.get("entry_time"))
+            if hhmm is None:
+                continue
+            side = "inside" if _kairos._hhmm_in_windows(hhmm, windows) else "outside"
+            # A strategy usually exists on BOTH farms. Bind each name to exactly one
+            # so the two mechanisms never get averaged together — that would measure
+            # the mechanism rather than the hours, which is the whole point here.
+            pref = entry_map.get(slug)
+            if pref and pref != mech:
+                continue                      # wired the other way; wrong farm
+            d = per.get(slug)
+            if d is None:
+                d = per[slug] = {"strategy": slug,
+                                 "ticker": slug.split("_", 1)[0].upper(),
+                                 "mechanism": mech, "farm": rec.get("label", acct),
+                                 "inside": [], "outside": []}
+            elif d["mechanism"] != mech:
+                continue                      # already bound to the other farm
+            d[side].append(float(t.get("pnl") or 0))
+
+    def _agg(pnls):
+        n = len(pnls)
+        return {"trades": n, "total": round(sum(pnls), 2),
+                "per_trade": round(sum(pnls) / n, 2) if n else None}
+
+    rows = []
+    for slug, d in per.items():
+        ins, out = _agg(d["inside"]), _agg(d["outside"])
+        thin = ins["trades"] < HOURS_SPLIT_MIN_SIDE or out["trades"] < HOURS_SPLIT_MIN_SIDE
+        delta = (None if (ins["per_trade"] is None or out["per_trade"] is None)
+                 else round(out["per_trade"] - ins["per_trade"], 2))
+        if thin:
+            verdict, recommend = "thin — not enough on one side to judge", None
+        elif out["per_trade"] > 0 and delta > 0:
+            verdict, recommend = ("the hours it refuses were its BETTER hours", "all_day")
+        elif out["per_trade"] > 0:
+            verdict, recommend = ("profitable outside too, but weaker there", "either")
+        else:
+            verdict, recommend = ("loses money outside the windows — the gate earns "
+                                  "its keep here", "keep_window")
+        rows.append({**{k: d[k] for k in ("strategy", "ticker", "mechanism", "farm")},
+                     "inside": ins, "outside": out, "delta_per_trade": delta,
+                     "verdict": verdict, "recommend": recommend, "thin": thin})
+
+    rows.sort(key=lambda r: -(r["delta_per_trade"] if r["delta_per_trade"] is not None else -1e9))
+
+    def _tot(key):
+        n = sum(r[key]["trades"] for r in rows)
+        s = sum(r[key]["total"] for r in rows)
+        return {"trades": n, "total": round(s, 2),
+                "per_trade": round(s / n, 2) if n else None}
+
+    return {
+        "days": days, "from": frm,
+        "windows": [{"start": s, "end": e} for s, e in windows],
+        "min_side": HOURS_SPLIT_MIN_SIDE,
+        "strategies": rows,
+        "totals": {"inside": _tot("inside"), "outside": _tot("outside")},
+        "candidates": [r["strategy"] for r in rows if r["recommend"] == "all_day"],
+        "caveats": [
+            "Farm fills, not book fills — the farms are ungated, which is what makes "
+            "them a control for the hours gate.",
+            "Each name is measured against the farm sharing its entry mechanism; "
+            "comparing a TV pick to engine fills would measure the mechanism instead.",
+            f"A verdict needs {HOURS_SPLIT_MIN_SIDE}+ trades on BOTH sides. Anything "
+            f"thinner is shown without one.",
+            "The farms run no day-type, RVOL or strikes gate either, so an out-of-window "
+            "edge here is not proof the curated book would have captured it.",
+        ],
+    }
+
 
 
 @crew_bp.route("/api/crew/selection_curve")
