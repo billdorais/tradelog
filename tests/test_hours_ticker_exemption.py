@@ -195,3 +195,75 @@ def test_a_midday_pause_still_binds_for_everything_else(monkeypatch):
     assert a._account_hours_ok("alpaca4", now_et=_et(11, 0), ticker="SPY")  is True
     assert a._account_hours_ok("alpaca4", now_et=_et(9, 45), ticker="NVDA") is True
     assert a._account_hours_ok("alpaca4", now_et=_et(13, 0), ticker="NVDA") is True
+
+
+# ── the UI must not misstate what a rule will do ────────────────────────────
+
+def test_the_risk_payload_carries_resolved_exemptions(monkeypatch):
+    """Resolved, not raw: the UI needs the answer AFTER the acct6 -> acct4 mirror,
+    or every card on the live book would render as if nothing were exempt."""
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"num": "4", "tag": "alpaca4", "label": "Crew Paper"},
+        {"num": "6", "tag": "alpaca6", "label": "Crew Live"},
+        {"num": "2", "tag": "alpaca2", "label": "TV Refined"}])
+    _exempt(monkeypatch, ["SPY"], tag="alpaca4")
+    a.app.config["TESTING"] = True
+    d = a.app.test_client().get("/api/risk/status").get_json()
+    ex = d["hours_exempt_by_account"]
+    assert ex["alpaca4"] == ["SPY"]
+    assert ex["alpaca6"] == ["SPY"], "the mirror must be applied before sending"
+    assert "alpaca2" not in ex, "books with no exemptions are omitted, not empty"
+    assert d["gate_mirror"] == {"alpaca6": "alpaca4"}
+
+
+def test_the_hours_chip_reports_exemption_rather_than_the_window():
+    """A card rendering 09:35-15:55 for a ticker that ignores it is a card that
+    lies. This became possible only once the exemption started beating the rule
+    node — before that the window was always the truth."""
+    src = open("templates/routing.html", encoding="utf-8").read()
+    i = src.index("function renderNode(")
+    block = src[i:i + 1800]
+    assert "_ruleHoursExempt(ruleId)" in block
+    assert "node-hours-exempt" in block
+    assert "value = 'all day'" in block
+
+
+def test_the_hours_modal_warns_that_edits_will_not_apply():
+    """Editing a window the rule will not honour is a trap."""
+    src = open("templates/routing.html", encoding="utf-8").read()
+    i = src.index("Signals arriving outside this window are silently dropped")
+    block = src[i:i + 1200]
+    assert "_ruleHoursExempt(activePipelineId)" in block
+    assert "will not change that" in block
+
+
+def test_the_client_tag_resolver_mirrors_the_server():
+    """BROKER_TAG_OF duplicates _routing_broker_to_tag's mapping in JS. If they
+    drift, the chip attributes an exemption to the wrong book."""
+    src = open("templates/routing.html", encoding="utf-8").read()
+    assert "function BROKER_TAG_OF" in src
+    i = src.index("function BROKER_TAG_OF")
+    block = src[i:i + 600]
+    # Non-Alpaca brokers must resolve to null, not fall back to slot 1.
+    assert "return m ?" in block and "null" in block
+    for tag in ("alpaca-paper", "alpaca-live"):
+        assert tag in block
+
+
+@pytest.mark.parametrize("value,tag", [
+    ("alpaca", "alpaca"), ("alpaca-paper", "alpaca"), ("alpaca-live", "alpaca"),
+    ("alpaca-paper-4", "alpaca4"), ("alpaca-live-6", "alpaca6"),
+    ("ib-paper", None), ("coinbase", None),
+])
+def test_the_server_mapping_the_client_copies(monkeypatch, value, tag):
+    """Pins the behaviour BROKER_TAG_OF is written against, so a server-side change
+    to broker naming fails here rather than silently desyncing the UI.
+
+    One deliberate difference: the server is REGISTRY-driven and returns None for a
+    slot with no keys, while the client resolves by pattern. Harmless, because
+    hours_exempt_by_account is itself built from the registry — an unconfigured
+    book has no exemptions to attribute, so the client never gets to be wrong."""
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
+        {"tag": "alpaca4", "target_paper": "alpaca-paper-4", "target_live": "alpaca-live-4"},
+        {"tag": "alpaca6", "target_paper": "alpaca-paper-6", "target_live": "alpaca-live-6"}])
+    assert a._routing_broker_to_tag(value) == tag

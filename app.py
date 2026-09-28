@@ -4092,6 +4092,15 @@ def risk_status():
         "take_profit_pct":     TAKE_PROFIT_PCT if TAKE_PROFIT_PCT > 0 else None,
         "take_profit_by_account": _account_tp_map(),
         "gates_by_account":       _account_gate_overrides(),
+        # Which books follow another's overrides (acct6 -> acct4). Sent rather than
+        # duplicated in JS so the UI cannot disagree with the router about who
+        # inherits what.
+        "gate_mirror":            _GATE_MIRROR,
+        # Effective per-ticker hours exemptions, mirror already applied — the UI
+        # needs the RESOLVED answer, not the raw override map.
+        "hours_exempt_by_account": {a["tag"]: sorted(_hours_exempt_tickers(a["tag"]))
+                                    for a in (ALPACA_ACCOUNTS or [])
+                                    if _hours_exempt_tickers(a["tag"])},
     })
 
 

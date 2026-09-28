@@ -78,6 +78,8 @@
     /* Crew Live is the only REAL-MONEY broker, so it is the only red chip. Every
        other broker node is a shade of its book's colour; this one is a warning. */
     .node-broker-alpaca-live-6  { background: #2a0f14; border-color: #ef5350; color: #ff8a80; font-weight: 700; }
+    /* Hours chip on a ticker the book exempts — it does NOT obey this window. */
+    .node-hours-exempt { border-color: #f0a35e !important; color: #f0a35e !important; }
     .node-broker-alpaca-paper-6 { background: #241a1c; border-color: #6a4a4e; color: #c9a0a4; }
     /* Bulk-actions toolbar — grouped, labeled rows */
     .bulk-card    { background:#0d0f16; border:1px solid #1e2130; border-radius:10px; padding:12px 14px; margin-bottom:10px; display:flex; flex-direction:column; gap:9px; }
@@ -1429,6 +1431,13 @@
           : '<span style="color:#666;font-size:0.76rem">none set</span>';
       }
 
+      // Per-ticker hours exemptions, already mirror-resolved by the server. Drives
+      // the HOURS chip: a rule whose ticker is exempt does NOT obey its own window,
+      // so rendering the window unqualified would misstate what the rule will do.
+      _HOURS_EXEMPT = {};
+      for (const [tag, list] of Object.entries(data.hours_exempt_by_account || {}))
+        _HOURS_EXEMPT[tag] = new Set((list || []).map(t => String(t).toUpperCase()));
+
       // Crew Paper (acct4) entry-gate overrides — populate the section's fields, but
       // never while the user is editing them (the 5s poll would wipe their input).
       if (!_crewGatesDirty) {
@@ -2309,10 +2318,56 @@
     } catch(e) { console.warn('Price fetch failed:', e); }
   }
 
+  let _HOURS_EXEMPT = {};      // tag -> Set(tickers), from the risk poll
+
+  // Broker node value -> account tag. Mirrors _routing_broker_to_tag in app.py:
+  // bare alpaca / alpaca-paper / alpaca-live are slot 1, numbered suffixes are
+  // that slot. Non-Alpaca brokers (IB, Coinbase) have no tag and return null.
+  function BROKER_TAG_OF(v) {
+    const b = String(v || '').toLowerCase();
+    if (b === 'alpaca' || b === 'alpaca-paper' || b === 'alpaca-live') return 'alpaca';
+    const m = b.match(/^alpaca-(?:paper|live)-(\d+)$/);
+    return m ? (m[1] === '1' ? 'alpaca' : 'alpaca' + m[1]) : null;
+  }
+
+  // Is THIS rule's ticker exempt on the book THIS rule routes to? Returns the
+  // matching tag, or null. Both halves matter: an exemption is per-book, and a
+  // rule names exactly one broker.
+  function _ruleHoursExempt(ruleId) {
+    const rule = rules.find(r => r.id === ruleId);
+    if (!rule) return null;
+    const parts  = String(rule.name || '').toUpperCase().split('_');
+    const ticker = parts[0] === 'CAM' ? parts[1] : parts[0];
+    if (!ticker) return null;
+    let nodes = rule.nodes;
+    if (typeof nodes === 'string') { try { nodes = JSON.parse(nodes); } catch (e) { return null; } }
+    for (const n of (nodes || [])) {
+      if (n.type !== 'broker') continue;
+      const tag = BROKER_TAG_OF(n.value);
+      if (tag && _HOURS_EXEMPT[tag] && _HOURS_EXEMPT[tag].has(ticker)) return tag;
+    }
+    return null;
+  }
+
   function renderNode(ruleId, node, idx) {
-    const cls   = nodeClass(node);
+    let cls     = nodeClass(node);
     const label = nodeLabel(node);
-    const value = nodeValue(node);
+    let value   = nodeValue(node);
+
+    // An exempt ticker ignores this window entirely — say so rather than printing
+    // hours the rule will not honour.
+    let exemptNote = '';
+    if (node.type === 'trading_hours') {
+      const _xt = _ruleHoursExempt(ruleId);
+      if (_xt) {
+        cls   += ' node-hours-exempt';
+        value = 'all day';
+        exemptNote = `<div style="font-size:0.6rem;color:#f0a35e;margin-top:2px"
+                           title="This ticker is on the book's Trade-all-day list, so it ignores this window. Change it in Risk Guard → Crew — Entry Gates.">
+                        ↪ book exempt · ${escHtml(_xt)}
+                      </div>`;
+      }
+    }
 
     let pctBadge = '';
     if (node.type === 'exit_params' && node.stop_loss && node.mode !== 'percent') {
@@ -2343,6 +2398,7 @@
       <div class="node ${cls}" onclick="openNodeEditor(${ruleId}, ${idx})">
         <div class="node-label">${label}</div>
         <div class="node-value">${escHtml(value)}</div>
+        ${exemptNote}
         ${pctBadge}
         ${qtyBadge}
         <div class="node-delete" onclick="deleteNode(event, ${ruleId}, ${idx})">&#10005;</div>
@@ -3146,7 +3202,19 @@
               <option value="UTC"                  ${v.tz==='UTC'                  ? 'selected':''}>UTC</option>
             </select>
           </div>
-          <p style="font-size:0.78rem;color:#555;margin-top:-8px">Signals arriving outside this window are silently dropped.</p>`;
+          <p style="font-size:0.78rem;color:#555;margin-top:-8px">Signals arriving outside this window are silently dropped.</p>
+          ${(() => {
+            // Editing a window this rule will not honour is a trap — say so here
+            // rather than letting the change look effective.
+            const _xt = _ruleHoursExempt(activePipelineId);
+            if (!_xt) return '';
+            return `<p style="font-size:0.78rem;color:#f0a35e;background:rgba(240,163,94,0.08);
+                              border:1px solid #4a3a22;border-radius:6px;padding:8px 11px;line-height:1.5">
+                      <b>This ticker is exempt on ${escHtml(_xt)}</b> — it trades all day and ignores
+                      this window entirely. Editing the times here will not change that.
+                      Remove it from <b>Risk Guard → Crew — Entry Gates → Trade all day</b> first.
+                    </p>`;
+          })()}`;
 
       case 'crypto_qty':
         return `
