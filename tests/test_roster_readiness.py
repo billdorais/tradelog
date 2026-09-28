@@ -228,7 +228,8 @@ def test_the_panel_dims_rather_than_hides_names_below_the_line():
     """Seeing who just missed the cut is the point — a roster decision needs the
     names on the bench, not only the ones above it."""
     src = open("templates/crew.html", encoding="utf-8").read()
-    i = src.index("loadRosterReadiness")
-    block = src[i:i + 4500]
+    # Anchor on the DEFINITION — the first mention is the markup's onchange.
+    i = src.index("async function loadRosterReadiness")
+    block = src[i:i + 5000]
     assert "coreNames" in block and "opacity:0.55" in block
     assert "below the line at this roster" in block
