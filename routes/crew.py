@@ -3229,6 +3229,64 @@ def _side_gate_conflicts(app_obj, picks, account="4"):
 # between 50% and 100% of position size on a name with four trades behind it.
 
 
+def _entry_source_by_strategy(app_obj, brokers=("alpaca-paper-4", "alpaca-live-4")):
+    """strategy -> "tv" | "kairos", from the CURRENT routing rules for a book.
+
+    Entry mechanism is a property of the rule, not of the strategy name, and no
+    per-trade record of it survives: trades has no source column and every Alpaca
+    order carries the same "kairos-" client_order_id prefix regardless of what
+    triggered it. So this is the wiring AS IT STANDS — a name rewired mid-period
+    has its whole history attributed to its current mechanism. Stated wherever it
+    is displayed rather than left for the reader to assume.
+    """
+    out = {}
+    try:
+        conn = app_obj.get_db(); cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        for row in cur.fetchall():
+            raw = row[0] if app_obj.DATABASE_URL else row["nodes"]
+            try:    nodes = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except Exception: continue
+            vals = [(n.get("value") or "").lower() for n in nodes if n.get("type") == "broker"]
+            if not any(v in brokers for v in vals):
+                continue
+            entry = next((("kairos" if (n.get("value") or "") == "kairos" else "tv")
+                          for n in nodes if n.get("type") == "entry_source"), "tv")
+            for n in nodes:
+                if n.get("type") == "strategy" and n.get("value"):
+                    out[(n["value"] or "").strip().upper()] = entry
+        conn.close()
+    except Exception as e:
+        app_obj.log.debug("entry-source map failed: %s", e)
+    return out
+
+
+def _rollup(rows, keyfn, bar):
+    """Group traded names and total them PER TRADE, not per name.
+
+    Averaging per-name figures would let a 4-trade name weigh as much as a 20-trade
+    one, which is the bias the whole readiness view exists to avoid.
+    """
+    from collections import defaultdict
+    acc = defaultdict(lambda: {"trades": 0, "total_pnl": 0.0, "names": 0, "earned": 0})
+    for r in rows:
+        k = keyfn(r)
+        if k is None:
+            continue
+        a_ = acc[k]
+        a_["trades"]    += r["trades"]
+        a_["total_pnl"] += r["total_pnl"]
+        a_["names"]     += 1
+        a_["earned"]    += 1 if r["trades"] >= bar else 0
+    out = []
+    for k, v in acc.items():
+        out.append({"key": k, "trades": v["trades"],
+                    "total_pnl": round(v["total_pnl"], 2),
+                    "per_trade": round(v["total_pnl"] / v["trades"], 2) if v["trades"] else None,
+                    "names": v["names"], "earned_names": v["earned"]})
+    return sorted(out, key=lambda x: -(x["per_trade"] or 0))
+
+
 @crew_bp.route("/api/crew/roster_readiness")
 def api_crew_roster_readiness():
     """Which strategies have EARNED a core slot, and what a given roster size would
@@ -3291,7 +3349,12 @@ def api_crew_roster_readiness():
             "profit_factor": st.get("profit_factor"),
         }
 
-    rows   = [_row(k.upper(), v) for k, v in per_strategy.items()]
+    entry_map = _entry_source_by_strategy(_kairos)
+    rows = []
+    for k, v in per_strategy.items():
+        r = _row(k.upper(), v)
+        r["entry"] = entry_map.get(r["strategy"])      # None = no enabled rule here
+        rows.append(r)
     earned = sorted((r for r in rows if r["trades"] >= CREW_CORE_MIN_TRADES),
                     key=lambda r: -(r["per_trade"] or 0))
     thin   = sorted((r for r in rows if 0 < r["trades"] < CREW_CORE_MIN_TRADES),
@@ -3382,6 +3445,14 @@ def api_crew_roster_readiness():
             "distinct_tickers": len(tick_ct), "distinct_bands": len(band_ct),
             "distinct_setups": len(setup_ct),
         },
+        # Grouped views. Name-by-name hides splits that only show in aggregate —
+        # the level pair and the entry mechanism are both book-wide questions.
+        "rollups": {
+            "band":  _rollup(rows, lambda r: r["band"], CREW_CORE_MIN_TRADES),
+            "setup": _rollup(rows, lambda r: r["band"].split("_", 1)[0], CREW_CORE_MIN_TRADES),
+            "entry": _rollup(rows, lambda r: r["entry"] or "not wired here",
+                             CREW_CORE_MIN_TRADES),
+        },
         "verdict": verdict, "warnings": warnings,
         "caveats": [
             f"Earned = {CREW_CORE_MIN_TRADES}+ closed round-trips on this book, the "
@@ -3391,6 +3462,9 @@ def api_crew_roster_readiness():
             "book on a different size.",
             "Never-traded picks are listed separately: that is a wiring or gating "
             "question, not a performance one.",
+            "Entry mechanism is read from the CURRENT routing rules — trades carry no "
+            "record of what triggered them, so a name rewired mid-period has its whole "
+            "history attributed to its present mechanism.",
         ],
     })
 

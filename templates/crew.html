@@ -1691,6 +1691,29 @@
             <th style="text-align:left;padding:3px 8px">Total</th><th style="text-align:left;padding:3px 8px">Win%</th>
           </tr></thead><tbody>${rows}</tbody></table>`;
 
+      // Grouped views. A split that is invisible name-by-name — one level pair or
+      // one entry mechanism carrying the book — only shows in aggregate.
+      const roll = (rows, head, note) => !rows.length ? '' : `
+        <div style="color:#666;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;margin:12px 0 4px">${head}</div>
+        ${note ? `<div style="font-size:0.68rem;color:#555;margin-bottom:4px">${note}</div>` : ''}
+        <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+          <thead><tr style="color:#555;font-size:0.66rem;text-transform:uppercase">
+            <th style="text-align:left;padding:3px 8px"></th><th style="text-align:left;padding:3px 8px">Trades</th>
+            <th style="text-align:left;padding:3px 8px">Per trade</th><th style="text-align:left;padding:3px 8px">Total</th>
+            <th style="text-align:left;padding:3px 8px">Names</th>
+          </tr></thead><tbody>${rows.map(r => `<tr>
+            <td style="padding:3px 8px;color:#ccc;font-family:ui-monospace,monospace;font-size:0.76rem">${esc(r.key)}</td>
+            <td style="padding:3px 8px">${r.trades}</td>
+            <td style="padding:3px 8px;font-weight:700;${cls(r.per_trade)}">${money(r.per_trade)}</td>
+            <td style="padding:3px 8px;${cls(r.total_pnl)}">${money(r.total_pnl)}</td>
+            <td style="padding:3px 8px;color:#888">${r.names}<span style="color:#555"> (${r.earned_names} earned)</span></td>
+          </tr>`).join('')}</tbody></table>`;
+
+      const rollups = (d.rollups ? roll(d.rollups.entry, 'By entry mechanism',
+                         'From the CURRENT rules — trades carry no record of what triggered them.')
+                       + roll(d.rollups.setup, 'By setup')
+                       + roll(d.rollups.band,  'By band') : '');
+
       const coreNames = new Set(ap.core.map(r => r.strategy));
       const earnedRows = d.earned.map((r, i) => row(r, i, coreNames.has(r.strategy))).join('');
       const thinRows   = d.thin.map((r, i) => row(r, i, false)).join('');
@@ -1717,6 +1740,7 @@
       host.innerHTML = `
         <div style="font-size:0.86rem;color:#ccc">${esc(d.verdict)}</div>
         ${warn}${spread}
+        ${rollups}
         ${tbl(earnedRows, `Earned — ${d.bar}+ live round-trips (dimmed = below the line at this roster)`)}
         ${tbl(thinRows, 'Thin — traded, but not enough sample yet')}
         ${untr}

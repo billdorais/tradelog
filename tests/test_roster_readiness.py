@@ -230,6 +230,90 @@ def test_the_panel_dims_rather_than_hides_names_below_the_line():
     src = open("templates/crew.html", encoding="utf-8").read()
     # Anchor on the DEFINITION — the first mention is the markup's onchange.
     i = src.index("async function loadRosterReadiness")
-    block = src[i:i + 5000]
+    # To the end of the function, not a fixed byte count — the window was outgrown
+    # the moment the rollups were added above it.
+    block = src[i:src.index("loadRosterReadiness();", i)]
     assert "coreNames" in block and "opacity:0.55" in block
     assert "below the line at this roster" in block
+
+
+# ── rollups: splits that are invisible name-by-name ─────────────────────────
+
+@pytest.fixture
+def entries(monkeypatch):
+    def _set(m): monkeypatch.setattr(C, "_entry_source_by_strategy", lambda *a_, **k: m)
+    _set({})
+    return _set
+
+
+def test_rollups_total_per_trade_not_per_name(book, entries):
+    """Averaging per-name figures would let a 4-trade name weigh as much as a
+    20-trade one — the bias the whole readiness view exists to avoid."""
+    book["per_strategy"] = {
+        "A_CAM_BREAKOUT_R3S3": _st(20, 200.0),      # +10.00/trade
+        "B_CAM_BREAKOUT_R3S3": _st(2,  -80.0),      # -40.00/trade, tiny sample
+    }
+    d, _ = _get()
+    band = {r["key"]: r for r in d["rollups"]["band"]}["BREAKOUT_R3S3"]
+    assert band["trades"] == 22 and band["total_pnl"] == 120.0
+    assert band["per_trade"] == pytest.approx(120.0 / 22, abs=0.01)   # not (10-40)/2
+
+
+def test_the_band_split_the_book_actually_shows(book, entries):
+    """The finding that prompted this: R3S3 carrying the book while R4S4 sits at
+    roughly zero. Name-by-name it is invisible."""
+    book["per_strategy"] = {
+        "NVDA_CAM_BREAKOUT_R3S3": _st(20, 355.75), "PLTR_CAM_BREAKOUT_R3S3": _st(12, 169.28),
+        "MSFT_CAM_REVERSAL_R3S3": _st(12, 119.83), "GLD_CAM_BREAKOUT_R3S3":  _st(11, 21.91),
+        "IWM_CAM_REVERSAL_R3S3":  _st(14, -10.89),
+        "AAPL_CAM_BREAKOUT_R4S4": _st(15, 125.51), "NVDA_CAM_BREAKOUT_R4S4": _st(15, -29.19),
+        "AMZN_CAM_REVERSAL_R4S4": _st(19, -88.82),
+    }
+    d, _ = _get()
+    by = {r["key"]: r for r in d["rollups"]["band"]}
+    assert by["BREAKOUT_R3S3"]["per_trade"] > by["BREAKOUT_R4S4"]["per_trade"]
+    setups = {r["key"]: r for r in d["rollups"]["setup"]}
+    assert setups["BREAKOUT"]["trades"] == 73 and setups["REVERSAL"]["trades"] == 45
+
+
+def test_entry_mechanism_is_rolled_up(book, entries):
+    """The head-to-head the system exists to answer: do engine entries beat TV?"""
+    entries({"A_CAM_BREAKOUT_R3S3": "kairos", "B_CAM_BREAKOUT_R3S3": "kairos",
+             "C_CAM_REVERSAL_R4S4": "tv"})
+    book["per_strategy"] = {
+        "A_CAM_BREAKOUT_R3S3": _st(20, 200.0), "B_CAM_BREAKOUT_R3S3": _st(10, 100.0),
+        "C_CAM_REVERSAL_R4S4": _st(30, -60.0),
+    }
+    d, _ = _get()
+    by = {r["key"]: r for r in d["rollups"]["entry"]}
+    assert by["kairos"]["trades"] == 30 and by["kairos"]["per_trade"] == 10.0
+    assert by["tv"]["per_trade"] == -2.0
+
+
+def test_a_strategy_with_no_rule_here_is_labelled_not_guessed(book, entries):
+    """Defaulting an unknown mechanism to "tv" would quietly load one side of the
+    head-to-head with names that may have been engine-driven."""
+    entries({"A_CAM_BREAKOUT_R3S3": "kairos"})
+    book["per_strategy"] = {"A_CAM_BREAKOUT_R3S3": _st(20, 100.0),
+                            "ORPHAN_CAM_BREAKOUT_R3S3": _st(20, -100.0)}
+    d, _ = _get()
+    keys = {r["key"] for r in d["rollups"]["entry"]}
+    assert keys == {"kairos", "not wired here"}
+
+
+def test_the_attribution_limit_is_stated(book, entries):
+    """Trades carry no record of what triggered them, so this reads CURRENT wiring.
+    A reader who assumes it is per-trade history would over-trust it."""
+    book["per_strategy"] = {"A_CAM_BREAKOUT_R3S3": _st(20, 100.0)}
+    d, _ = _get()
+    assert any("CURRENT routing rules" in c and "rewired mid-period" in c
+               for c in d["caveats"])
+
+
+def test_the_panel_renders_all_three_rollups():
+    src = open("templates/crew.html", encoding="utf-8").read()
+    i = src.index("async function loadRosterReadiness")
+    block = src[i:i + 7000]
+    assert "By entry mechanism" in block
+    assert "By setup" in block and "By band" in block
+    assert "CURRENT rules" in block, "the attribution limit must be on screen"
