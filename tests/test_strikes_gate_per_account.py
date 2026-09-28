@@ -72,7 +72,7 @@ def wh(tmp_path, monkeypatch):
     monkeypatch.setattr(a, "ACCOUNTS_BY_TAG", {x["tag"]: x for x in accounts})
     monkeypatch.setattr(a, "STRIKES_ENABLED", True)
     monkeypatch.setattr(a, "STRIKES_PER_LEVEL", 2)
-    monkeypatch.setattr(a, "_account_hours_ok", lambda tag: True)
+    monkeypatch.setattr(a, "_account_hours_ok", lambda *ar, **kw: True)
     monkeypatch.setattr(a, "_trade_level", lambda strategy, side: "R3")
     monkeypatch.setattr(a, "_strike_limit", lambda level, tag: 2)
 

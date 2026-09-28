@@ -841,7 +841,7 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     # through. Lets Paper trade all day while Refined only trades the open, etc.
     if not _is_exit and alpaca_targets:
         _in_hours = [bt for bt in alpaca_targets
-                     if app._account_hours_ok(_alpaca_broker_name(bt[0]))]
+                     if app._account_hours_ok(_alpaca_broker_name(bt[0]), ticker=ticker)]
         if len(_in_hours) != len(alpaca_targets):
             _dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
                        - {_alpaca_broker_name(bt[0]) for bt in _in_hours}

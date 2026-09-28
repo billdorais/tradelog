@@ -698,6 +698,14 @@
           <div class="risk-input-row">
             <button class="btn btn-ghost" style="padding:6px 12px;font-size:0.82rem" onclick="_addHoursRow('crewHoursRows','crew'); _crewGatesDirty=true">+ add window</button>
           </div>
+          <div class="risk-label" style="margin-top:10px">Trade all day
+            <span style="color:#666;font-size:0.68rem">comma-separated tickers that ignore the windows above</span></div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="crewHoursExempt" type="text" placeholder="e.g. SPY, QQQ"
+                   style="width:260px" oninput="_crewGatesDirty=true"
+                   title="These tickers trade the whole session on both Crew books. Everything else obeys the windows above. Entries only — exits are never gated.">
+          </div>
+          <div class="risk-hint" style="margin-top:6px">Liquidity is not uniform across the book: an index ETF is tradeable all session, while a thin name genuinely should be confined to the open. Blank = every ticker obeys the windows.</div>
         </div>
         <div class="risk-input-row" style="margin-top:12px">
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveCrewGates()">Save Crew gates (Paper + Live)</button>
@@ -1439,6 +1447,9 @@
         else if (cg.hours.start || cg.hours.end) cwins = [{start: cg.hours.start || '', end: cg.hours.end || ''}];
       }
       _setHoursUI('crew', cwins);
+      const _cex = document.getElementById('crewHoursExempt');
+      if (_cex && document.activeElement !== _cex)
+        _cex.value = ((cg.hours || {}).exempt_tickers || []).join(', ');
       }
 
       // Per-position stop status badge
@@ -1848,6 +1859,7 @@
       strikes_base:  document.getElementById('crewStrikesBase').value,
       strikes_short: document.getElementById('crewStrikesShort').value,
       hours_windows: _collectHoursRows('crewHoursRows'),
+      hours_exempt:  document.getElementById('crewHoursExempt').value,
     };
     if (st) { st.style.color = '#888'; st.textContent = 'saving…'; }
     try {

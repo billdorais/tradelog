@@ -49,7 +49,7 @@ def webhook_client(tmp_path, monkeypatch):
         return c
 
     monkeypatch.setattr(a, "get_db", _fake_db)
-    monkeypatch.setattr(a, "_account_hours_ok", lambda tag: True)
+    monkeypatch.setattr(a, "_account_hours_ok", lambda *ar, **kw: True)
     monkeypatch.setattr(a, "MAX_DAILY_LOSS", -125.0)
     a._daily_loss_halted.clear()
     a._daily_loss_halted["alpaca2"] = True   # Refined hit its limit; Kairos did not

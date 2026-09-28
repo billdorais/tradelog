@@ -11227,7 +11227,8 @@ def set_account_gates():
 
     Body: {account, daytype: "inherit"|"on"|"off", breakout_ok_days: ["Outside",..],
            strikes_base: int|"", strikes_short: int|"",
-           hours_start: "HH:MM"|"", hours_end: "HH:MM"|""}
+           hours_start: "HH:MM"|"", hours_end: "HH:MM"|"",
+           hours_exempt: "SPY,QQQ"|""   (tickers that ignore the window entirely)}
     """
     global _gates_acct_cache, _gates_acct_ts
     data    = request.get_json(silent=True) or {}
@@ -11306,6 +11307,22 @@ def set_account_gates():
             acct.pop("hours", None)
         else:
             acct["hours"] = {"start": hs, "end": he}
+
+    # Per-ticker exemptions live INSIDE the hours override, so they survive the
+    # branches above clearing it — a book can exempt a ticker while inheriting the
+    # shared window, which is the common case (Crew keeps 09:35-15:55, SPY runs all
+    # day). Sent as a comma list; blank clears.
+    if "hours_exempt" in data:
+        _ex = data.get("hours_exempt") or ""
+        if isinstance(_ex, str):
+            _ex = _ex.split(",")
+        _ex = sorted({str(t).strip().upper() for t in _ex if str(t).strip()})
+        if _ex:
+            acct["hours"] = {**(acct.get("hours") or {}), "exempt_tickers": _ex}
+        elif acct.get("hours"):
+            acct["hours"].pop("exempt_tickers", None)
+            if not acct["hours"]:
+                acct.pop("hours", None)
 
     if acct:
         _map[tag] = acct
@@ -14242,11 +14259,38 @@ def _hhmm_in_windows(hhmm: str, windows) -> bool:
     return False
 
 
-def _account_hours_ok(account: str, now_et=None) -> bool:
+def _hours_exempt_tickers(account: str):
+    """Tickers this book trades ALL DAY, ignoring its hours window.
+
+    The window is a book-wide policy, but liquidity is not uniform across the book:
+    an index ETF is tradeable all session while a thin name genuinely should be
+    confined to the open. This is the per-ticker escape hatch.
+
+    Read from the same per-account override the Risk Guard's Crew panel writes
+    (GATES_BY_ACCOUNT[tag].hours.exempt_tickers), with an HOURS_EXEMPT_<TAG> env
+    fallback for parity with HOURS_<TAG>_START/END.
+    """
+    raw = os.environ.get("HOURS_EXEMPT_" + (account or "").upper())
+    if raw is None:
+        raw = ((_account_gate_overrides(account).get("hours") or {})
+               .get("exempt_tickers") or [])
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return {str(t).strip().upper() for t in raw if str(t).strip()}
+
+
+def _account_hours_ok(account: str, now_et=None, ticker: str = None) -> bool:
     """True if `account` (a broker tag) is inside ANY of its configured trading
     windows (ET). No windows configured = always allowed. Callers must pass the
-    TARGET account's tag."""
+    TARGET account's tag.
+
+    `ticker` opts one symbol out of the window entirely. Callers that are asking
+    about a SPECIFIC entry should pass it; the coarse "is any book open" checks
+    deliberately do not.
+    """
     import datetime as _dt
+    if ticker and str(ticker).strip().upper() in _hours_exempt_tickers(account):
+        return True
     windows = _account_hours_windows(account)
     if not windows:
         return True
@@ -15816,6 +15860,7 @@ _GATE_RULES = {
             "Windows are half-open: an entry exactly at the end time is already out.",
             "Resolution order: HOURS_<TAG> env, then this account's override, then the shared window for its hours_key.",
             "No window configured = allowed all day.",
+            "Individual tickers can be exempted from the window entirely — liquidity is not uniform across a book, and an index ETF is tradeable all session while a thin name genuinely should be confined to the open.",
         ],
         "why": "Entries late in the session have no room left to reach a trail, and the "
                "first minutes price off overnight imbalance rather than off the level.",
@@ -15967,10 +16012,12 @@ def _gate_state(tag):
     ov   = _account_gate_overrides(tag) or {}
     out  = {}
 
-    ws = _account_hours_windows(tag)
-    out["hours"] = (bool(ws),
-                    " · ".join(f"{s}-{e} ET" for s, e in ws) if ws else "all day (no window set)",
-                    "override" if (ov.get("hours") or {}) else "shared")
+    ws     = _account_hours_windows(tag)
+    exempt = sorted(_hours_exempt_tickers(tag))
+    _hd    = " · ".join(f"{s}-{e} ET" for s, e in ws) if ws else "all day (no window set)"
+    if exempt:
+        _hd += f" · {', '.join(exempt)} exempt (all day)"
+    out["hours"] = (bool(ws), _hd, "override" if (ov.get("hours") or {}) else "shared")
 
     # RVOL — an override can enable this book independently of the shared list.
     _rov = ov.get("rvol")
@@ -20105,7 +20152,11 @@ def _engine_pilot_tick(now_et, today):
     # Cheap tick-level short-circuit only: skip the whole evaluation when NO book
     # the engine can fire into is inside its window. The authoritative check is
     # per-target inside _enter — asking one fixed account here would mute the rest.
-    hours_ok = (any(_account_hours_ok(_a["tag"], now_et=now_et) for _a in ALPACA_ACCOUNTS)
+    # An exemption anywhere means SOME ticker can still fire even with every window
+    # shut, so the short-circuit has to stand down — otherwise the coarse check
+    # silently overrules the per-ticker exemption the authoritative check honours.
+    hours_ok = (any(_account_hours_ok(_a["tag"], now_et=now_et) or
+                    _hours_exempt_tickers(_a["tag"]) for _a in ALPACA_ACCOUNTS)
                 if ALPACA_ACCOUNTS else True)
     strikes  = _compute_strike_counts(today) if STRIKES_ENABLED else {}
     now_utc  = datetime.now(timezone.utc)
@@ -20134,7 +20185,7 @@ def _engine_pilot_tick(now_et, today):
             # any rule broker), and they do not share a window. This used to ask
             # _account_hours_ok("alpaca2") once per tick, so setting a TV Refined
             # window would have silently muted every other book the engine feeds.
-            if not _account_hours_ok(broker_tag, now_et=now_et):
+            if not _account_hours_ok(broker_tag, now_et=now_et, ticker=tk):
                 _record_block(broker_tag, tk, strat, side, "hours",
                           "outside the account's trading window", source="engine", once_per_day=True)
                 continue

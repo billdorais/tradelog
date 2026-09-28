@@ -143,7 +143,7 @@ def webhook_client(tmp_path, monkeypatch):
     a.get_db = _fake_db
     # Neutralize the trading-hours gate so it can't pre-empt the reversal gate
     # (Refined has a 09:30-11:00 ET window; otherwise the test is wall-clock dependent).
-    a._account_hours_ok = lambda tag: True
+    a._account_hours_ok = lambda *ar, **kw: True
     yield a.app.test_client(), db
     a.get_db = saved_db
     a._account_hours_ok = saved_hours
