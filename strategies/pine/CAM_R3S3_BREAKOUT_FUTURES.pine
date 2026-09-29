@@ -1,0 +1,317 @@
+// =============================================================================
+// CAM_R3S3_BREAKOUT_FUTURES — Camarilla R3/S3 breakout, futures build (ES / NQ)
+// =============================================================================
+// Futures port of the equity CAM_BREAKOUT_R3S3 family
+// (e.g. NVDA_CAM_BREAKOUT_R3S3_V02_5MIN). Entry logic is a faithful copy of
+// strategies/camarilla.py:run_backtest — only the level multiplier changes
+// (R3/S3 = 1.1/4 instead of R4/S4 = 1.1/2) plus the futures-specific work:
+//
+//   1. SESSION. Equities have one obvious "previous day". Futures trade ~23h,
+//      so a plain daily bar folds the overnight session into the pivot inputs
+//      and the levels stop matching what a cash-session trader sees. Default
+//      here is RTH-only (09:30-16:00 ET) accumulation, with a toggle for the
+//      full electronic session if you want to test the other convention.
+//   2. SIZING. Contracts, not shares. Stops default to PERCENT so the same
+//      settings auto-scale between ES (~6k) and NQ (~20k); switch to points if
+//      you prefer the futures convention.
+//   3. EOD FLAT. A futures position left open runs overnight on margin. The
+//      flatten is on by default and matches the Kairos 15:55 ET cutoff.
+//
+// LEVELS (previous session H/L/C, standard Camarilla):
+//     range = H - L
+//     R3    = C + range * 1.1 / 4          S3 = C - range * 1.1 / 4
+//     R4    = C + range * 1.1 / 2          S4 = C - range * 1.1 / 2   (not used here)
+//
+// ENTRY (matches camarilla.py lines 320 / 329):
+//     LONG  : bar straddles R3 upward   (open < R3, close > R3) AND close > EMA
+//     SHORT : bar straddles S3 downward (open > S3, close < S3) AND close < EMA
+//
+// ALERTS: Pine builds the full JSON itself and puts it in alert_message, so the
+// TradingView alert "Message" box is a single placeholder:
+//     {{strategy.order.alert_message}}
+// That is the same contract the equity scripts use and it is what keeps entries
+// and exits distinguishable — {{strategy.order.action}} collapses both onto
+// buy/sell, which is exactly the ambiguity routes/webhook.py was changed to
+// stop relying on. Actions emitted: LONG / SHORT / EXIT_LONG / EXIT_SHORT.
+//
+// ---------------------------------------------------------------------------
+// CONTRACT REFERENCE
+//   ES  E-mini S&P 500     tick 0.25   $12.50/tick   $50/point
+//   MES Micro E-mini S&P   tick 0.25   $1.25/tick     $5/point
+//   NQ  E-mini Nasdaq-100  tick 0.25   $5.00/tick    $20/point
+//   MNQ Micro E-mini NQ    tick 0.25   $0.50/tick     $2/point
+// Start on MES/MNQ — same price action, 1/10th the damage while you calibrate.
+//
+// BROKER NOTE: Alpaca does not offer futures at all, and the IB path in this
+// repo handles STK/OPT only — there is no "FUT" sec_type in routes/webhook.py.
+// So this runs in the TradingView Strategy Tester today; routing it to a live
+// book needs IB futures support added first. Point the `broker` input at a
+// paper book if you want the signals logged without an order attempt.
+// =============================================================================
+
+//@version=6
+strategy("CAM R3S3 Breakout — Futures (ES/NQ)",
+     shorttitle            = "CAM R3S3 FUT",
+     overlay               = true,
+     default_qty_type      = strategy.fixed,
+     default_qty_value     = 1,
+     initial_capital       = 25000,
+     currency              = currency.USD,
+     commission_type       = strategy.commission.cash_per_contract,
+     commission_value      = 2.25,
+     slippage              = 1,
+     process_orders_on_close = true,
+     calc_on_every_tick    = false)
+
+// ---------------------------------------------------------------------------
+// Inputs — routing
+// ---------------------------------------------------------------------------
+gRoute   = "Routing (alert payload)"
+stratId  = input.string("ES_CAM_BREAKOUT_R3S3_V02_5MIN", "Strategy ID", group = gRoute,
+   tooltip = "Must match the Strategy node in your Signal Router pipeline EXACTLY. " +
+             "Convention: {SYMBOL}_CAM_BREAKOUT_R3S3_V02_{TF}. Underscores matter — " +
+             "the router matches on the literal string.")
+brokerId = input.string("alpaca-paper", "Broker target", group = gRoute,
+   options = ["alpaca-paper", "alpaca-live", "ib-paper", "ib-live", "none"],
+   tooltip = "Sent as the broker field. The pipeline's Broker node overrides this, " +
+             "so it is mostly a fallback for unrouted signals.")
+qty      = input.int(1, "Contracts", minval = 1, group = gRoute,
+   tooltip = "Contracts per entry. Also what the alert reports as quantity.")
+
+// ---------------------------------------------------------------------------
+// Inputs — levels
+// ---------------------------------------------------------------------------
+gLvl      = "Camarilla levels"
+sessMode  = input.string("RTH (09:30-16:00 ET)", "Previous-session basis", group = gLvl,
+   options = ["RTH (09:30-16:00 ET)", "Full electronic session"],
+   tooltip = "RTH matches the levels a cash-session trader is watching and is the " +
+             "default. Full session uses the daily bar including overnight — a " +
+             "different convention, not a wrong one. Worth testing both.")
+rthSess   = input.session("0930-1600", "RTH session", group = gLvl)
+showLvls  = input.bool(true, "Plot levels", group = gLvl)
+
+// ---------------------------------------------------------------------------
+// Inputs — entry filter
+// ---------------------------------------------------------------------------
+gEntry    = "Entry"
+emaLen    = input.int(8, "EMA filter length", minval = 1, group = gEntry,
+   tooltip = "Longs need close > EMA, shorts need close < EMA. 8 matches the " +
+             "equity backtester (strategies/camarilla.py).")
+useEma    = input.bool(true, "Require EMA agreement", group = gEntry)
+trigMode  = input.string("Straddle bar", "Breakout trigger", group = gEntry,
+   options = ["Straddle bar", "Close crossover"],
+   tooltip = "Straddle = one bar opens on one side of the level and closes on the " +
+             "other (the equity logic). Crossover = close crosses the level versus " +
+             "the prior close — fires more often, and catches gaps the straddle misses.")
+allowLong  = input.bool(true, "Longs (R3)",  group = gEntry, inline = "sides")
+allowShort = input.bool(true, "Shorts (S3)", group = gEntry, inline = "sides")
+oncePerDay = input.bool(false, "One entry per side per day", group = gEntry,
+   tooltip = "Caps re-entries when price chops across a level all session.")
+
+// ---------------------------------------------------------------------------
+// Inputs — trading window
+// ---------------------------------------------------------------------------
+gWin      = "Trading window (ET)"
+tradeSess = input.session("0935-1555", "Entries allowed", group = gWin,
+   tooltip = "Matches the Kairos pipeline window: no new entries after 15:55. " +
+             "The 09:35 start skips the opening-bar noise.")
+eodFlat   = input.bool(true, "Flatten at window close", group = gWin,
+   tooltip = "Strongly recommended on futures — an open position otherwise carries " +
+             "overnight on margin.")
+
+// ---------------------------------------------------------------------------
+// Inputs — exits
+// ---------------------------------------------------------------------------
+gExit     = "Exits"
+exitUnit  = input.string("Percent", "Stop / trail units", group = gExit,
+   options = ["Percent", "Points"],
+   tooltip = "Percent auto-scales across ES (~6k) and NQ (~20k) — one settings set " +
+             "works on both. Points is the futures convention but needs retuning " +
+             "per contract.")
+hardStopP = input.float(0.30, "Hard stop (%)",       minval = 0.0, step = 0.01, group = gExit, inline = "pct1")
+trailTrgP = input.float(0.25, "Trail trigger (%)",   minval = 0.0, step = 0.01, group = gExit, inline = "pct1")
+trailOffP = input.float(0.10, "Trail offset (%)",    minval = 0.0, step = 0.01, group = gExit, inline = "pct2")
+hardStopT = input.float(12.0, "Hard stop (points)",  minval = 0.0, step = 0.25,  group = gExit, inline = "pt1")
+trailTrgT = input.float(10.0, "Trail trigger (pts)", minval = 0.0, step = 0.25,  group = gExit, inline = "pt1")
+trailOffT = input.float(4.0,  "Trail offset (pts)",  minval = 0.0, step = 0.25,  group = gExit, inline = "pt2")
+maxHoldM  = input.int(10, "Max hold (minutes, 0 = off)", minval = 0, group = gExit,
+   tooltip = "Mirrors the Max-Hold node in the router. 0 disables.")
+
+// ---------------------------------------------------------------------------
+// Previous-session H / L / C
+// ---------------------------------------------------------------------------
+// RTH mode accumulates the session high/low/close by hand so the pivot inputs
+// contain only cash-session trade. The roll happens on the first RTH bar of a
+// new day: whatever we accumulated becomes "previous", and accumulation restarts.
+inRTH     = not na(time(timeframe.period, rthSess, "America/New_York"))
+firstRTH  = inRTH and not inRTH[1]
+
+var float curH  = na
+var float curL  = na
+var float curC  = na
+var float rthPH = na
+var float rthPL = na
+var float rthPC = na
+
+if firstRTH
+    rthPH := curH
+    rthPL := curL
+    rthPC := curC
+    curH  := high
+    curL  := low
+    curC  := close
+else if inRTH
+    curH := math.max(nz(curH, high), high)
+    curL := math.min(nz(curL, low),  low)
+    curC := close
+
+// Full-session mode: previous completed daily bar. `[1]` with lookahead_on is
+// the standard non-repainting previous-day read — the value is only requested
+// once that bar has closed, so it cannot see the future.
+[dH, dL, dC] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]],
+     lookahead = barmerge.lookahead_on)
+
+useRTH = sessMode == "RTH (09:30-16:00 ET)"
+pH = useRTH ? rthPH : dH
+pL = useRTH ? rthPL : dL
+pC = useRTH ? rthPC : dC
+
+rng = pH - pL
+r3  = pC + rng * 1.1 / 4
+s3  = pC - rng * 1.1 / 4
+// R4/S4 plotted for context only — the wider band this variant does NOT trade.
+r4  = pC + rng * 1.1 / 2
+s4  = pC - rng * 1.1 / 2
+
+levelsReady = not na(r3) and not na(s3) and rng > 0
+
+// ---------------------------------------------------------------------------
+// Entry logic
+// ---------------------------------------------------------------------------
+ema      = ta.ema(close, emaLen)
+emaLongOk  = not useEma or close > ema
+emaShortOk = not useEma or close < ema
+
+straddleUp   = open < r3 and close > r3
+straddleDn   = open > s3 and close < s3
+crossUp      = ta.crossover(close, r3)
+crossDn      = ta.crossunder(close, s3)
+
+breakUp = trigMode == "Straddle bar" ? straddleUp : crossUp
+breakDn = trigMode == "Straddle bar" ? straddleDn : crossDn
+
+inWindow = not na(time(timeframe.period, tradeSess, "America/New_York"))
+windowEnd = not inWindow and inWindow[1]
+
+// Per-day entry counters for the one-per-side cap.
+var int longsToday  = 0
+var int shortsToday = 0
+if ta.change(time("D")) != 0
+    longsToday  := 0
+    shortsToday := 0
+
+longCapOk  = not oncePerDay or longsToday  == 0
+shortCapOk = not oncePerDay or shortsToday == 0
+
+longSig  = allowLong  and levelsReady and inWindow and breakUp and emaLongOk  and longCapOk
+shortSig = allowShort and levelsReady and inWindow and breakDn and emaShortOk and shortCapOk
+
+// ---------------------------------------------------------------------------
+// Alert payload
+// ---------------------------------------------------------------------------
+// Field names are what routes/webhook.py reads: ticker, action, sentiment,
+// quantity, price, time, interval, strategy, broker.
+f_alert(_action, _sentiment) =>
+    '{"ticker":"'     + syminfo.ticker +
+    '","action":"'    + _action +
+    '","sentiment":"' + _sentiment +
+    '","quantity":'   + str.tostring(qty) +
+    ',"price":'       + str.tostring(close, format.mintick) +
+    ',"time":"'       + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") +
+    '","interval":"'  + timeframe.period +
+    '","strategy":"'  + stratId +
+    '","broker":"'    + brokerId + '"}'
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+if longSig and strategy.position_size <= 0
+    strategy.entry("L", strategy.long, qty = qty, alert_message = f_alert("LONG", "long"))
+    longsToday += 1
+
+if shortSig and strategy.position_size >= 0
+    strategy.entry("S", strategy.short, qty = qty, alert_message = f_alert("SHORT", "short"))
+    shortsToday += 1
+
+// --- exit levels ---------------------------------------------------------
+entryPx  = strategy.position_avg_price
+isLong   = strategy.position_size > 0
+isShort  = strategy.position_size < 0
+usePct   = exitUnit == "Percent"
+
+// Convert whichever unit is selected into absolute price distance.
+stopDist  = usePct ? entryPx * hardStopP / 100.0 : hardStopT
+trigDist  = usePct ? entryPx * trailTrgP  / 100.0 : trailTrgT
+offDist   = usePct ? entryPx * trailOffP  / 100.0 : trailOffT
+
+// Pine wants trail values in ticks, as ints.
+trigTicks = int(math.max(1, math.round(trigDist / syminfo.mintick)))
+offTicks  = int(math.max(1, math.round(offDist  / syminfo.mintick)))
+
+longStop  = entryPx - stopDist
+shortStop = entryPx + stopDist
+
+if isLong
+    strategy.exit("L-x", from_entry = "L",
+         stop        = hardStopP > 0 or hardStopT > 0 ? longStop : na,
+         trail_points = trigTicks,
+         trail_offset = offTicks,
+         alert_message = f_alert("EXIT_LONG", "flat"))
+
+if isShort
+    strategy.exit("S-x", from_entry = "S",
+         stop        = hardStopP > 0 or hardStopT > 0 ? shortStop : na,
+         trail_points = trigTicks,
+         trail_offset = offTicks,
+         alert_message = f_alert("EXIT_SHORT", "flat"))
+
+// --- max hold ------------------------------------------------------------
+// Bars, derived from minutes so the setting survives a timeframe change.
+tfMins  = math.max(1, timeframe.in_seconds(timeframe.period) / 60)
+maxBars = maxHoldM > 0 ? int(math.max(1, math.round(maxHoldM / tfMins))) : 0
+
+// Track the entry bar directly rather than indexing strategy.opentrades — that
+// index is invalid when flat, and Pine does not reliably short-circuit it out
+// of a ternary.
+var int entryBar = na
+if strategy.position_size != 0 and nz(strategy.position_size[1]) == 0
+    entryBar := bar_index
+if strategy.position_size == 0
+    entryBar := na
+barsHeld = na(entryBar) ? 0 : bar_index - entryBar
+
+if maxBars > 0 and strategy.position_size != 0 and barsHeld >= maxBars
+    if isLong
+        strategy.close("L", comment = "max-hold", alert_message = f_alert("EXIT_LONG", "flat"))
+    if isShort
+        strategy.close("S", comment = "max-hold", alert_message = f_alert("EXIT_SHORT", "flat"))
+
+// --- end-of-window flatten ----------------------------------------------
+if eodFlat and windowEnd and strategy.position_size != 0
+    if isLong
+        strategy.close("L", comment = "eod", alert_message = f_alert("EXIT_LONG", "flat"))
+    if isShort
+        strategy.close("S", comment = "eod", alert_message = f_alert("EXIT_SHORT", "flat"))
+
+// ---------------------------------------------------------------------------
+// Plots
+// ---------------------------------------------------------------------------
+plot(showLvls and levelsReady ? r3 : na, "R3", color = color.new(color.teal,   0),  linewidth = 2, style = plot.style_linebr)
+plot(showLvls and levelsReady ? s3 : na, "S3", color = color.new(color.maroon, 0),  linewidth = 2, style = plot.style_linebr)
+plot(showLvls and levelsReady ? r4 : na, "R4", color = color.new(color.teal,   65), linewidth = 1, style = plot.style_linebr)
+plot(showLvls and levelsReady ? s4 : na, "S4", color = color.new(color.maroon, 65), linewidth = 1, style = plot.style_linebr)
+plot(useEma ? ema : na, "EMA", color = color.new(color.orange, 30))
+
+bgcolor(inWindow ? color.new(color.blue, 96) : na, title = "Trading window")
+plotshape(longSig,  "Long signal",  shape.triangleup,   location.belowbar, color.new(color.teal,   0), size = size.tiny)
+plotshape(shortSig, "Short signal", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.tiny)
