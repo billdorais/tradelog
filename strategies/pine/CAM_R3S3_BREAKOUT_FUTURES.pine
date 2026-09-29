@@ -55,11 +55,19 @@ strategy("CAM R3S3 Breakout — Futures (ES/NQ)",
      overlay               = true,
      default_qty_type      = strategy.fixed,
      default_qty_value     = 1,
-     initial_capital       = 25000,
+     initial_capital       = 50000,
      currency              = currency.USD,
      commission_type       = strategy.commission.cash_per_contract,
      commission_value      = 2.25,
      slippage              = 1,
+     // MARGIN IS NOT OPTIONAL ON FUTURES. TradingView defaults margin to 100%,
+     // i.e. the full notional in cash. MNQ at ~30,650 is 30,650 x $2 = $61,300
+     // of notional PER CONTRACT, and ES is 6,700 x $50 = $335,000 — so with a
+     // normal account balance every entry is silently rejected and the Strategy
+     // Tester just reports "requires trade data". 5% lines up with real overnight
+     // futures margin (~$16.7k on ES, ~$3.1k on MNQ); intraday is lower still.
+     margin_long           = 5,
+     margin_short          = 5,
      process_orders_on_close = true,
      calc_on_every_tick    = false)
 
