@@ -1,0 +1,348 @@
+//@version=6
+// =============================================================================
+// CAM_BREAKOUT_R4S4_FUT — futures build (ES / NQ / MES / MNQ)
+// =============================================================================
+// Port of the original CristianD "CamarillaStrategyV1" (Pine v2) to v6 +
+// futures, in the house style of the production CAM_BREAKOUT_R3S3 script so the
+// family reads alike and a cross-variant comparison is not measuring config drift.
+//
+// WHAT THE ORIGINAL DID, PRESERVED HERE:
+//   - Trades H4 / L4 (close +/- range * 1.1 / 2) — what the Kairos naming calls
+//     R4S4. This is the WIDE band; the R3S3 sibling trades 1.1/4.
+//   - "Engulf" trigger: close beyond the level, open inside it.
+//   - EMA(8) agreement: EMA < close for longs, EMA > close for shorts.
+//   - ASYMMETRIC exits. Longs 40/1/70, shorts 10/1/20 (trail trigger / trail
+//     offset / stop, in ticks). A 3.5:1 long:short ratio — longs are given far
+//     more room. The same asymmetry is the default in strategies/camarilla.py
+//     (long_trail_activation 40 / short 10, long_hard_stop 70 / short 20), so
+//     it is a deliberate property of the strategy, not an artifact. Kept, and
+//     exposed per side rather than flattened into one symmetric setting.
+//
+// DELTAS FROM THE ORIGINAL — each one a futures necessity, commented at its site:
+//   1. margin_long / margin_short. TradingView defaults margin to 100% (full
+//      notional in cash). MNQ at ~30,650 is $61,300 notional PER CONTRACT and
+//      ES is ~$335,000, so on any real balance every entry is silently rejected
+//      and the Strategy Tester reports "requires trade data".
+//   2. Commission. Futures are ~$2-5 round turn and that is material at these
+//      stop distances.
+//   3. Level basis. The original reads security(tickerid,'D',...), which on a
+//      ~23h futures contract folds the overnight session into the pivot inputs.
+//      Default here is RTH-session capture (the production R3S3 approach);
+//      "Daily bar" is kept as an option so the original basis can be tested.
+//   4. RTH entry gate + optional flatten at the close. The original trades all
+//      day; on futures that means holding overnight on margin, and there is no
+//      server-side EOD path for futures in Kairos.
+//   5. Risk in POINTS converted to ticks (the house pattern), not raw ticks.
+//      The original's offset=1 is ONE TICK — on futures that exits on any
+//      quarter-point wiggle off the high. Defaults below keep the ratios but
+//      give the offset enough room to survive noise.
+//
+// SUGGESTED RISK (points) — ratios preserved from the original:
+//      MNQ / NQ   long  stop 35  trigger 20  offset 3     short  stop 10  trigger 5  offset 3
+//      MES / ES   long  stop  9  trigger  5  offset 1     short  stop  3  trigger 1.5 offset 1
+// CONTRACT VALUES:  ES $50/pt · MES $5/pt · NQ $20/pt · MNQ $2/pt (tick 0.25)
+//
+// FILL TIMING NOTE: process_orders_on_close = true fills at the signal bar's
+// close, matching the production Pine. The original v2 used the default (next
+// bar's open), which is also what strategies/camarilla.py simulates. If you are
+// reconciling against that backtester, turn this off.
+//
+// ALERTS: set the TradingView alert Message box to exactly:
+//      {{strategy.order.alert_message}}
+// =============================================================================
+
+strategy(
+     title                   = 'CAM_BREAKOUT_R4S4_FUT',
+     shorttitle              = 'CAM_BR_R4S4_FUT',
+     overlay                 = true,
+     pyramiding              = 0,
+     initial_capital         = 50000,
+     currency                = currency.USD,
+     // FUTURES DELTA 1 — without this, nothing fills.
+     margin_long             = 5,
+     margin_short            = 5,
+     // FUTURES DELTA 2
+     commission_type         = strategy.commission.cash_per_contract,
+     commission_value        = 2.25,
+     slippage                = 1,
+     process_orders_on_close = true)
+
+// ═══════════════════════════════════════════════════════════════
+// WEBHOOK ROUTING
+// ═══════════════════════════════════════════════════════════════
+strategyId = input.string('CAM_TICKER_BREAKOUT_R4S4_05MIN', 'Routing Strategy ID',
+     group='Webhook',
+     tooltip='Must match the routing rule name on the Kairos server, e.g. CAM_MNQ_BREAKOUT_R4S4_05MIN. Update this for every alert you create.')
+brokerName = input.string('alpaca-paper', 'Broker',
+     options=['alpaca-paper','alpaca-live','ib-paper','ib-live','coinbase'],
+     group='Webhook',
+     tooltip='NOTE: no broker here trades futures today — Alpaca has no futures and the IB path in Kairos is STK/OPT only. Backtest/paper until that is built.')
+qty        = input.int(1, 'Quantity (contracts)', minval=1, group='Webhook')
+
+// ═══════════════════════════════════════════════════════════════
+// RISK / EXIT PARAMETERS — ASYMMETRIC, per the original
+// Longs get materially more room than shorts (original 70/40 vs 20/10).
+// Same conversion pattern as the production script: points -> ticks.
+// ═══════════════════════════════════════════════════════════════
+longLossPts    = input.float(35.0, 'LONG  Stop Loss (points)',     step=0.25, group='Risk — Long')
+longTrigPts    = input.float(20.0, 'LONG  Trail Trigger (points)', step=0.25, group='Risk — Long')
+longOffPts     = input.float(3.0,  'LONG  Trail Offset (points)',  step=0.25, group='Risk — Long')
+
+shortLossPts   = input.float(10.0, 'SHORT Stop Loss (points)',     step=0.25, group='Risk — Short')
+shortTrigPts   = input.float(5.0,  'SHORT Trail Trigger (points)', step=0.25, group='Risk — Short')
+shortOffPts    = input.float(3.0,  'SHORT Trail Offset (points)',  step=0.25, group='Risk — Short')
+
+longLossTicks  = math.round(longLossPts  / syminfo.mintick)
+longTrigTicks  = math.round(longTrigPts  / syminfo.mintick)
+longOffTicks   = math.round(longOffPts   / syminfo.mintick)
+shortLossTicks = math.round(shortLossPts / syminfo.mintick)
+shortTrigTicks = math.round(shortTrigPts / syminfo.mintick)
+shortOffTicks  = math.round(shortOffPts  / syminfo.mintick)
+
+// ═══════════════════════════════════════════════════════════════
+// EMA FILTER
+// ═══════════════════════════════════════════════════════════════
+emaPeriod    = input.int(8, 'EMA Period', minval=1, group='Filter')
+useEmaFilter = input.bool(true, 'EMA Trend Filter (close > EMA for long)', group='Filter')
+emaVal = ta.ema(close, emaPeriod)
+
+// ═══════════════════════════════════════════════════════════════
+// BREAKOUT TRIGGER STYLE
+// The original is Engulf (open inside the level, close beyond it), so that is
+// the default here. Cross is offered for parity with the R3S3 script.
+// ═══════════════════════════════════════════════════════════════
+triggerStyle = input.string('Engulf', 'Trigger Style',
+     options=['Cross','Engulf'],
+     group='Breakout Trigger',
+     tooltip='Engulf = open inside the level, close beyond it (the original). Cross = previous close inside, current close beyond.')
+
+levelChoice = input.string('R4 / S4', 'Breakout Level',
+     options=['R4 / S4','R3 / S3'],
+     group='Breakout Trigger',
+     tooltip='R4/S4 (1.1/2) is the original wide band. R3/S3 (1.1/4) is the tighter sibling — more signals, less room.')
+
+// ═══════════════════════════════════════════════════════════════
+// SESSION — explicit timezone so chart tz setting cannot break it
+// ═══════════════════════════════════════════════════════════════
+rthSession = input.session('0930-1600', 'RTH Session', group='Session')
+inRTH      = not na(time(timeframe.period, rthSession, "America/New_York"))
+newRTHDay  = inRTH and not inRTH[1]
+
+// FUTURES DELTA 3
+levelBasis = input.string('Previous RTH session', 'Level Basis', group='Session',
+     options=['Previous RTH session','Previous daily bar (original)'],
+     tooltip='The original reads the daily bar, which on a ~23h contract includes the overnight session. RTH matches what a cash-session trader sees and is the production approach.')
+
+// FUTURES DELTA 4
+rthOnly = input.bool(true, 'Entries only during RTH', group='Session',
+     tooltip='The original trades all day. On futures that includes the overnight session.')
+eodFlat = input.bool(true, 'Flatten at RTH close', group='Session',
+     tooltip='Futures-only. An open futures position otherwise carries overnight on margin, and the Kairos EOD scheduler has no futures path.')
+
+// ═══════════════════════════════════════════════════════════════
+// CURRENT RTH SESSION OHLC
+// ═══════════════════════════════════════════════════════════════
+var float curRTHHigh  = na
+var float curRTHLow   = na
+var float curRTHClose = na
+
+if newRTHDay
+    curRTHHigh  := high
+    curRTHLow   := low
+    curRTHClose := close
+else if inRTH
+    curRTHHigh  := math.max(nz(curRTHHigh, high), high)
+    curRTHLow   := math.min(nz(curRTHLow,  low),  low)
+    curRTHClose := close
+
+// ═══════════════════════════════════════════════════════════════
+// PREVIOUS RTH SESSION OHLC
+// Saved at the moment RTH closes (inRTH → not inRTH transition).
+// More reliable than reading curRTH*[1] at newRTHDay: extended-hours bars
+// between sessions can make that lookback land on a non-RTH bar where
+// curRTH* was never written — and on futures there are ~17.5 hours of such
+// bars between sessions, not a handful.
+// ═══════════════════════════════════════════════════════════════
+var float prevRTHHigh  = na
+var float prevRTHLow   = na
+var float prevRTHClose = na
+
+if inRTH[1] and not inRTH and not na(curRTHHigh)
+    prevRTHHigh  := curRTHHigh
+    prevRTHLow   := curRTHLow
+    prevRTHClose := curRTHClose
+
+// Original basis: the previous completed DAILY bar. [1] with lookahead_on is
+// the standard non-repainting previous-day read.
+dHigh  = request.security(syminfo.tickerid, 'D', high[1],  lookahead = barmerge.lookahead_on)
+dLow   = request.security(syminfo.tickerid, 'D', low[1],   lookahead = barmerge.lookahead_on)
+dClose = request.security(syminfo.tickerid, 'D', close[1], lookahead = barmerge.lookahead_on)
+
+useRTHBasis = levelBasis == 'Previous RTH session'
+H = useRTHBasis ? prevRTHHigh  : dHigh
+L = useRTHBasis ? prevRTHLow   : dLow
+C = useRTHBasis ? prevRTHClose : dClose
+
+// ═══════════════════════════════════════════════════════════════
+// CAMARILLA CALCULATIONS
+// ═══════════════════════════════════════════════════════════════
+rng = H - L
+
+r1 = na(H) ? na : C + rng * 1.1 / 12
+s1 = na(H) ? na : C - rng * 1.1 / 12
+r2 = na(H) ? na : C + rng * 1.1 / 6
+s2 = na(H) ? na : C - rng * 1.1 / 6
+r3 = na(H) ? na : C + rng * 1.1 / 4
+s3 = na(H) ? na : C - rng * 1.1 / 4
+r4 = na(H) ? na : C + rng * 1.1 / 2
+s4 = na(H) ? na : C - rng * 1.1 / 2
+r5 = na(H) ? na : (H / L) * C
+s5 = na(H) ? na : C - (r5 - C)
+r6 = na(H) ? na : r5 + 1.168 * (r5 - r4)
+s6 = na(H) ? na : C - (r6 - C)
+dp = na(H) ? na : (H + L + C) / 3
+
+// ═══════════════════════════════════════════════════════════════
+// ACTIVE BREAKOUT LEVELS
+// ═══════════════════════════════════════════════════════════════
+useR4 = levelChoice == 'R4 / S4'
+upperLevel = useR4 ? r4 : r3
+lowerLevel = useR4 ? s4 : s3
+
+// ═══════════════════════════════════════════════════════════════
+// STRATEGY CONDITIONS
+// ═══════════════════════════════════════════════════════════════
+longEngulf  = close > upperLevel and open < upperLevel
+shortEngulf = close < lowerLevel and open > lowerLevel
+
+longCross   = close > upperLevel and close[1] <= upperLevel
+shortCross  = close < lowerLevel and close[1] >= lowerLevel
+
+longTrigger  = triggerStyle == 'Cross' ? longCross  : longEngulf
+shortTrigger = triggerStyle == 'Cross' ? shortCross : shortEngulf
+
+emaPassLong  = not useEmaFilter or close > emaVal
+emaPassShort = not useEmaFilter or close < emaVal
+
+sessionOk = not rthOnly or inRTH
+
+longCondition  = sessionOk and not na(upperLevel) and longTrigger  and emaPassLong
+shortCondition = sessionOk and not na(lowerLevel) and shortTrigger and emaPassShort
+
+// ═══════════════════════════════════════════════════════════════
+// ALERT MESSAGES
+// ═══════════════════════════════════════════════════════════════
+qtyStr = str.tostring(qty)
+
+longMsg      = '{"ticker":"' + syminfo.ticker + '","action":"LONG","sentiment":"{{strategy.market_position}}","quantity":' + qtyStr + ',"price":"{{close}}","time":"{{timenow}}","strategy":"' + strategyId + '","interval":"{{interval}}","broker":"' + brokerName + '"}'
+shortMsg     = '{"ticker":"' + syminfo.ticker + '","action":"SHORT","sentiment":"{{strategy.market_position}}","quantity":' + qtyStr + ',"price":"{{close}}","time":"{{timenow}}","strategy":"' + strategyId + '","interval":"{{interval}}","broker":"' + brokerName + '"}'
+exitLongMsg  = '{"ticker":"' + syminfo.ticker + '","action":"EXIT_LONG","sentiment":"{{strategy.market_position}}","quantity":' + qtyStr + ',"price":"{{close}}","time":"{{timenow}}","strategy":"' + strategyId + '","interval":"{{interval}}","broker":"' + brokerName + '"}'
+exitShortMsg = '{"ticker":"' + syminfo.ticker + '","action":"EXIT_SHORT","sentiment":"{{strategy.market_position}}","quantity":' + qtyStr + ',"price":"{{close}}","time":"{{timenow}}","strategy":"' + strategyId + '","interval":"{{interval}}","broker":"' + brokerName + '"}'
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRIES + EXITS — asymmetric per side, per the original
+// ═══════════════════════════════════════════════════════════════
+if longCondition and strategy.position_size <= 0
+    strategy.entry('Long', strategy.long, qty=qty, alert_message=longMsg)
+    strategy.exit('Exit Long', 'Long',
+         trail_points  = longTrigTicks,
+         trail_offset  = longOffTicks,
+         loss          = longLossTicks,
+         alert_message = exitLongMsg)
+
+if shortCondition and strategy.position_size >= 0
+    strategy.entry('Short', strategy.short, qty=qty, alert_message=shortMsg)
+    strategy.exit('Exit Short', 'Short',
+         trail_points  = shortTrigTicks,
+         trail_offset  = shortOffTicks,
+         loss          = shortLossTicks,
+         alert_message = exitShortMsg)
+
+// FUTURES DELTA 4 — flatten on the RTH close transition.
+if eodFlat and inRTH[1] and not inRTH and strategy.position_size != 0
+    if strategy.position_size > 0
+        strategy.close('Long',  comment='eod', alert_message=exitLongMsg)
+    if strategy.position_size < 0
+        strategy.close('Short', comment='eod', alert_message=exitShortMsg)
+
+// ═══════════════════════════════════════════════════════════════
+// DISPLAY TOGGLES
+// ═══════════════════════════════════════════════════════════════
+showEMA     = input.bool(true,  'Show EMA',                    group='Display')
+showActive  = input.bool(true,  'Show Active Breakout Levels', group='Display')
+labelOffset = input.int(20, 'Right Label Offset', minval=1,     group='Display')
+
+showR1 = input.bool(false, 'Show R1', inline='R1', group='Camarilla Levels')
+showR2 = input.bool(false, 'Show R2', inline='R2', group='Camarilla Levels')
+showR3 = input.bool(false, 'Show R3', inline='R3', group='Camarilla Levels')
+showR4 = input.bool(true,  'Show R4', inline='R4', group='Camarilla Levels')
+showR5 = input.bool(false, 'Show R5', inline='R5', group='Camarilla Levels')
+showR6 = input.bool(false, 'Show R6', inline='R6', group='Camarilla Levels')
+showDP = input.bool(true,  'Show DP', inline='DP', group='Camarilla Levels')
+showS1 = input.bool(false, 'Show S1', inline='S1', group='Camarilla Levels')
+showS2 = input.bool(false, 'Show S2', inline='S2', group='Camarilla Levels')
+showS3 = input.bool(false, 'Show S3', inline='S3', group='Camarilla Levels')
+showS4 = input.bool(true,  'Show S4', inline='S4', group='Camarilla Levels')
+showS5 = input.bool(false, 'Show S5', inline='S5', group='Camarilla Levels')
+showS6 = input.bool(false, 'Show S6', inline='S6', group='Camarilla Levels')
+
+// ═══════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════
+plot(showEMA ? emaVal : na, title='EMA', color=color.white, linewidth=2)
+
+colR1S1 = color.new(color.gray,    60)
+colR2S2 = color.new(color.gray,    50)
+colR3S3 = color.new(color.orange,  40)
+colR4    = color.new(color.red,    30)
+colS4    = color.new(color.green,  30)
+colR5S5 = color.new(color.purple,  40)
+colR6S6 = color.new(color.fuchsia, 40)
+colDP    = color.new(color.aqua,   30)
+
+plot(showR1 ? r1 : na, 'R1', color=colR1S1, style=plot.style_linebr, linewidth=1)
+plot(showR2 ? r2 : na, 'R2', color=colR2S2, style=plot.style_linebr, linewidth=1)
+plot(showR3 ? r3 : na, 'R3', color=colR3S3, style=plot.style_linebr, linewidth=1)
+plot(showR4 ? r4 : na, 'R4', color=colR4,   style=plot.style_linebr, linewidth=1)
+plot(showR5 ? r5 : na, 'R5', color=colR5S5, style=plot.style_linebr, linewidth=1)
+plot(showR6 ? r6 : na, 'R6', color=colR6S6, style=plot.style_linebr, linewidth=1)
+plot(showDP ? dp : na, 'DP', color=colDP,   style=plot.style_linebr, linewidth=1)
+plot(showS1 ? s1 : na, 'S1', color=colR1S1, style=plot.style_linebr, linewidth=1)
+plot(showS2 ? s2 : na, 'S2', color=colR2S2, style=plot.style_linebr, linewidth=1)
+plot(showS3 ? s3 : na, 'S3', color=colR3S3, style=plot.style_linebr, linewidth=1)
+plot(showS4 ? s4 : na, 'S4', color=colS4,   style=plot.style_linebr, linewidth=1)
+plot(showS5 ? s5 : na, 'S5', color=colR5S5, style=plot.style_linebr, linewidth=1)
+plot(showS6 ? s6 : na, 'S6', color=colR6S6, style=plot.style_linebr, linewidth=1)
+
+plot(showActive ? upperLevel : na, title='Upper Breakout', color=color.red,   linewidth=2, style=plot.style_stepline)
+plot(showActive ? lowerLevel : na, title='Lower Breakout', color=color.green, linewidth=2, style=plot.style_stepline)
+
+bgcolor(rthOnly and not inRTH ? color.new(color.gray, 94) : na, title='Outside RTH')
+
+// ═══════════════════════════════════════════════════════════════
+// RIGHT-SIDE LABELS
+// ═══════════════════════════════════════════════════════════════
+var label upperLabel = na
+var label lowerLabel = na
+upperTag = useR4 ? 'R4 ' : 'R3 '
+lowerTag = useR4 ? 'S4 ' : 'S3 '
+
+if barstate.islast
+    label.delete(upperLabel)
+    label.delete(lowerLabel)
+
+    if not na(upperLevel)
+        upperLabel := label.new(
+             bar_index + labelOffset, upperLevel,
+             upperTag + str.tostring(upperLevel, format.mintick),
+             style     = label.style_label_left,
+             color     = color.red,
+             textcolor = color.white)
+
+    if not na(lowerLevel)
+        lowerLabel := label.new(
+             bar_index + labelOffset, lowerLevel,
+             lowerTag + str.tostring(lowerLevel, format.mintick),
+             style     = label.style_label_left,
+             color     = color.green,
+             textcolor = color.white)
