@@ -221,16 +221,21 @@ shortSig = allowShort and levelsReady and inWindow and breakDn and emaShortOk an
 // ---------------------------------------------------------------------------
 // Field names are what routes/webhook.py reads: ticker, action, sentiment,
 // quantity, price, time, interval, strategy, broker.
+// Built one statement at a time rather than as a single multi-line expression:
+// Pine treats a continuation line indented at a multiple of 4 as a new block,
+// which is a syntax error inside a function body that is itself at 4.
 f_alert(_action, _sentiment) =>
-    '{"ticker":"'     + syminfo.ticker +
-    '","action":"'    + _action +
-    '","sentiment":"' + _sentiment +
-    '","quantity":'   + str.tostring(qty) +
-    ',"price":'       + str.tostring(close, format.mintick) +
-    ',"time":"'       + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") +
-    '","interval":"'  + timeframe.period +
-    '","strategy":"'  + stratId +
-    '","broker":"'    + brokerId + '"}'
+    _ts = str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
+    _s = '{"ticker":"' + syminfo.ticker + '"'
+    _s := _s + ',"action":"' + _action + '"'
+    _s := _s + ',"sentiment":"' + _sentiment + '"'
+    _s := _s + ',"quantity":' + str.tostring(qty)
+    _s := _s + ',"price":' + str.tostring(close, format.mintick)
+    _s := _s + ',"time":"' + _ts + '"'
+    _s := _s + ',"interval":"' + timeframe.period + '"'
+    _s := _s + ',"strategy":"' + stratId + '"'
+    _s := _s + ',"broker":"' + brokerId + '"}'
+    _s
 
 // ---------------------------------------------------------------------------
 // Orders
