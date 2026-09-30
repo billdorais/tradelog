@@ -186,3 +186,54 @@ def test_the_gated_book_list_comes_from_the_registry(monkeypatch):
     books = a.app.test_client().get("/api/risk/status").get_json()["gated_books"]["daytype"]
     assert "TV Farm" not in books and "Kairos Farm" not in books
     assert "Crew Paper" in books and "Crew Live" in books
+
+
+# ── the dropdown must survive a save ────────────────────────────────────────
+
+def test_the_dropdown_reads_the_enabled_key_not_the_overrides_existence():
+    """Setting "Inherit (shared)" flipped back to "Off" on the next 5s poll.
+
+    Saving inherit-with-an-exemption stores {exempt_tickers: [...]} — correctly, no
+    on/off decision in it. But the UI tested the OBJECT, and an object with no
+    `enabled` read as false, so it rendered "off". Worse than cosmetic: the next
+    Save then wrote that off for real, turning the whole book's day-type gate off.
+
+    Same conflation as the gate-logic bug, in the half of the round trip that was
+    not fixed with it.
+    """
+    src = open("templates/routing.html", encoding="utf-8").read()
+    assert "cg.daytype ? (cg.daytype.enabled" not in src, "the truthiness test is back"
+    assert "'enabled' in o" in src
+    i = src.index("const _sel = o =>")
+    block = src[i:i + 400]
+    assert "_cgSet('crewDaytypeSel', _sel(cg.daytype))" in src
+    assert "_cgSet('crewRvolSel',    _sel(cg.rvol))" in src, "same fragility, same fix"
+
+
+@pytest.mark.parametrize("choice,exempt,stored_keys", [
+    ("off",     "AAPL", {"enabled", "exempt_tickers"}),
+    ("inherit", "AAPL", {"exempt_tickers"}),
+    ("on",      "AAPL", {"enabled", "exempt_tickers"}),
+])
+def test_what_each_choice_stores(monkeypatch, gated, choice, exempt, stored_keys):
+    """Pins the shape the dropdown has to read back. inherit stores NO `enabled` —
+    that is the whole point, and what made the UI misread it."""
+    store = {}
+    monkeypatch.setattr(a, "_load_setting", lambda k: store.get(k))
+    monkeypatch.setattr(a, "_save_setting", lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(a, "_update_env_file", lambda *x: None, raising=False)
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {"4": {"tag": "alpaca4", "label": "Crew Paper"}})
+    monkeypatch.setattr(a, "ACCOUNTS_BY_TAG", {"alpaca4": {"tag": "alpaca4", "label": "Crew Paper"}})
+    a.app.config["TESTING"] = True
+    d = a.app.test_client().post("/api/routing/account_gates", json={
+        "account": "4", "daytype": choice, "daytype_exempt": exempt}).get_json()
+    assert set(d["overrides"]["daytype"]) == stored_keys
+
+
+def test_inherit_with_an_exemption_leaves_the_shared_gate_in_charge(monkeypatch, gated):
+    """The end state the user actually wanted: Crew keeps obeying the shared gate,
+    AAPL alone ignores it."""
+    _exempt(monkeypatch, ["AAPL"])                      # no `enabled` — i.e. inherit
+    assert _blocked("alpaca4", "AAPL") is False
+    assert _blocked("alpaca4", "NVDA") is True
+    assert _blocked("alpaca6", "NVDA") is True

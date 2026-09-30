@@ -1460,8 +1460,13 @@
       if (!_crewGatesDirty) {
       const cg = (data.gates_by_account || {}).alpaca4 || {};
       const _cgSet = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-      _cgSet('crewDaytypeSel', cg.daytype ? (cg.daytype.enabled ? 'on' : 'off') : 'inherit');
-      _cgSet('crewRvolSel', cg.rvol ? (cg.rvol.enabled ? 'on' : 'off') : 'inherit');
+      // Read the PRESENCE of `enabled`, not the presence of the override. An
+      // override holding only exempt_tickers is a per-ticker carve-out with no
+      // on/off decision in it — testing the object made "inherit + AAPL exempt"
+      // render as "off", and the next Save then wrote that off for real.
+      const _sel = o => (o && 'enabled' in o) ? (o.enabled ? 'on' : 'off') : 'inherit';
+      _cgSet('crewDaytypeSel', _sel(cg.daytype));
+      _cgSet('crewRvolSel',    _sel(cg.rvol));
       _cgSet('crewRvolMin', cg.rvol && cg.rvol.min != null ? cg.rvol.min : '');
       _cgSet('crewRvolCap', cg.rvol && cg.rvol.short_cap != null ? cg.rvol.short_cap : '');
       _cgSet('crewStrikesBase',  cg.strikes ? cg.strikes.base : '');
