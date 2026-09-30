@@ -4100,6 +4100,17 @@ def risk_status():
         # surface says "Crew Live"; a warning that says "alpaca6" reads like a leak.
         "account_labels":         {a["tag"]: a.get("label", a["tag"])
                                    for a in (ALPACA_ACCOUNTS or [])},
+        # Which books each gate actually covers. The day-type label was hardcoded as
+        # "TV Farm, TV Refined, Kairos Refined, Kairos Farm" — naming both farms,
+        # which are NOT gated, and omitting both Crew books, which are.
+        "gated_books": {
+            "daytype":  sorted((_META_BY_TAG.get(t) or {}).get("label", t)
+                               for t in DAYTYPE_GATE_ACCOUNTS),
+            "daytype_reversal": sorted((_META_BY_TAG.get(t) or {}).get("label", t)
+                                       for t in DAYTYPE_REVERSAL_GATE_ACCOUNTS),
+            "rvol":     sorted((_META_BY_TAG.get(t) or {}).get("label", t)
+                               for t in RVOL_GATE_ACCOUNTS),
+        },
         # Effective per-ticker hours exemptions, mirror already applied — the UI
         # needs the RESOLVED answer, not the raw override map.
         "hours_exempt_by_account": {a["tag"]: sorted(_hours_exempt_tickers(a["tag"]))
@@ -11259,7 +11270,13 @@ def set_account_gates():
     # Day-type: "inherit" removes the override; "on"/"off" set enabled.
     dt = (data.get("daytype") or "inherit").strip().lower()
     if dt == "inherit":
+        # Keep any per-ticker exemption: inheriting the shared ON/OFF decision and
+        # exempting one ticker from it are independent choices, and the common case
+        # is exactly that pairing.
+        _keep = (acct.get("daytype") or {}).get("exempt_tickers")
         acct.pop("daytype", None)
+        if _keep:
+            acct["daytype"] = {"exempt_tickers": _keep}
     elif dt in ("on", "off"):
         _d = {"enabled": dt == "on"}
         _ok = data.get("breakout_ok_days")
@@ -11325,6 +11342,18 @@ def set_account_gates():
     # branches above clearing it — a book can exempt a ticker while inheriting the
     # shared window, which is the common case (Crew keeps 09:35-15:55, SPY runs all
     # day). Sent as a comma list; blank clears.
+    if "daytype_exempt" in data:
+        _dx = data.get("daytype_exempt") or ""
+        if isinstance(_dx, str):
+            _dx = _dx.split(",")
+        _dx = sorted({str(t).strip().upper() for t in _dx if str(t).strip()})
+        if _dx:
+            acct["daytype"] = {**(acct.get("daytype") or {}), "exempt_tickers": _dx}
+        elif acct.get("daytype"):
+            acct["daytype"].pop("exempt_tickers", None)
+            if not acct["daytype"]:
+                acct.pop("daytype", None)
+
     if "hours_exempt" in data:
         _ex = data.get("hours_exempt") or ""
         if isinstance(_ex, str):
@@ -15899,6 +15928,7 @@ _GATE_RULES = {
             "Breakouts fire only on the allowed day types; reversals pass unless the separate reversal day-type gate is on for this book.",
             "Day type is classified from the prior session's range against its pivots.",
             "FAILS OPEN: a ticker that cannot be classified (no daily bars) is allowed through.",
+            "Individual tickers can be exempted and trade every day type — the gate reads the market's day, and a name with its own liquidity can expand on a day the classification calls Inside.",
         ],
         "why": "A breakout needs range to break into. Days that already closed inside "
                "their pivots tend to chop back through the level.",
@@ -16050,7 +16080,7 @@ def _gate_state(tag):
                    src)
 
     _dov = ov.get("daytype")
-    if _dov is not None:
+    if _dov is not None and "enabled" in _dov:
         on, days, src = (bool(_dov.get("enabled")),
                          set(_dov.get("breakout_ok_days") or DAYTYPE_GATE_BREAKOUT_OK_DAYS),
                          "override")
@@ -16059,6 +16089,9 @@ def _gate_state(tag):
                          DAYTYPE_GATE_BREAKOUT_OK_DAYS, "shared")
     rev_on = bool(DAYTYPE_REVERSAL_GATE_ENABLED and tag in DAYTYPE_REVERSAL_GATE_ACCOUNTS)
     _d = f"breakouts only on {', '.join(sorted(days))} days" if on else "off"
+    _dx = sorted(_daytype_exempt_tickers(tag))
+    if _dx and on:
+        _d += f" · {', '.join(_dx)} exempt (every day)"
     if rev_on:
         _d += f" · reversals only on {', '.join(sorted(DAYTYPE_REVERSAL_OK_DAYS))} days"
     out["day-type"] = (on or rev_on, _d, src)
@@ -21577,6 +21610,24 @@ def _get_day_classification(ticker: str, trade_date: str) -> dict:
     return val
 
 
+def _daytype_exempt_tickers(account: str):
+    """Tickers this book trades on EVERY day type, ignoring the day-type gate.
+
+    The gate is a book-wide read on whether breakouts pay today, but that premise
+    does not hold uniformly: a name with its own liquidity can expand on a day the
+    index-wide classification calls Inside. Same escape hatch as the hours gate,
+    same storage (GATES_BY_ACCOUNT[tag].daytype.exempt_tickers), same
+    DAYTYPE_EXEMPT_<TAG> env fallback.
+    """
+    raw = os.environ.get("DAYTYPE_EXEMPT_" + (account or "").upper())
+    if raw is None:
+        raw = ((_account_gate_overrides(account).get("daytype") or {})
+               .get("exempt_tickers") or [])
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return {str(t).strip().upper() for t in raw if str(t).strip()}
+
+
 def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str):
     """Day-type entry gate. Returns (blocked: bool, reason: str).
 
@@ -21587,16 +21638,24 @@ def _daytype_gate_block(strategy: str, ticker: str, date: str, account_tag: str)
         (Paper All + Kairos), when DAYTYPE_REVERSAL_GATE_ENABLED.
     Fails OPEN: an unclassifiable ticker (no daily bars) is allowed through."""
     su = (strategy or "").upper()
+    # Per-ticker exemption, checked before the day type is even looked up — an
+    # exempt name trades every day type, so the classification is irrelevant to it.
+    if ticker and str(ticker).strip().upper() in _daytype_exempt_tickers(account_tag):
+        return False, ""
     _dov = _account_gate_overrides(account_tag).get("daytype")
     if "BREAKOUT" in su:
-        if _dov is not None:
+        # Only an override that actually states on/off takes over the shared gate.
+        # An override holding ONLY exempt_tickers is a per-ticker carve-out, not a
+        # decision about the book — treating it as one turned the gate OFF for the
+        # whole book the moment a single ticker was exempted.
+        if _dov is not None and "enabled" in _dov:
             # Per-account override: this account controls the breakout day-type gate
             # itself, independent of the shared DAYTYPE_GATE_ENABLED + membership.
             if not _dov.get("enabled"):
                 return False, ""
             ok_days = set(_dov.get("breakout_ok_days") or DAYTYPE_GATE_BREAKOUT_OK_DAYS)
             kind_lbl = "breakout"
-        elif not DAYTYPE_GATE_ENABLED or account_tag not in DAYTYPE_GATE_ACCOUNTS:
+        elif not DAYTYPE_GATE_ENABLED or account_tag not in DAYTYPE_GATE_ACCOUNTS:  # noqa: E501
             return False, ""
         else:
             ok_days, kind_lbl = DAYTYPE_GATE_BREAKOUT_OK_DAYS, "breakout"

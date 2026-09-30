@@ -565,7 +565,7 @@
       <div class="risk-section">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
           Block breakout entries on Inside/Neutral days
-          <span style="color:#666;font-size:0.68rem">The gated books (TV Farm, TV Refined, Kairos Refined, Kairos Farm)</span>
+          <span style="color:#666;font-size:0.68rem" id="daytypeGatedBooks">The gated books</span>
           <span id="dtGateBadge" class="risk-status-badge disabled">
             <span class="risk-dot grey" id="dtGateDot"></span>
             <span id="dtGateText">Disabled</span>
@@ -676,6 +676,14 @@
           </select>
         </div>
         <div style="border-top:1px solid #2a2d3e;margin-top:12px;padding-top:12px">
+          <div class="risk-label" style="margin-top:8px">Trade on every day type
+            <span style="color:#666;font-size:0.68rem">comma-separated tickers exempt from the day-type gate</span></div>
+          <div class="risk-input-row">
+            <input class="risk-input" id="crewDaytypeExempt" type="text" placeholder="e.g. AAPL"
+                   style="width:260px" oninput="_crewGatesDirty=true"
+                   title="These tickers take breakout entries on Inside/Neutral days too, on both Crew books. Everything else obeys the day-type gate.">
+          </div>
+          <div class="risk-hint" style="margin-top:6px">The gate reads the MARKET's day. A name with its own liquidity can expand on a day the classification calls Inside. Blank = every ticker obeys it.</div>
           <div class="risk-label">RVOL gate (breakouts) <span style="color:#666;font-size:0.68rem">Crew is normally ungated — opt in here with its own min / short-cap</span></div>
           <div class="risk-input-row">
             <select class="risk-input" id="crewRvolSel" style="width:170px" onchange="_crewGatesDirty=true">
@@ -1438,6 +1446,14 @@
       for (const [tag, list] of Object.entries(data.hours_exempt_by_account || {}))
         _HOURS_EXEMPT[tag] = new Set((list || []).map(t => String(t).toUpperCase()));
       _ACCT_LABELS = data.account_labels || {};
+      // Rendered from the registry, not a hardcoded list — the previous one named
+      // both farms (ungated) and omitted both Crew books (gated).
+      const _gb = document.getElementById('daytypeGatedBooks');
+      if (_gb) {
+        const books = ((data.gated_books || {}).daytype) || [];
+        _gb.textContent = books.length ? `The gated books (${books.join(', ')})`
+                                       : 'No books are gated';
+      }
 
       // Crew Paper (acct4) entry-gate overrides — populate the section's fields, but
       // never while the user is editing them (the 5s poll would wipe their input).
@@ -1460,6 +1476,9 @@
       const _cex = document.getElementById('crewHoursExempt');
       if (_cex && document.activeElement !== _cex)
         _cex.value = ((cg.hours || {}).exempt_tickers || []).join(', ');
+      const _cdx = document.getElementById('crewDaytypeExempt');
+      if (_cdx && document.activeElement !== _cdx)
+        _cdx.value = ((cg.daytype || {}).exempt_tickers || []).join(', ');
       }
 
       // Per-position stop status badge
@@ -1869,7 +1888,8 @@
       strikes_base:  document.getElementById('crewStrikesBase').value,
       strikes_short: document.getElementById('crewStrikesShort').value,
       hours_windows: _collectHoursRows('crewHoursRows'),
-      hours_exempt:  document.getElementById('crewHoursExempt').value,
+      hours_exempt:   document.getElementById('crewHoursExempt').value,
+      daytype_exempt: document.getElementById('crewDaytypeExempt').value,
     };
     if (st) { st.style.color = '#888'; st.textContent = 'saving…'; }
     try {
