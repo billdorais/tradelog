@@ -1163,11 +1163,16 @@ def _get_cached_fills_n(num, raise_on_error=False, swr=False):
 # as −$1). Reuse the shared 90-day cache — it's already populated by the chart, so
 # this is a cache hit, and get_fills pages newest→oldest (capped) so today's fills
 # are always present even if the deep history is truncated.
-def _get_today_fills_n(num):
-    """Alias to the shared cached fills for account `num`, so daily-P&L pairing uses
-    the exact same source as the analysis/chart (kept as a named seam in case we later
-    want a lighter incremental fetch here)."""
-    return _get_cached_fills_n(num)
+def _get_today_fills_n(num, swr=False):
+    """Shared cached fills for account `num`, so daily-P&L pairing uses the exact
+    same source as the analysis/chart.
+
+    swr=True returns the cached fills IMMEDIATELY even when past TTL and refreshes
+    behind the request. That is right for the glance cards, which are a read of the
+    day so far and are re-polled anyway; it is NOT right for the risk monitor, where
+    a stale read decides whether to halt an account, so the default stays blocking.
+    """
+    return _get_cached_fills_n(num, swr=swr)
 
 _sig_lookup_cache = {"data": None, "ts": 0.0}
 _sig_lookup_lock  = threading.Lock()
@@ -1334,6 +1339,7 @@ if alpaca_broker is not None:
         warm, not a request path."""
         time.sleep(3)   # let gunicorn finish binding before making API calls
         while True:
+            _sweep_start = time.time()
             for _i, _n in enumerate(ACCOUNTS_BY_NUM):
                 if _i:
                     time.sleep(4)
@@ -1342,10 +1348,14 @@ if alpaca_broker is not None:
                     log.debug("Fills cache warm [account %s] — %d fills", _n, len(_fills))
                 except Exception as _e:
                     log.debug("Fills cache warm failed [account %s]: %s", _n, _e)
-            # Next sweep well BEFORE the 120s TTL expires so the cache never goes
-            # stale from the dashboard's POV. Total loop time ~ 6 accts × 4s + 90s
-            # idle = ~114s per full cycle. First sweep logs INFO once for visibility.
-            time.sleep(90)
+            # Next sweep well BEFORE the TTL expires, so the cache never goes stale
+            # from the dashboard's POV. This idle used to be a flat 90s, tuned by
+            # hand for six accounts: the sweep itself costs (n-1)x4s of stagger plus
+            # n paginated fetches, so a SEVENTH account pushed the cycle to ~135s
+            # against a 120s TTL and every cycle opened a window where a request paid
+            # the full pagination. Derive it instead of remembering it.
+            _idle = ALPACA_CACHE_TTL * 0.7 - (time.time() - _sweep_start)
+            time.sleep(max(10, _idle))
 
     threading.Thread(target=_prewarm_fills, daemon=True).start()
 
@@ -3687,7 +3697,9 @@ def api_alpaca_account():
         try:
             # Today-scoped fills only — NOT the 90-day shared cache, which grows until
             # a cold fetch exceeds its TTL and stalls the dashboard for minutes.
-            _dstats  = _realized_daily_stats(lambda: _get_today_fills_n(account))
+            # swr: the card must not sit on a 90-day pagination. Same cache the
+            # chart pairs from, so the two still agree.
+            _dstats  = _realized_daily_stats(lambda: _get_today_fills_n(account, swr=True))
             daily_pnl = None if _dstats is None else _dstats["pnl"]
         except Exception as _e:
             log.debug("api_alpaca_account: %s realized daily_pnl failed: %s", broker_tag, _e)
@@ -4038,7 +4050,7 @@ def risk_status():
         if _a.get("broker") is None:
             continue
         try:
-            _apnl = _realized_daily_pnl(lambda _n=_a["num"]: _get_today_fills_n(_n))
+            _apnl = _realized_daily_pnl(lambda _n=_a["num"]: _get_today_fills_n(_n, swr=True))
         except Exception:
             _apnl = None
         _pnl_accts.append({
