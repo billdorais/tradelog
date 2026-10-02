@@ -669,8 +669,8 @@
 
   </div>
 
-  <!-- Curated accounts — today's P&L at a glance (no tabbing needed) -->
-  <div class="section-label" style="margin-top:8px">Today's P&amp;L · Curated Accounts</div>
+  <!-- Tracked books — today's P&L at a glance (no tabbing needed) -->
+  <div class="section-label" style="margin-top:8px">Today's P&amp;L · Tracked Books</div>
   <div class="stats" style="margin-bottom:8px">
     {# Registry-driven: every CONFIGURED curated book, in UI order. Crew Live leads
        and carries the ● real-money marker used everywhere else on the page. #}
@@ -4225,13 +4225,37 @@
     let _refinedRankNames  = [];          // original-case strategy names in rank order (snapshot top→on-deck)
 
     // Leaderboard animal badge for an open position's strategy, by Refined rank.
+    // One icon per book that trades an explicit roster. Built from _ROSTERS, so a
+    // strategy leaving a book's rules stops being badged without a second edit.
+    const _ROSTER_ICON = { select: '🎯' };   // Kairos Select
+    const _rosterByStrategy = (function () {
+      const m = new Map();
+      for (const tab of Object.keys(_ROSTERS || {})) {
+        const icon = _ROSTER_ICON[tab];
+        if (!icon) continue;                       // a roster with no icon is not badged
+        for (const st of (_ROSTERS[tab].strategies || [])) {
+          if (!m.has(st)) m.set(st, { icon: icon, label: _ROSTERS[tab].label });
+        }
+      }
+      return m;
+    })();
+
     function _rankEmoji(stratU) {
       // White dove marks Crew Paper strategies (additive — shown alongside the band animal).
       let out = '';
+      const _rr = stratU && _rosterByStrategy.get(stratU);
+      if (_rr) {
+        out += '<span title="' + _rr.label + ' roster" style="margin-right:3px">'
+             + _rr.icon + '</span>';
+      }
       if (stratU && _crewStrategies && _crewStrategies.has(stratU)) {
         out += '<span title="Crew strategy — wired to Crew Paper" style="margin-right:3px">🕊️</span>';
       }
-      const r = stratU && _refinedRank[stratU];
+      // `stratU && _refinedRank[stratU]` yields '' for a blank strategy, and '' <= 5
+      // coerces to 0 <= 5 -- so an open position with NO strategy attached rendered
+      // as a Refined top-5 GOAT. Require an actual rank number.
+      const r = stratU ? _refinedRank[stratU] : undefined;
+      if (typeof r !== 'number') return out;
       if (r <= 5)       out += '<span title="GOAT — Refined top 5" style="margin-right:3px">🐐</span>';
       else if (r <= 10) out += '<span title="Workhorse — Refined 6–10" style="margin-right:3px">🐎</span>';
       else if (r <= 20) out += '<span class="bee-buzz" title="Busy Bee — Refined 11–20" style="margin-right:3px">🐝</span>';
@@ -4674,7 +4698,7 @@
         if (typeof data.max_hold_enforcement === 'boolean') updateMaxHoldBtn(data.max_hold_enforcement);
         // Curated books (TV Refined, Kairos Refined, Crew) stacked ABOVE the farms
         // (TV Farm, Kairos Farm). Stable sort keeps each group's existing order.
-        const _acctRank = { alpaca6: 0, alpaca4: 1, alpaca3: 2, alpaca2: 3, alpaca: 4, alpaca5: 5 };
+        const _acctRank = { alpaca6: 0, alpaca4: 1, alpaca7: 2, alpaca3: 3, alpaca2: 4, alpaca: 5, alpaca5: 6 };
         const positions   = (data.positions || [])
           .map((p, i) => [p, i])
           .sort((a, b) => (_acctRank[a[0].broker] ?? 9) - (_acctRank[b[0].broker] ?? 9) || a[1] - b[1])

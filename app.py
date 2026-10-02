@@ -260,7 +260,7 @@ ACCOUNT_META = {
     # from a test into the curve-fit the farm ranking already failed
     # (/api/backtest/score_shootout put Kairos Farm at t=0.41, and the picked cohort
     # still lost). Frozen, it is evidence either way.
-    "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3",
+    "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3", "glance": True,
           "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
@@ -304,10 +304,12 @@ def _ui_accounts():
     return sorted(
         ({"num": a["num"], "tag": a["tag"], "label": a["label"],
           "color": a.get("color") or "#888", "paper": bool(a.get("paper", True)),
-          # `curated` = carries a profit lock, i.e. one of the books whose daily P&L
-          # is worth showing at a glance. Same predicate the backend already uses to
-          # build pnl_accounts, so the row and the API cannot disagree.
-          "curated": bool(a.get("profit_lock", True)),
+          # `curated` = show this book's day on the glance row. It used to be read
+          # straight off profit_lock, which coincided until Kairos Select: that book
+          # mirrors the farm's gates ON PURPOSE (no profit lock) and is still a book
+          # whose day matters. `glance` overrides; absent it, the old predicate
+          # stands, so every existing account keeps the card it had.
+          "curated": bool(a.get("glance", a.get("profit_lock", True))),
           "tab": _TAB_KEY_BY_NUM.get(str(a["num"]), "acct" + str(a["num"]))}
          for a in ALPACA_ACCOUNTS),
         key=lambda a: _ui_account_rank(a["num"]))
