@@ -4934,12 +4934,51 @@ def alpaca_close_position(symbol):
     return jsonify(result), 400
 
 
+def _wired_roster(tag):
+    """Strategy names EXPLICITLY routed to one account by enabled routing rules.
+
+    Read from the routing table rather than kept as a second copy, so a filter
+    built on this cannot drift from what the account actually trades. Accounts fed
+    by a blanket pilot fan-out (the farms) have no explicit rules and return [] --
+    "every strategy" is not a roster.
+    """
+    out = set()
+    try:
+        conn = get_db()
+        for (nodes_json,) in conn.execute(
+                "SELECT nodes FROM routing_rules WHERE enabled=1").fetchall():
+            try:    nodes = json.loads(nodes_json or "[]")
+            except Exception: continue
+            if not any(n.get("type") == "broker"
+                       and _routing_broker_to_tag(n.get("value")) == tag for n in nodes):
+                continue
+            for n in nodes:
+                if n.get("type") == "strategy":
+                    v = (n.get("value") or "").strip().upper()
+                    if v and "*" not in v:
+                        out.add(v)
+        conn.close()
+    except Exception as e:
+        log.debug("wired roster for %s failed: %s", tag, e)
+    return sorted(out)
+
+
 @app.route("/")
 def dashboard():
     # Pass the webhook token so the Open Positions row actions (BE / ½ / close)
     # can authenticate silently — no password prompt on every click.
+    #
+    # Rosters for books that trade an explicit list, so the picker can filter to
+    # exactly what a book trades in one click. Keyed by tab so the template can
+    # name the chip after the book.
+    _rosters = {}
+    for _a in _ui_accounts():
+        _r = _wired_roster(_a["tag"])
+        if _r:
+            _rosters[_a["tab"]] = {"label": _a["label"], "color": _a["color"],
+                                   "strategies": _r}
     return render_template("index.html", webhook_token=WEBHOOK_TOKEN,
-                           accounts=_ui_accounts())
+                           accounts=_ui_accounts(), rosters=_rosters)
 
 
 @app.route("/routing")

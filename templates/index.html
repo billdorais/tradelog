@@ -790,6 +790,13 @@
               <span onclick="selectTopN(20,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 20</span>
               <span onclick="selectTopN(25,event)" style="font-size:0.75rem;color:#F2E7AC;cursor:pointer">Top 25</span>
               <span id="topNOosHint" style="font-size:0.66rem;color:#8a7c52;font-style:italic"></span>
+              {% for tab, r in (rosters or {}).items() %}
+              <span id="rosterChip_{{ tab }}" class="roster-chip" data-tab="{{ tab }}"
+                    onclick="toggleRoster('{{ tab }}', event)"
+                    title="Filter to the {{ r.strategies|length }} strategies {{ r.label }} actually trades. Stays on while you page the dates."
+                    style="font-size:0.68rem;font-weight:700;cursor:pointer;border:1px solid {{ r.color }};
+                           border-radius:4px;padding:1px 6px;color:{{ r.color }}">{{ r.label }}</span>
+              {% endfor %}
               <span onclick="selectRefinedTopN(5,event)"  title="Refined leaderboard RANK — top 5 by composite score (not recent P&L)"  style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;margin-left:auto;font-weight:600">★5</span>
               <span onclick="selectRefinedTopN(10,event)" title="Refined leaderboard RANK — top 10 by composite score (not recent P&L)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;font-weight:600">★10</span>
               <span onclick="selectRefined(event)" title="Select all Refined leaderboard strategies (★ top-20 band)" style="font-size:0.75rem;color:#c4b5fd;cursor:pointer;font-weight:600">★ all</span>
@@ -1417,6 +1424,75 @@
     // With this on, Top-N ranks over the EQUAL-LENGTH PERIOD IMMEDIATELY BEFORE the
     // visible range and charts the visible one — the selection never sees the data
     // it is judged on. A basket that only works in-sample goes flat here.
+    // Rosters for books that trade an EXPLICIT list, read server-side from the
+    // routing rules. Not a copy of the names kept here: a filter that drifts from
+    // what the book actually trades would quietly compare the wrong basket.
+    const _ROSTERS = {{ (rosters or {}) | tojson }};
+
+    // Which roster filter is pinned, if any. Held in localStorage so it survives a
+    // reload and a tab switch — the whole point is to page weeks with one basket
+    // held fixed, and a filter that quietly dropped on refresh would make two
+    // charts look comparable when they are not.
+    let _rosterOn = (function () {
+      try { return localStorage.getItem('dash_roster') || ''; } catch (_) { return ''; }
+    })();
+
+    function toggleRoster(tab, e) {
+      if (e) e.stopPropagation();
+      const r = _ROSTERS[tab];
+      if (!r) return;
+      if (_rosterOn === tab) {            // second click clears it
+        _rosterOn = '';
+        selectedStrategies = new Set();
+      } else {
+        _rosterOn = tab;
+        // Intersect with what this book/range actually has, EXCEPT when that would
+        // empty the set — an empty set means "show all" in this picker, so a week
+        // in which none of the roster traded would silently show all 233 names.
+        const have = new Set(_allStrategyNames.map(x => x.toUpperCase()));
+        const hit  = _allStrategyNames.filter(x => r.strategies.includes(x.toUpperCase()));
+        selectedStrategies = new Set(hit.length ? hit : r.strategies);
+      }
+      try {
+        if (_rosterOn) localStorage.setItem('dash_roster', _rosterOn);
+        else localStorage.removeItem('dash_roster');
+      } catch (_) {}
+      _tabSelections[activeTab] = selectedStrategies;
+      _syncRosterChips();
+      _updateStratPickerBtn();
+      _populateStratPicker();
+      applyEquityFilter();
+    }
+
+    function _unpinRoster() {
+      if (!_rosterOn) return;
+      _rosterOn = '';
+      try { localStorage.removeItem('dash_roster'); } catch (_) {}
+      _syncRosterChips();
+    }
+
+    function _syncRosterChips() {
+      document.querySelectorAll('.roster-chip').forEach(el => {
+        const on = el.dataset.tab === _rosterOn;
+        el.style.background = on ? (_ROSTERS[el.dataset.tab] || {}).color : 'transparent';
+        el.style.color      = on ? '#0b0d14' : (_ROSTERS[el.dataset.tab] || {}).color;
+      });
+    }
+
+    // Re-apply the pinned roster after the strategy list is rebuilt for a new
+    // range. Without this the filter survives in name only: the picker repopulates
+    // from the new window and the chip would be lit over a stale set.
+    function _reapplyRoster() {
+      if (!_rosterOn || !_ROSTERS[_rosterOn]) return;
+      const r   = _ROSTERS[_rosterOn];
+      const hit = _allStrategyNames.filter(x => r.strategies.includes(x.toUpperCase()));
+      if (hit.length) {
+        selectedStrategies = new Set(hit);
+        _tabSelections[activeTab] = selectedStrategies;
+      }
+      _syncRosterChips();
+    }
+
     let _topNOutOfSample = false;
 
     // Window the last OOS ranking was drawn from, for the hint line.
@@ -1545,6 +1621,7 @@
         return;
       }
       selectedStrategies = new Set(top);
+      _unpinRoster();
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
@@ -1567,6 +1644,7 @@
       for (const s of refined) if (!_allStrategyNames.includes(s)) _allStrategyNames.push(s);
       _allStrategyNames.sort();
       selectedStrategies = new Set(refined);
+      _unpinRoster();
       _tabSelections[activeTab] = selectedStrategies;
       _populateStratPicker();
       _updateStratPickerBtn();
@@ -3483,6 +3561,7 @@
           // Add newly appearing strategies as visible
           strategies.filter(s => !prevNames.has(s)).forEach(s => selectedStrategies.add(s));
         }
+        _reapplyRoster();   // a pinned roster is EXACT — it must not absorb the above
         _populateStratPicker();
         _updateStratPickerBtn();
 
@@ -4085,6 +4164,7 @@
       if (_tv) { const el = document.getElementById('equityToDate');   if (el) { el.value = _tv; el._flatpickr && el._flatpickr.setDate(_tv, false); } }
     } catch(e) {}
     try { _syncEquityStepLabel(); } catch(e) {}
+    try { _syncRosterChips(); } catch(e) {}
 
     // Poll live Alpaca unrealized P&L for open positions every 10 s
     async function refreshLivePnl() {
