@@ -249,6 +249,19 @@ ACCOUNT_META = {
     # row alone trades nothing: the account must also be armed.
     "6": {"tag": "alpaca6", "label": "Crew Live",      "color": "#E8A0BF", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "open_loc_gate": True},
+    # Kairos Select — a FROZEN 15-name roster drawn from the Kairos Farm's
+    # 2026-08-01..10-01 winners. Its whole purpose is to answer out-of-sample
+    # whether that selection carries forward, so the gates deliberately MIRROR THE
+    # FARM (ungated, all-day, no profit lock, no daily-loss guard): the names were
+    # measured under those conditions, and any gate added here would confound a
+    # forward shortfall between "the edge was noise" and "a gate got in the way".
+    #
+    # The roster must NOT be re-picked. Re-selecting winners periodically turns this
+    # from a test into the curve-fit the farm ranking already failed
+    # (/api/backtest/score_shootout put Kairos Farm at t=0.41, and the picked cohort
+    # still lost). Frozen, it is evidence either way.
+    "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3",
+          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -258,7 +271,7 @@ MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 #   account not in this list falls in after (stable by num).
 # Crew Live leads: it is the only book with real money on it, so it is the first
 # thing you should see. Its paper twin (4) sits next to it for the comparison.
-UI_ACCOUNT_ORDER = ["6", "4", "3", "2", "5", "1"]
+UI_ACCOUNT_ORDER = ["6", "4", "7", "3", "2", "5", "1"]
 _UI_ACCOUNT_RANK = {n: i for i, n in enumerate(UI_ACCOUNT_ORDER)}
 def _ui_account_rank(num):
     return (_UI_ACCOUNT_RANK.get(str(num), 99), str(num))
@@ -277,7 +290,8 @@ _NUM_BY_TAG = {_meta_tag(_n): _n for _n in ACCOUNT_META}
 # names ('crew', 'kairos', ...) rather than by slot number, so server and template
 # need one shared map — otherwise a new account gets a tab the JS cannot switch to.
 _TAB_KEY_BY_NUM = {"1": "alpaca", "2": "refined", "3": "kairos",
-                   "4": "crew",   "5": "farm",    "6": "live"}
+                   "4": "crew",   "5": "farm",    "6": "live",
+                   "7": "select"}
 
 
 def _ui_accounts():

@@ -301,6 +301,8 @@
     .pnl-tab.live-tab        { color: #E8A0BF; border-bottom-color: rgba(232,160,191,0.4); }
     .pnl-tab.active-live     { color: #E8A0BF; border-bottom-color: #E8A0BF;
                                background: rgba(232,160,191,0.10); font-weight: 700; }
+    .pnl-tab.active-select  { border-color: #B8A1E3; background: rgba(184,161,227,0.12);
+                               color: #B8A1E3; border-bottom-color: #B8A1E3; } /* Kairos Select */
     .pnl-tab.active-kairos  { border-color: #F2C07A; background: rgba(242,192,122,0.12);
                                color: #F2C07A; border-bottom-color: #F2C07A; }   /* Kairos Refined */
     .pnl-tab.active-crew    { border-color: #7FE098; background: rgba(127,224,152,0.12);
@@ -998,28 +1000,32 @@
     let allAlpaca5Execs = [];      // Engine Farm (alpaca-paper-5) fills
     let _fillsUnavailable = false, _fillsError = '';   // fetch failed vs genuinely empty
     let allAlpaca6Execs = [];      // Crew Live (alpaca-live-6) fills — REAL MONEY
+    let allAlpaca7Execs = [];      // Kairos Select (alpaca-paper-7) fills — frozen 15-name roster
     let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
     let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
     let allAlpaca3Positions = [];   // authoritative open positions from Alpaca account 3 (Kairos)
     let allAlpaca4Positions = [];   // authoritative open positions from Alpaca account 4 (Crew Paper)
     let allAlpaca5Positions = [];   // authoritative open positions from Alpaca account 5 (Engine Farm)
     let allAlpaca6Positions = [];   // authoritative open positions from Alpaca account 6 (Crew Live — REAL MONEY)
+    let allAlpaca7Positions = [];   // authoritative open positions from Alpaca account 7 (Kairos Select)
 
     // Keyed by account number so a new book needs no branch here — just the
     // allAlpacaN* pair and its _ACCT_TABS row.
     function _execsByAcct(n) {
       return ({ '2': allAlpaca2Execs, '3': allAlpaca3Execs, '4': allAlpaca4Execs,
-                '5': allAlpaca5Execs, '6': allAlpaca6Execs })[n] || allAlpacaExecs;
+                '5': allAlpaca5Execs, '6': allAlpaca6Execs,
+                '7': allAlpaca7Execs })[n] || allAlpacaExecs;
     }
     function _positionsByAcct(n) {
       return ({ '2': allAlpaca2Positions, '3': allAlpaca3Positions, '4': allAlpaca4Positions,
-                '5': allAlpaca5Positions, '6': allAlpaca6Positions })[n] || allAlpacaPositions;
+                '5': allAlpaca5Positions, '6': allAlpaca6Positions,
+                '7': allAlpaca7Positions })[n] || allAlpacaPositions;
     }
     function _currentAlpacaExecs()     { return _execsByAcct(_acctForTab(feedTab)); }
     function _currentAlpacaPositions() { return _positionsByAcct(_acctForTab(feedTab)); }
     let selectedStrategy   = '';
     // Per-tab strategy selections so Paper All and Paper Refined filter independently
-    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), crew: new Set(), farm: new Set(), signals: new Set() };
+    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), crew: new Set(), farm: new Set(), select: new Set(), signals: new Set() };
     let selectedStrategies = _tabSelections['refined'];  // active set, points into _tabSelections
     let _allStrategyNames  = [];
     let _cachedFullStats   = null;
@@ -1042,6 +1048,8 @@
                  note:  'Crew Live (account 6) trades REAL MONEY. Same roster as Crew Paper.' },
       crew:    { account: '4', label: 'Cumulative realized P&L from Crew Paper fills (acct 4)',
                  note:  'Cumulative realized P&L from Crew Paper fills (paper account 4).' },
+      select:  { account: '7', label: 'Cumulative realized P&L from Kairos Select fills (acct 7)',
+                 note:  'Kairos Select (paper account 7) trades a FROZEN 15-name roster picked from the Kairos Farm on 2026-10-01. Ungated and all-day, matching the farm the names were measured on. The roster is deliberately not re-picked — re-selecting winners would make this a curve-fit instead of an out-of-sample test.' },
       kairos:  { account: '3', label: 'Cumulative realized P&L from Kairos Refined fills (acct 3)',
                  note:  'Cumulative realized P&L from Kairos Refined fills (paper account 3).' },
       refined: { account: '2', label: 'Cumulative realized P&L from TV Refined fills',
@@ -3369,7 +3377,7 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpaca5ExecsRes, alpaca6ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, alpaca5PosRes, alpaca6PosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpaca5ExecsRes, alpaca6ExecsRes, alpaca7ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, alpaca5PosRes, alpaca6PosRes, alpaca7PosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
@@ -3380,12 +3388,14 @@
           fetch('/api/alpaca/trades?account=4').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=5').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=6').then(r => r.json()).catch(() => []),
+          fetch('/api/alpaca/trades?account=7').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=2').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=3').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=4').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=5').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=6').then(r => r.json()).catch(() => ({positions: []})),
+          fetch('/api/alpaca/positions?account=7').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
@@ -3398,12 +3408,14 @@
         allAlpaca4Execs  = Array.isArray(alpaca4ExecsRes) ? alpaca4ExecsRes : [];
         allAlpaca5Execs  = Array.isArray(alpaca5ExecsRes) ? alpaca5ExecsRes : [];
         allAlpaca6Execs  = Array.isArray(alpaca6ExecsRes) ? alpaca6ExecsRes : [];
+        allAlpaca7Execs  = Array.isArray(alpaca7ExecsRes) ? alpaca7ExecsRes : [];
         allAlpacaPositions  = Array.isArray(alpacaPosRes)  ? alpacaPosRes  : (alpacaPosRes.positions  || []);
         allAlpaca2Positions = Array.isArray(alpaca2PosRes) ? alpaca2PosRes : (alpaca2PosRes.positions || []);
         allAlpaca3Positions = Array.isArray(alpaca3PosRes) ? alpaca3PosRes : (alpaca3PosRes.positions || []);
         allAlpaca4Positions = Array.isArray(alpaca4PosRes) ? alpaca4PosRes : (alpaca4PosRes.positions || []);
         allAlpaca5Positions = Array.isArray(alpaca5PosRes) ? alpaca5PosRes : (alpaca5PosRes.positions || []);
         allAlpaca6Positions = Array.isArray(alpaca6PosRes) ? alpaca6PosRes : (alpaca6PosRes.positions || []);
+        allAlpaca7Positions = Array.isArray(alpaca7PosRes) ? alpaca7PosRes : (alpaca7PosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
