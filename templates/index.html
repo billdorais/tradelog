@@ -810,6 +810,14 @@
         <button id="eqDateThisMonth" onclick="setEquityThisMonth()" title="This month" class="eq-date-btn"                    style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">This Month</button>
         <button id="eqDateLastMonth" onclick="setEquityLastMonth()" title="Last month" class="eq-date-btn"                    style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer;white-space:nowrap">Last Month</button>
         <button onclick="clearEquityDates()"   title="Show all"   style="background:transparent;border:1px solid #2a2d3e;color:#555;border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">✕</button>
+        <span style="display:inline-flex;align-items:center;gap:3px;margin-left:4px">
+          <button id="eqStepBack" onclick="stepEquityRange(-1)"
+                  style="background:transparent;border:1px solid #2a2d3e;color:#9aa0b5;border-radius:6px;padding:4px 9px;font-size:0.75rem;cursor:pointer">◀</button>
+          <span id="eqStepLabel" title="The arrows shift the window by its own length"
+                style="font-size:0.68rem;color:#6b7280;min-width:34px;text-align:center;user-select:none">—</span>
+          <button id="eqStepFwd"  onclick="stepEquityRange(1)"
+                  style="background:transparent;border:1px solid #2a2d3e;color:#9aa0b5;border-radius:6px;padding:4px 9px;font-size:0.75rem;cursor:pointer">▶</button>
+        </span>
       </div>
     </div>
     <canvas id="equityChart" height="90"></canvas>
@@ -3912,6 +3920,84 @@
       if (fpTo)   fpTo.setDate(to, false);
       _saveDashboardDates();
       applyEquityFilter();
+      _syncEquityStepLabel();
+    }
+
+    // ── Paging the window ──────────────────────────────────────────────────
+    // One pair of arrows that pages by day, week or month. The step is READ OFF
+    // the window on screen rather than chosen in a separate mode, so "Last Week"
+    // then ◀ means the week before, and a month then ◀ means the month before.
+    //
+    // new Date('2026-09-21') parses as UTC MIDNIGHT, which in US timezones is the
+    // previous day locally — getDate() would be off by one and every step would
+    // drift a day. Build from parts so it is local midnight, like the presets.
+    function _equityParse(v) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((v || '').trim());
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+    }
+
+    function _equityStep() {
+      const from = _equityParse((document.getElementById('equityFromDate') || {}).value);
+      const to   = _equityParse((document.getElementById('equityToDate')   || {}).value);
+      if (!from || !to || to < from) return null;
+      const days = Math.round((to - from) / 86400000) + 1;
+      // A single day is a day even when it lands on the 1st. This test comes FIRST
+      // because the month rule below also matches 1st-to-1st, which would make
+      // "Today" page a whole month on the first of the month.
+      if (days === 1) return { unit: 'day', n: 1, label: 'day' };
+      // A month is a CALENDAR month, not 30 days — stepping back from Mar 1-31 by
+      // a fixed day count lands in mid-February.
+      if (from.getDate() === 1 && to.getMonth() === from.getMonth()
+          && to.getFullYear() === from.getFullYear())
+        return { unit: 'month', label: 'month' };
+      // Mon-Fri and Mon-Sun are both "a week": step a full 7 so the next click
+      // lands on the previous Monday instead of drifting back through midweek.
+      if (from.getDay() === 1 && days <= 7) return { unit: 'week', n: 7, label: 'week' };
+      return { unit: 'days', n: days, label: days + 'd' };
+    }
+
+    function _syncEquityStepLabel() {
+      const lbl = document.getElementById('eqStepLabel');
+      const bk  = document.getElementById('eqStepBack');
+      const fw  = document.getElementById('eqStepFwd');
+      if (!lbl || !bk || !fw) return;
+      const st = _equityStep();
+      lbl.textContent = st ? st.label : '\u2014';
+      // No range set = nothing to page. Forward past today is always an empty
+      // window, so it is disabled rather than left to render a blank chart.
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const to    = _equityParse((document.getElementById('equityToDate') || {}).value);
+      const atEnd = !!to && _equityIso(to) >= today;
+      [[bk, !st], [fw, !st || atEnd]].forEach(([el, off]) => {
+        el.disabled = off;
+        el.style.opacity = off ? '0.3' : '1';
+        el.style.cursor  = off ? 'default' : 'pointer';
+      });
+      bk.title = st ? 'Previous ' + st.label : 'Set a date range first';
+      fw.title = !st ? 'Set a date range first'
+               : atEnd ? 'Already runs through today' : 'Next ' + st.label;
+    }
+
+    function stepEquityRange(dir) {
+      const st = _equityStep();
+      if (!st) return;
+      const from = _equityParse(document.getElementById('equityFromDate').value);
+      const to   = _equityParse(document.getElementById('equityToDate').value);
+      let nf, nt;
+      if (st.unit === 'month') {
+        nf = new Date(from.getFullYear(), from.getMonth() + dir, 1);
+        const lastSrc = new Date(from.getFullYear(), from.getMonth() + 1, 0).getDate();
+        const lastTgt = new Date(nf.getFullYear(), nf.getMonth() + 1, 0).getDate();
+        // A window that ran to the end of its month runs to the end of the next,
+        // so Jan 1-31 steps to Feb 1-28 rather than a Feb 31 that means March 3.
+        const day = to.getDate() >= lastSrc ? lastTgt : Math.min(to.getDate(), lastTgt);
+        nt = new Date(nf.getFullYear(), nf.getMonth(), day);
+      } else {
+        nf = new Date(from); nf.setDate(from.getDate() + dir * st.n);
+        nt = new Date(to);   nt.setDate(to.getDate()   + dir * st.n);
+      }
+      _setEquityRange(_equityIso(nf), _equityIso(nt));
+      _syncEquityDateButtons(null);   // a stepped window, no longer a preset
     }
 
     function _syncEquityDateButtons(activeId) {
@@ -3967,6 +4053,7 @@
       _saveDashboardDates();
       applyEquityFilter();
       _syncEquityDateButtons(null);
+      _syncEquityStepLabel();
     }
 
     function _saveDashboardDates() {
@@ -3984,6 +4071,7 @@
         applyEquityFilter();
         // Manual date pick — no preset is "active" any more.
         _syncEquityDateButtons(null);
+        _syncEquityStepLabel();
       },
     };
     flatpickr('#equityFromDate', _fpCfg);
@@ -3996,6 +4084,7 @@
       if (_sv) { const el = document.getElementById('equityFromDate'); if (el) { el.value = _sv; el._flatpickr && el._flatpickr.setDate(_sv, false); } }
       if (_tv) { const el = document.getElementById('equityToDate');   if (el) { el.value = _tv; el._flatpickr && el._flatpickr.setDate(_tv, false); } }
     } catch(e) {}
+    try { _syncEquityStepLabel(); } catch(e) {}
 
     // Poll live Alpaca unrealized P&L for open positions every 10 s
     async function refreshLivePnl() {
