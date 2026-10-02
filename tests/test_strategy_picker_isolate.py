@@ -96,3 +96,35 @@ def test_solo_control_is_revealed_on_hover_not_always_painted():
     html = _index()
     assert re.search(r"\.strat-solo\s*\{[^}]*opacity:\s*0\b", html)
     assert ".strat-picker-row:hover .strat-solo" in html
+
+
+# ── the control has to be ON SCREEN to be usable ─────────────────────────────
+
+def _css(html, selector):
+    i = html.index(selector)
+    return html[i:html.index("}", i)]
+
+
+def test_the_row_has_room_for_the_isolate_control():
+    """The solo control is the LAST element in the row and the panel clips
+    overflow-x, so a row wider than the panel hides it entirely.
+
+    At the old 440px the fixed columns (eye, star, P&L, trades, gaps, padding)
+    spend ~240px, leaving ~200px for a name that renders ~226px — the overflow
+    pushed the control out of sight."""
+    html = open("templates/index.html", encoding="utf-8").read()
+    panel = _css(html, ".strat-picker-panel")
+    m = re.search(r"max-width:\s*min\((\d+)px", panel)
+    assert m, "panel has no explicit max-width"
+    assert int(m.group(1)) >= 560, f"panel too narrow for a 31-char name: {m.group(1)}px"
+
+
+def test_the_name_yields_before_the_controls_do():
+    """Width alone only moves the cliff — a longer name would clip the control
+    again. The name truncates; the controls never shrink."""
+    html = open("templates/index.html", encoding="utf-8").read()
+    assert "flex-shrink: 0" in _css(html, ".strat-solo")
+    name = _css(html, ".strat-name")
+    assert "text-overflow: ellipsis" in name
+    assert "min-width: 0" in name          # without this a flex item will not shrink
+    assert 'class="strat-name"' in html, "the rule exists but no row uses it"
