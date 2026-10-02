@@ -1255,6 +1255,31 @@ def _build_alpaca_broker(num):
         paper  = paper,
     )
 
+def _account_meta_fields(num, meta):
+    """The ACCOUNT_META-derived fields of an account record.
+
+    One place, because the registry builds records from an EXPLICIT key list and
+    anything that reconstructs one (tests, tooling) would otherwise keep its own
+    copy of that list. `glance` shipped with no card on the live dashboard exactly
+    that way: present in the test's stub record, absent from the real one, so the
+    card test passed against a fixture more permissive than production.
+    """
+    return {
+        "label":            meta.get("label", "Paper " + str(num)),
+        "color":            meta.get("color", "#888"),
+        "daytype_gate":     meta.get("daytype_gate", True),
+        "reversal_gate":    meta.get("reversal_gate", True),
+        "retest":           meta.get("retest", True),
+        "auto_source":      meta.get("auto_source", True),
+        "profit_lock":      meta.get("profit_lock", True),
+        # Whether this book shows a daily P&L card. Defaults to profit_lock, which
+        # is what the row meant before a book existed that mirrors a farm's gates
+        # and is still watched daily.
+        "glance":           meta.get("glance", meta.get("profit_lock", True)),
+        "daily_loss_guard": meta.get("daily_loss_guard", True),
+    }
+
+
 ALPACA_ACCOUNTS = []    # ordered list of configured account records
 ACCOUNTS_BY_NUM = {}    # "1" -> record
 ACCOUNTS_BY_TAG = {}    # "alpaca" -> record
@@ -1269,8 +1294,6 @@ for _num in _ALPACA_NUMS:
     _rec = {
         "num":           _num,
         "tag":           _meta_tag(_num),
-        "label":         _meta.get("label", "Paper " + _num),
-        "color":         _meta.get("color", "#888"),
         "paper":         _paper,
         "broker":        _broker,
         "fills_cache":   _alpaca_caches[_num],
@@ -1279,13 +1302,8 @@ for _num in _ALPACA_NUMS:
         "fills_fn":      (lambda n=_num: _get_cached_fills_n(n)),
         "target_paper":  "alpaca-paper" if _num == "1" else "alpaca-paper-" + _num,
         "target_live":   "alpaca-live"  if _num == "1" else "alpaca-live-"  + _num,
-        "daytype_gate":  _meta.get("daytype_gate", True),
-        "reversal_gate": _meta.get("reversal_gate", True),
-        "retest":        _meta.get("retest", True),
-        "auto_source":   _meta.get("auto_source", True),
-        "profit_lock":   _meta.get("profit_lock", True),
         "reversal_side": _REVERSAL_SIDE_BY_TAG.get(_meta_tag(_num)),
-        "daily_loss_guard": _meta.get("daily_loss_guard", True),
+        **_account_meta_fields(_num, _meta),
     }
     ALPACA_ACCOUNTS.append(_rec)
     ACCOUNTS_BY_NUM[_num]        = _rec

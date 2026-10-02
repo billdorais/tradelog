@@ -30,11 +30,39 @@ import app as a
 SELECT, FARM = "7", "5"
 
 
+# Records are built through the SAME function production uses, so a flag dropped
+# from it breaks the fixture and the app together. Reconstructing the key list
+# here is what let `glance` ship with no card: the stub had it, the record did not.
+def _record(n):
+    meta = a.ACCOUNT_META[n]
+    rec = {"num": n, "tag": meta["tag"], "paper": n != "6"}
+    rec.update(a._account_meta_fields(n, meta))
+    return rec
+
+
 def _accounts(monkeypatch):
     monkeypatch.setattr(a, "ALPACA_ACCOUNTS",
-                        [dict(a.ACCOUNT_META[n], num=n, paper=(n != "6"))
-                         for n in ("1", "2", "3", "4", "5", "6", "7")])
+                        [_record(n) for n in ("1", "2", "3", "4", "5", "6", "7")])
 
+def test_every_meta_flag_the_ui_reads_is_copied_into_the_record():
+    """The bug this guards: _ui_accounts reads its flags off the account RECORD,
+    and that record is assembled from an EXPLICIT key list rather than the meta
+    dict. A meta flag missing from that list silently reads as its default, so the
+    dashboard disagrees with ACCOUNT_META and nothing fails. That is exactly how
+    `glance` shipped with no card on the live page."""
+    import inspect
+    import re as _re
+    wanted = set(_re.findall(r'a[.]get[(]"(\w+)"', inspect.getsource(a._ui_accounts)))
+    src = inspect.getsource(a)
+    rec = src[src.index("def _account_meta_fields"):]
+    rec = rec[:rec.index(chr(10) + "ALPACA_ACCOUNTS")]
+    copied = set(_re.findall(r'"(\w+)":', rec))
+    # `paper` is read off the record too but comes from ALPACA_PAPER{N}, not
+    # from meta, so it is not the builder's to supply.
+    missing = wanted - copied - {"paper"}
+    assert not missing, (
+        "_ui_accounts reads " + str(sorted(missing))
+        + " off the record, but the record never copies it")
 
 # ── the card ────────────────────────────────────────────────────────────────
 
