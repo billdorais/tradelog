@@ -9422,23 +9422,49 @@ def _build_signal_lookup_for_alpaca(trades_db=None):
 
 
 def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_id=""):
-    """Return (strategy, sentiment) for the TV signal closest in time to this fill,
-    within a ±5-minute window. Falls back to parsing strategy from the
-    client_order_id (kairos-{strategy}-{ts}) when no TV signal matches."""
+    """Return (strategy, sentiment) for a fill.
+
+    The CLIENT ORDER ID wins. Every entry order this app places is tagged
+    kairos-{strategy}-{ts}, TV-triggered and engine-triggered alike, so it is the
+    app's own record of which strategy it placed the order for. The TV signal table
+    is a ±5-minute ticker+side PROXIMITY GUESS, and it used to win: when a book
+    trades one strategy on a ticker while a different strategy signals the same
+    ticker and side nearby, the guess overrode the fact.
+
+    That mislabelled real trades onto strategies a book does not trade at all.
+    Kairos Select placed four orders on 2026-10-02, all tagged AAPL/AMZN
+    BREAKOUT R4S4 — both on its 15-name roster — and two came back labelled
+    AMZN_CAM_REVERSAL_R4S4 and AAPL_CAM_BREAKOUT_R3S3, so a roster filter found
+    two of its four trades.
+
+    Exit orders (kairos-trail-/kairos-hard-) carry no strategy and still fall
+    through to the lookup, as do fills placed outside this app.
+    """
     from datetime import datetime as _dt
     try:
         fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
     except Exception:
         fill_ts = None
+
+    # Nearest TV signal, if any. Still the source of `sentiment`, which the order
+    # id does not carry.
+    best = None
     candidates = signal_lookup.get((symbol.upper(), side), [])
     if candidates and fill_ts is not None:
-        best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
-        if abs(best[0] - fill_ts) <= 300:
-            return best[1], best[2]
-    if order_id and order_id.startswith("kairos-"):
-        parts = order_id.split("-", 2)
-        if len(parts) == 3 and parts[1]:
-            return parts[1], ""
+        _b = min(candidates, key=lambda x: abs(x[0] - fill_ts))
+        if abs(_b[0] - fill_ts) <= 300:
+            best = _b
+
+    oid = order_id or ""
+    if oid.startswith("kairos-") and not oid.startswith(("kairos-trail-", "kairos-hard-")):
+        # rsplit, not split("-", 2): the timestamp is the LAST segment, and a
+        # hyphenated ticker (BRK-B) would make a left split cut the name short.
+        strat = oid[len("kairos-"):].rsplit("-", 1)[0]
+        if strat:
+            return strat, (best[2] if best else "")
+
+    if best:
+        return best[1], best[2]
     return "Unknown", ""
 
 
