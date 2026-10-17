@@ -391,7 +391,14 @@
   function _renderRoster() {
     const el = document.getElementById('roster');
     const d = _data, ro = d.roster || [];
-    if (!ro.length) { el.innerHTML = '<div class="empty">No strategy qualifies with these settings.</div>'; return; }
+    const onNow = d.diff.keep.length + d.diff.remove.length;
+    const clearBtn = `<button class="btn danger" onclick="askClear()" ${!d.select_configured || !onNow ? 'disabled' : ''}
+        title="${onNow ? 'Take Kairos Select off all ' + onNow + ' strategies' : 'Kairos Select has no strategies wired'}">Clear Kairos Select…</button>`;
+    if (!ro.length) {
+      el.innerHTML = '<div class="empty">No strategy qualifies with these settings.</div>'
+        + `<div style="margin-top:10px">${clearBtn}</div><div id="applyBox"></div>`;
+      return;
+    }
     const keep = new Set(d.diff.keep);
     const rows = ro.map((r, i) => `<tr>
         <td>${i + 1}</td><td class="l">${_esc(r.strategy)}</td>
@@ -402,22 +409,48 @@
       </tr>`).join('');
     const removed = d.diff.remove.length
       ? '<div class="note" style="margin-top:10px">Comes <span class="chip remove">off</span> Kairos Select: ' + d.diff.remove.map(_esc).join(', ') + '</div>' : '';
+    const gp = d.gate_parity || { rows: [], mismatches: [] };
     const blocked = !d.select_configured ? 'Kairos Select (account 7) isn\'t configured — set ALPACA_KEY7.'
-      : Object.keys(d.errors || {}).length ? 'Farm data is incomplete — fix the warning above first.' : '';
-    const last = d.last_apply
+      : Object.keys(d.errors || {}).length ? 'Farm data is incomplete — fix the warning above first.'
+      : gp.error ? 'Could not read gate settings.'
+      : gp.mismatches.length ? 'Gates don\'t match the farms — see the gate check.' : '';
+    const last = d.last_apply && d.last_apply.cleared
+      ? `<div class="note" style="margin-top:10px">Last cleared ${_esc(d.last_apply.at)} UTC.</div>`
+      : d.last_apply
       ? `<div class="note" style="margin-top:10px">Last applied ${_esc(d.last_apply.at)} UTC: top ${d.last_apply.n}, ${d.last_apply.days ? d.last_apply.days + 'd window' : 'all history'}, `
         + `${d.last_apply.picks.length} picks at $${Number(d.last_apply.size_dollars).toLocaleString()}.</div>` : '';
     const size = localStorage.getItem('farm_select_size') || '15000';
     el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>Net in window</th><th>Router</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>${removed}
+      <tbody>${rows}</tbody></table></div>${removed}${_gateCheck(gp)}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">
         <span class="lbl" style="margin-left:0">Size / trade $</span>
         <input class="f" id="sizeDollars" type="number" min="100" step="500" value="${_esc(size)}" style="width:90px"
                onchange="try{localStorage.setItem('farm_select_size', this.value)}catch(_){}">
         <button class="btn go" id="applyBtn" onclick="askApply()" ${blocked ? 'disabled' : ''}>Apply to Kairos Select…</button>
+        ${clearBtn}
+        <span class="note">${onNow} on Kairos Select now</span>
         ${blocked ? `<span class="note" style="color:#e08a8a">${_esc(blocked)}</span>` : ''}
       </div>
       <div id="applyBox"></div>${last}`;
+  }
+
+  // Every pick was measured on a farm, so Select has to run the farm's gates — a
+  // gate the farm didn't have would make the forward results a test of the gate.
+  function _gateCheck(gp) {
+    if (gp.error) return `<div class="warn" style="margin-top:12px">Gate check failed: ${_esc(gp.error)}</div>`;
+    if (!gp.mismatches.length) {
+      return `<div class="note" style="margin-top:12px"><span style="color:#7FE098">&#10003; Gate check:</span>
+        Kairos Select runs the same entry gates as both farms (${gp.rows.map(r => _esc(r.gate)).join(', ')}).
+        Each rule also copies its pipeline's hours window, side gate and exits.</div>`;
+    }
+    const cell = c => `<td class="l" style="white-space:normal">${c.on ? '' : '<span class="dim">off · </span>'}${_esc(c.setting)}`
+      + `${c.source === 'override' ? ' <span class="chip">override</span>' : ''}</td>`;
+    return `<div class="warn" style="margin-top:12px">&#9888; Kairos Select's gates don't match the farms, so a pick would trade
+        under different rules than the ones it was measured under. Apply is disabled until they match — change the
+        gate overrides on the Routing page.${gp.farms_agree ? '' : ' Note: the two farms also differ from each other, so Select can only match both once they agree.'}</div>
+      <div class="tbl"><table><thead><tr><th class="l">Gate</th><th class="l">TV Farm</th><th class="l">Kairos Farm</th><th class="l">Kairos Select</th></tr></thead><tbody>`
+      + gp.rows.filter(r => !r.ok).map(r => `<tr><td class="l">${_esc(r.gate)}</td>${cell(r.tv)}${cell(r.kairos)}${cell(r.select)}</tr>`).join('')
+      + '</tbody></table></div>';
   }
 
   function askApply() {
@@ -432,6 +465,42 @@
         <button class="btn go" onclick="doApply()">Confirm — rewire account 7</button>
         <button class="btn" onclick="document.getElementById('applyBox').innerHTML='';_confirming=false">Cancel</button>
       </div></div>`;
+  }
+
+  function askClear() {
+    const d = _data, onNow = d.diff.keep.length + d.diff.remove.length;
+    _confirming = true;
+    document.getElementById('applyBox').innerHTML = `<div class="confirm" style="border-color:#5a3535;background:rgba(224,138,138,0.06)">
+      Take Kairos Select off <strong>all ${onNow}</strong> strategies? Its own rules are deleted and its broker is removed
+      from any shared rule, so account 7 stops taking new entries. A strategy with an open position on account 7 keeps its
+      rule until you clear again after it closes.
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn danger" onclick="doClear()">Confirm — clear account 7</button>
+        <button class="btn" onclick="document.getElementById('applyBox').innerHTML='';_confirming=false">Cancel</button>
+      </div></div>`;
+  }
+
+  async function doClear() {
+    if (!_confirming) return;
+    const box = document.getElementById('applyBox');
+    box.innerHTML = '<div class="confirm">Clearing…</div>';
+    let res, body;
+    try {
+      res = await fetch('/api/farms/clear_select', { method: 'POST' });
+      body = await res.json();
+    } catch (e) {
+      box.innerHTML = '<div class="warn">Clear failed: ' + _esc(String(e)) + '</div>';
+      return;
+    }
+    if (!res.ok) { box.innerHTML = '<div class="warn">' + _esc(body.error || ('HTTP ' + res.status)) + '</div>'; return; }
+    const list = (k, label) => (body[k] && body[k].length) ? `<div>${label} (${body[k].length}): ${body[k].map(_esc).join(', ')}</div>` : '';
+    await load();
+    document.getElementById('applyBox').innerHTML = '<div class="confirm">'
+      + '<strong>Kairos Select cleared.</strong>'
+      + list('deleted', 'Removed') + list('stripped_from_mixed', 'Select broker removed from shared rules')
+      + list('deferred_open_position', 'Kept for now (open position — clear again once it closes)')
+      + (!body.deleted.length && !body.stripped_from_mixed.length && !body.deferred_open_position.length ? '<div>Nothing was wired.</div>' : '')
+      + '</div>';
   }
 
   async function doApply() {

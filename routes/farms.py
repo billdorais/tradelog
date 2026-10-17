@@ -272,9 +272,11 @@ def accumulation(trips_by_farm, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DE
 
 def select_nodes(slug, shares, entry, source_nodes=None):
     """Routing nodes for one Select pick. Clones the strategy's own pipeline (tuned
-    exits, hours, instrument) when there is one, then pins the Select broker, the
-    share count and the entry source. side_gate is dropped: the farms trade both
-    sides, and the record being bought here was earned on both."""
+    exits, hours, instrument, side_gate) when there is one, then pins the Select
+    broker, the share count and the entry source. The side_gate is KEPT: the farms
+    honour the pipeline's side gate (the webhook skips the gated rule, and the
+    engine applies it uniformly to every source), so the record being bought here
+    was earned under it."""
     if not source_nodes:
         return [
             {"type": "strategy",     "value": slug},
@@ -295,8 +297,6 @@ def select_nodes(slug, shares, entry, source_nodes=None):
             nd = ({"type": "broker", "value": SELECT_BROKERS[0]} if t == "broker" else
                   {"type": "quantity", "amount": shares, "unit": "shares"} if t == "quantity" else
                   {"type": "entry_source", "value": entry})
-        elif t == "side_gate":
-            continue
         out.append(nd)
     for t, nd in (("quantity", {"type": "quantity", "amount": shares, "unit": "shares"}),
                   ("broker", {"type": "broker", "value": SELECT_BROKERS[0]}),
@@ -437,6 +437,92 @@ def _select_rules(cur, a):
     return own, mixed, source
 
 
+# Account-level entry gates a Select pick must share with the farm it was measured
+# on. Rule-level gates (hours window, side gate, exits) travel on the cloned rule.
+PARITY_GATES = ("hours", "day-type", "rvol", "open-location", "reversal",
+                "strikes", "profit-lock", "daily-loss")
+FARM_TAGS = {"tv": "alpaca", "kairos": "alpaca5"}
+
+
+def gate_parity(state_fn):
+    """Compare Kairos Select's EFFECTIVE gates (shared config + per-account
+    overrides) against both farms. state_fn(tag) → {gate: (on, setting, source)}.
+
+    Returns {rows: [{gate, tv, kairos, select, ok}], mismatches: [gate], farms_agree}.
+    A gate is a mismatch when Select differs from EITHER farm: a TV pick was
+    measured under TV Farm's gates and an engine pick under Kairos Farm's, and
+    Select runs both kinds through one account."""
+    st = {k: state_fn(tag) for k, tag in {**FARM_TAGS, "select": SELECT_TAG}.items()}
+
+    def _cell(k, g):
+        on, setting, src = st[k].get(g, (False, "—", "shared"))
+        return {"on": bool(on), "setting": setting, "source": src}
+
+    rows, bad, disagree = [], [], False
+    for g in PARITY_GATES:
+        c = {k: _cell(k, g) for k in st}
+        same = lambda x, y: (x["on"], x["setting"]) == (y["on"], y["setting"])
+        ok = same(c["select"], c["tv"]) and same(c["select"], c["kairos"])
+        disagree = disagree or not same(c["tv"], c["kairos"])
+        rows.append({"gate": g, **c, "ok": ok})
+        if not ok:
+            bad.append(g)
+    return {"rows": rows, "mismatches": bad, "farms_agree": not disagree}
+
+
+def _parity_or_error(a):
+    try:
+        return gate_parity(a._gate_state)
+    except Exception as e:
+        return {"rows": [], "mismatches": [], "farms_agree": False,
+                "error": f"could not read gate settings: {e}"}
+
+
+class _PositionsUnreadable(Exception):
+    pass
+
+
+def _prune_select(cur, a, own, mixed, keep=frozenset()):
+    """Take Kairos Select off every strategy not in `keep`.
+
+    Select-only rules are deleted; a shared rule just loses its Select broker node.
+    A rule whose ticker has an OPEN Select position is left in place so the trade
+    keeps its tuned exit — the next apply or clear removes it. Raises
+    _PositionsUnreadable (before writing anything) if positions can't be read,
+    because pruning blind could strand an open trade without its exits.
+
+    Returns (deleted, deferred, stripped)."""
+    by_rid = {}
+    for s, rid in own.items():
+        by_rid.setdefault(rid, set()).add(s)
+    prune = {rid: ss for rid, ss in by_rid.items() if not (ss & keep)}
+    open_tk = set()
+    if prune:
+        try:
+            br = a.ACCOUNTS_BY_TAG[SELECT_TAG]["broker"]
+            br._invalidate_pos_cache()
+            open_tk = {(x.get("symbol") or "").upper() for x in br.get_positions(raise_on_error=True)}
+        except Exception as e:
+            raise _PositionsUnreadable(
+                f"Could not read Kairos Select positions ({e}), so an open trade might "
+                "lose its exits. Nothing was changed.") from e
+    ph = a.placeholder()
+    stripped = []
+    for rid, nodes, strats in mixed:
+        rest = [n for n in nodes if not (n.get("type") == "broker"
+                                         and (n.get("value") or "").lower() in SELECT_BROKERS)]
+        cur.execute(f"UPDATE routing_rules SET nodes={ph} WHERE id={ph}", (json.dumps(rest), rid))
+        stripped.extend(strats)
+    deleted, deferred = [], []
+    for rid, ss in prune.items():
+        if any(s.split("_", 1)[0] in open_tk for s in ss):
+            deferred.extend(sorted(ss))
+            continue
+        cur.execute(f"DELETE FROM routing_rules WHERE id={ph}", (rid,))
+        deleted.extend(sorted(ss))
+    return deleted, deferred, sorted(set(stripped))
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @farms_bp.route("/farms")
@@ -472,6 +558,7 @@ def api_farm_leaders():
                  "keep": sorted(new & set(current)),
                  "remove": sorted(set(current) - new)},
         "select_configured": SELECT_TAG in a.ACCOUNTS_BY_TAG,
+        "gate_parity": _parity_or_error(a),
         "last_apply": json.loads(a._load_setting("SELECT_LAST_APPLY") or "null"),
         "lookback_cap_days": FULL_HISTORY_DAYS if p["full"] else 90,
         "errors": errors,
@@ -492,6 +579,14 @@ def api_farm_apply_select():
     if SELECT_TAG not in a.ACCOUNTS_BY_TAG:
         return jsonify({"error": "Kairos Select (account 7) isn't configured — set "
                                  "ALPACA_KEY7. Nothing was changed."}), 400
+    parity = _parity_or_error(a)
+    if parity.get("error") or parity["mismatches"]:
+        return jsonify({"error": "Kairos Select's gates don't match the farms ("
+                                 + (parity.get("error") or ", ".join(parity["mismatches"]))
+                                 + "). A pick would trade under different rules than the ones "
+                                 "it was measured under. Fix the gate overrides on the Routing "
+                                 "page first. Nothing was changed.",
+                        "gate_parity": parity}), 409
     data = request.get_json(silent=True) or {}
     p = _params()
     try:
@@ -540,35 +635,12 @@ def api_farm_apply_select():
                         (slug + SELECT_SUFFIX, 1, nodes, ts, 0))
             created.append(slug)
 
-    new = {r["strategy"] for r in roster}
-    stripped = []
-    for rid, nodes, strats in mixed:
-        keep = [n for n in nodes if not (n.get("type") == "broker"
-                                         and (n.get("value") or "").lower() in SELECT_BROKERS)]
-        cur.execute(f"UPDATE routing_rules SET nodes={ph} WHERE id={ph}", (json.dumps(keep), rid))
-        stripped.extend(strats)
-
-    by_rid = {}
-    for s, rid in own.items():
-        by_rid.setdefault(rid, set()).add(s)
-    prune = {rid: ss for rid, ss in by_rid.items() if not (ss & new)}
-    open_tk = set()
-    if prune:
-        try:
-            br = a.ACCOUNTS_BY_TAG[SELECT_TAG]["broker"]
-            br._invalidate_pos_cache()
-            open_tk = {(x.get("symbol") or "").upper() for x in br.get_positions(raise_on_error=True)}
-        except Exception as e:
-            conn.rollback(); conn.close()
-            return jsonify({"error": f"Could not read Kairos Select positions ({e}), so an "
-                                     "open trade might lose its exits. Nothing was changed."}), 409
-    deleted, deferred = [], []
-    for rid, ss in prune.items():
-        if any(s.split("_", 1)[0] in open_tk for s in ss):
-            deferred.extend(sorted(ss))
-            continue
-        cur.execute(f"DELETE FROM routing_rules WHERE id={ph}", (rid,))
-        deleted.extend(sorted(ss))
+    try:
+        deleted, deferred, stripped = _prune_select(
+            cur, a, own, mixed, keep={r["strategy"] for r in roster})
+    except _PositionsUnreadable as e:
+        conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 409
     conn.commit(); conn.close()
 
     record = {"at": ts, "n": p["n"], "days": p["days"], "from_date": p["from_date"],
@@ -583,5 +655,33 @@ def api_farm_apply_select():
     a.log.info("Kairos Select rewired from Farm Leaders: %d picks (+%d ~%d -%d, %d deferred)",
                len(roster), len(created), len(updated), len(deleted), len(deferred))
     return jsonify({"created": created, "updated": updated, "deleted": deleted,
-                    "deferred_open_position": deferred, "stripped_from_mixed": sorted(set(stripped)),
+                    "deferred_open_position": deferred, "stripped_from_mixed": stripped,
                     "record": record})
+
+
+@farms_bp.route("/api/farms/clear_select", methods=["POST"])
+def api_farm_clear_select():
+    """Take Kairos Select off every strategy: delete its own rules and strip its
+    broker from shared ones. Rules for tickers with an open Select position stay
+    until that position is closed (clear again then)."""
+    a = _app()
+    if SELECT_TAG not in a.ACCOUNTS_BY_TAG:
+        return jsonify({"error": "Kairos Select (account 7) isn't configured. Nothing was changed."}), 400
+    conn = a.get_db(); cur = conn.cursor()
+    own, mixed, _src = _select_rules(cur, a)
+    try:
+        deleted, deferred, stripped = _prune_select(cur, a, own, mixed)
+    except _PositionsUnreadable as e:
+        conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 409
+    conn.commit(); conn.close()
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        a._save_setting("SELECT_LAST_APPLY", json.dumps(
+            {"at": ts, "cleared": True, "picks": [], "deferred": deferred}))
+    except Exception as e:
+        a.log.warning("farms: could not persist the Select clear record: %s", e)
+    a.log.info("Kairos Select cleared from Farm Leaders: -%d, %d deferred, %d shared rules stripped",
+               len(deleted), len(deferred), len(stripped))
+    return jsonify({"deleted": deleted, "deferred_open_position": deferred,
+                    "stripped_from_mixed": stripped})

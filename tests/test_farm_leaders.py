@@ -92,7 +92,9 @@ def test_select_nodes_clone_exits_and_pin_broker_size_and_entry():
            {"type": "exit_params", "trail_offset": 0.4, "mode": "percent"}]
     out = farms.select_nodes("X", 42, "kairos", src)
     types = [n["type"] for n in out]
-    assert types.count("broker") == 1 and "side_gate" not in types
+    assert types.count("broker") == 1
+    # The farms honour the pipeline's side gate, so Select must too.
+    assert {"type": "side_gate", "value": "long"} in out
     assert {"type": "broker", "value": "alpaca-paper-7"} in out
     assert {"type": "quantity", "amount": 42, "unit": "shares"} in out
     assert {"type": "entry_source", "value": "kairos"} in out
@@ -242,3 +244,79 @@ def test_all_window_reads_full_history_and_drops_the_date_floor(monkeypatch):
     assert seen == {"1": ("", True), "5": ("", True)}
     a.app.test_client().get("/api/farms/leaders?days=30")
     assert seen["1"][1] is False and seen["1"][0] != ""
+
+
+# ── clear ─────────────────────────────────────────────────────────────────────
+
+def test_clear_takes_select_off_everything_but_open_positions(router):
+    import app as a
+    db, _roster, saved = router
+    r = a.app.test_client().post("/api/farms/clear_select")
+    body = r.get_json()
+    assert r.status_code == 200, body
+    assert sorted(body["deleted"]) == sorted([_s("OLD"), _s("KEEP")])
+    assert body["deferred_open_position"] == [_s("OPEN")]
+    assert body["stripped_from_mixed"] == [_s("MIX")]
+    rules = _rules(db)
+    assert set(rules) == {_s("OPEN") + " · Select", _s("MIX"), _s("NEW")}
+    assert rules[_s("MIX")] == [{"type": "strategy", "value": _s("MIX")},
+                                {"type": "broker", "value": "alpaca-paper"}]
+    assert json.loads(saved["SELECT_LAST_APPLY"])["cleared"] is True
+
+
+def test_clear_changes_nothing_when_positions_cannot_be_read(router, monkeypatch):
+    import app as a
+    db, _roster, _ = router
+
+    class _Down(_FakeBroker):
+        def get_positions(self, raise_on_error=False):
+            raise RuntimeError("alpaca down")
+    monkeypatch.setattr(a, "ACCOUNTS_BY_TAG", {**a.ACCOUNTS_BY_TAG, "alpaca7": {"broker": _Down([])}})
+    before = _rules(db)
+    r = a.app.test_client().post("/api/farms/clear_select")
+    assert r.status_code == 409 and "Nothing was changed" in r.get_json()["error"]
+    assert _rules(db) == before
+
+
+# ── gate parity ───────────────────────────────────────────────────────────────
+
+def _states(select_overrides=None, kairos_overrides=None):
+    base = {g: (False, "off", "shared") for g in farms.PARITY_GATES}
+    base["strikes"] = (True, "3 losses per level per day", "shared")
+    per = {"alpaca": dict(base), "alpaca5": {**base, **(kairos_overrides or {})},
+           "alpaca7": {**base, **(select_overrides or {})}}
+    return lambda tag: per[tag]
+
+
+def test_parity_passes_when_select_runs_the_farms_gates():
+    r = farms.gate_parity(_states())
+    assert r["mismatches"] == [] and r["farms_agree"] is True
+
+
+def test_parity_flags_an_override_only_select_has():
+    r = farms.gate_parity(_states({"day-type": (True, "breakouts only on Outside days", "override")}))
+    assert r["mismatches"] == ["day-type"] and r["farms_agree"] is True
+
+
+def test_parity_flags_when_the_farms_disagree_with_each_other():
+    r = farms.gate_parity(_states(kairos_overrides={"strikes": (True, "2 losses per level per day", "override")}))
+    assert r["mismatches"] == ["strikes"] and r["farms_agree"] is False
+
+
+def test_select_meta_flags_match_both_farms():
+    import app as a
+    flags = ("daytype_gate", "reversal_gate", "reversal_side", "profit_lock",
+             "daily_loss_guard", "rvol_gate", "open_loc_gate", "hours_key", "retest")
+    for f in flags:
+        assert a.ACCOUNT_META["7"].get(f) == a.ACCOUNT_META["1"].get(f) == a.ACCOUNT_META["5"].get(f), f
+
+
+def test_apply_refuses_when_select_gates_differ(router, monkeypatch):
+    import app as a
+    db, roster, _ = router
+    monkeypatch.setattr(a, "_gate_state", _states({"rvol": (True, "breakouts need >=1.5x", "override")}))
+    before = _rules(db)
+    r = a.app.test_client().post("/api/farms/apply_select",
+                                 json={"expect": [x["strategy"] for x in roster]})
+    assert r.status_code == 409 and "rvol" in r.get_json()["error"]
+    assert _rules(db) == before
