@@ -34,6 +34,45 @@ def _bbands(close, period, std_dev):
     std  = s.rolling(period, min_periods=1).std(ddof=0).fillna(0)
     return (mid - std * std_dev).to_numpy(), mid.to_numpy(), (mid + std * std_dev).to_numpy()
 
+def _last_bar_of_day(idx):
+    """Bool per bar: True on each trading day's final bar (and on the very last bar).
+
+    All False on daily data, where every bar is its own day and "flatten at the
+    close" would mean exiting every trade the bar it was opened."""
+    n = len(idx)
+    out = np.zeros(n, dtype=bool)
+    if not n or not hasattr(idx[0], 'hour'):
+        return out
+    dates = np.array([t.date() for t in idx])
+    if len(set(dates)) == n:
+        return out
+    out[:-1] = dates[1:] != dates[:-1]
+    out[-1] = True
+    return out
+
+
+class _EodFlattenMixin:
+    """Close at the end of each session, and never open on its last bar.
+
+    The live books are flat overnight, so an intraday backtest that carries a
+    breakout past the close is testing a different strategy. On 1-hour bars this
+    matters most: the last bar (15:30-16:00) closes the day, and a trade opened
+    earlier is exited at that bar's close (16:00). eod_flatten=0 restores the old
+    hold-through behaviour. A no-op on daily data."""
+    eod_flatten = 1
+
+    def _flatten_eod(self):
+        if not self.eod_flatten:
+            return False
+        i = len(self.data) - 1
+        if i < len(self._eod) and self._eod[i]:
+            if self.position:
+                self.position.close()
+            self._entry = self._trail_sl = np.nan
+            return True
+        return False
+
+
 def _macd(close, fast, slow, signal):
     ema_fast   = pd.Series(_ema(close, fast))
     ema_slow   = pd.Series(_ema(close, slow))
@@ -191,7 +230,7 @@ class MacdStrategy(Strategy):
             self.position.close(); self.sell(sl=p + stop)
 
 
-class CamarillaEMA8(Strategy):
+class CamarillaEMA8(_EodFlattenMixin, Strategy):
     """
     Exact Python translation of cam_v6 Pine Script.
 
@@ -242,8 +281,11 @@ class CamarillaEMA8(Strategy):
 
         self._entry    = np.nan
         self._trail_sl = np.nan
+        self._eod = _last_bar_of_day(self.data.index)
 
     def next(self):
+        if self._flatten_eod():
+            return
         c    = self.data.Close[-1]
         o    = self.data.Open[-1]
         h4   = self.h4[-1]
@@ -295,7 +337,7 @@ class CamarillaEMA8(Strategy):
             self._entry = c
 
 
-class CamarillaBreakout(Strategy):
+class CamarillaBreakout(_EodFlattenMixin, Strategy):
     """H4/L4 breakout with EMA-direction filter. Matches CAM_*_v6 Pine
     bar-for-bar (same entry/exit logic as CamarillaEMA8, with cam_mult
     exposed so the level multiplier can be tuned).
@@ -330,8 +372,11 @@ class CamarillaBreakout(Strategy):
 
         self._entry    = np.nan
         self._trail_sl = np.nan
+        self._eod = _last_bar_of_day(self.data.index)
 
     def next(self):
+        if self._flatten_eod():
+            return
         c, o = self.data.Close[-1], self.data.Open[-1]
         h4, l4, ema = self.h4[-1], self.l4[-1], self.ema[-1]
         if any(np.isnan(x) for x in (h4, l4, ema)):
@@ -368,7 +413,7 @@ class CamarillaBreakout(Strategy):
             self.sell(); self._entry = c
 
 
-class CamarillaR3S3BreakoutPct(Strategy):
+class CamarillaR3S3BreakoutPct(_EodFlattenMixin, Strategy):
     """Exact Python translation of CAM_BREAKOUT_R3S3 Pine Script — percentage-based exits.
 
     Entry (Cross style — matches Pine default):
@@ -423,8 +468,11 @@ class CamarillaR3S3BreakoutPct(Strategy):
 
         self._entry    = np.nan
         self._trail_sl = np.nan
+        self._eod = _last_bar_of_day(self.data.index)
 
     def next(self):
+        if self._flatten_eod():
+            return
         c    = self.data.Close[-1]
         c1   = self.data.Close[-2] if len(self.data.Close) >= 2 else c
         r3   = self.r3[-1]
@@ -476,7 +524,7 @@ class CamarillaR3S3BreakoutPct(Strategy):
             self.sell(); self._entry = c
 
 
-class CamarillaBreakoutPct(Strategy):
+class CamarillaBreakoutPct(_EodFlattenMixin, Strategy):
     """Percentage-based version of CamarillaBreakout.
 
     Identical entry logic (H4/L4 crossover + EMA filter) but stops and
@@ -523,8 +571,11 @@ class CamarillaBreakoutPct(Strategy):
                           name="L4", overlay=True, color="#26a65b")
         self._entry    = np.nan
         self._trail_sl = np.nan
+        self._eod = _last_bar_of_day(self.data.index)
 
     def next(self):
+        if self._flatten_eod():
+            return
         c, o = self.data.Close[-1], self.data.Open[-1]
         h4, l4, ema = self.h4[-1], self.l4[-1], self.ema[-1]
         if any(np.isnan(x) for x in (h4, l4, ema)):
@@ -693,6 +744,7 @@ STRATEGIES = {
             {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.20, "max": 1.50, "step": 0.10},
             {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.10, "max": 0.80, "step": 0.10},
             {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 5,    "max": 21,   "step": 1},
+            {"id": "eod_flatten",      "label": "Close at end of day (1 = yes)", "type": "int",   "default": 1,    "min": 0,    "max": 1,    "step": 1},
         ],
     ),
     "cam_r3s3_breakout_pct": (
@@ -703,6 +755,7 @@ STRATEGIES = {
             {"id": "trail_act_pct",    "label": "Trail Trigger %",    "type": "float", "default": 0.20, "min": 0.05, "max": 0.80, "step": 0.05},
             {"id": "trail_offset_pct", "label": "Trail Offset %",     "type": "float", "default": 0.15, "min": 0.05, "max": 0.50, "step": 0.05},
             {"id": "ema_period",       "label": "EMA Period",         "type": "int",   "default": 2,    "min": 1,    "max": 15,   "step": 1},
+            {"id": "eod_flatten",      "label": "Close at end of day (1 = yes)", "type": "int",   "default": 1,    "min": 0,    "max": 1,    "step": 1},
         ],
     ),
     "cam_breakout_pct": (
@@ -713,6 +766,7 @@ STRATEGIES = {
             {"id": "trail_activation_pct", "label": "Trail Activation %",       "type": "float", "default": 0.40, "min": 0.10, "max": 1.50, "step": 0.05},
             {"id": "trail_offset_pct",     "label": "Trail Offset %",           "type": "float", "default": 0.20, "min": 0.05, "max": 1.00, "step": 0.05},
             {"id": "ema_period",           "label": "EMA Period",               "type": "int",   "default": 8,    "min": 3,    "max": 21,   "step": 1},
+            {"id": "eod_flatten",      "label": "Close at end of day (1 = yes)", "type": "int",   "default": 1,    "min": 0,    "max": 1,    "step": 1},
         ],
     ),
     "cam_h3l3_reversal": (
@@ -735,6 +789,7 @@ STRATEGIES = {
             {"id": "trail_activation", "label": "Trail Activation ($)", "type": "float", "default": 0.40, "min": 0.20, "max": 1.50, "step": 0.10},
             {"id": "trail_offset",     "label": "Trail Offset ($)",     "type": "float", "default": 0.20, "min": 0.10, "max": 0.80, "step": 0.10},
             {"id": "ema_period",       "label": "EMA Period",           "type": "int",   "default": 8,    "min": 5,    "max": 21,   "step": 1},
+            {"id": "eod_flatten",      "label": "Close at end of day (1 = yes)", "type": "int",   "default": 1,    "min": 0,    "max": 1,    "step": 1},
         ],
     ),
     "camarilla": (

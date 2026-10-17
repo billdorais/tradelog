@@ -106,10 +106,39 @@ def fetch_bars(ticker, start, end, interval="1d"):
     return bars
 
 
+def session_hourly(df):
+    """Regular-session hourly bars from 5-minute bars, aligned to the 9:30 open:
+    9:30-10:30, 10:30-11:30, ... 14:30-15:30, then a half bar 15:30-16:00.
+
+    Alpaca's native 1-hour bars are clock-aligned (9:00, 10:00, ...). The 9:00 bar
+    mixes pre-market with the opening half hour, so an RTH filter drops it and the
+    open, where most Camarilla breakouts fire, vanishes from the backtest; every
+    later bar also straddles TradingView's 9:30-aligned session bars. Building from
+    5-minute RTH bars gives the same bars TradingView draws.
+
+    df: tz-aware (UTC) DatetimeIndex with open/high/low/close/volume columns.
+    Returns the same shape, UTC index, labelled by each bar's START."""
+    import pandas as pd
+    et = df.tz_convert("America/New_York") if df.index.tz is not None \
+        else df.tz_localize("UTC").tz_convert("America/New_York")
+    mins = et.index.hour * 60 + et.index.minute
+    et = et[(mins >= 9 * 60 + 30) & (mins < 16 * 60)]
+    if et.empty:
+        return df.iloc[0:0]
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    if "volume" in et.columns:
+        agg["volume"] = "sum"
+    out = (et[list(agg)].resample("60min", origin="start_day", offset="30min",
+                                  label="left", closed="left")
+             .agg(agg).dropna(subset=["open"]))
+    return out.tz_convert("UTC")
+
+
 def fetch_bars_alpaca(ticker, start, end, interval="1d"):
     """
     Fetch OHLCV bars from Alpaca Data API.
     interval: '1d', '1h', '30m', '15m', '5m'
+    '1h' is built from 5-minute bars aligned to the 9:30 open (see session_hourly).
     Requires ALPACA_KEY + ALPACA_SECRET env vars.
     """
     import os
@@ -125,7 +154,8 @@ def fetch_bars_alpaca(ticker, start, end, interval="1d"):
         "15m": TimeFrame(15, TimeFrameUnit.Minute),
         "5m":  TimeFrame(5,  TimeFrameUnit.Minute),
     }
-    tf = _TF.get(interval, TimeFrame.Day)
+    hourly = interval == "1h"
+    tf = _TF["5m"] if hourly else _TF.get(interval, TimeFrame.Day)
 
     key    = os.environ.get("ALPACA_KEY",    "")
     secret = os.environ.get("ALPACA_SECRET", "")
@@ -156,6 +186,8 @@ def fetch_bars_alpaca(ticker, start, end, interval="1d"):
     # Drop symbol level from MultiIndex if present
     if hasattr(df.index, "levels"):
         df = df.xs(ticker, level="symbol")
+    if hourly:
+        df = session_hourly(df)
 
     bars = []
     for ts, row in df.iterrows():
