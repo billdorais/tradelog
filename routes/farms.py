@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -198,6 +200,76 @@ def merge_roster(tops):
     return sorted(best.values(), key=lambda p: (-p["pnl"], p["strategy"]))
 
 
+def accumulation(trips_by_farm, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DEFAULT_CAP):
+    """Running P&L by day for each farm's top N and for the combined Select roster.
+
+    Two modes, same shape:
+      top     — today's top N (and today's merged roster) traded over the whole
+                window. Hindsight: the curve was picked for being good.
+      forward — at each period boundary each farm's top N is re-ranked on earlier
+                periods only, the two lists merged the way Apply would, and that
+                roster trades the period. None before the second period.
+
+    The combined line counts a strategy from ONE farm only — the one its rule
+    would enter on — so a name on both lists is never double-counted.
+
+    Returns {dates, top: {tv, kairos, combined}, forward: {...}, forward_start}."""
+    farms = list(trips_by_farm)
+    for trips in trips_by_farm.values():
+        for t in trips:
+            t["period"] = period_key(t["date"], period)
+    dates = sorted({t["date"] for ts in trips_by_farm.values() for t in ts if t["date"]})
+    keys = sorted({t["period"] for ts in trips_by_farm.values() for t in ts if t["period"]})
+
+    def _tops(trips):
+        return [{"strategy": nm, "pnl": s["pnl"]} for nm, s in rank_top(trips, n, min_trades, cap)]
+
+    hind = {f: _tops(trips_by_farm[f]) for f in farms}
+    hind_sets = {f: {r["strategy"] for r in hind[f]} for f in farms}
+    hind_comb = {r["strategy"]: r["farm"] for r in merge_roster(hind)}
+
+    fwd_sets, fwd_comb = {}, {}          # period → {farm: set} / {strategy: farm}
+    for k in keys[1:]:
+        tops = {f: _tops([t for t in trips_by_farm[f] if t["period"] < k]) for f in farms}
+        fwd_sets[k] = {f: {r["strategy"] for r in tops[f]} for f in farms}
+        fwd_comb[k] = {r["strategy"]: r["farm"] for r in merge_roster(tops)}
+
+    daily = {m: {s: {} for s in farms + ["combined"]} for m in ("top", "forward")}
+
+    def _add(mode, series, d, pnl):
+        b = daily[mode][series]
+        b[d] = b.get(d, 0.0) + pnl
+
+    for f in farms:
+        for t in trips_by_farm[f]:
+            s, d, p = t["strategy"], t["date"], float(t["pnl"])
+            if s in hind_sets[f]:
+                _add("top", f, d, p)
+            if hind_comb.get(s) == f:
+                _add("top", "combined", d, p)
+            k = t["period"]
+            if k in fwd_sets:
+                if s in fwd_sets[k][f]:
+                    _add("forward", f, d, p)
+                if fwd_comb[k].get(s) == f:
+                    _add("forward", "combined", d, p)
+
+    start = keys[1] if len(keys) > 1 else None
+    out = {"dates": dates, "forward_start": start}
+    for mode in ("top", "forward"):
+        out[mode] = {}
+        for series, by_day in daily[mode].items():
+            run, line = 0.0, []
+            for d in dates:
+                if mode == "forward" and (start is None or period_key(d, period) < start):
+                    line.append(None)
+                    continue
+                run += by_day.get(d, 0.0)
+                line.append(round(run, 2))
+            out[mode][series] = line
+    return out
+
+
 def select_nodes(slug, shares, entry, source_nodes=None):
     """Routing nodes for one Select pick. Clones the strategy's own pipeline (tuned
     exits, hours, instrument) when there is one, then pins the Select broker, the
@@ -241,7 +313,27 @@ def _app():
     return _kairos
 
 
-def _farm_trips(num, from_date, to_date):
+FULL_HISTORY_DAYS = 730          # "All": far enough back to cover each farm's start
+_FULL_TTL = 15 * 60              # a full pagination is slow; hold it for 15 minutes
+_full_cache = {}                 # num → (fetched_at, fills)
+_full_lock = threading.Lock()
+
+
+def _full_fills(rec, num):
+    """Every fill since the farm began. The shared fills cache stops at 90 days
+    (FILLS_LOOKBACK_DAYS) to keep cold starts fast, so "All" pays for its own longer
+    walk, cached here so it isn't repeated on every toggle. Raises on failure — a
+    partial history must not pass for the whole one."""
+    with _full_lock:
+        hit = _full_cache.get(num)
+        if hit and time.time() - hit[0] < _FULL_TTL:
+            return hit[1]
+        fills = rec["broker"].get_fills(days=FULL_HISTORY_DAYS, raise_on_error=True)
+        _full_cache[num] = (time.time(), fills)
+        return fills
+
+
+def _farm_trips(num, from_date, to_date, full=False):
     """Closed round-trips on one farm as [{strategy, pnl, date}], honouring the same
     strategy/ticker/band exclusions as the Refined leaderboards. Returns
     (trips, error) — a failed fetch must not render as an empty farm."""
@@ -250,11 +342,11 @@ def _farm_trips(num, from_date, to_date):
     if not rec:
         return [], "not configured"
     try:
-        fills = rec["fills_fn"]()
+        fills = _full_fills(rec, num) if full else rec["fills_fn"]()
     except Exception as e:
         return [], f"fills unavailable: {e}"
     if not fills:
-        return [], ("fills unavailable" if a._fills_error(num) else None)
+        return [], ("fills unavailable" if not full and a._fills_error(num) else None)
     paired = a._pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
     ex_s = a._load_excluded_strategies()
     ex_t = a._load_excluded_tickers()
@@ -280,12 +372,15 @@ def _params():
             return min(hi, max(lo, int(src.get(k, d))))
         except (TypeError, ValueError):
             return d
-    days = _int("days", 90, 7, 365)
+    days = _int("days", 90, 0, 365)          # 0 = since each farm started
+    if 0 < days < 7:
+        days = 7
     today = datetime.now(_ET).date()
     return {
         "n": _int("n", 10, 1, 50),
         "days": days,
-        "from_date": (today - timedelta(days=days)).isoformat(),
+        "full": days == 0,
+        "from_date": "" if days == 0 else (today - timedelta(days=days)).isoformat(),
         "to_date": today.isoformat(),
         "period": "month" if (src.get("period") or "") == "month" else "week",
         "min_trades": _int("min_trades", DEFAULT_MIN_TRADES, 1, 100),
@@ -294,18 +389,20 @@ def _params():
 
 
 def _build(p):
-    farms, errors = {}, {}
+    farms, errors, trips_by_farm = {}, {}, {}
     for key, num, label in FARMS:
-        trips, err = _farm_trips(num, p["from_date"], p["to_date"])
+        trips, err = _farm_trips(num, p["from_date"], p["to_date"], full=p["full"])
         if err:
             errors[key] = f"{label}: {err}"
+        trips_by_farm[key] = trips
         view = farm_view(trips, p["n"], p["period"], p["min_trades"], p["cap"])
         view["label"] = label
         view["num"] = num
         view["first_date"] = min((t["date"] for t in trips), default=None)
         farms[key] = view
     roster = merge_roster({k: v["top"] for k, v in farms.items()})
-    return farms, roster, errors
+    farms_acc = accumulation(trips_by_farm, p["n"], p["period"], p["min_trades"], p["cap"])
+    return farms, roster, errors, farms_acc
 
 
 def _select_rules(cur, a):
@@ -355,7 +452,7 @@ def api_farm_leaders():
     diff against what account 7 runs now."""
     a = _app()
     p = _params()
-    farms, roster, errors = _build(p)
+    farms, roster, errors, acc = _build(p)
 
     current = []
     try:
@@ -369,13 +466,14 @@ def api_farm_leaders():
     return jsonify({
         **p,
         "farms": farms,
+        "accumulation": acc,
         "roster": roster,
         "diff": {"add": sorted(new - set(current)),
                  "keep": sorted(new & set(current)),
                  "remove": sorted(set(current) - new)},
         "select_configured": SELECT_TAG in a.ACCOUNTS_BY_TAG,
         "last_apply": json.loads(a._load_setting("SELECT_LAST_APPLY") or "null"),
-        "lookback_cap_days": 90,
+        "lookback_cap_days": FULL_HISTORY_DAYS if p["full"] else 90,
         "errors": errors,
     })
 
@@ -401,7 +499,7 @@ def api_farm_apply_select():
     except (TypeError, ValueError):
         size = float(DEFAULT_SIZE)
 
-    farms, roster, errors = _build(p)
+    farms, roster, errors, _acc = _build(p)
     if errors:
         return jsonify({"error": "Farm data is incomplete (" + "; ".join(errors.values())
                                  + "). Nothing was changed.", "errors": errors}), 409

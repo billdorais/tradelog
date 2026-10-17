@@ -85,6 +85,7 @@
       <button class="btn" data-days="30" onclick="setOpt('days',30)">30d</button>
       <button class="btn" data-days="60" onclick="setOpt('days',60)">60d</button>
       <button class="btn" data-days="90" onclick="setOpt('days',90)">90d</button>
+      <button class="btn" data-days="0" onclick="setOpt('days',0)" title="Everything since each farm's first trade">All</button>
       <span class="sep"></span>
       <span class="lbl">By</span>
       <button class="btn" data-period="week" onclick="setOpt('period','week')">Week</button>
@@ -117,6 +118,26 @@
       </div>
     </div>
 
+    <div class="panel" id="accPanel">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div class="band-q">Accumulated P&amp;L — both farms</div>
+          <div class="band-sub" id="accSub"></div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn" data-acc="top" onclick="setAccMode('top')">Today's top N</button>
+          <button class="btn" data-acc="forward" onclick="setAccMode('forward')">Forward pick</button>
+        </div>
+      </div>
+      <div class="tiles" id="accTiles"></div>
+      <div class="legend">
+        <span><i style="background:#9085e9"></i>TV Farm top N</span>
+        <span><i style="background:#199e70"></i>Kairos Farm top N</span>
+        <span><i style="background:#e0e0e0;height:3px"></i>Combined (the Select roster)</span>
+      </div>
+      <div class="chartbox" style="height:300px"><canvas id="chart-acc"></canvas></div>
+    </div>
+
     <div id="farmTv"></div>
     <div id="farmKairos"></div>
 
@@ -142,6 +163,9 @@
   const C_FWD = '#3987e5', C_TOP = '#d95926', C_BASE = '#6b7080';
   const _charts = {};
   let _data = null, _confirming = false;
+  const C_TV = '#9085e9', C_KA = '#199e70', C_COMB = '#e0e0e0';
+  let _accMode = 'top';
+  try { _accMode = localStorage.getItem('farm_acc_mode') || 'top'; } catch (_) {}
 
   const DEFAULTS = { n: 10, days: 90, period: 'week', min_trades: 5, cap: 2 };
   let _opt = { ...DEFAULTS };
@@ -155,6 +179,7 @@
   function _syncControls() {
     document.querySelectorAll('.btn[data-n]').forEach(b => b.classList.toggle('on', Number(b.dataset.n) === Number(_opt.n)));
     document.querySelectorAll('.btn[data-days]').forEach(b => b.classList.toggle('on', Number(b.dataset.days) === Number(_opt.days)));
+    document.querySelectorAll('.btn[data-acc]').forEach(b => b.classList.toggle('on', b.dataset.acc === _accMode));
     document.querySelectorAll('.btn[data-period]').forEach(b => b.classList.toggle('on', b.dataset.period === _opt.period));
     document.getElementById('minTrades').value = _opt.min_trades;
     document.getElementById('cap').value = String(_opt.cap);
@@ -170,7 +195,8 @@
   async function load() {
     _confirming = false;
     const qs = new URLSearchParams(_opt).toString();
-    document.getElementById('roster').innerHTML = '<div class="empty">Loading…</div>';
+    document.getElementById('roster').innerHTML = '<div class="empty">'
+      + (Number(_opt.days) === 0 ? 'Loading the full history — the first load can take a minute…' : 'Loading…') + '</div>';
     try {
       const r = await fetch('/api/farms/leaders?' + qs);
       _data = await r.json();
@@ -182,13 +208,80 @@
     const errs = Object.values(_data.errors || {});
     document.getElementById('errBox').innerHTML = errs.length
       ? '<div class="warn">&#9888; ' + errs.map(_esc).join('<br>&#9888; ') + ' — these numbers are incomplete, and Apply is disabled.</div>' : '';
-    const firsts = Object.values(_data.farms).map(f => f.first_date).filter(Boolean).sort();
-    document.getElementById('lookbackNote').textContent =
-      ' Fills reach back at most ' + _data.lookback_cap_days + ' days' +
-      (firsts.length ? ' (earliest trade shown: ' + firsts[0] + ')' : '') + ', so this is not since each farm started.';
+    const starts = Object.values(_data.farms).filter(f => f.first_date).map(f => f.label + ' from ' + f.first_date);
+    document.getElementById('lookbackNote').textContent = _data.full
+      ? ' Showing everything since each farm started (' + starts.join(', ') + ').'
+      : ' This window covers the last ' + _data.days + ' days (' + starts.join(', ') + "). Use All to go back to each farm's first trade.";
+    _renderAccumulation();
     _renderFarm('farmTv', 'tv');
     _renderFarm('farmKairos', 'kairos');
     _renderRoster();
+  }
+
+  function setAccMode(m) {
+    _accMode = m;
+    try { localStorage.setItem('farm_acc_mode', m); } catch (_) {}
+    _syncControls();
+    if (_data) _renderAccumulation();
+  }
+
+  function _last(arr) { for (let i = arr.length - 1; i >= 0; i--) if (arr[i] !== null) return arr[i]; return null; }
+
+  function _renderAccumulation() {
+    const acc = _data.accumulation || {}, dates = acc.dates || [];
+    const per = _data.period === 'month' ? 'month' : 'week';
+    const series = acc[_accMode] || {};
+    const fwd = _accMode === 'forward';
+    document.getElementById('accSub').innerHTML = fwd
+      ? `Running total if the roster had been <strong>re-picked every ${per}</strong> on only what was known then, `
+        + `and traded the next ${per}. Starts ${acc.forward_start ? 'the ' + per + ' of ' + _esc(acc.forward_start) : 'once there are two ' + per + 's'}. `
+        + `This is the curve a roster refreshed on this page would actually have earned.`
+      : `Running total of <strong>today's</strong> top ${_data.n} from each farm, traded across the whole window. `
+        + `Hindsight: these strategies were chosen because this curve is good. Switch to Forward pick for the honest version.`;
+    if (!dates.length) {
+      document.getElementById('accTiles').innerHTML = '<div class="empty">No closed trades in this window.</div>';
+      if (_charts.acc) { _charts.acc.destroy(); _charts.acc = null; }
+      return;
+    }
+    const tile = (k, v, sub) => `<div class="tile"><div class="k">${k}</div><div class="v ${v === null ? '' : _cls(v)}">${v === null ? '—' : _money(v)}</div><div class="s">${sub}</div></div>`;
+    const lbl = (fwd ? 'forward ' : 'top ') + _data.n;
+    document.getElementById('accTiles').innerHTML =
+        tile('Combined', _last(series.combined || []), 'one rule per strategy, as Apply wires it')
+      + tile('TV Farm ' + lbl, _last(series.tv || []), 'enters on TV alerts')
+      + tile('Kairos Farm ' + lbl, _last(series.kairos || []), 'enters on the engine');
+
+    if (_charts.acc) _charts.acc.destroy();
+    const ds = (label, data, color, w) => ({
+      label, data, borderColor: color, backgroundColor: color, borderWidth: w,
+      pointRadius: 0, pointHoverRadius: 5, pointHitRadius: 8, tension: 0, spanGaps: false,
+    });
+    _charts.acc = new Chart(document.getElementById('chart-acc'), {
+      type: 'line',
+      data: { labels: dates, datasets: [
+        ds('Combined', series.combined, C_COMB, 3),
+        ds('TV Farm', series.tv, C_TV, 2),
+        ds('Kairos Farm', series.kairos, C_KA, 2),
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1a1d2e', borderColor: '#2a2d3e', borderWidth: 1,
+            titleColor: '#e0e0e0', bodyColor: '#cfd3e0', padding: 10,
+            callbacks: { label: c => ' ' + c.dataset.label + ': ' + (c.raw === null ? 'not started' : _money(c.raw)) },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0,
+               callback: function (v) { const [y, m, dd] = this.getLabelForValue(v).split('-').map(Number);
+                 return new Date(y, m - 1, dd).toLocaleString('en-US', { month: 'short', day: 'numeric' }); } } },
+          y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+               ticks: { color: '#666', font: { size: 10 }, callback: v => '$' + v } },
+        },
+      },
+    });
   }
 
   function _periodLabel(k) {
@@ -312,7 +405,7 @@
     const blocked = !d.select_configured ? 'Kairos Select (account 7) isn\'t configured — set ALPACA_KEY7.'
       : Object.keys(d.errors || {}).length ? 'Farm data is incomplete — fix the warning above first.' : '';
     const last = d.last_apply
-      ? `<div class="note" style="margin-top:10px">Last applied ${_esc(d.last_apply.at)} UTC: top ${d.last_apply.n}, ${d.last_apply.days}d window, `
+      ? `<div class="note" style="margin-top:10px">Last applied ${_esc(d.last_apply.at)} UTC: top ${d.last_apply.n}, ${d.last_apply.days ? d.last_apply.days + 'd window' : 'all history'}, `
         + `${d.last_apply.picks.length} picks at $${Number(d.last_apply.size_dollars).toLocaleString()}.</div>` : '';
     const size = localStorage.getItem('farm_select_size') || '15000';
     el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>Net in window</th><th>Router</th></tr></thead>

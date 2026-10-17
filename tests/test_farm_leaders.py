@@ -144,7 +144,7 @@ def router(tmp_path, monkeypatch):
                         lambda tks: {t: 100.0 for t in tks})
     roster = [{"strategy": _s("NEW"), "farm": "tv", "entry": "tv", "pnl": 50, "also_in": None},
               {"strategy": _s("KEEP"), "farm": "kairos", "entry": "kairos", "pnl": 30, "also_in": None}]
-    monkeypatch.setattr(farms, "_build", lambda p: ({}, roster, {}))
+    monkeypatch.setattr(farms, "_build", lambda p: ({}, roster, {}, {}))
     saved = {}
     monkeypatch.setattr(a, "_save_setting", lambda k, v: saved.__setitem__(k, v))
     return db, roster, saved
@@ -203,3 +203,42 @@ def test_apply_refuses_to_guess_a_size_without_a_price(router, monkeypatch):
                                  json={"expect": [x["strategy"] for x in roster]})
     assert r.status_code == 409 and "price" in r.get_json()["error"]
     assert _rules(db) == before
+
+
+# ── accumulation chart ────────────────────────────────────────────────────────
+
+def test_accumulation_runs_per_farm_and_combines_without_double_counting():
+    A, B, D = _s("AAA"), _s("BBB"), _s("DUP")
+    tv = _trips([(A, 10, "2026-10-05"), (D, 5, "2026-10-06"), (A, 4, "2026-10-12")])
+    ka = _trips([(B, 7, "2026-10-05"), (D, 20, "2026-10-06"), (B, -2, "2026-10-13")])
+    acc = farms.accumulation({"tv": tv, "kairos": ka}, n=5, period="week", min_trades=1, cap=0)
+    assert acc["dates"] == ["2026-10-05", "2026-10-06", "2026-10-12", "2026-10-13"]
+    assert acc["top"]["tv"] == [10, 15, 19, 19]
+    assert acc["top"]["kairos"] == [7, 27, 27, 25]
+    # DUP is on both lists; combined counts it once, from Kairos (where it made more).
+    assert acc["top"]["combined"] == [17, 37, 41, 39]
+
+
+def test_forward_accumulation_starts_in_the_second_period_and_uses_no_hindsight():
+    A, B = _s("AAA"), _s("BBB")
+    tv = _trips([(A, 10, "2026-10-05"), (B, -5, "2026-10-05"),
+                 (A, -3, "2026-10-12"), (B, 40, "2026-10-12")])
+    acc = farms.accumulation({"tv": tv, "kairos": []}, n=1, period="week", min_trades=1, cap=0)
+    assert acc["forward_start"] == "2026-10-12"
+    assert acc["forward"]["tv"] == [None, -3]          # week-1 leader A, not B
+    assert acc["forward"]["combined"] == [None, -3]
+    assert acc["top"]["tv"] == [-5, 35]                 # today's leader is B
+
+
+def test_all_window_reads_full_history_and_drops_the_date_floor(monkeypatch):
+    import app as a
+    seen = {}
+    def fake(num, fd, td, full=False):
+        seen[num] = (fd, full)
+        return [], None
+    monkeypatch.setattr(farms, "_farm_trips", fake)
+    d = a.app.test_client().get("/api/farms/leaders?days=0").get_json()
+    assert d["full"] is True and d["from_date"] == ""
+    assert seen == {"1": ("", True), "5": ("", True)}
+    a.app.test_client().get("/api/farms/leaders?days=30")
+    assert seen["1"][1] is False and seen["1"][0] != ""
