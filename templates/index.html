@@ -861,11 +861,15 @@
   <!-- Daily P&L charts (bar + cumulative, side by side) -->
   <div class="chart-wrap">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <div class="chart-title" style="margin-bottom:0">Daily P&amp;L</div>
+      <div class="chart-title" style="margin-bottom:0" id="pnlBucketTitle">Daily P&amp;L</div>
+      <div style="display:flex;gap:6px">
+        <button id="pnlBucketDay"  onclick="setPnlBucket('day')"  class="eq-date-btn eq-date-btn-active" style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer">Daily</button>
+        <button id="pnlBucketWeek" onclick="setPnlBucket('week')" class="eq-date-btn" title="Sum each Monday–Friday week into one bar" style="border:1px solid #2a2d3e;border-radius:6px;padding:4px 10px;font-size:0.75rem;cursor:pointer">Weekly</button>
+      </div>
     </div>
     <div style="display:flex;gap:32px;flex-wrap:wrap">
       <div style="flex:0 0 calc(50% - 16px);min-width:280px">
-        <div style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Realized P&amp;L per Day</div>
+        <div id="pnlBucketSub" style="font-size:0.72rem;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Realized P&amp;L per Day</div>
         <canvas id="netDailyPnlChart" height="110"></canvas>
       </div>
       <div style="flex:0 0 calc(50% - 16px);min-width:280px">
@@ -2759,7 +2763,37 @@
       drawTimeScatter(stats.equity_curve || [], tradesForScatter);
     }
 
+    // Daily ↔ Weekly bars. The last inputs are kept so flipping the toggle redraws
+    // from the same data instead of waiting on the next fetch.
+    let _pnlBucket = 'day';
+    try { if (localStorage.getItem('pnl_bucket') === 'week') _pnlBucket = 'week'; } catch (_) {}
+    let _netDailyArgs = null;
+
+    function _syncPnlBucketUi() {
+      document.getElementById('pnlBucketDay').classList.toggle('eq-date-btn-active', _pnlBucket === 'day');
+      document.getElementById('pnlBucketWeek').classList.toggle('eq-date-btn-active', _pnlBucket === 'week');
+      document.getElementById('pnlBucketTitle').textContent = _pnlBucket === 'week' ? 'Weekly P&L' : 'Daily P&L';
+      document.getElementById('pnlBucketSub').textContent   = _pnlBucket === 'week' ? 'Realized P&L per Week' : 'Realized P&L per Day';
+    }
+
+    function setPnlBucket(mode) {
+      _pnlBucket = mode === 'week' ? 'week' : 'day';
+      try { localStorage.setItem('pnl_bucket', _pnlBucket); } catch (_) {}
+      _syncPnlBucketUi();
+      if (_netDailyArgs) drawNetDailyChart(..._netDailyArgs);
+    }
+
+    // 'YYYY-MM-DD' → that week's Monday, same format. Pure date math (UTC noon) so
+    // the viewer's timezone can't shift a day across the boundary.
+    function _weekStart(day) {
+      const d = new Date(day + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+      return d.toISOString().slice(0, 10);
+    }
+
     function drawNetDailyChart(equityCurveOrTrades, todayLivePnl) {
+      _netDailyArgs = [equityCurveOrTrades, todayLivePnl];
+      _syncPnlBucketUi();
       // Accept either a closedTrades array [{time, pnl}] for direct summing,
       // or an equityCurve [{time, value}] for cumulative-diff approach.
       // todayLivePnl (optional): Alpaca's authoritative equity-based daily P&L
@@ -2808,7 +2842,22 @@
 
       // Per-day round-trip count, aligned to the final label order (incl. any
       // today bar added by the override above) — for the tooltip.
-      const counts = labels.map(d => dayCount[d] || 0);
+      let counts = labels.map(d => dayCount[d] || 0);
+
+      // Weekly: fold the finished daily bars (today's live override included) into
+      // Monday-start weeks, so a week's bar is exactly the sum of its daily bars.
+      if (_pnlBucket === 'week') {
+        const wkPnl = {}, wkCount = {};
+        labels.forEach((d, i) => {
+          const w = _weekStart(d);
+          wkPnl[w]   = (wkPnl[w] || 0) + netValues[i];
+          wkCount[w] = (wkCount[w] || 0) + counts[i];
+        });
+        labels    = Object.keys(wkPnl).sort();
+        netValues = labels.map(w => parseFloat(wkPnl[w].toFixed(2)));
+        counts    = labels.map(w => wkCount[w]);
+      }
+      const isWeek = _pnlBucket === 'week';
 
       const canvas = document.getElementById('netDailyPnlChart');
       const ctx    = canvas.getContext('2d');
@@ -2831,6 +2880,7 @@
             legend: { display: false },
             tooltip: {
               callbacks: {
+                title: items => isWeek ? 'Week of ' + items[0].label : items[0].label,
                 label: ctx => (ctx.parsed.y >= 0 ? '+' : '') + '$' + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
                 afterLabel: ctx => { const n = counts[ctx.dataIndex]; return n ? (n + (n === 1 ? ' trade' : ' trades')) : ''; },
               },
