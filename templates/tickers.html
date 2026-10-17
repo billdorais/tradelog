@@ -263,10 +263,10 @@
       const held = keep && list.includes(keep);
       if (held) sel.value = keep;
       // Keeping the strategy only makes sense while its ticker is still selected.
-      document.getElementById('stratSel').value =
-        (resetStrategy || !held) ? '' : strat;
+      const reset = resetStrategy || !held;
+      document.getElementById('stratSel').value = reset ? '' : strat;
       if (list.length) {
-        await load();
+        await load({ autoPick: reset });
       } else {
         _data = null;
         render();
@@ -319,18 +319,34 @@
 
   function onTicker() {
     document.getElementById('stratSel').value = '';   // a strategy list is per-ticker
-    load();
+    load({ autoPick: true });
   }
 
-  async function load() {
+  // autoPick: on a fresh ticker (or book), land on its highest-P&L strategy rather
+  // than the blended view — the blend averages strategies that disagree. Only on a
+  // fresh selection: choosing "All strategies" or clicking a row to clear it is a
+  // deliberate choice and must stick.
+  async function load({ autoPick = false } = {}) {
     const t = document.getElementById('tickerSel').value;
     if (!t) return;
-    const qs = '?ticker=' + encodeURIComponent(t) + '&' + _range()
+    const stratSel = document.getElementById('stratSel');
+    const qs = (strat) => '?ticker=' + encodeURIComponent(t) + '&' + _range()
              + '&account='  + encodeURIComponent(_acct)
-             + '&strategy=' + encodeURIComponent(document.getElementById('stratSel').value || '');
+             + '&strategy=' + encodeURIComponent(strat || '');
     let d;
     try {
-      d = await fetch('/api/ticker/breakdown' + qs).then(r => r.json());
+      d = await fetch('/api/ticker/breakdown' + qs(stratSel.value)).then(r => r.json());
+      const groups = Object.entries(d.by_strategy || {}).filter(([, s]) => s);
+      if (autoPick && !d.strategy && groups.length) {
+        const best = groups.reduce((a, b) => (b[1].pnl > a[1].pnl ? b : a))[0];
+        // render() only rebuilds the picker on an unfiltered response, so seed it
+        // with this ticker's strategies before narrowing.
+        stratSel.innerHTML = '<option value="">All strategies</option>'
+          + groups.map(([n]) => n).sort()
+              .map(n => `<option value="${_esc(n)}">${_esc(n)}</option>`).join('');
+        stratSel.value = best;
+        d = await fetch('/api/ticker/breakdown' + qs(best)).then(r => r.json());
+      }
     } catch (e) {
       document.getElementById('warnBox').innerHTML =
         '<div class="panel warn">Load failed: ' + _esc(String(e)) + '</div>';
