@@ -10081,24 +10081,32 @@ _REFINED_SIZE_BANDS = _build_size_bands(REFINED_SIZE_DOLLARS)
 _REFINED_CONSEC_LOSS_GATE = 3
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
-# 5 (2026-08-21), matched to Kairos by choice so the two books are judged on the
-# same bar. Was 7 historically; briefly 5 as relief for the takeable filter, back to
-# 7 when that was reverted, then deliberately set to 5 here — a looser bar chosen on
-# purpose rather than left over, which is the distinction that matters.
-_REFINED_MIN_TRADES = 5
+# 20 (2026-10-17), with the window widened 45 → 60 days. At 5 trades a strategy's
+# average is almost pure luck: per-trade results swing ~±1.3% against edges of a
+# few hundredths of a percent, so the top of a 5-trade leaderboard was mostly the
+# luckiest names. 20 trades doesn't make one strategy's estimate reliable, but it
+# stops the thinnest samples from taking slots. Farm breakouts clear it easily in
+# 60 days; low-frequency names (many reversals) won't. If fewer than N clear the
+# bar, the book trades fewer names rather than lowering it.
+# History: 7 → 5 (relief for the takeable filter) → 7 → 5 (2026-08-21) → 20.
+_REFINED_MIN_TRADES = 20
 # Looser threshold for the On-Deck watchlist only (display, never routed) — lets
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
 # strategies clear the strict routing bar above. Must stay BELOW the routing floor
 # or On-Deck empties out: at parity every qualifying name gets routed (20 slots)
-# and the watchlist has nothing left to show. Followed the routing floor down to 5.
-_REFINED_ONDECK_MIN_TRADES = 3
+# and the watchlist has nothing left to show.
+_REFINED_ONDECK_MIN_TRADES = 10
 
-# Kairos Refined snapshot uses a lower floor than TV — the engine account is newer
-# with fewer fills per strategy. Raised 3→5 as the pool matured; briefly 4 while
-# promotion ran on the takeable subset, back to 5 (2026-08-21) now that it ranks on
-# the raw farm pool again.
-_KAIROS_REFINED_MIN_TRADES        = 5
-_KAIROS_REFINED_ONDECK_MIN_TRADES = 2
+# Kairos Refined: same floor as TV so the two books are judged on the same bar
+# (raised 3 → 5 as the pool matured, → 20 with TV on 2026-10-17).
+_KAIROS_REFINED_MIN_TRADES        = 20
+_KAIROS_REFINED_ONDECK_MIN_TRADES = 10
+
+# Rolling ranking window for both Refined snapshots when no saved setting exists.
+# Widened 45 → 60 days alongside the 20-trade floor so the floor doesn't starve
+# the pool. The saved REFINED_DAYS / KAIROS_REFINED_DAYS settings are moved to 60
+# once by _restore_risk_settings; a later manual change sticks.
+REFINED_WINDOW_DAYS = 60
 
 
 def _band_target_dollars(score):
@@ -10169,7 +10177,7 @@ def _compute_refined_qty(score, last_price):
     return max(1, round(target / last_price))
 
 
-def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=None):
+def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_DAYS, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
     Ranking uses the weighted composite score in _REFINED_SCORE_WEIGHTS (Sharpe 30%
@@ -10534,7 +10542,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=45, from_date=No
     return _refined_last_result
 
 
-def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
+def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
     """Kairos Refined snapshot — mirrors _do_refresh_refined but sourced from
     Kairos Farm (acct5) fills. Shares TV's 45-day ranking window and composite
     score, so TV-vs-Kairos comparisons (and the crew's [TV]/[Kairos] tagging) are
@@ -10780,8 +10788,8 @@ def _do_refresh_kairos_refined(n=20, days=45, from_date=None):
 def get_kairos_refined_status():
     anchor = _load_setting("KAIROS_REFINED_FROM_DATE") or ""
     days   = _load_setting("KAIROS_REFINED_DAYS")
-    try:    days = int(days) if days else 45
-    except (TypeError, ValueError): days = 45
+    try:    days = int(days) if days else REFINED_WINDOW_DAYS
+    except (TypeError, ValueError): days = REFINED_WINDOW_DAYS
     if _kairos_refined_last_run:
         return jsonify({**_kairos_refined_last_result, "anchor_from_date": anchor, "days": days})
     return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
@@ -10798,8 +10806,8 @@ def refresh_kairos_refined():
         _save_setting("KAIROS_REFINED_DAYS", str(days))
     else:
         stored = _load_setting("KAIROS_REFINED_DAYS")
-        try:    days = int(stored) if stored else 45
-        except (TypeError, ValueError): days = 45
+        try:    days = int(stored) if stored else REFINED_WINDOW_DAYS
+        except (TypeError, ValueError): days = REFINED_WINDOW_DAYS
     if "from_date" in data:
         from_date = (data.get("from_date") or "").strip() or None
         _save_setting("KAIROS_REFINED_FROM_DATE", from_date or "")
@@ -10968,8 +10976,8 @@ def _refined_scheduler_loop():
                 # so the daily 4:15 PM scheduler stays in sync with the manual
                 # Refresh Now control. Falls back to 20 if nothing saved.
                 _sched_days_raw = _load_setting("REFINED_DAYS")
-                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else 45
-                except (TypeError, ValueError): _sched_days = 45
+                try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else REFINED_WINDOW_DAYS
+                except (TypeError, ValueError): _sched_days = REFINED_WINDOW_DAYS
                 _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
                 log.info("Scheduled Refined refresh complete for %s (rolling %dd window)", today, _sched_days)
             except Exception as _re:
@@ -10980,8 +10988,8 @@ def _refined_scheduler_loop():
             _kairos_ran_today = today
             try:
                 _kdays_raw = _load_setting("KAIROS_REFINED_DAYS")
-                try:    _kdays = int(_kdays_raw) if _kdays_raw else 45
-                except (TypeError, ValueError): _kdays = 45
+                try:    _kdays = int(_kdays_raw) if _kdays_raw else REFINED_WINDOW_DAYS
+                except (TypeError, ValueError): _kdays = REFINED_WINDOW_DAYS
                 _kfrom = (_load_setting("KAIROS_REFINED_FROM_DATE") or "").strip() or None
                 _do_refresh_kairos_refined(days=_kdays, from_date=_kfrom)
                 log.info("Scheduled Kairos Refined refresh complete for %s", today)
@@ -11128,8 +11136,8 @@ def remove_excluded_ticker(ticker):
 def get_refined_status():
     anchor = _load_setting("REFINED_FROM_DATE") or ""
     days   = _load_setting("REFINED_DAYS")
-    try:    days = int(days) if days else 45
-    except (TypeError, ValueError): days = 45
+    try:    days = int(days) if days else REFINED_WINDOW_DAYS
+    except (TypeError, ValueError): days = REFINED_WINDOW_DAYS
     if _refined_last_run:
         return jsonify({**_refined_last_result, "anchor_from_date": anchor, "days": days})
     return jsonify({"run_at": None, "anchor_from_date": anchor, "days": days})
@@ -11149,8 +11157,8 @@ def refresh_refined():
         _save_setting("REFINED_DAYS", str(days))
     else:
         stored_days = _load_setting("REFINED_DAYS")
-        try:    days = int(stored_days) if stored_days else 45
-        except (TypeError, ValueError): days = 45
+        try:    days = int(stored_days) if stored_days else REFINED_WINDOW_DAYS
+        except (TypeError, ValueError): days = REFINED_WINDOW_DAYS
     if "from_date" in data:
         # Caller is explicitly setting (or clearing) the anchor — persist it
         # so the daily scheduler picks it up on subsequent runs.
@@ -23496,6 +23504,14 @@ def _restore_risk_settings():
         _save_setting("KAIROS_REFINED_DAYS", "45")
         _save_setting("KAIROS_REFINED_DAYS_45_MIGRATED", "1")
         log.info("Migrated KAIROS_REFINED_DAYS to 45 (one-time)")
+    # One-time migration: 45 → 60 days for both snapshots, paired with the min-trades
+    # floor going 5 → 20 (2026-10-17). The wider window keeps enough strategies above
+    # the higher floor. Flag-guarded so a later manual change sticks.
+    for _key in ("REFINED_DAYS", "KAIROS_REFINED_DAYS"):
+        if not _load_setting(f"{_key}_60_MIGRATED"):
+            _save_setting(_key, str(REFINED_WINDOW_DAYS))
+            _save_setting(f"{_key}_60_MIGRATED", "1")
+            log.info("Migrated %s to %d (one-time)", _key, REFINED_WINDOW_DAYS)
 
 _restore_risk_settings()
 

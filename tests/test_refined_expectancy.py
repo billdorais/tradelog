@@ -88,7 +88,7 @@ def test_tv_and_kairos_share_the_same_ranking_window():
     import inspect
     tv  = inspect.signature(a._do_refresh_refined).parameters["days"].default
     kai = inspect.signature(a._do_refresh_kairos_refined).parameters["days"].default
-    assert tv == kai == 45
+    assert tv == kai == a.REFINED_WINDOW_DAYS == 60
 
 
 def test_min_trade_floors_are_pinned():
@@ -100,9 +100,11 @@ def test_min_trade_floors_are_pinned():
     restored to 7 when that filter was reverted, then set to 5 again ON PURPOSE.
     A looser bar chosen deliberately is fine; one left behind by a reverted change
     is not. Pinned so the next move is also a decision. Kairos must never exceed TV.
+    2026-10-17: both raised to 20, with the window widened 45 -> 60 days.
     """
-    assert a._REFINED_MIN_TRADES == 5
-    assert a._KAIROS_REFINED_MIN_TRADES == 5
+    assert a._REFINED_MIN_TRADES == 20
+    assert a._KAIROS_REFINED_MIN_TRADES == 20
+    assert a.REFINED_WINDOW_DAYS == 60
     assert a._KAIROS_REFINED_MIN_TRADES <= a._REFINED_MIN_TRADES
     # On-Deck (display-only) must stay BELOW its routing floor or the watchlist
     # empties out — at parity every qualifying name gets routed.
