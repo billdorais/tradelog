@@ -1,12 +1,11 @@
-"""Kairos Select (account 7) — a frozen 15-name roster, run as an experiment.
+"""Kairos Select (account 7) — both farms' top-N, wired by hand from /farms.
 
-The names were chosen because they were the Kairos Farm's winners over
-2026-08-01..10-01. That is IN-SAMPLE selection, and the farm's own walk-forward
-(/api/backtest/score_shootout) put its ranking at t=0.41 with the picked cohort
-still losing. A paper book trading a FROZEN list is the instrument that settles
-whether the selection carries forward.
+It began as a frozen 15-name Kairos Farm roster (2026-08-01..10-01 winners); it is
+now re-picked deliberately on the Farm Leaders page. Selection is IN-SAMPLE, and the
+farm's own walk-forward (/api/backtest/score_shootout) put its ranking at t=0.41, so
+/farms shows a forward series beside the hindsight one.
 
-Two properties make it a test rather than a story, and both are asserted here:
+Two properties keep its results readable, and both are asserted here:
 
   1. The gates MIRROR THE FARM. The names were measured ungated and all-day; a
      gate here would confound a forward shortfall between "the edge was noise"

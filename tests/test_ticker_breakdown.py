@@ -409,7 +409,9 @@ def test_the_strategy_filter_resets_on_a_book_switch():
     nothing. Kept on a range change only — see the sticky tests below."""
     html = _tk_html()
     i = html.index("async function refreshTickerList")
-    assert "(resetStrategy || !held) ? '' : strat" in html[i:i + 1600]
+    block = html[i:i + 1600]
+    assert "const reset = resetStrategy || !held;" in block
+    assert "reset ? '' : strat" in block
 
 
 def test_changing_the_range_also_rebuilds_the_picker():
@@ -659,7 +661,8 @@ def test_a_held_strategy_is_dropped_if_its_ticker_is_gone():
     html = _tk_html()
     i = html.index("async function refreshTickerList")
     block = html[i:i + 1400]
-    assert "(resetStrategy || !held) ? '' : strat" in block
+    assert "const reset = resetStrategy || !held;" in block
+    assert "reset ? '' : strat" in block
 
 
 def test_an_empty_result_names_the_filter_that_caused_it():
@@ -732,3 +735,18 @@ def test_the_caption_says_which_number_ties_to_the_summary():
     i = html.index("function openGateDetail")
     block = html[i:i + 4800]
     assert "summary table" in block
+
+
+def test_a_fresh_ticker_lands_on_its_best_strategy():
+    """Picking a ticker or book narrows to its highest-P&L strategy; a range change
+    (resetStrategy=false) and an explicit 'All strategies' do not auto-pick."""
+    html = _tk_html()
+    i = html.index("function onTicker")
+    assert "load({ autoPick: true })" in html[i:i + 300]
+    i = html.index("async function refreshTickerList")
+    assert "load({ autoPick: reset })" in html[i:i + 1600]
+    i = html.index("async function load(")
+    block = html[i:i + 2200]
+    assert "autoPick && !d.strategy" in block
+    assert "b[1].pnl > a[1].pnl" in block
+    assert 'id="stratSel" onchange="load()"' in html        # manual choice: no auto-pick

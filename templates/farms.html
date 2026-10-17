@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Farm Leaders — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    .content { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+    .btn { background: transparent; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .btn:hover { border-color: #4a5568; }
+    .btn.on { border-color: #3a7a4e; color: #7FE098; background: rgba(127,224,152,0.10); }
+    .btn.go { border-color: #3a7a4e; color: #7FE098; }
+    .btn.danger { border-color: #8a4a4a; color: #e08a8a; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    select.f, input.f { background: #1a1d2e; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 8px; font-size: 0.8rem; font-family: inherit; }
+    .lbl { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em; color: #666; margin: 0 2px 0 8px; }
+    .sep { width: 1px; height: 18px; background: #2a2d3e; }
+    .panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+    .band-q { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #f0a35e; margin-bottom: 2px; }
+    .band-sub { font-size: 0.72rem; color: #777; margin-bottom: 12px; line-height: 1.45; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .tile { background: #171a24; border: 1px solid #232735; border-radius: 8px; padding: 10px 12px; }
+    .tile .k { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+    .tile .v { font-size: 1.25rem; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .tile .s { font-size: 0.66rem; color: #666; margin-top: 2px; }
+    .chartbox { position: relative; height: 240px; margin-bottom: 6px; }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.7rem; color: #9aa0b5; margin-bottom: 12px; }
+    .legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; }
+    .tbl { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.74rem; }
+    th { text-align: right; padding: 5px 8px; color: #666; font-weight: 500; font-size: 0.62rem; text-transform: uppercase; white-space: nowrap; }
+    th:first-child, td:first-child, th.l, td.l { text-align: left; }
+    td { text-align: right; padding: 5px 8px; border-top: 1px solid #1e2130; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    td.cell { min-width: 58px; }
+    tr.sum td { border-top: 1px solid #2a2d3e; color: #9aa0b5; font-weight: 600; }
+    .pos { color: #7FE098; } .neg { color: #e08a8a; } .dim { color: #444; }
+    .empty { color: #666; font-size: 0.85rem; padding: 20px 0; text-align: center; }
+    .warn { background: rgba(224,138,138,0.08); border: 1px solid #5a3535; color: #e08a8a; font-size: 0.76rem; border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; }
+    .note { font-size: 0.7rem; color: #666; line-height: 1.5; }
+    .chip { font-size: 0.62rem; color: #9aa0b5; background: #1a1d2e; border: 1px solid #2a2d3e; border-radius: 4px; padding: 1px 6px; }
+    .chip.tv { color: #9aa0b5; } .chip.kairos { color: #5FC8D4; border-color: #2a4a50; }
+    .chip.add { color: #7FE098; border-color: #3a7a4e; } .chip.keep { color: #9aa0b5; }
+    .chip.remove { color: #e08a8a; border-color: #5a3535; }
+    .grid2 { display: grid; grid-template-columns: 1fr; gap: 0; }
+    .confirm { margin-top: 12px; padding: 10px 12px; border: 1px solid #5a4a2a; background: rgba(240,163,94,0.06); border-radius: 8px; font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+      <h1>Kairos Automata — Farm Leaders</h1>
+    </div>
+    <div style="position:relative;display:inline-block">
+      <button onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+      <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:190px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+        <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+        <a href="/analysis" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128300; Analysis</a>
+        <a href="/simulate" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Replay</a>
+        <a href="/strategy-explorer" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128202; Strategy Explorer</a>
+        <a href="/tickers" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127991; Ticker Breakdown</a>
+        <a href="/farms" style="display:block;padding:10px 16px;color:#7FE098;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127793; Farm Leaders</a>
+        <a href="/recap" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Recap</a>
+        <a href="/crew" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#10022; Crew</a>
+        <a href="/diagnostics" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128736; Diagnostics</a>
+        <a href="/about" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#8505; About</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="panel" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px">
+      <span class="lbl" style="margin-left:0">Top</span>
+      <button class="btn" data-n="10" onclick="setOpt('n',10)">10</button>
+      <button class="btn" data-n="20" onclick="setOpt('n',20)">20</button>
+      <span class="sep"></span>
+      <span class="lbl">Window</span>
+      <button class="btn" data-days="30" onclick="setOpt('days',30)">30d</button>
+      <button class="btn" data-days="60" onclick="setOpt('days',60)">60d</button>
+      <button class="btn" data-days="90" onclick="setOpt('days',90)">90d</button>
+      <span class="sep"></span>
+      <span class="lbl">By</span>
+      <button class="btn" data-period="week" onclick="setOpt('period','week')">Week</button>
+      <button class="btn" data-period="month" onclick="setOpt('period','month')">Month</button>
+      <span class="sep"></span>
+      <span class="lbl" title="A strategy needs at least this many closed trades in the window to rank">Min trades</span>
+      <input class="f" id="minTrades" type="number" min="1" max="100" style="width:56px" onchange="setOpt('min_trades', this.value)">
+      <span class="lbl" title="At most this many strategies per ticker, so a top 10 can't be four SPY level pairs that lose together">Max / ticker</span>
+      <select class="f" id="cap" onchange="setOpt('cap', this.value)">
+        <option value="0">no cap</option><option value="1">1</option>
+        <option value="2">2</option><option value="3">3</option>
+      </select>
+      <button class="btn" onclick="load()" style="margin-left:auto">&#8635; Refresh</button>
+    </div>
+
+    <div id="errBox"></div>
+
+    <div class="panel">
+      <div class="band-q">How to read this</div>
+      <div class="band-sub" style="margin-bottom:0">
+        Both farms trade every pipeline at an equal $1,000 a trade, so their numbers compare directly.
+        Each farm's strategies are ranked on <strong>net P&amp;L</strong> over the window (net-positive, with the
+        min-trades floor and per-ticker cap above). The chart has three lines:
+        <span style="color:#d95926">today's top N</span> by period — <em>hindsight</em>, they were picked because
+        these numbers are good — and the line that matters,
+        <span style="color:#3987e5">the forward pick</span>: at each period boundary the top N is re-ranked on only
+        what was known then, and the line is what those picks made the <em>next</em> period. The dashed line is what
+        N <em>average</em> farm strategies made. If the forward line doesn't clear the dashed one, picking winners isn't working.
+        <span id="lookbackNote"></span>
+      </div>
+    </div>
+
+    <div id="farmTv"></div>
+    <div id="farmKairos"></div>
+
+    <div class="panel" id="rosterPanel">
+      <div class="band-q">Kairos Select roster</div>
+      <div class="band-sub">Both farms' top lists combined. TV Farm picks enter on TV alerts, Kairos Farm picks on the engine —
+        the way each earned its record. A strategy on both lists gets one rule, from the farm where it made more.
+        Apply rewires account 7 to exactly this list.</div>
+      <div id="roster"></div>
+    </div>
+  </div>
+
+<script>
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    if (!e.target.closest('header')) document.getElementById('navMenu').style.display = 'none';
+  });
+
+  const MIN_N = 5;
+  const C_FWD = '#3987e5', C_TOP = '#d95926', C_BASE = '#6b7080';
+  const _charts = {};
+  let _data = null, _confirming = false;
+
+  const DEFAULTS = { n: 10, days: 90, period: 'week', min_trades: 5, cap: 2 };
+  let _opt = { ...DEFAULTS };
+  try { _opt = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('farm_leaders_opts') || '{}') }; } catch (_) {}
+
+  function _esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function _money(v) { return (v >= 0 ? '+' : '−') + '$' + Math.abs(v).toFixed(2); }
+  function _money0(v) { return Math.round(v) === 0 ? '$0' : (v > 0 ? '+' : '−') + '$' + Math.abs(v).toFixed(0); }
+  function _cls(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : ''; }
+
+  function _syncControls() {
+    document.querySelectorAll('.btn[data-n]').forEach(b => b.classList.toggle('on', Number(b.dataset.n) === Number(_opt.n)));
+    document.querySelectorAll('.btn[data-days]').forEach(b => b.classList.toggle('on', Number(b.dataset.days) === Number(_opt.days)));
+    document.querySelectorAll('.btn[data-period]').forEach(b => b.classList.toggle('on', b.dataset.period === _opt.period));
+    document.getElementById('minTrades').value = _opt.min_trades;
+    document.getElementById('cap').value = String(_opt.cap);
+  }
+
+  function setOpt(k, v) {
+    _opt[k] = (k === 'period') ? v : Number(v);
+    try { localStorage.setItem('farm_leaders_opts', JSON.stringify(_opt)); } catch (_) {}
+    _syncControls();
+    load();
+  }
+
+  async function load() {
+    _confirming = false;
+    const qs = new URLSearchParams(_opt).toString();
+    document.getElementById('roster').innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const r = await fetch('/api/farms/leaders?' + qs);
+      _data = await r.json();
+      if (!r.ok) throw new Error(_data.error || r.status);
+    } catch (e) {
+      document.getElementById('errBox').innerHTML = '<div class="warn">Could not load the farms: ' + _esc(String(e.message || e)) + '</div>';
+      return;
+    }
+    const errs = Object.values(_data.errors || {});
+    document.getElementById('errBox').innerHTML = errs.length
+      ? '<div class="warn">&#9888; ' + errs.map(_esc).join('<br>&#9888; ') + ' — these numbers are incomplete, and Apply is disabled.</div>' : '';
+    const firsts = Object.values(_data.farms).map(f => f.first_date).filter(Boolean).sort();
+    document.getElementById('lookbackNote').textContent =
+      ' Fills reach back at most ' + _data.lookback_cap_days + ' days' +
+      (firsts.length ? ' (earliest trade shown: ' + firsts[0] + ')' : '') + ', so this is not since each farm started.';
+    _renderFarm('farmTv', 'tv');
+    _renderFarm('farmKairos', 'kairos');
+    _renderRoster();
+  }
+
+  function _periodLabel(k) {
+    if (_data.period === 'month') {
+      const [y, m] = k.split('-');
+      return new Date(Number(y), Number(m) - 1, 1).toLocaleString('en-US', { month: 'short', year: '2-digit' });
+    }
+    const [y, m, d] = k.split('-').map(Number);
+    return 'wk ' + new Date(y, m - 1, d).toLocaleString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  function _renderFarm(elId, key) {
+    const f = _data.farms[key];
+    const el = document.getElementById(elId);
+    const n = _data.n, t = f.totals, per = _data.period === 'month' ? 'month' : 'week';
+    if (!f.periods.length) {
+      el.innerHTML = `<div class="panel"><div class="band-q">${_esc(f.label)}</div><div class="empty">No closed trades in this window.</div></div>`;
+      return;
+    }
+    const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s || ''}</div></div>`;
+    const fwdN = t.forward_periods;
+    let html = `<div class="panel">
+      <div class="band-q">${_esc(f.label)} — top ${n}</div>
+      <div class="band-sub">${t.farm_strategies} strategies traded ${t.farm_trades} closed round-trips in the window;
+        ${f.top.length} clear the bar for the top ${n}.</div>
+      <div class="tiles">
+        ${tile('Top ' + n + ' net (hindsight)', _money(t.top_pnl), 'ranked on these same trades', _cls(t.top_pnl))}
+        ${tile('Forward picks net', fwdN ? _money(t.forward_pnl) : '—', fwdN ? 'over ' + fwdN + ' ' + per + (fwdN === 1 ? '' : 's') + ' after the first' : 'needs 2+ ' + per + 's', _cls(t.forward_pnl))}
+        ${tile('Forward vs average', fwdN ? t.forward_beat + ' / ' + fwdN : '—', fwdN ? per + 's the forward pick beat ' + n + ' average strategies (' + _money0(t.baseline_pnl) + ' total)' : '')}
+        ${tile('Whole farm', _money(t.farm_pnl), t.farm_strategies + ' strategies', _cls(t.farm_pnl))}
+      </div>
+      <div class="legend">
+        <span><i style="background:${C_FWD}"></i>Forward pick (re-ranked each ${per}, traded the next)</span>
+        <span><i style="background:${C_TOP}"></i>Today's top ${n} (hindsight)</span>
+        <span><i style="background:repeating-linear-gradient(90deg,${C_BASE} 0 4px,transparent 4px 7px)"></i>${n} average strategies</span>
+      </div>
+      <div class="chartbox"><canvas id="chart-${key}"></canvas></div>
+      <div class="tbl" style="margin-top:12px">${_farmTable(f)}</div>
+    </div>`;
+    el.innerHTML = html;
+    _drawChart(key, f);
+  }
+
+  function _farmTable(f) {
+    if (!f.top.length) return '<div class="empty">No strategy is net-positive with ' + _data.min_trades + '+ trades in this window.</div>';
+    const keys = f.periods.map(p => p.key);
+    const head = '<tr><th>#</th><th class="l">Strategy</th><th>Trades</th><th>Win %</th><th>PF</th><th>Net</th>'
+      + keys.map(k => `<th>${_esc(_periodLabel(k))}</th>`).join('') + '</tr>';
+    const rows = f.top.map((s, i) => '<tr>'
+      + `<td>${i + 1}</td><td class="l">${_esc(s.strategy)}</td><td>${s.trades}</td><td>${s.win_rate}%</td>`
+      + `<td>${s.profit_factor === null ? '∞' : s.profit_factor}</td><td class="${_cls(s.pnl)}"><strong>${_money(s.pnl)}</strong></td>`
+      + keys.map(k => {
+          const v = s.by_period[k];
+          return v === undefined ? '<td class="cell dim">·</td>' : `<td class="cell ${_cls(v)}">${_money0(v)}</td>`;
+        }).join('') + '</tr>').join('');
+    const sum = '<tr class="sum"><td></td><td class="l">Top ' + _data.n + ' total</td><td></td><td></td><td></td>'
+      + `<td class="${_cls(f.totals.top_pnl)}">${_money(f.totals.top_pnl)}</td>`
+      + f.periods.map(p => `<td class="cell ${_cls(p.top_pnl)}">${_money0(p.top_pnl)}</td>`).join('') + '</tr>'
+      + '<tr class="sum"><td></td><td class="l">Forward pick</td><td colspan="4"></td>'
+      + f.periods.map(p => p.forward_pnl === null ? '<td class="cell dim">—</td>'
+          : `<td class="cell ${_cls(p.forward_pnl)}">${_money0(p.forward_pnl)}</td>`).join('') + '</tr>'
+      + '<tr class="sum"><td></td><td class="l">Whole farm</td><td colspan="4"></td>'
+      + f.periods.map(p => `<td class="cell ${_cls(p.farm_pnl)}">${_money0(p.farm_pnl)}</td>`).join('') + '</tr>';
+    return '<table><thead>' + head + '</thead><tbody>' + rows + sum + '</tbody></table>';
+  }
+
+  function _drawChart(key, f) {
+    if (_charts[key]) { _charts[key].destroy(); }
+    const labels = f.periods.map(p => _periodLabel(p.key));
+    const ds = (label, data, color, extra) => ({
+      label, data, borderColor: color, backgroundColor: color, borderWidth: 2,
+      pointRadius: 4, pointHoverRadius: 6, pointBorderColor: '#13161f', pointBorderWidth: 2,
+      tension: 0, spanGaps: false, ...extra,
+    });
+    _charts[key] = new Chart(document.getElementById('chart-' + key), {
+      type: 'line',
+      data: { labels, datasets: [
+        ds('Forward pick', f.periods.map(p => p.forward_pnl), C_FWD),
+        ds("Today's top " + _data.n, f.periods.map(p => p.top_pnl), C_TOP),
+        ds(_data.n + ' average strategies', f.periods.map(p => p.avg_n_pnl), C_BASE, { borderDash: [4, 3], pointRadius: 0, pointHoverRadius: 4 }),
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1a1d2e', borderColor: '#2a2d3e', borderWidth: 1,
+            titleColor: '#e0e0e0', bodyColor: '#cfd3e0', padding: 10,
+            callbacks: {
+              label: c => ' ' + c.dataset.label + ': ' + (c.raw === null ? 'n/a (nothing to rank on yet)' : _money(c.raw)),
+              afterBody: items => {
+                const p = f.periods[items[0].dataIndex];
+                return ['', 'Whole farm: ' + _money(p.farm_pnl) + ' across ' + p.strategies + ' strategies'];
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 } } },
+          y: { grid: { color: '#1e2130' }, ticks: { color: '#666', font: { size: 10 }, callback: v => '$' + v } },
+        },
+      },
+    });
+  }
+
+  function _renderRoster() {
+    const el = document.getElementById('roster');
+    const d = _data, ro = d.roster || [];
+    if (!ro.length) { el.innerHTML = '<div class="empty">No strategy qualifies with these settings.</div>'; return; }
+    const keep = new Set(d.diff.keep);
+    const rows = ro.map((r, i) => `<tr>
+        <td>${i + 1}</td><td class="l">${_esc(r.strategy)}</td>
+        <td class="l"><span class="chip ${r.farm}">${r.farm === 'tv' ? 'TV Farm' : 'Kairos Farm'}</span>${r.also_in ? ' <span class="chip" title="also in the other farm\'s top list">both</span>' : ''}</td>
+        <td class="l">${r.entry === 'tv' ? 'TV alert' : 'Engine'}</td>
+        <td class="${_cls(r.pnl)}">${_money(r.pnl)}</td>
+        <td><span class="chip ${keep.has(r.strategy) ? 'keep' : 'add'}">${keep.has(r.strategy) ? 'already on' : 'add'}</span></td>
+      </tr>`).join('');
+    const removed = d.diff.remove.length
+      ? '<div class="note" style="margin-top:10px">Comes <span class="chip remove">off</span> Kairos Select: ' + d.diff.remove.map(_esc).join(', ') + '</div>' : '';
+    const blocked = !d.select_configured ? 'Kairos Select (account 7) isn\'t configured — set ALPACA_KEY7.'
+      : Object.keys(d.errors || {}).length ? 'Farm data is incomplete — fix the warning above first.' : '';
+    const last = d.last_apply
+      ? `<div class="note" style="margin-top:10px">Last applied ${_esc(d.last_apply.at)} UTC: top ${d.last_apply.n}, ${d.last_apply.days}d window, `
+        + `${d.last_apply.picks.length} picks at $${Number(d.last_apply.size_dollars).toLocaleString()}.</div>` : '';
+    const size = localStorage.getItem('farm_select_size') || '15000';
+    el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>Net in window</th><th>Router</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>${removed}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">
+        <span class="lbl" style="margin-left:0">Size / trade $</span>
+        <input class="f" id="sizeDollars" type="number" min="100" step="500" value="${_esc(size)}" style="width:90px"
+               onchange="try{localStorage.setItem('farm_select_size', this.value)}catch(_){}">
+        <button class="btn go" id="applyBtn" onclick="askApply()" ${blocked ? 'disabled' : ''}>Apply to Kairos Select…</button>
+        ${blocked ? `<span class="note" style="color:#e08a8a">${_esc(blocked)}</span>` : ''}
+      </div>
+      <div id="applyBox"></div>${last}`;
+  }
+
+  function askApply() {
+    const d = _data;
+    _confirming = true;
+    document.getElementById('applyBox').innerHTML = `<div class="confirm">
+      Rewire Kairos Select to these <strong>${d.roster.length}</strong> strategies:
+      <span class="chip add">+${d.diff.add.length} add</span> <span class="chip keep">${d.diff.keep.length} keep</span>
+      <span class="chip remove">−${d.diff.remove.length} off</span>, sized at $${Number(document.getElementById('sizeDollars').value).toLocaleString()} a trade.
+      A strategy with an open position on account 7 keeps its rule until the next apply.
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn go" onclick="doApply()">Confirm — rewire account 7</button>
+        <button class="btn" onclick="document.getElementById('applyBox').innerHTML='';_confirming=false">Cancel</button>
+      </div></div>`;
+  }
+
+  async function doApply() {
+    if (!_confirming) return;
+    const box = document.getElementById('applyBox');
+    box.innerHTML = '<div class="confirm">Applying…</div>';
+    let res, body;
+    try {
+      res = await fetch('/api/farms/apply_select', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ..._opt, size_dollars: Number(document.getElementById('sizeDollars').value),
+                               expect: _data.roster.map(r => r.strategy) }),
+      });
+      body = await res.json();
+    } catch (e) {
+      box.innerHTML = '<div class="warn">Apply failed: ' + _esc(String(e)) + '</div>';
+      return;
+    }
+    if (!res.ok) { box.innerHTML = '<div class="warn">' + _esc(body.error || ('HTTP ' + res.status)) + '</div>'; return; }
+    const list = (k, label) => (body[k] && body[k].length) ? `<div>${label} (${body[k].length}): ${body[k].map(_esc).join(', ')}</div>` : '';
+    await load();
+    document.getElementById('applyBox').innerHTML = '<div class="confirm" style="border-color:#3a7a4e;background:rgba(127,224,152,0.06)">'
+      + '<strong style="color:#7FE098">Kairos Select rewired.</strong>'
+      + list('created', 'Added') + list('updated', 'Updated') + list('deleted', 'Removed')
+      + list('deferred_open_position', 'Kept for now (open position)')
+      + list('stripped_from_mixed', 'Select broker removed from shared rules') + '</div>';
+  }
+
+  _syncControls();
+  load();
+</script>
+</body>
+</html>

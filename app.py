@@ -249,17 +249,18 @@ ACCOUNT_META = {
     # row alone trades nothing: the account must also be armed.
     "6": {"tag": "alpaca6", "label": "Crew Live",      "color": "#E8A0BF", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "open_loc_gate": True},
-    # Kairos Select — a FROZEN 15-name roster drawn from the Kairos Farm's
-    # 2026-08-01..10-01 winners. Its whole purpose is to answer out-of-sample
-    # whether that selection carries forward, so the gates deliberately MIRROR THE
-    # FARM (ungated, all-day, no profit lock, no daily-loss guard): the names were
-    # measured under those conditions, and any gate added here would confound a
-    # forward shortfall between "the edge was noise" and "a gate got in the way".
+    # Kairos Select — the combined top-N of BOTH farms, wired by an explicit Apply
+    # on the Farm Leaders page (/farms): TV Farm picks enter on TV alerts, Kairos
+    # Farm picks on the engine. It began (2026-10-01) as a frozen 15-name Kairos
+    # Farm roster; from 2026-10-17 the user re-picks it deliberately. The gates
+    # still MIRROR THE FARMS (ungated, all-day, no profit lock, no daily-loss
+    # guard): the names were measured under those conditions, and a gate here
+    # would confound "the edge was noise" with "a gate got in the way".
     #
-    # The roster must NOT be re-picked. Re-selecting winners periodically turns this
-    # from a test into the curve-fit the farm ranking already failed
-    # (/api/backtest/score_shootout put Kairos Farm at t=0.41, and the picked cohort
-    # still lost). Frozen, it is evidence either way.
+    # Re-picking winners has not held up before (/api/backtest/score_shootout put
+    # Kairos Farm at t=0.41, the picked cohort still lost), so /farms shows a
+    # FORWARD series — what each period's re-ranked top N made the next period —
+    # beside the hindsight one. auto_source stays False: nothing re-picks on a timer.
     "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3", "glance": True,
           "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
 }
@@ -3525,6 +3526,9 @@ except Exception as _crew_err:
     @app.route("/crew")
     def crew_unavailable():
         return "<h2 style='font-family:sans-serif;padding:40px'>Crew page unavailable — crewai package not installed on this deployment.</h2>", 503
+
+from routes.farms import farms_bp
+app.register_blueprint(farms_bp)
 
 
 @app.route("/api/trades")
