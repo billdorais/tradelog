@@ -138,6 +138,29 @@
       <div class="chartbox" style="height:300px"><canvas id="chart-acc"></canvas></div>
     </div>
 
+    <div class="panel" id="ovPanel">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div class="band-q">Top performers, overlaid</div>
+          <div class="band-sub">Each line is one strategy's running P&amp;L over the window, all starting at $0. Colour shows the farm;
+            hover a line or a row to pick it out. Untick a strategy to hide it. Hindsight, like the top-N view: these are today's leaders.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn" onclick="ovShow('all')">All</button>
+          <button class="btn" onclick="ovShow('none')">None</button>
+          <button class="btn" onclick="ovShow('top5')" title="The top 5 from each farm">Top 5 each</button>
+          <button class="btn" onclick="ovShow('tv')">TV only</button>
+          <button class="btn" onclick="ovShow('kairos')">Kairos only</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:#9085e9"></i>TV Farm strategy</span>
+        <span><i style="background:#199e70"></i>Kairos Farm strategy</span>
+      </div>
+      <div class="chartbox" style="height:340px"><canvas id="chart-ov"></canvas></div>
+      <div id="ovList" style="margin-top:12px"></div>
+    </div>
+
     <div id="farmTv"></div>
     <div id="farmKairos"></div>
 
@@ -213,6 +236,7 @@
       ? ' Showing everything since each farm started (' + starts.join(', ') + ').'
       : ' This window covers the last ' + _data.days + ' days (' + starts.join(', ') + "). Use All to go back to each farm's first trade.";
     _renderAccumulation();
+    _renderOverlay();
     _renderFarm('farmTv', 'tv');
     _renderFarm('farmKairos', 'kairos');
     _renderRoster();
@@ -226,6 +250,116 @@
   }
 
   function _last(arr) { for (let i = arr.length - 1; i >= 0; i--) if (arr[i] !== null) return arr[i]; return null; }
+
+  // ── Overlay: one line per top strategy ────────────────────────────────────
+  // Colour encodes the farm (the same violet/green as the accumulation chart);
+  // identity comes from hover + the list, since 20-40 lines can't each get a hue.
+  // Hidden lines are remembered per farm:strategy key so a reload keeps the view.
+  let _ovHidden = new Set(), _ovHot = null;
+  try { _ovHidden = new Set(JSON.parse(localStorage.getItem('farm_ov_hidden') || '[]')); } catch (_) {}
+  const _ovKey = s => s.farm + ':' + s.strategy;
+  const _ovColor = (farm, a) => {
+    const hex = farm === 'tv' ? C_TV : C_KA;
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+
+  function _ovSave() { try { localStorage.setItem('farm_ov_hidden', JSON.stringify([..._ovHidden])); } catch (_) {} }
+
+  function ovShow(mode) {
+    const all = ((_data && _data.accumulation) || {}).strategies || [];
+    _ovHidden = new Set(all.filter(s =>
+        mode === 'none' ? true
+      : mode === 'top5' ? s.rank > 5
+      : mode === 'tv' ? s.farm !== 'tv'
+      : mode === 'kairos' ? s.farm !== 'kairos'
+      : false).map(_ovKey));
+    _ovSave();
+    _renderOverlay();
+  }
+
+  function ovToggle(key) {
+    _ovHidden.has(key) ? _ovHidden.delete(key) : _ovHidden.add(key);
+    _ovSave();
+    _renderOverlay();
+  }
+
+  function ovHot(key) {
+    if (_ovHot === key) return;
+    _ovHot = key;
+    _ovStyle();
+    document.querySelectorAll('#ovList tr[data-k]').forEach(r =>
+      r.style.background = r.dataset.k === key ? 'rgba(255,255,255,0.04)' : '');
+  }
+
+  function _ovStyle() {
+    const ch = _charts.ov;
+    if (!ch) return;
+    ch.data.datasets.forEach(ds => {
+      const on = !_ovHot || ds._key === _ovHot;
+      ds.borderColor = _ovColor(ds._farm, _ovHot ? (on ? 1 : 0.12) : 0.75);
+      ds.borderWidth = _ovHot && on ? 3 : 1.5;
+      ds.order = _ovHot && on ? 0 : 1;
+    });
+    ch.update('none');
+  }
+
+  function _renderOverlay() {
+    const acc = _data.accumulation || {}, dates = acc.dates || [], all = acc.strategies || [];
+    const listEl = document.getElementById('ovList');
+    if (_charts.ov) { _charts.ov.destroy(); _charts.ov = null; }
+    if (!all.length) { listEl.innerHTML = '<div class="empty">No strategy clears the bar with these settings.</div>'; return; }
+    _ovHot = null;
+    const shown = all.filter(s => !_ovHidden.has(_ovKey(s)));
+    _charts.ov = new Chart(document.getElementById('chart-ov'), {
+      type: 'line',
+      data: { labels: dates, datasets: shown.map(s => ({
+        label: s.strategy, data: s.values, _key: _ovKey(s), _farm: s.farm,
+        borderColor: _ovColor(s.farm, 0.75), backgroundColor: _ovColor(s.farm, 1),
+        borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 6, tension: 0,
+      })) },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'nearest', intersect: false },
+        onHover: (e, els) => ovHot(els.length ? _charts.ov.data.datasets[els[0].datasetIndex]._key : null),
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1a1d2e', borderColor: '#2a2d3e', borderWidth: 1,
+            titleColor: '#e0e0e0', bodyColor: '#cfd3e0', padding: 10,
+            callbacks: {
+              label: c => ' ' + c.dataset.label + ' [' + (c.dataset._farm === 'tv' ? 'TV' : 'Kairos') + ']: ' + _money(c.raw),
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0,
+               callback: function (v) { const [y, m, dd] = this.getLabelForValue(v).split('-').map(Number);
+                 return new Date(y, m - 1, dd).toLocaleString('en-US', { month: 'short', day: 'numeric' }); } } },
+          y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+               ticks: { color: '#666', font: { size: 10 }, callback: v => '$' + v } },
+        },
+      },
+    });
+    document.getElementById('chart-ov').onmouseleave = () => ovHot(null);
+
+    const row = s => {
+      const k = _ovKey(s), on = !_ovHidden.has(k);
+      return `<tr data-k="${_esc(k)}" onmouseenter="ovHot(this.dataset.k)" onmouseleave="ovHot(null)" style="cursor:pointer"
+                  onclick="ovToggle(this.dataset.k)">
+        <td><input type="checkbox" ${on ? 'checked' : ''} tabindex="-1" style="pointer-events:none;accent-color:${s.farm === 'tv' ? C_TV : C_KA}"></td>
+        <td>${s.rank}</td>
+        <td class="l"><i style="display:inline-block;width:12px;height:2px;vertical-align:middle;margin-right:6px;background:${s.farm === 'tv' ? C_TV : C_KA}"></i>${_esc(s.strategy)}</td>
+        <td class="${_cls(s.pnl)}">${_money(s.pnl)}</td></tr>`;
+    };
+    const col = (farm, label) => {
+      const rows = all.filter(s => s.farm === farm);
+      return `<div style="flex:1 1 360px;min-width:0"><div class="lbl" style="margin:0 0 4px 0">${label} · ${rows.filter(s => !_ovHidden.has(_ovKey(s))).length}/${rows.length} shown</div>
+        <div class="tbl"><table><thead><tr><th></th><th>#</th><th class="l">Strategy</th><th>Net</th></tr></thead>
+        <tbody>${rows.map(row).join('') || '<tr><td colspan="4" class="empty">none</td></tr>'}</tbody></table></div></div>`;
+    };
+    listEl.innerHTML = `<div style="display:flex;gap:18px;flex-wrap:wrap">${col('tv', 'TV Farm')}${col('kairos', 'Kairos Farm')}</div>`;
+  }
 
   function _renderAccumulation() {
     const acc = _data.accumulation || {}, dates = acc.dates || [];

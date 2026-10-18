@@ -320,3 +320,15 @@ def test_apply_refuses_when_select_gates_differ(router, monkeypatch):
                                  json={"expect": [x["strategy"] for x in roster]})
     assert r.status_code == 409 and "rvol" in r.get_json()["error"]
     assert _rules(db) == before
+
+
+def test_accumulation_carries_one_line_per_top_strategy_per_farm():
+    A, D = _s("AAA"), _s("DUP")
+    tv = _trips([(A, 10, "2026-10-05"), (D, 5, "2026-10-06")])
+    ka = _trips([(D, 20, "2026-10-06"), (D, -4, "2026-10-07")])
+    acc = farms.accumulation({"tv": tv, "kairos": ka}, n=5, period="week", min_trades=1, cap=0)
+    lines = {(s["farm"], s["strategy"]): s for s in acc["strategies"]}
+    assert set(lines) == {("tv", A), ("tv", D), ("kairos", D)}   # DUP once per farm
+    assert lines[("tv", A)]["values"] == [10, 10, 10]           # every line spans all dates
+    assert lines[("kairos", D)]["values"] == [0, 20, 16]
+    assert lines[("tv", A)]["rank"] == 1 and lines[("tv", D)]["rank"] == 2

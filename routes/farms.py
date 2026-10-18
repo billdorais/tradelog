@@ -254,8 +254,26 @@ def accumulation(trips_by_farm, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DE
                 if fwd_comb[k].get(s) == f:
                     _add("forward", "combined", d, p)
 
+    # One running total per top strategy, every line starting at $0 on the first
+    # date so they compare on the same axis. A strategy on both farms' lists gets
+    # two lines: the TV-alert and engine versions are different executions.
+    per_strategy = []
+    for f in farms:
+        for rank, r in enumerate(hind[f], 1):
+            s = r["strategy"]
+            by_day = {}
+            for t in trips_by_farm[f]:
+                if t["strategy"] == s:
+                    by_day[t["date"]] = by_day.get(t["date"], 0.0) + float(t["pnl"])
+            run, line = 0.0, []
+            for d in dates:
+                run += by_day.get(d, 0.0)
+                line.append(round(run, 2))
+            per_strategy.append({"strategy": s, "farm": f, "rank": rank,
+                                 "pnl": r["pnl"], "values": line})
+
     start = keys[1] if len(keys) > 1 else None
-    out = {"dates": dates, "forward_start": start}
+    out = {"dates": dates, "forward_start": start, "strategies": per_strategy}
     for mode in ("top", "forward"):
         out[mode] = {}
         for series, by_day in daily[mode].items():
