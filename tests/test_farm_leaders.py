@@ -303,9 +303,17 @@ def test_parity_flags_when_the_farms_disagree_with_each_other():
     assert r["mismatches"] == ["strikes"] and r["farms_agree"] is False
 
 
+def test_parity_lets_select_carry_the_profit_lock_alone():
+    r = farms.gate_parity(_states(select_overrides={"profit-lock": (True, "$100 give-back floor", "shared")}))
+    assert r["mismatches"] == []
+    row = next(x for x in r["rows"] if x["gate"] == "profit-lock")
+    assert row["exempt"] is True and row["select"]["on"] is True
+
+
 def test_select_meta_flags_match_both_farms():
     import app as a
-    flags = ("daytype_gate", "reversal_gate", "reversal_side", "profit_lock",
+    # profit_lock excluded: Select carries it deliberately (farms.PARITY_EXEMPT).
+    flags = ("daytype_gate", "reversal_gate", "reversal_side",
              "daily_loss_guard", "rvol_gate", "open_loc_gate", "hours_key", "retest")
     for f in flags:
         assert a.ACCOUNT_META["7"].get(f) == a.ACCOUNT_META["1"].get(f) == a.ACCOUNT_META["5"].get(f), f

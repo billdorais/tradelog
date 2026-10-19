@@ -25,8 +25,10 @@ import app as a
 SELECT = "7"
 FARM   = "5"          # Kairos Farm — the book the roster was drawn from
 
-# Everything that changes which trades the book is allowed to take.
-GATE_FLAGS = ("daytype_gate", "reversal_gate", "reversal_side", "profit_lock",
+# Everything that changes which trades the book is allowed to take. profit_lock is
+# left out on purpose: Select carries it (it caps the day's give-back, it doesn't
+# pick setups) -- see test_profit_lock_is_the_one_deliberate_exception.
+GATE_FLAGS = ("daytype_gate", "reversal_gate", "reversal_side",
               "daily_loss_guard", "rvol_gate", "open_loc_gate", "hours_key")
 
 
@@ -43,6 +45,13 @@ def test_its_gates_mirror_the_farm_it_was_drawn_from():
     sel, farm = a.ACCOUNT_META[SELECT], a.ACCOUNT_META[FARM]
     for f in GATE_FLAGS:
         assert sel.get(f) == farm.get(f), f"{f}: Select {sel.get(f)!r} != Farm {farm.get(f)!r}"
+
+
+def test_profit_lock_is_the_one_deliberate_exception():
+    """Select runs the profit lock, but must NOT inherit the curated position stops,
+    take-profit or short strike cap that profit_lock used to imply."""
+    assert a.ACCOUNT_META[SELECT]["profit_lock"] is True
+    assert "alpaca7" not in a._CURATED_TAGS
 
 
 def test_it_trades_all_day_like_the_farm():

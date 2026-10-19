@@ -491,6 +491,10 @@ def _select_rules(cur, a):
 # on. Rule-level gates (hours window, side gate, exits) travel on the cloned rule.
 PARITY_GATES = ("hours", "day-type", "rvol", "open-location", "reversal",
                 "strikes", "profit-lock", "daily-loss")
+# Gates Select is allowed to differ on, by deliberate choice. The profit lock only
+# acts once the book is already up a step on the day — it caps give-back rather
+# than filtering which setups enter — so it is shown but never blocks Apply.
+PARITY_EXEMPT = ("profit-lock",)
 FARM_TAGS = {"tv": "alpaca", "kairos": "alpaca5"}
 
 
@@ -512,9 +516,10 @@ def gate_parity(state_fn):
     for g in PARITY_GATES:
         c = {k: _cell(k, g) for k in st}
         same = lambda x, y: (x["on"], x["setting"]) == (y["on"], y["setting"])
-        ok = same(c["select"], c["tv"]) and same(c["select"], c["kairos"])
+        exempt = g in PARITY_EXEMPT
+        ok = exempt or (same(c["select"], c["tv"]) and same(c["select"], c["kairos"]))
         disagree = disagree or not same(c["tv"], c["kairos"])
-        rows.append({"gate": g, **c, "ok": ok})
+        rows.append({"gate": g, **c, "ok": ok, "exempt": exempt})
         if not ok:
             bad.append(g)
     return {"rows": rows, "mismatches": bad, "farms_agree": not disagree}

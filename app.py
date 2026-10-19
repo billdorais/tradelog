@@ -261,8 +261,15 @@ ACCOUNT_META = {
     # Kairos Farm at t=0.41, the picked cohort still lost), so /farms shows a
     # FORWARD series — what each period's re-ranked top N made the next period —
     # beside the hindsight one. auto_source stays False: nothing re-picks on a timer.
-    "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3", "glance": True,
-          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
+    #
+    # Profit lock is the ONE deliberate exception (2026-10-19, user's call): it only
+    # acts after the book is already up a step on the day, so it caps give-back
+    # rather than filtering which setups enter. /farms gate parity exempts it.
+    # "curated": False keeps Select out of _CURATED_TAGS — profit_lock used to
+    # double as the curated marker, and inheriting the position stops, take-profit
+    # and short strike cap along with it would be a real gate change.
+    "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3", "glance": True, "curated": False,
+          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": False},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -340,8 +347,11 @@ ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS
 
 # Curated books (profit_lock on: TV Refined, Kairos Refined, Crew Paper) — the
 # accounts the tighter short strike limit applies to. Farms (profit_lock off) are
-# exempt so they keep sampling short re-fades for the periodic re-check.
-_CURATED_TAGS = _accounts_with("profit_lock")
+# exempt so they keep sampling short re-fades for the periodic re-check. An
+# explicit "curated" flag overrides — Kairos Select has the profit lock but not
+# the curated stops.
+_CURATED_TAGS = {_meta_tag(n) for n, m in ACCOUNT_META.items()
+                 if m.get("curated", m.get("profit_lock"))}
 
 # RVOL entry gate — block low relative-volume BREAKOUT entries (and short blow-offs)
 # on the gated books. The Replay RVOL sweep (Jun–Jul '26) showed the edge lives in

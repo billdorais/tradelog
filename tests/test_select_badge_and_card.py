@@ -66,13 +66,13 @@ def test_every_meta_flag_the_ui_reads_is_copied_into_the_record():
 
 # ── the card ────────────────────────────────────────────────────────────────
 
-def test_select_gets_a_card_without_carrying_a_profit_lock(monkeypatch):
-    """The whole point of the `glance` flag. If this ever needs profit_lock set to
-    get its card, the account has stopped mirroring the farm."""
+def test_select_gets_its_card_from_glance(monkeypatch):
+    """Select's card is pinned by the explicit `glance` flag, not by profit_lock
+    (which it now carries too) -- so turning the lock back off keeps the card."""
     _accounts(monkeypatch)
     byname = {x["label"]: x for x in a._ui_accounts()}
     assert byname["Kairos Select"]["curated"] is True
-    assert a.ACCOUNT_META[SELECT].get("profit_lock") is False
+    assert a.ACCOUNT_META[SELECT].get("glance") is True
 
 
 def test_the_farms_still_have_no_card(monkeypatch):

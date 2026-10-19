@@ -666,9 +666,13 @@
   function _gateCheck(gp) {
     if (gp.error) return `<div class="warn" style="margin-top:12px">Gate check failed: ${_esc(gp.error)}</div>`;
     if (!gp.mismatches.length) {
+      const ex = gp.rows.filter(r => r.exempt && r.select && r.select.on);
       return `<div class="note" style="margin-top:12px"><span style="color:#7FE098">&#10003; Gate check:</span>
-        Kairos Select runs the same entry gates as both farms (${gp.rows.map(r => _esc(r.gate)).join(', ')}).
-        Each rule also copies its pipeline's hours window, side gate and exits.</div>`;
+        Kairos Select runs the same entry gates as both farms (${gp.rows.filter(r => !r.exempt).map(r => _esc(r.gate)).join(', ')}).
+        Each rule also copies its pipeline's hours window, side gate and exits.`
+        + (ex.length ? ` Deliberately different: ${ex.map(r => _esc(r.gate) + ' (' + _esc(r.select.setting) + ')').join(', ')}
+        — it caps the day's give-back, so it doesn't change which setups enter.` : '')
+        + `</div>`;
     }
     const cell = c => `<td class="l" style="white-space:normal">${c.on ? '' : '<span class="dim">off · </span>'}${_esc(c.setting)}`
       + `${c.source === 'override' ? ' <span class="chip">override</span>' : ''}</td>`;
