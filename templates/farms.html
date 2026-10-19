@@ -129,6 +129,12 @@
           <button class="btn" data-acc="forward" onclick="setAccMode('forward')">Forward pick</button>
         </div>
       </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn" id="accPrev" onclick="accStep(-1)" title="Previous week (←)">&#8249;</button>
+        <span id="accWeekLbl" style="font-size:0.8rem;color:#cfd3e0;min-width:170px;text-align:center"></span>
+        <button class="btn" id="accNext" onclick="accStep(1)" title="Next week (→)">&#8250;</button>
+        <button class="btn" id="accAllBtn" onclick="accWeek(null)">All weeks</button>
+      </div>
       <div class="tiles" id="accTiles"></div>
       <div class="legend">
         <span><i style="background:#9085e9"></i>TV Farm top N</span>
@@ -361,33 +367,91 @@
     listEl.innerHTML = `<div style="display:flex;gap:18px;flex-wrap:wrap">${col('tv', 'TV Farm')}${col('kairos', 'Kairos Farm')}</div>`;
   }
 
+  // ── Week-by-week paging of the accumulation chart ─────────────────────────
+  // null = the whole window. A week view re-bases every line to $0 at that
+  // week's start, so the chart reads as "what this week added".
+  let _accWeekKey = null;
+
+  function _wkStart(day) {
+    const d = new Date(day + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    return d.toISOString().slice(0, 10);
+  }
+  function _accWeeks() {
+    const dates = ((_data && _data.accumulation) || {}).dates || [];
+    return [...new Set(dates.map(_wkStart))];
+  }
+  function accWeek(key) { _accWeekKey = key; if (_data) _renderAccumulation(); }
+  function accStep(dir) {
+    const wk = _accWeeks();
+    if (!wk.length) return;
+    const i = wk.indexOf(_accWeekKey);
+    accWeek(i < 0 ? (dir < 0 ? wk[wk.length - 1] : wk[0])
+                  : wk[Math.max(0, Math.min(wk.length - 1, i + dir))]);
+  }
+  document.addEventListener('keydown', e => {
+    if (e.target.closest('input, select, textarea') || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'ArrowLeft')  { accStep(-1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { accStep(1);  e.preventDefault(); }
+  });
+  const _fmtDay = d => { const [y, m, dd] = d.split('-').map(Number);
+    return new Date(y, m - 1, dd).toLocaleString('en-US', { month: 'short', day: 'numeric' }); };
+
   function _renderAccumulation() {
-    const acc = _data.accumulation || {}, dates = acc.dates || [];
+    const acc = _data.accumulation || {};
     const per = _data.period === 'month' ? 'month' : 'week';
-    const series = acc[_accMode] || {};
     const fwd = _accMode === 'forward';
+
+    // Slice to one week when paging; re-base each line to the prior day's value.
+    const weeks = _accWeeks();
+    if (_accWeekKey !== null && !weeks.includes(_accWeekKey)) _accWeekKey = null;
+    const wi = weeks.indexOf(_accWeekKey);
+    let dates = acc.dates || [], series = acc[_accMode] || {};
+    if (_accWeekKey !== null) {
+      const idx = dates.map((d, i) => _wkStart(d) === _accWeekKey ? i : -1).filter(i => i >= 0);
+      const i0 = idx[0], i1 = idx[idx.length - 1];
+      const cut = arr => {
+        const a = arr || [], base = i0 > 0 && a[i0 - 1] !== null ? a[i0 - 1] : 0;
+        return a.slice(i0, i1 + 1).map(v => v === null ? null : Math.round((v - base) * 100) / 100);
+      };
+      series = { combined: cut(series.combined), tv: cut(series.tv), kairos: cut(series.kairos) };
+      dates = dates.slice(i0, i1 + 1);
+    }
+    document.getElementById('accWeekLbl').textContent = _accWeekKey === null
+      ? `All ${weeks.length} weeks`
+      : `Week of ${_fmtDay(_accWeekKey)} · ${wi + 1} of ${weeks.length}`;
+    document.getElementById('accPrev').disabled = !weeks.length || wi === 0;
+    document.getElementById('accNext').disabled = !weeks.length || wi === weeks.length - 1;
+    document.getElementById('accAllBtn').classList.toggle('on', _accWeekKey === null);
     document.getElementById('accSub').innerHTML = fwd
       ? `Running total if the roster had been <strong>re-picked every ${per}</strong> on only what was known then, `
         + `and traded the next ${per}. Starts ${acc.forward_start ? 'the ' + per + ' of ' + _esc(acc.forward_start) : 'once there are two ' + per + 's'}. `
         + `This is the curve a roster refreshed on this page would actually have earned.`
       : `Running total of <strong>today's</strong> top ${_data.n} from each farm, traded across the whole window. `
         + `Hindsight: these strategies were chosen because this curve is good. Switch to Forward pick for the honest version.`;
+    if (_accWeekKey !== null) {
+      document.getElementById('accSub').innerHTML += ` <strong>Showing one week</strong>: every line counts from $0 at the `
+        + `start of ${_esc(_fmtDay(_accWeekKey))}, so each dot is the week's total so far and the tiles are what the week added. `
+        + `‹ › or the arrow keys page through.`;
+    }
     if (!dates.length) {
       document.getElementById('accTiles').innerHTML = '<div class="empty">No closed trades in this window.</div>';
       if (_charts.acc) { _charts.acc.destroy(); _charts.acc = null; }
       return;
     }
     const tile = (k, v, sub) => `<div class="tile"><div class="k">${k}</div><div class="v ${v === null ? '' : _cls(v)}">${v === null ? '—' : _money(v)}</div><div class="s">${sub}</div></div>`;
-    const lbl = (fwd ? 'forward ' : 'top ') + _data.n;
+    const lbl = (fwd ? 'forward ' : 'top ') + _data.n + (_accWeekKey !== null ? ' · this week' : '');
     document.getElementById('accTiles').innerHTML =
         tile('Combined', _last(series.combined || []), 'one rule per strategy, as Apply wires it')
       + tile('TV Farm ' + lbl, _last(series.tv || []), 'enters on TV alerts')
       + tile('Kairos Farm ' + lbl, _last(series.kairos || []), 'enters on the engine');
 
     if (_charts.acc) _charts.acc.destroy();
+    const few = dates.length <= 10;   // a week is ≤5 points — show them
     const ds = (label, data, color, w) => ({
       label, data, borderColor: color, backgroundColor: color, borderWidth: w,
-      pointRadius: 0, pointHoverRadius: 5, pointHitRadius: 8, tension: 0, spanGaps: false,
+      pointRadius: few ? 4 : 0, pointBorderColor: '#13161f', pointBorderWidth: few ? 2 : 0,
+      pointHoverRadius: 5, pointHitRadius: 8, tension: 0, spanGaps: false,
     });
     _charts.acc = new Chart(document.getElementById('chart-acc'), {
       type: 'line',
