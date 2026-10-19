@@ -173,9 +173,10 @@
     <div class="panel" id="rosterPanel">
       <div class="band-q">Kairos Select roster</div>
       <div class="band-sub">Both farms' top lists combined. TV Farm picks enter on TV alerts, Kairos Farm picks on the engine —
-        the way each earned its record. <strong>One strategy per ticker</strong>: Select is one Alpaca account, which holds one
-        position per symbol, so strategies sharing a ticker would trade over each other. The one with the highest profit factor
-        wins (win rate, then net P&amp;L, break ties) — including a strategy on both farms' lists, whose two versions compete the same way.
+        the way each earned its record. A strategy on both lists gets <strong>one rule</strong>, from the farm whose version has
+        the higher profit factor (win rate, then net P&amp;L, break ties). Different strategies on the same ticker (R3S3 and R4S4)
+        are both kept — note they share account 7's single position in that symbol: a TV entry is skipped while the ticker is
+        held, but an engine entry isn't, so two engine picks on one ticker can stack, and either one's exit closes both.
         Apply rewires account 7 to exactly this list.</div>
       <div id="roster"></div>
     </div>
@@ -452,8 +453,8 @@
     if (_cv !== null && _tv !== null && _kv !== null) {
       const dup = Math.round((_tv + _kv - _cv) * 100) / 100;
       if (Math.abs(dup) >= 0.01) {
-        combSub = `TV + Kairos = ${_money(_tv + _kv)}; ${_money(dup)} of that is from strategies Select leaves out `
-          + `because another strategy on the same ticker won (one per ticker, highest PF)`;
+        combSub = `TV + Kairos = ${_money(_tv + _kv)}; ${_money(dup)} of that is the second copy of strategies `
+          + `on both lists, which Select runs once (from the farm with the higher PF)`;
       }
     }
     document.getElementById('accTiles').innerHTML =
@@ -627,7 +628,7 @@
     const dr = d.roster_dropped || [];
     const farmName = f => f === 'tv' ? 'TV' : 'Kairos';
     const droppedHtml = dr.length ? `<div style="margin-top:14px">
-        <div class="lbl" style="margin:0 0 4px 0">Left out — another strategy on the same ticker won (${dr.length})</div>
+        <div class="lbl" style="margin:0 0 4px 0">Left out — on both lists; the other farm's version won (${dr.length})</div>
         <div class="tbl"><table><thead><tr><th class="l">Strategy</th><th class="l">From</th><th>PF</th><th>Win %</th><th>Net</th><th class="l">Lost to</th></tr></thead><tbody>`
       + dr.map(x => `<tr style="color:#8a8fa3">
           <td class="l">${_esc(x.strategy)}</td><td class="l">${farmName(x.farm)}</td>

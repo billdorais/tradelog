@@ -190,19 +190,19 @@ def _priority(r):
 
 
 def merge_roster_detail(tops):
-    """Combine each farm's top list into one Select roster: ONE strategy per ticker.
+    """Combine each farm's top list into one Select roster: one rule per STRATEGY.
 
     tops: {"tv": [{strategy, pnl, profit_factor, win_rate, ...}], "kairos": [...]}.
 
-    Kairos Select is a single Alpaca account, and Alpaca holds one net position per
-    symbol. Two strategies on the same ticker would share it: the webhook's position
-    gate skips a second TV entry, but engine entries aren't gated, so a second
-    strategy could add to or net against the first, and either one's exit closes
-    both. So every candidate competes for its ticker and the one with the highest
-    profit factor wins (win rate, then net P&L, break ties). A strategy on both
-    farms' lists is simply two candidates for its ticker.
+    A strategy on both farms' lists gets one rule, from the farm whose version has
+    the higher profit factor (win rate, then net P&L, break ties) — two rules would
+    double its position. Different strategies on the same ticker (R3S3 and R4S4)
+    are both kept, by choice (2026-10-19). They share account 7's one position per
+    symbol: a second TV entry is skipped by the webhook's position gate, but engine
+    entries aren't gated, so two engine-entered strategies on one ticker can stack
+    and either one's exit closes both.
 
-    Returns (roster, dropped). dropped rows name the strategy that beat them."""
+    Returns (roster, dropped). dropped rows name the version that beat them."""
     cands = [{"strategy": r["strategy"], "farm": farm, "entry": ENTRY_BY_FARM[farm],
               "pnl": r["pnl"], "profit_factor": r.get("profit_factor"),
               "win_rate": r.get("win_rate")}
@@ -212,10 +212,9 @@ def merge_roster_detail(tops):
         on_lists.setdefault(c["strategy"], set()).add(c["farm"])
     best, dropped = {}, []
     for c in sorted(cands, key=lambda c: (_priority(c), c["strategy"]), reverse=True):
-        tk = c["strategy"].split("_", 1)[0].upper()
-        w = best.get(tk)
+        w = best.get(c["strategy"])
         if w is None:
-            best[tk] = c
+            best[c["strategy"]] = c
         else:
             dropped.append({**c, "lost_to": w["strategy"], "lost_to_farm": w["farm"],
                             "lost_to_pf": w["profit_factor"], "lost_to_wr": w["win_rate"]})
@@ -605,7 +604,7 @@ def api_farm_leaders():
         "farms": farms,
         "accumulation": acc,
         "roster": roster,
-        # Same-ticker losers: kept off the roster so Select holds one strategy per symbol.
+        # The other farm's version of a strategy on both lists (one rule per strategy).
         "roster_dropped": merge_roster_detail({k: v["top"] for k, v in farms.items()})[1],
         "diff": {"add": sorted(new - set(current)),
                  "keep": sorted(new & set(current)),
