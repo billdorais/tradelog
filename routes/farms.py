@@ -182,22 +182,54 @@ def farm_view(trips, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DEFAULT_CAP):
     }
 
 
-def merge_roster(tops):
-    """Combine each farm's top list into one Select roster.
+def _priority(r):
+    """Same-ticker priority: profit factor first (None = no losing trades = best),
+    then win rate, then net P&L, then name so the order is deterministic."""
+    pf = r.get("profit_factor")
+    return (float("inf") if pf is None else pf, r.get("win_rate") or 0.0, r["pnl"])
 
-    tops: {"tv": [{strategy, pnl, ...}], "kairos": [...]}. A strategy in BOTH lists
-    gets one rule, sourced from the farm where it made more — the same both-books
-    rule the crew uses, since two rules would double its position."""
-    best = {}
-    for farm, rows in tops.items():
-        for r in rows:
-            s = r["strategy"]
-            if s not in best or r["pnl"] > best[s]["pnl"]:
-                best[s] = {"strategy": s, "farm": farm, "entry": ENTRY_BY_FARM[farm],
-                           "pnl": r["pnl"], "also_in": best.get(s, {}).get("farm")}
-            else:
-                best[s]["also_in"] = farm
-    return sorted(best.values(), key=lambda p: (-p["pnl"], p["strategy"]))
+
+def merge_roster_detail(tops):
+    """Combine each farm's top list into one Select roster: ONE strategy per ticker.
+
+    tops: {"tv": [{strategy, pnl, profit_factor, win_rate, ...}], "kairos": [...]}.
+
+    Kairos Select is a single Alpaca account, and Alpaca holds one net position per
+    symbol. Two strategies on the same ticker would share it: the webhook's position
+    gate skips a second TV entry, but engine entries aren't gated, so a second
+    strategy could add to or net against the first, and either one's exit closes
+    both. So every candidate competes for its ticker and the one with the highest
+    profit factor wins (win rate, then net P&L, break ties). A strategy on both
+    farms' lists is simply two candidates for its ticker.
+
+    Returns (roster, dropped). dropped rows name the strategy that beat them."""
+    cands = [{"strategy": r["strategy"], "farm": farm, "entry": ENTRY_BY_FARM[farm],
+              "pnl": r["pnl"], "profit_factor": r.get("profit_factor"),
+              "win_rate": r.get("win_rate")}
+             for farm, rows in tops.items() for r in rows]
+    on_lists = {}
+    for c in cands:
+        on_lists.setdefault(c["strategy"], set()).add(c["farm"])
+    best, dropped = {}, []
+    for c in sorted(cands, key=lambda c: (_priority(c), c["strategy"]), reverse=True):
+        tk = c["strategy"].split("_", 1)[0].upper()
+        w = best.get(tk)
+        if w is None:
+            best[tk] = c
+        else:
+            dropped.append({**c, "lost_to": w["strategy"], "lost_to_farm": w["farm"],
+                            "lost_to_pf": w["profit_factor"], "lost_to_wr": w["win_rate"]})
+    roster = []
+    for c in best.values():
+        other = on_lists[c["strategy"]] - {c["farm"]}
+        roster.append({**c, "also_in": next(iter(other), None)})
+    roster.sort(key=lambda p: (-p["pnl"], p["strategy"]))
+    dropped.sort(key=lambda p: (p["strategy"].split("_", 1)[0], -p["pnl"]))
+    return roster, dropped
+
+
+def merge_roster(tops):
+    return merge_roster_detail(tops)[0]
 
 
 def accumulation(trips_by_farm, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DEFAULT_CAP):
@@ -222,7 +254,8 @@ def accumulation(trips_by_farm, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DE
     keys = sorted({t["period"] for ts in trips_by_farm.values() for t in ts if t["period"]})
 
     def _tops(trips):
-        return [{"strategy": nm, "pnl": s["pnl"]} for nm, s in rank_top(trips, n, min_trades, cap)]
+        return [{"strategy": nm, "pnl": s["pnl"], "profit_factor": s["profit_factor"],
+                 "win_rate": s["win_rate"]} for nm, s in rank_top(trips, n, min_trades, cap)]
 
     hind = {f: _tops(trips_by_farm[f]) for f in farms}
     hind_sets = {f: {r["strategy"] for r in hind[f]} for f in farms}
@@ -572,6 +605,8 @@ def api_farm_leaders():
         "farms": farms,
         "accumulation": acc,
         "roster": roster,
+        # Same-ticker losers: kept off the roster so Select holds one strategy per symbol.
+        "roster_dropped": merge_roster_detail({k: v["top"] for k, v in farms.items()})[1],
         "diff": {"add": sorted(new - set(current)),
                  "keep": sorted(new & set(current)),
                  "remove": sorted(set(current) - new)},

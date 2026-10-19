@@ -332,3 +332,49 @@ def test_accumulation_carries_one_line_per_top_strategy_per_farm():
     assert lines[("tv", A)]["values"] == [10, 10, 10]           # every line spans all dates
     assert lines[("kairos", D)]["values"] == [0, 20, 16]
     assert lines[("tv", A)]["rank"] == 1 and lines[("tv", D)]["rank"] == 2
+
+
+# ── one strategy per ticker ───────────────────────────────────────────────────
+
+def test_roster_keeps_one_strategy_per_ticker_by_profit_factor_then_win_rate():
+    ro, dropped = farms.merge_roster_detail({
+        "tv": [{"strategy": _s("NVDA"), "pnl": 50, "profit_factor": 1.4, "win_rate": 60},
+               {"strategy": _s("AAPL"), "pnl": 20, "profit_factor": 1.5, "win_rate": 40}],
+        "kairos": [{"strategy": _s("NVDA", "R3S3"), "pnl": 10, "profit_factor": 2.1, "win_rate": 45},
+                   {"strategy": _s("AAPL", "R3S3"), "pnl": 30, "profit_factor": 1.5, "win_rate": 55}],
+    })
+    by = {r["strategy"]: r for r in ro}
+    # NVDA: PF 2.1 beats PF 1.4 even with lower win rate and lower P&L.
+    assert _s("NVDA", "R3S3") in by and _s("NVDA") not in by
+    # AAPL: PF tied at 1.5, so win rate decides (55 > 40).
+    assert _s("AAPL", "R3S3") in by and _s("AAPL") not in by
+    assert len(ro) == 2
+    lost = {d["strategy"]: d for d in dropped}
+    assert lost[_s("NVDA")]["lost_to"] == _s("NVDA", "R3S3")
+    assert lost[_s("NVDA")]["lost_to_farm"] == "kairos"
+
+
+def test_no_losing_trades_counts_as_the_highest_profit_factor():
+    ro, _ = farms.merge_roster_detail({
+        "tv": [{"strategy": _s("SPY"), "pnl": 5, "profit_factor": None, "win_rate": 100}],
+        "kairos": [{"strategy": _s("SPY", "R3S3"), "pnl": 90, "profit_factor": 3.0, "win_rate": 70}],
+    })
+    assert [r["strategy"] for r in ro] == [_s("SPY")]
+
+
+def test_same_strategy_on_both_lists_competes_like_any_same_ticker_pair():
+    S = _s("QQQ")
+    ro, dropped = farms.merge_roster_detail({
+        "tv":     [{"strategy": S, "pnl": 40, "profit_factor": 1.2, "win_rate": 50}],
+        "kairos": [{"strategy": S, "pnl": 10, "profit_factor": 1.9, "win_rate": 50}],
+    })
+    assert len(ro) == 1 and ro[0]["farm"] == "kairos" and ro[0]["also_in"] == "tv"
+    assert dropped[0]["farm"] == "tv"
+
+
+def test_combined_accumulation_counts_only_the_ticker_winner():
+    A, B = _s("AAA"), _s("AAA", "R3S3")
+    tv = _trips([(A, 10, "2026-10-05"), (A, -5, "2026-10-06")])   # PF 2.0
+    ka = _trips([(B, 6, "2026-10-05"), (B, -1, "2026-10-06")])    # PF 6.0 -> wins AAA
+    acc = farms.accumulation({"tv": tv, "kairos": ka}, n=5, period="week", min_trades=1, cap=0)
+    assert acc["top"]["combined"] == [6, 5]

@@ -173,7 +173,9 @@
     <div class="panel" id="rosterPanel">
       <div class="band-q">Kairos Select roster</div>
       <div class="band-sub">Both farms' top lists combined. TV Farm picks enter on TV alerts, Kairos Farm picks on the engine —
-        the way each earned its record. A strategy on both lists gets one rule, from the farm where it made more.
+        the way each earned its record. <strong>One strategy per ticker</strong>: Select is one Alpaca account, which holds one
+        position per symbol, so strategies sharing a ticker would trade over each other. The one with the highest profit factor
+        wins (win rate, then net P&amp;L, break ties) — including a strategy on both farms' lists, whose two versions compete the same way.
         Apply rewires account 7 to exactly this list.</div>
       <div id="roster"></div>
     </div>
@@ -202,6 +204,7 @@
 
   function _esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function _money(v) { return (v >= 0 ? '+' : '−') + '$' + Math.abs(v).toFixed(2); }
+  function _pf(v) { return v == null ? '∞' : Number(v).toFixed(2); }
   function _money0(v) { return Math.round(v) === 0 ? '$0' : (v > 0 ? '+' : '−') + '$' + Math.abs(v).toFixed(0); }
   function _cls(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : ''; }
 
@@ -441,8 +444,20 @@
     }
     const tile = (k, v, sub) => `<div class="tile"><div class="k">${k}</div><div class="v ${v === null ? '' : _cls(v)}">${v === null ? '—' : _money(v)}</div><div class="s">${sub}</div></div>`;
     const lbl = (fwd ? 'forward ' : 'top ') + _data.n + (_accWeekKey !== null ? ' · this week' : '');
+    // Combined ≠ TV + Kairos whenever a strategy is on both lists: Select runs it
+    // once, from its better farm, so the other farm's copy is left out. Say so in
+    // the tile, or the three numbers look like they don't add up.
+    const _cv = _last(series.combined || []), _tv = _last(series.tv || []), _kv = _last(series.kairos || []);
+    let combSub = 'one rule per strategy, as Apply wires it';
+    if (_cv !== null && _tv !== null && _kv !== null) {
+      const dup = Math.round((_tv + _kv - _cv) * 100) / 100;
+      if (Math.abs(dup) >= 0.01) {
+        combSub = `TV + Kairos = ${_money(_tv + _kv)}; ${_money(dup)} of that is from strategies Select leaves out `
+          + `because another strategy on the same ticker won (one per ticker, highest PF)`;
+      }
+    }
     document.getElementById('accTiles').innerHTML =
-        tile('Combined', _last(series.combined || []), 'one rule per strategy, as Apply wires it')
+        tile('Combined', _cv, combSub)
       + tile('TV Farm ' + lbl, _last(series.tv || []), 'enters on TV alerts')
       + tile('Kairos Farm ' + lbl, _last(series.kairos || []), 'enters on the engine');
 
@@ -602,11 +617,24 @@
         <td>${i + 1}</td><td class="l">${_esc(r.strategy)}</td>
         <td class="l"><span class="chip ${r.farm}">${r.farm === 'tv' ? 'TV Farm' : 'Kairos Farm'}</span>${r.also_in ? ' <span class="chip" title="also in the other farm\'s top list">both</span>' : ''}</td>
         <td class="l">${r.entry === 'tv' ? 'TV alert' : 'Engine'}</td>
+        <td>${_pf(r.profit_factor)}</td>
+        <td>${r.win_rate == null ? '—' : r.win_rate + '%'}</td>
         <td class="${_cls(r.pnl)}">${_money(r.pnl)}</td>
         <td><span class="chip ${keep.has(r.strategy) ? 'keep' : 'add'}">${keep.has(r.strategy) ? 'already on' : 'add'}</span></td>
       </tr>`).join('');
     const removed = d.diff.remove.length
       ? '<div class="note" style="margin-top:10px">Comes <span class="chip remove">off</span> Kairos Select: ' + d.diff.remove.map(_esc).join(', ') + '</div>' : '';
+    const dr = d.roster_dropped || [];
+    const farmName = f => f === 'tv' ? 'TV' : 'Kairos';
+    const droppedHtml = dr.length ? `<div style="margin-top:14px">
+        <div class="lbl" style="margin:0 0 4px 0">Left out — another strategy on the same ticker won (${dr.length})</div>
+        <div class="tbl"><table><thead><tr><th class="l">Strategy</th><th class="l">From</th><th>PF</th><th>Win %</th><th>Net</th><th class="l">Lost to</th></tr></thead><tbody>`
+      + dr.map(x => `<tr style="color:#8a8fa3">
+          <td class="l">${_esc(x.strategy)}</td><td class="l">${farmName(x.farm)}</td>
+          <td>${_pf(x.profit_factor)}</td><td>${x.win_rate == null ? '—' : x.win_rate + '%'}</td>
+          <td>${_money(x.pnl)}</td>
+          <td class="l">${_esc(x.lost_to)} [${farmName(x.lost_to_farm)}] · PF ${_pf(x.lost_to_pf)}, ${x.lost_to_wr == null ? '—' : x.lost_to_wr + '%'}</td></tr>`).join('')
+      + '</tbody></table></div></div>' : '';
     const gp = d.gate_parity || { rows: [], mismatches: [] };
     const blocked = !d.select_configured ? 'Kairos Select (account 7) isn\'t configured — set ALPACA_KEY7.'
       : Object.keys(d.errors || {}).length ? 'Farm data is incomplete — fix the warning above first.'
@@ -618,8 +646,8 @@
       ? `<div class="note" style="margin-top:10px">Last applied ${_esc(d.last_apply.at)} UTC: top ${d.last_apply.n}, ${d.last_apply.days ? d.last_apply.days + 'd window' : 'all history'}, `
         + `${d.last_apply.picks.length} picks at $${Number(d.last_apply.size_dollars).toLocaleString()}.</div>` : '';
     const size = localStorage.getItem('farm_select_size') || '15000';
-    el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>Net in window</th><th>Router</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>${removed}${_gateCheck(gp)}
+    el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>PF</th><th>Win %</th><th>Net in window</th><th>Router</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>${droppedHtml}${removed}${_gateCheck(gp)}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">
         <span class="lbl" style="margin-left:0">Size / trade $</span>
         <input class="f" id="sizeDollars" type="number" min="100" step="500" value="${_esc(size)}" style="width:90px"
