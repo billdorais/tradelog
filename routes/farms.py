@@ -383,10 +383,11 @@ def _full_fills(rec, num):
         return fills
 
 
-def _farm_trips(num, from_date, to_date, full=False):
-    """Closed round-trips on one farm as [{strategy, pnl, date}], honouring the same
-    strategy/ticker/band exclusions as the Refined leaderboards. Returns
-    (trips, error) — a failed fetch must not render as an empty farm."""
+def _farm_round_trips(num, from_date, to_date, full=False):
+    """Full closed round-trips on one farm (prices, qty, times), strategy names
+    upper-cased, honouring the same strategy/ticker/band exclusions as the Refined
+    leaderboards. Returns (round_trips, error) — a failed fetch must not render as
+    an empty farm."""
     a = _app()
     rec = a.ACCOUNTS_BY_NUM.get(num)
     if not rec:
@@ -401,16 +402,22 @@ def _farm_trips(num, from_date, to_date, full=False):
     ex_s = a._load_excluded_strategies()
     ex_t = a._load_excluded_tickers()
     ex_b = a._load_excluded_bands()
-    trips = []
+    out = []
     for c in paired.get("closed_clean") or []:
         s = (c.get("strategy") or "").strip().upper()
         if not s or s == "UNKNOWN" or s in ex_s:
             continue
         if s.split("_", 1)[0] in ex_t or (ex_b and a._band_of(s) in ex_b):
             continue
-        d = et_date(c.get("exit_time")) or c.get("date") or ""
-        trips.append({"strategy": s, "pnl": float(c.get("pnl") or 0), "date": d})
-    return trips, None
+        out.append({**c, "strategy": s})
+    return out, None
+
+
+def _farm_trips(num, from_date, to_date, full=False):
+    """Closed round-trips on one farm as [{strategy, pnl, date}] (ET exit date)."""
+    rts, err = _farm_round_trips(num, from_date, to_date, full)
+    return [{"strategy": c["strategy"], "pnl": float(c.get("pnl") or 0),
+             "date": et_date(c.get("exit_time")) or c.get("date") or ""} for c in rts], err
 
 
 def _params():
@@ -578,6 +585,170 @@ def _prune_select(cur, a, own, mixed, keep=frozenset()):
     return deleted, deferred, sorted(set(stripped))
 
 
+# ── Roster replay ─────────────────────────────────────────────────────────────
+# Re-run the roster's real farm round-trips on 1-minute bars with different exit
+# settings. Each test varies ONE thing against a baseline of the live exits, and
+# both are simulated the same way, so the delta is the setting and not the model.
+#
+# The roster was picked on these same trades, so tuning exits on them fits twice.
+# Trades are split at the median date: pick the best setting on the older half,
+# then see whether it still beats the baseline on the newer half. That guards the
+# EXIT choice; it can't undo the hindsight in which strategies made the roster.
+
+REPLAY_TESTS = ("max_hold", "trail", "take_profit")
+REPLAY_MAX_TICKER_DAYS = 2000      # bar fetches per run; past this, shorten the window
+DEFAULT_TRAIL = 0.15               # same fallback the Replay sweep uses
+
+
+def build_variants(test, body):
+    """The settings one test tries. Each is {label, max_hold?, trail?, trigger?, tp?};
+    keys left out keep the trade's own live value."""
+    def _nums(key, default):
+        raw = body.get(key)
+        vals = raw if isinstance(raw, list) else str(raw if raw is not None else default).split(",")
+        out = []
+        for v in vals:
+            try:
+                out.append(round(float(v), 4))
+            except (TypeError, ValueError):
+                continue
+        return sorted(set(out)) or [float(x) for x in str(default).split(",")]
+
+    if test == "max_hold":
+        return [{"label": "no max hold" if m == 0 else f"{m:g} min", "max_hold": m}
+                for m in _nums("max_holds", "5,10,15,20,30,45,60,0")]
+    if test == "take_profit":
+        return [{"label": f"TP {t:g}%", "tp": t} for t in _nums("tps", "0.3,0.5,0.75,1,1.5,2") if t > 0]
+    return [{"label": f"trail {tr:g}% · trigger {tg:g}%", "trail": tr, "trigger": tg}
+            for tr in _nums("trails", "0.1,0.15,0.2,0.25,0.3,0.4,0.5")
+            for tg in _nums("triggers", "0,0.1,0.2,0.3")]
+
+
+def split_date(prepared):
+    """Median entry date: older half tunes, newer half checks. None when every
+    trade is on one day (nothing to split)."""
+    ds = sorted(td["date"] for td in prepared)
+    if not ds or ds[0] == ds[-1]:
+        return None
+    mid = ds[len(ds) // 2]
+    return mid if mid > ds[0] else ds[-1]
+
+
+def score_variants(prepared, variants, sim):
+    """Score the baseline and each variant on all trades and on each half.
+
+    prepared: [{date, notional, base: {trail, trigger, max_hold}, ...}]
+    sim(td, trail, trigger, max_hold, tp) -> {"pnl", "reason"} or None (no bars).
+    Returns {baseline, variants, split_date, best, verdict}."""
+    sd = split_date(prepared)
+
+    def _run(v):
+        tot = {"all": [], "tune": [], "check": []}
+        reasons = {}
+        pct = []
+        for td in prepared:
+            b = td["base"]
+            r = sim(td, v.get("trail", b["trail"]), v.get("trigger", b["trigger"]),
+                    v.get("max_hold", b["max_hold"]), v.get("tp", 0.0))
+            if r is None:
+                continue
+            tot["all"].append(r["pnl"])
+            if sd:
+                tot["tune" if td["date"] < sd else "check"].append(r["pnl"])
+            reasons[r["reason"]] = reasons.get(r["reason"], 0) + 1
+            if td["notional"]:
+                pct.append(r["pnl"] / td["notional"] * 100)
+        n = len(tot["all"])
+        return {
+            "label": v["label"], "trades": n,
+            "pnl": round(sum(tot["all"]), 2),
+            "tune_pnl": round(sum(tot["tune"]), 2) if sd else None,
+            "check_pnl": round(sum(tot["check"]), 2) if sd else None,
+            "tune_trades": len(tot["tune"]), "check_trades": len(tot["check"]),
+            "win_rate": round(sum(1 for p in tot["all"] if p > 0) / n * 100, 1) if n else None,
+            "avg_pct": round(sum(pct) / len(pct), 4) if pct else None,
+            "exits": reasons,
+        }
+
+    base = _run({"label": "live exits (baseline)"})
+    rows = []
+    for v in variants:
+        r = _run(v)
+        r.update({k: v[k] for k in ("max_hold", "trail", "trigger", "tp") if k in v})
+        r["delta"] = round(r["pnl"] - base["pnl"], 2)
+        if sd:
+            r["tune_delta"] = round(r["tune_pnl"] - base["tune_pnl"], 2)
+            r["check_delta"] = round(r["check_pnl"] - base["check_pnl"], 2)
+        rows.append(r)
+
+    best = verdict = None
+    if sd and rows:
+        best = max(rows, key=lambda r: r["tune_delta"])
+        if best["tune_delta"] <= 0:
+            verdict = "none"         # nothing beat live exits even on the tuning half
+        elif best["check_delta"] > 0:
+            verdict = "holds"        # better on the half it was picked on AND the other
+        else:
+            verdict = "fails"        # only better on the half it was fitted to
+    rows.sort(key=lambda r: r["delta"], reverse=True)
+    return {"baseline": base, "variants": rows, "split_date": sd,
+            "best": best["label"] if best else None, "verdict": verdict}
+
+
+_bars_cache = {}                   # (ticker, date) -> 1-min bars, past days only
+_bars_lock = threading.Lock()
+
+
+def _day_bars(a, ticker, day):
+    """1-minute bars for one ticker-day, cached once the day is over (they never
+    change after the close, and a sweep re-reads the same days every run)."""
+    key = (ticker, day)
+    with _bars_lock:
+        if key in _bars_cache:
+            return _bars_cache[key]
+    bars = a._fetch_day_bars(ticker, day)
+    if bars and day < datetime.now(_ET).date().isoformat():
+        with _bars_lock:
+            _bars_cache[key] = bars
+    return bars
+
+
+def _exit_settings(a):
+    """{STRATEGY: {trail, trigger, max_hold}} from the enabled routing rules —
+    preferring the Select rule (what account 7 trades), else the farm pipeline."""
+    out = {}
+    conn = a.get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        raw = row[0] if a.DATABASE_URL else row["nodes"]
+        try:
+            nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception:
+            continue
+        ep = next((n for n in nodes if n.get("type") == "exit_params"), None)
+        if not ep:
+            continue
+        sel = any((n.get("value") or "").lower() in SELECT_BROKERS
+                  for n in nodes if n.get("type") == "broker")
+        try:
+            trail = float(ep.get("trail_offset") or 0) or DEFAULT_TRAIL
+            trigger = float(ep.get("trail_trigger") or 0)
+            mh = int(float(ep["max_hold_mins"])) if ep.get("max_hold_mins") else None
+        except (TypeError, ValueError):
+            continue
+        for n in nodes:
+            if n.get("type") == "strategy" and n.get("value") and "*" not in n["value"]:
+                s = n["value"].strip().upper()
+                if sel or s not in out:
+                    out[s] = {"trail": trail, "trigger": trigger, "max_hold": mh}
+    return out
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @farms_bp.route("/farms")
@@ -742,3 +913,100 @@ def api_farm_clear_select():
                len(deleted), len(deferred), len(stripped))
     return jsonify({"deleted": deleted, "deferred_open_position": deferred,
                     "stripped_from_mixed": stripped})
+
+
+@farms_bp.route("/api/farms/replay", methods=["POST"])
+def api_farm_replay():
+    """Replay the current Select roster's real farm trades with different exits.
+
+    Body: the page's leaderboard params (n, days, period, min_trades, cap) so the
+    roster matches what's on screen, plus test = max_hold | trail | take_profit and
+    its grid (max_holds / trails + triggers / tps, comma lists, % of price).
+
+    Each roster pick replays the round-trips of the farm it comes from (TV picks:
+    TV Farm, Kairos picks: Kairos Farm) at the farm's $1,000 sizing, on 1-minute
+    bars. Baseline = each trade's live exits (rule trail/trigger with the session
+    trail adjustment, rule max hold else the global backstop), simulated the same
+    way as every variant. TV exit signals are ignored on both sides of the
+    comparison: the test is the broker-side exit settings alone."""
+    import concurrent.futures as _cf
+    a = _app()
+    body = request.get_json(silent=True) or {}
+    test = body.get("test") if body.get("test") in REPLAY_TESTS else "max_hold"
+    p = _params()
+    _farms, roster, errors, _acc = _build(p)
+    if errors:
+        return jsonify({"error": "Farm data is incomplete (" + "; ".join(errors.values()) + ")."}), 409
+    if not roster:
+        return jsonify({"error": "No strategy qualifies with these settings."}), 400
+
+    picks = {(r["farm"], r["strategy"]) for r in roster}
+    nums = {key: num for key, num, _label in FARMS}
+    trades = []
+    for farm in {f for f, _s in picks}:
+        rts, err = _farm_round_trips(nums[farm], p["from_date"], p["to_date"], full=p["full"])
+        if err:
+            return jsonify({"error": f"{farm} farm: {err}"}), 409
+        trades += [dict(c, farm=farm) for c in rts if (farm, c["strategy"]) in picks]
+    if not trades:
+        return jsonify({"error": "The roster has no closed trades in this window."}), 404
+
+    days = {((c.get("ticker") or "").upper(), (c.get("entry_time") or "")[:10])
+            for c in trades if c.get("ticker") and c.get("entry_time")}
+    if len(days) > REPLAY_MAX_TICKER_DAYS:
+        return jsonify({"error": f"{len(days)} ticker-days of 1-minute bars is more than one run "
+                                 f"fetches ({REPLAY_MAX_TICKER_DAYS}). Use a shorter window or Top 10."}), 400
+    bars = {}
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {pool.submit(_day_bars, a, tk, d): (tk, d) for tk, d in days}
+        for f in _cf.as_completed(futs):
+            try:
+                bars[futs[f]] = f.result() or []
+            except Exception:
+                bars[futs[f]] = []
+
+    rules = _exit_settings(a)
+    backstop = int(a.MAX_HOLD_MINS) if a.MAX_HOLD_MINS > 0 else 0
+    prepared, no_bars = [], 0
+    for c in trades:
+        tk = (c.get("ticker") or "").upper()
+        et = c.get("entry_time") or ""
+        try:
+            entry_dt = datetime.fromisoformat(et.replace("Z", "+00:00"))
+            entry_px, qty = float(c["entry_price"]), float(c.get("qty") or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        tb = [b for b in bars.get((tk, et[:10]), []) if b.timestamp >= entry_dt]
+        if not tb or not entry_px or not qty:
+            no_bars += 1
+            continue
+        rule = rules.get(c["strategy"], {})
+        prepared.append({
+            "strategy": c["strategy"], "farm": c["farm"], "side": (c.get("side") or "").upper(),
+            "entry_dt": entry_dt, "entry_px": entry_px, "qty": qty, "notional": entry_px * qty,
+            "bars": tb, "date": et_date(et), "actual_pnl": float(c.get("pnl") or 0),
+            "base": {"trail": rule.get("trail", DEFAULT_TRAIL), "trigger": rule.get("trigger", 0.0),
+                     "max_hold": rule.get("max_hold") or backstop},
+        })
+    if not prepared:
+        return jsonify({"error": "No roster trade had 1-minute bars to replay."}), 404
+
+    def sim(td, trail, trigger, max_hold, tp):
+        r = a._simulate_exit(td["bars"], td["entry_px"], td["side"],
+                             a._apply_session_trail(trail, td["entry_dt"]), trigger, 0.0,
+                             int(max_hold or 0), td["entry_dt"], qty=td["qty"],
+                             take_profit_pct=tp or 0.0)
+        if not r:
+            return None
+        move = r["exit_price"] - td["entry_px"]
+        return {"pnl": round((move if td["side"] == "LONG" else -move) * td["qty"], 2),
+                "reason": r["reason"]}
+
+    out = score_variants(prepared, build_variants(test, body), sim)
+    out.update({
+        "test": test, "roster": len(roster), "trades": len(prepared), "no_bars": no_bars,
+        "ticker_days": len(days), "actual_pnl": round(sum(t["actual_pnl"] for t in prepared), 2),
+        "backstop_max_hold": backstop or None,
+        "from_date": p["from_date"] or min(t["date"] for t in prepared), "to_date": p["to_date"],
+    })
+    return jsonify(out)

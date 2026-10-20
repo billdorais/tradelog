@@ -374,3 +374,89 @@ def test_profit_factor_tie_goes_to_win_rate_and_no_losses_is_best():
     by = {r["strategy"]: r["farm"] for r in ro}
     assert by[S] == "kairos"     # PF tied, win rate 55 > 40
     assert by[T] == "tv"         # no losing trades beats PF 3.0
+
+
+# ── roster replay ─────────────────────────────────────────────────────────────
+
+def test_variant_grids():
+    mh = farms.build_variants("max_hold", {"max_holds": "15,0,30"})
+    assert [v["max_hold"] for v in mh] == [0, 15, 30] and mh[0]["label"] == "no max hold"
+    tr = farms.build_variants("trail", {"trails": "0.1,0.2", "triggers": "0,0.1"})
+    assert len(tr) == 4 and {(v["trail"], v["trigger"]) for v in tr} == {(0.1, 0), (0.1, 0.1), (0.2, 0), (0.2, 0.1)}
+    tp = farms.build_variants("take_profit", {"tps": "0,0.5,1"})
+    assert [v["tp"] for v in tp] == [0.5, 1]                       # 0 = no TP = the baseline
+
+
+def _td(date, base_mh=15):
+    return {"date": date, "notional": 1000.0, "base": {"trail": 0.15, "trigger": 0.0, "max_hold": base_mh}}
+
+
+def test_split_is_at_the_median_date():
+    prepared = [_td(d) for d in ("2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04")]
+    assert farms.split_date(prepared) == "2026-09-03"
+    assert farms.split_date([_td("2026-09-01"), _td("2026-09-01")]) is None
+
+
+def test_best_on_the_older_half_is_checked_on_the_newer_half():
+    prepared = [_td("2026-09-01"), _td("2026-09-02"), _td("2026-09-10"), _td("2026-09-11")]
+
+    # 30-min hold: +$5 a trade on the older half, -$5 on the newer -> fitted, fails.
+    # 60-min hold: +$1 everywhere -> smaller on the tune half, but it holds.
+    def sim(td, trail, trigger, max_hold, tp):
+        old = td["date"] < "2026-09-10"
+        if max_hold == 30:
+            return {"pnl": 5.0 if old else -5.0, "reason": "max_hold"}
+        if max_hold == 60:
+            return {"pnl": 1.0, "reason": "trail"}
+        return {"pnl": 0.0, "reason": "trail"}          # baseline (15)
+
+    out = farms.score_variants(prepared, farms.build_variants("max_hold", {"max_holds": "30,60"}), sim)
+    assert out["split_date"] == "2026-09-10"
+    assert out["best"] == "30 min" and out["verdict"] == "fails"
+    by = {v["label"]: v for v in out["variants"]}
+    assert by["30 min"]["tune_delta"] == 10 and by["30 min"]["check_delta"] == -10
+    assert by["60 min"]["check_delta"] == 2 and by["60 min"]["avg_pct"] == 0.1
+
+
+def test_verdict_none_when_nothing_beats_live_exits():
+    prepared = [_td("2026-09-01"), _td("2026-09-10")]
+    out = farms.score_variants(prepared, farms.build_variants("take_profit", {"tps": "1"}),
+                               lambda td, *a: {"pnl": -1.0 if a[3] else 0.0, "reason": "x"})
+    assert out["verdict"] == "none"
+
+
+def test_replay_endpoint_runs_the_roster_through_the_real_exit_simulator(monkeypatch):
+    import datetime as dt
+    import types
+    import app as a
+
+    S = _s("AAA")
+    roster = [{"strategy": S, "farm": "tv", "entry": "tv", "pnl": 5, "also_in": None}]
+    monkeypatch.setattr(farms, "_build", lambda p: ({}, roster, {}, {}))
+
+    def _rt(day):
+        return {"strategy": S, "ticker": "AAA", "side": "LONG", "entry_price": 100.0, "qty": 10,
+                "entry_time": f"{day}T14:00:00Z", "exit_time": f"{day}T14:30:00Z", "pnl": 3.0}
+    monkeypatch.setattr(farms, "_farm_round_trips",
+                        lambda num, f, t, full=False: ([_rt("2026-09-01"), _rt("2026-09-15")], None))
+    monkeypatch.setattr(farms, "_exit_settings", lambda a_: {S: {"trail": 5.0, "trigger": 0.0, "max_hold": 10}})
+
+    def _bars(a_, tk, day):
+        t0 = dt.datetime.fromisoformat(f"{day}T14:00:00+00:00")
+        # Price climbs $0.10 a minute for an hour: a longer hold makes more.
+        return [types.SimpleNamespace(timestamp=t0 + dt.timedelta(minutes=i),
+                                      open=100 + i * .1, high=100 + i * .1 + .05,
+                                      low=100 + i * .1 - .05, close=100 + i * .1)
+                for i in range(61)]
+    monkeypatch.setattr(farms, "_day_bars", _bars)
+    monkeypatch.setattr(a, "MORNING_TRAIL_PCT", 0, raising=False)
+    monkeypatch.setattr(a, "AFTERNOON_TRAIL_PCT", 0, raising=False)
+
+    r = a.app.test_client().post("/api/farms/replay", json={"test": "max_hold", "max_holds": "10,30"})
+    body = r.get_json()
+    assert r.status_code == 200, body
+    assert body["trades"] == 2 and body["roster"] == 1
+    assert body["baseline"]["pnl"] == 20.0                  # 10-min hold: +$1.00 x 10 sh x 2 trades
+    by = {v["label"]: v for v in body["variants"]}
+    assert by["30 min"]["pnl"] == 60.0 and by["30 min"]["delta"] == 40.0
+    assert body["best"] == "30 min" and body["verdict"] == "holds"

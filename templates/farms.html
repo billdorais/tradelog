@@ -180,6 +180,26 @@
         Apply rewires account 7 to exactly this list.</div>
       <div id="roster"></div>
     </div>
+
+    <div class="panel" id="replayPanel">
+      <div class="band-q">Replay the roster — exit tests</div>
+      <div class="band-sub">Re-runs every roster pick's real trades from the farm it comes from on 1-minute bars, changing one exit
+        setting at a time against your <strong>live exits</strong> (each rule's trail and trigger, its max hold or the global backstop).
+        Both are simulated the same way, so the difference is the setting. Trades are split at the median date: the best setting is
+        picked on the <strong>older half</strong> and then checked on the <strong>newer half</strong> — only trust a setting that
+        wins on both. Farm trades are $1,000 each; read results as % per trade. Uses the roster and window chosen above.</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <span class="lbl" style="margin-left:0">Test</span>
+        <button class="btn" data-rt="max_hold" onclick="setReplayTest('max_hold')">Max hold</button>
+        <button class="btn" data-rt="trail" onclick="setReplayTest('trail')">Trail × trigger</button>
+        <button class="btn" data-rt="take_profit" onclick="setReplayTest('take_profit')">Take profit</button>
+        <span class="sep"></span>
+        <span id="rtGrid" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></span>
+        <button class="btn go" id="rtRun" onclick="runReplay()" style="margin-left:auto">Run replay</button>
+      </div>
+      <div id="replayOut"><div class="note">Pick a test and click Run. The first run fetches 1-minute bars for every roster trade
+        and can take a minute; re-runs reuse them.</div></div>
+    </div>
   </div>
 
 <script>
@@ -222,7 +242,99 @@
     _opt[k] = (k === 'period') ? v : Number(v);
     try { localStorage.setItem('farm_leaders_opts', JSON.stringify(_opt)); } catch (_) {}
     _syncControls();
+    // A new Top N / window / floor is a different roster — old replay results no longer apply.
+    document.getElementById('replayOut').innerHTML =
+      '<div class="note">The roster changed — run the replay again for these settings.</div>';
     load();
+  }
+
+  // ── Roster replay ─────────────────────────────────────────────────────────
+  const RT_GRID = {
+    max_hold:    [['max_holds', 'Max hold (min, 0 = none)', '5,10,15,20,30,45,60,0']],
+    trail:       [['trails', 'Trail %', '0.1,0.15,0.2,0.25,0.3,0.4,0.5'], ['triggers', 'Trigger %', '0,0.1,0.2,0.3']],
+    take_profit: [['tps', 'Take profit %', '0.3,0.5,0.75,1,1.5,2']],
+  };
+  let _rtTest = 'max_hold';
+  try { _rtTest = localStorage.getItem('farm_rt_test') || 'max_hold'; } catch (_) {}
+  if (!RT_GRID[_rtTest]) _rtTest = 'max_hold';
+
+  function setReplayTest(t) {
+    _rtTest = t;
+    try { localStorage.setItem('farm_rt_test', t); } catch (_) {}
+    _renderReplayControls();
+  }
+
+  function _renderReplayControls() {
+    document.querySelectorAll('.btn[data-rt]').forEach(b => b.classList.toggle('on', b.dataset.rt === _rtTest));
+    document.getElementById('rtGrid').innerHTML = RT_GRID[_rtTest].map(([k, label, def]) => {
+      let v = def;
+      try { v = localStorage.getItem('farm_rt_' + k) || def; } catch (_) {}
+      return `<span class="lbl">${label}</span><input class="f" id="rt_${k}" value="${_esc(v)}" style="width:${k === 'triggers' ? 120 : 210}px"
+               onchange="try{localStorage.setItem('farm_rt_${k}', this.value)}catch(_){}">`;
+    }).join('');
+  }
+
+  async function runReplay() {
+    const out = document.getElementById('replayOut'), btn = document.getElementById('rtRun');
+    const body = { ..._opt, test: _rtTest };
+    RT_GRID[_rtTest].forEach(([k]) => body[k] = document.getElementById('rt_' + k).value);
+    btn.disabled = true;
+    out.innerHTML = '<div class="note">Replaying the roster… the first run fetches 1-minute bars and can take a minute.</div>';
+    let res, d;
+    try {
+      res = await fetch('/api/farms/replay', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify(body) });
+      d = await res.json();
+    } catch (e) {
+      out.innerHTML = '<div class="warn">Replay failed: ' + _esc(String(e)) + '</div>';
+      btn.disabled = false; return;
+    }
+    btn.disabled = false;
+    if (!res.ok) { out.innerHTML = '<div class="warn">' + _esc(d.error || ('HTTP ' + res.status)) + '</div>'; return; }
+    _renderReplay(d);
+  }
+
+  function _renderReplay(d) {
+    const b = d.baseline, sd = d.split_date;
+    const pct = v => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3) + '%';
+    const delta = v => v == null ? '<td class="dim">—</td>' : `<td class="${_cls(v)}">${_money(v)}</td>`;
+    const exits = ex => Object.entries(ex || {}).sort((x, y) => y[1] - x[1])
+      .map(([k, n]) => `${n} ${_esc(k.replace('_', ' '))}`).join(' · ');
+    const best = d.variants.find(v => v.label === d.best);
+    let verdict = '';
+    if (!sd) {
+      verdict = `<div class="note">All trades are on one day, so there's no older/newer split — judge the whole-window column only.</div>`;
+    } else if (d.verdict === 'none') {
+      verdict = `<div class="confirm" style="border-color:#2a2d3e;background:transparent">Nothing in this grid beat your live exits on the
+        older half. Your current settings hold up here.</div>`;
+    } else if (d.verdict === 'holds') {
+      verdict = `<div class="confirm" style="border-color:#3a7a4e;background:rgba(127,224,152,0.06)"><strong style="color:#7FE098">Holds up:</strong>
+        <strong>${_esc(best.label)}</strong> was best on the older half (${_money(best.tune_delta)} vs live exits) and also beat them on the
+        newer half (${_money(best.check_delta)}). Worth considering — re-check after a few more weeks before changing the rules.</div>`;
+    } else {
+      verdict = `<div class="confirm"><strong style="color:#f0a35e">Doesn't hold:</strong> <strong>${_esc(best.label)}</strong> was best on the
+        older half (${_money(best.tune_delta)}) but did worse than live exits on the newer half (${_money(best.check_delta)}).
+        It most likely fitted the older trades — keep your current settings.</div>`;
+    }
+    const row = (v, isBase) => `<tr${v.label === d.best ? ' style="background:rgba(127,224,152,0.05)"' : ''}>
+        <td class="l">${isBase ? '<strong>' : ''}${_esc(v.label)}${isBase ? '</strong>' : ''}${v.label === d.best ? ' <span class="chip add">best on older half</span>' : ''}</td>
+        <td class="${_cls(v.pnl)}">${_money(v.pnl)}</td>
+        ${isBase ? '<td class="dim">—</td><td class="dim">—</td><td class="dim">—</td>' : delta(v.delta) + delta(v.tune_delta) + delta(v.check_delta)}
+        <td>${pct(v.avg_pct)}</td><td>${v.win_rate == null ? '—' : v.win_rate + '%'}</td>
+        <td class="l" style="color:#8a8fa3;white-space:normal;min-width:180px">${exits(v.exits)}</td></tr>`;
+    document.getElementById('replayOut').innerHTML = `
+      <div class="note" style="margin-bottom:8px">${d.trades} trades from ${d.roster} roster strategies
+        (${_esc(d.from_date)} → ${_esc(d.to_date)})${sd ? `, split at ${_esc(sd)}: older half ${b.tune_trades} trades, newer half ${b.check_trades}` : ''}.
+        Live exits replay to ${_money(b.pnl)}; the farms actually made ${_money(d.actual_pnl)} on these trades — the gap is TV exit
+        signals and fills the replay doesn't model.${d.backstop_max_hold ? ` Rules without their own max hold use the ${d.backstop_max_hold}-min global backstop.` : ''}
+        ${d.no_bars ? `${d.no_bars} trade(s) skipped — no 1-minute bars.` : ''}</div>
+      ${verdict}
+      <div class="tbl" style="margin-top:10px;max-height:520px;overflow-y:auto"><table><thead><tr>
+        <th class="l">Setting</th><th>Net</th><th>vs live</th><th>Older half vs live</th><th>Newer half vs live</th>
+        <th>Avg / trade</th><th>Win %</th><th class="l">How trades exited</th></tr></thead>
+        <tbody>${row(b, true)}${d.variants.map(v => row(v, false)).join('')}</tbody></table></div>
+      <div class="note" style="margin-top:8px">The split guards the exit choice, not the roster: these strategies made the roster on
+        this same window, so every row is somewhat flattered. Compare rows with each other, not against zero.</div>`;
   }
 
   async function load() {
@@ -761,6 +873,7 @@
   }
 
   _syncControls();
+  _renderReplayControls();
   load();
 </script>
 </body>
