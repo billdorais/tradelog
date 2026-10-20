@@ -320,6 +320,38 @@ def accumulation(trips_by_farm, n, period, min_trades=DEFAULT_MIN_TRADES, cap=DE
     return out
 
 
+# Exit settings the Farm Leaders page may write onto Kairos Select rules, mapped
+# from the replay's names to exit_params keys.
+EXIT_OVERRIDE_KEYS = {"max_hold": "max_hold_mins", "trail": "trail_offset",
+                      "trigger": "trail_trigger", "tp": "take_profit_pct"}
+
+
+def apply_exit_overrides(nodes, overrides):
+    """Write roster-wide exit overrides onto one rule's exit_params.
+
+    overrides: {max_hold_mins?, trail_offset?, trail_trigger?, take_profit_pct?}.
+    Trail and trigger values are % of price (what the replay tested), so they're
+    only written onto rules whose exits are in percent mode; a dollar-mode rule
+    keeps its trail and the reason is returned.
+
+    Returns (new_nodes, skipped_reason | None). Never mutates `nodes`."""
+    out = copy.deepcopy(nodes or [])
+    ep = next((n for n in out if n.get("type") == "exit_params"), None)
+    if ep is None:
+        ep = {"type": "exit_params", "stop_loss": None, "trail_trigger": None,
+              "trail_offset": DEFAULT_TRAIL, "mode": "percent"}
+        out.append(ep)
+    skipped = None
+    trail_keys = {"trail_offset", "trail_trigger"} & set(overrides)
+    if trail_keys and (ep.get("mode") or "percent") != "percent":
+        skipped = "exits are in dollars, so the % trail/trigger wasn't applied"
+    for k, v in overrides.items():
+        if k in trail_keys and skipped:
+            continue
+        ep[k] = v
+    return out, skipped
+
+
 def select_nodes(slug, shares, entry, source_nodes=None):
     """Routing nodes for one Select pick. Clones the strategy's own pipeline (tuned
     exits, hours, instrument, side_gate) when there is one, then pins the Select
@@ -874,6 +906,9 @@ def api_farm_leaders():
         "select_configured": SELECT_TAG in a.ACCOUNTS_BY_TAG,
         "gate_parity": _parity_or_error(a),
         "last_apply": json.loads(a._load_setting("SELECT_LAST_APPLY") or "null"),
+        "exit_overrides": _load_exit_overrides(a),
+        "exits_undo": json.loads(a._load_setting("SELECT_EXITS_UNDO") or "null"),
+        "backstop_max_hold": (a.MAX_HOLD_MINS if a.MAX_HOLD_MINS > 0 else None),
         "lookback_cap_days": FULL_HISTORY_DAYS if p["full"] else 90,
         "errors": errors,
     })
@@ -931,14 +966,19 @@ def api_farm_apply_select():
 
     conn = a.get_db(); cur = conn.cursor(); ph = a.placeholder()
     own, mixed, source = _select_rules(cur, a)
+    exit_ovr = _load_exit_overrides(a)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     created, updated, sizes = [], [], {}
     for r in roster:
         slug = r["strategy"]
         shares = max(1, round(size / prices[slug.split("_", 1)[0]]))
         sizes[slug] = shares
-        nodes = json.dumps(select_nodes(slug, shares, r["entry"],
-                                        (source.get(slug) or (0, None))[1]))
+        built = select_nodes(slug, shares, r["entry"], (source.get(slug) or (0, None))[1])
+        # Re-cloning from the farm pipeline would wipe exit changes made for Select
+        # on this page, so the saved overrides are re-applied on every rewire.
+        if exit_ovr:
+            built, _skip = apply_exit_overrides(built, exit_ovr)
+        nodes = json.dumps(built)
         rid = own.get(slug)
         if rid is not None:
             cur.execute(f"UPDATE routing_rules SET nodes={ph}, enabled=1 WHERE id={ph}", (nodes, rid))
@@ -1123,3 +1163,121 @@ def api_farm_replay_suggest():
     out = suggest_exits(ctx["prepared"], ctx["sim"], body)
     out.update(ctx["meta"])
     return jsonify(out)
+
+
+# ── Write exit settings to Kairos Select's rules ──────────────────────────────
+
+def _load_exit_overrides(a):
+    try:
+        v = json.loads(a._load_setting("SELECT_EXIT_OVERRIDES") or "{}")
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _exit_override_values(settings, backstop):
+    """Replay names -> exit_params values. Returns (values, error). A value of None
+    removes the key (rule falls back to the default)."""
+    vals = {}
+    for name, key in EXIT_OVERRIDE_KEYS.items():
+        if name not in settings or settings[name] is None:
+            continue
+        try:
+            v = float(settings[name])
+        except (TypeError, ValueError):
+            return None, f"{name} must be a number"
+        if v < 0:
+            return None, f"{name} can't be negative"
+        if name == "max_hold":
+            if v == 0 and backstop:
+                return None, (f"A rule can't turn max hold off while the global {backstop:g}-min "
+                              "backstop is set: a rule without its own max hold falls back to it.")
+            vals[key] = int(v) if v else None
+        elif name == "tp":
+            vals[key] = v or None
+        else:
+            vals[key] = v
+    if not vals:
+        return None, "no exit settings given"
+    return vals, None
+
+
+@farms_bp.route("/api/farms/select_exits", methods=["POST"])
+def api_farm_select_exits():
+    """Write exit settings onto every Kairos Select rule (rules whose only broker is
+    account 7 — farms and other books are never touched), and save them as Select's
+    exit overrides so a later roster Apply re-applies them instead of re-cloning
+    the farm pipeline's exits. The previous exits are kept for one-step Undo.
+
+    Body: {settings: {max_hold?, trail?, trigger?, tp?}} — the replay's units
+    (minutes, % of price)."""
+    a = _app()
+    settings = (request.get_json(silent=True) or {}).get("settings") or {}
+    backstop = a.MAX_HOLD_MINS if a.MAX_HOLD_MINS > 0 else 0
+    vals, err = _exit_override_values(settings, backstop)
+    if err:
+        return jsonify({"error": err + " Nothing was changed."}), 400
+
+    conn = a.get_db(); cur = conn.cursor(); ph = a.placeholder()
+    own, _mixed, _src = _select_rules(cur, a)
+    names = {}
+    for s, rid in own.items():
+        names.setdefault(rid, []).append(s)
+    prev, updated, skipped = {}, [], []
+    for rid, strats in names.items():
+        cur.execute(f"SELECT nodes FROM routing_rules WHERE id={ph}", (rid,))
+        row = cur.fetchone()
+        raw = row[0] if a.DATABASE_URL else row["nodes"]
+        nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        prev[str(rid)] = next((copy.deepcopy(n) for n in nodes if n.get("type") == "exit_params"), None)
+        new, why = apply_exit_overrides(nodes, vals)
+        cur.execute(f"UPDATE routing_rules SET nodes={ph} WHERE id={ph}", (json.dumps(new), rid))
+        updated.extend(strats)
+        if why:
+            skipped.append({"strategies": strats, "reason": why})
+    conn.commit(); conn.close()
+
+    old = _load_exit_overrides(a)
+    merged = {k: v for k, v in {**old, **vals}.items() if v is not None}
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    a._save_setting("SELECT_EXIT_OVERRIDES", json.dumps(merged))
+    a._save_setting("SELECT_EXITS_UNDO", json.dumps({"at": ts, "applied": vals,
+                                                      "prev_overrides": old, "rules": prev}))
+    a.log.info("Kairos Select exits set from Farm Leaders: %s on %d rules (%d skipped)",
+               vals, len(names), len(skipped))
+    return jsonify({"updated": sorted(updated), "skipped": skipped, "overrides": merged,
+                    "applied": vals, "at": ts})
+
+
+@farms_bp.route("/api/farms/select_exits/undo", methods=["POST"])
+def api_farm_select_exits_undo():
+    """Put back the exits the last change replaced, and the overrides before it.
+    Rules deleted since (roster rewired) are skipped."""
+    a = _app()
+    try:
+        rec = json.loads(a._load_setting("SELECT_EXITS_UNDO") or "null")
+    except Exception:
+        rec = None
+    if not rec:
+        return jsonify({"error": "Nothing to undo."}), 400
+    conn = a.get_db(); cur = conn.cursor(); ph = a.placeholder()
+    restored, gone = 0, 0
+    for rid, ep in (rec.get("rules") or {}).items():
+        cur.execute(f"SELECT nodes FROM routing_rules WHERE id={ph}", (int(rid),))
+        row = cur.fetchone()
+        if not row:
+            gone += 1
+            continue
+        raw = row[0] if a.DATABASE_URL else row["nodes"]
+        nodes = [n for n in (json.loads(raw) if isinstance(raw, str) else (raw or []))
+                 if n.get("type") != "exit_params"]
+        if ep:
+            nodes.append(ep)
+        cur.execute(f"UPDATE routing_rules SET nodes={ph} WHERE id={ph}", (json.dumps(nodes), int(rid)))
+        restored += 1
+    conn.commit(); conn.close()
+    a._save_setting("SELECT_EXIT_OVERRIDES", json.dumps(rec.get("prev_overrides") or {}))
+    a._save_setting("SELECT_EXITS_UNDO", "")
+    a.log.info("Kairos Select exit change of %s undone (%d rules restored, %d gone)",
+               rec.get("at"), restored, gone)
+    return jsonify({"restored": restored, "gone": gone, "overrides": rec.get("prev_overrides") or {}})

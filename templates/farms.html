@@ -188,6 +188,8 @@
         Both are simulated the same way, so the difference is the setting. Trades are split at the median date: the best setting is
         picked on the <strong>older half</strong> and then checked on the <strong>newer half</strong> — only trust a setting that
         wins on both. Farm trades are $1,000 each; read results as % per trade. Uses the roster and window chosen above.</div>
+      <div id="exitsBar" style="margin-bottom:12px"></div>
+      <div id="exitsBox"></div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
         <span class="lbl" style="margin-left:0">Test</span>
         <button class="btn" data-rt="max_hold" onclick="setReplayTest('max_hold')">Max hold</button>
@@ -341,6 +343,120 @@
         this same window, so every row is somewhat flattered. Compare rows with each other, not against zero.</div>`;
   }
 
+  // ── Writing exit settings to Kairos Select's rules ────────────────────────
+  // Settings use the replay's names/units: max_hold (min), trail / trigger / tp (%).
+  function _exitsLabel(s) {
+    const p = [];
+    if (s.max_hold != null) p.push(s.max_hold === 0 ? 'no max hold' : `max hold ${s.max_hold} min`);
+    if (s.trail != null) p.push(`trail ${s.trail}%`);
+    if (s.trigger != null) p.push(`trigger ${s.trigger}%`);
+    if (s.tp != null) p.push(s.tp ? `take profit ${s.tp}%` : 'no take profit');
+    return p.join(' · ');
+  }
+  const _ovrToSettings = o => {
+    const s = {};
+    if (o.max_hold_mins != null) s.max_hold = o.max_hold_mins;
+    if (o.trail_offset != null) s.trail = o.trail_offset;
+    if (o.trail_trigger != null) s.trigger = o.trail_trigger;
+    if (o.take_profit_pct != null) s.tp = o.take_profit_pct;
+    return s;
+  };
+
+  function _renderExitsBar() {
+    const d = _data || {}, ovr = d.exit_overrides || {}, undo = d.exits_undo;
+    const cur = _exitsLabel(_ovrToSettings(ovr));
+    const inp = (id, ph, w) => `<input class="f" id="${id}" placeholder="${ph}" style="width:${w}px">`;
+    document.getElementById('exitsBar').innerHTML = `
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid #232735;border-radius:8px;background:#171a24">
+        <span class="lbl" style="margin-left:0">Select exits</span>
+        <span class="note" style="margin-right:6px">${cur ? 'Overrides: <strong style="color:#cfd3e0">' + _esc(cur) + '</strong>'
+          : 'No overrides — Select rules use the exits cloned from each farm pipeline.'}</span>
+        <span class="sep"></span>
+        <span class="lbl">Max hold</span>${inp('ex_max_hold', 'min', 56)}
+        <span class="lbl">Trail %</span>${inp('ex_trail', '%', 56)}
+        <span class="lbl">Trigger %</span>${inp('ex_trigger', '%', 56)}
+        <span class="lbl">TP %</span>${inp('ex_tp', '%', 56)}
+        <button class="btn go" onclick="askExitsFromInputs()" title="Blank fields are left as they are">Apply to Select…</button>
+        <button class="btn" onclick="askUndoExits()" ${undo ? '' : 'disabled'}
+                title="${undo ? 'Put back the exits replaced at ' + _esc(undo.at) + ' UTC' : 'Nothing to undo'}">Undo last change</button>
+      </div>`;
+  }
+
+  function askExitsFromInputs() {
+    const s = {};
+    for (const k of ['max_hold', 'trail', 'trigger', 'tp']) {
+      const v = document.getElementById('ex_' + k).value.trim();
+      if (v === '') continue;
+      if (isNaN(Number(v))) { _exitsMsg('warn', `${k.replace('_', ' ')} must be a number.`); return; }
+      s[k] = Number(v);
+    }
+    if (!Object.keys(s).length) { _exitsMsg('warn', 'Fill in at least one setting.'); return; }
+    askExits(s, '');
+  }
+
+  function _exitsMsg(kind, html) {
+    document.getElementById('exitsBox').innerHTML = kind === 'warn'
+      ? `<div class="warn">${html}</div>` : `<div class="confirm" style="margin:0 0 12px 0">${html}</div>`;
+  }
+
+  let _pendingExits = null, _sgSettings = [];
+  function askExitsIdx(i) { const x = _sgSettings[i]; if (x) askExits(x.settings, x.warn); }
+  function askExits(settings, note) {
+    _pendingExits = settings;
+    const n = ((_data || {}).diff || { keep: [], remove: [] });
+    const count = n.keep.length + n.remove.length;
+    _exitsMsg('confirm', `Set <strong>${_esc(_exitsLabel(settings))}</strong> on every Kairos Select rule${count ? ` (${count})` : ''}?
+      Only rules that trade account 7 alone change — the farms and other books don't. It's saved as Select's exit override, so
+      re-applying the roster keeps it. Undo puts back the exits it replaces.${note ? '<br>' + note : ''}
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn go" onclick="doExits()">Confirm — update Select rules</button>
+        <button class="btn" onclick="_pendingExits=null;document.getElementById('exitsBox').innerHTML=''">Cancel</button>
+      </div>`);
+    document.getElementById('exitsBox').scrollIntoView({ block: 'nearest' });
+  }
+
+  async function doExits() {
+    if (!_pendingExits) return;
+    const settings = _pendingExits; _pendingExits = null;
+    _exitsMsg('confirm', 'Updating Kairos Select rules…');
+    let res, b;
+    try {
+      res = await fetch('/api/farms/select_exits', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                      body: JSON.stringify({ settings }) });
+      b = await res.json();
+    } catch (e) { _exitsMsg('warn', 'Update failed: ' + _esc(String(e))); return; }
+    if (!res.ok) { _exitsMsg('warn', _esc(b.error || ('HTTP ' + res.status))); return; }
+    await load();
+    const sk = (b.skipped || []).map(x => `${x.strategies.map(_esc).join(', ')} — ${_esc(x.reason)}`).join('<br>');
+    _exitsMsg('confirm', `<strong style="color:#7FE098">Updated ${b.updated.length} Kairos Select rule${b.updated.length === 1 ? '' : 's'}</strong>
+      to ${_esc(_exitsLabel(settings))}. New engine and TV entries on account 7 use it; open positions keep the exits they were armed with.
+      ${b.updated.length ? '' : '<br>No Select rules exist yet — the override will apply when you Apply the roster.'}
+      ${sk ? '<br><span style="color:#f0a35e">Not fully applied:</span><br>' + sk : ''}`);
+  }
+
+  function askUndoExits() {
+    const u = (_data || {}).exits_undo;
+    if (!u) return;
+    _exitsMsg('confirm', `Undo the change made ${_esc(u.at)} UTC (${_esc(_exitsLabel(_ovrToSettings(u.applied || {})))})?
+      Each Select rule gets back the exits it had before.
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn danger" onclick="doUndoExits()">Confirm — undo</button>
+        <button class="btn" onclick="document.getElementById('exitsBox').innerHTML=''">Cancel</button>
+      </div>`);
+  }
+
+  async function doUndoExits() {
+    let res, b;
+    try {
+      res = await fetch('/api/farms/select_exits/undo', { method: 'POST' });
+      b = await res.json();
+    } catch (e) { _exitsMsg('warn', 'Undo failed: ' + _esc(String(e))); return; }
+    if (!res.ok) { _exitsMsg('warn', _esc(b.error || ('HTTP ' + res.status))); return; }
+    await load();
+    _exitsMsg('confirm', `Undone — ${b.restored} rule${b.restored === 1 ? '' : 's'} back to their previous exits`
+      + (b.gone ? ` (${b.gone} no longer exist${b.gone === 1 ? 's' : ''})` : '') + '.');
+  }
+
   // ── Suggestion: best of the three tests, replayed together ────────────────
   function _rtVal(k, def) {
     const el = document.getElementById('rt_' + k);
@@ -379,28 +495,44 @@
                    partial: ['#5a4a2a', 'rgba(240,163,94,0.06)', '#f0a35e', 'Partial suggestion'],
                    keep: ['#2a2d3e', 'transparent', '#cfd3e0', 'Keep your live exits'],
                    no_split: ['#2a2d3e', 'transparent', '#cfd3e0', 'Not enough history'] }[d.recommendation];
+    // Settings behind each Apply button, referenced by index.
+    _sgSettings = [];
+    const pickSettings = b => {
+      const s = {};
+      ['max_hold', 'trail', 'trigger', 'tp'].forEach(k => { if (b[k] != null) s[k] = b[k]; });
+      return s;
+    };
+    const applyBtn = (settings, warn) => {
+      _sgSettings.push({ settings, warn });
+      return `<button class="btn" style="padding:3px 9px" onclick="askExitsIdx(${_sgSettings.length - 1})">Apply to Select…</button>`;
+    };
     const rows = ['max_hold', 'trail', 'take_profit'].map(k => {
       const t = d.tests[k], b = t.best || {};
       // Nothing beat live exits: there's no "best" to show, only the live settings.
       if (t.verdict === 'none' || !t.best) {
         return `<tr><td class="l">${_esc(t.name)}</td><td class="l dim">your live settings</td>
-          <td class="dim">—</td><td class="dim">—</td><td class="l">${chip(t)}</td></tr>`;
+          <td class="dim">—</td><td class="dim">—</td><td class="l">${chip(t)}</td><td></td></tr>`;
       }
+      const warn = t.kept ? '' : '<span style="color:#f0a35e">This one did NOT hold up on the newer half.</span>';
       return `<tr><td class="l">${_esc(t.name)}</td><td class="l">${_esc(b.label)}</td>
-        ${delta(b.tune_delta)}${delta(b.check_delta)}<td class="l">${chip(t)}</td></tr>`;
+        ${delta(b.tune_delta)}${delta(b.check_delta)}<td class="l">${chip(t)}</td>
+        <td>${applyBtn(pickSettings(b), warn)}</td></tr>`;
     }).join('');
     const c = d.combined;
+    const comboWarn = d.recommendation === 'change' ? ''
+      : '<span style="color:#f0a35e">Replayed together, these did NOT hold up on the newer half.</span>';
     const combo = c ? `<div class="tbl" style="margin-top:10px"><table><thead><tr><th class="l">Replayed together</th>
-        <th>vs live</th><th>Older half</th><th>Newer half</th><th>Avg / trade</th><th>Win %</th></tr></thead><tbody>
+        <th>vs live</th><th>Older half</th><th>Newer half</th><th>Avg / trade</th><th>Win %</th><th></th></tr></thead><tbody>
         <tr><td class="l">${_esc(c.label)}</td>${delta(c.delta)}${delta(c.tune_delta)}${delta(c.check_delta)}
           <td>${pct(c.avg_pct)} <span class="dim">(live ${pct(c.baseline.avg_pct)})</span></td>
-          <td>${c.win_rate == null ? '—' : c.win_rate + '%'} <span class="dim">(live ${c.baseline.win_rate}%)</span></td></tr>
+          <td>${c.win_rate == null ? '—' : c.win_rate + '%'} <span class="dim">(live ${c.baseline.win_rate}%)</span></td>
+          <td>${applyBtn(pickSettings(c), comboWarn)}</td></tr>
         </tbody></table></div>` : '';
     document.getElementById('suggestOut').innerHTML = `
       <div class="confirm" style="margin:0 0 12px 0;border-color:${tone[0]};background:${tone[1]}">
         <strong style="color:${tone[2]}">${tone[3]}:</strong> ${_esc(d.summary)}
         <div class="tbl" style="margin-top:10px"><table><thead><tr><th class="l">Test</th><th class="l">Best on older half</th>
-          <th>Older half vs live</th><th>Newer half vs live</th><th class="l">Result</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <th>Older half vs live</th><th>Newer half vs live</th><th class="l">Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         ${combo}
         <div class="note" style="margin-top:8px">${d.trades} roster trades${d.split_date ? `, split at ${_esc(d.split_date)}` : ''}.
           A suggestion is one roster-wide value per setting, replacing each rule's own. Nothing changes until you set it in the
@@ -433,6 +565,7 @@
     _renderFarm('farmTv', 'tv');
     _renderFarm('farmKairos', 'kairos');
     _renderRoster();
+    _renderExitsBar();
   }
 
   function setAccMode(m) {

@@ -518,3 +518,101 @@ def test_suggest_endpoint(monkeypatch):
     d = a.app.test_client().post("/api/farms/replay_suggest", json={}).get_json()
     assert d["recommendation"] == "change" and d["trades"] == 4
     assert d["combined"]["label"] == "max hold 30 min"
+
+
+# ── writing exits to Kairos Select's rules ────────────────────────────────────
+
+def test_apply_exit_overrides_writes_percent_rules_and_skips_dollar_trails():
+    pct = [{"type": "strategy", "value": "X"},
+           {"type": "exit_params", "trail_offset": 0.15, "trail_trigger": 0, "mode": "percent"}]
+    out, why = farms.apply_exit_overrides(pct, {"max_hold_mins": 15, "trail_offset": 0.1})
+    ep = next(n for n in out if n["type"] == "exit_params")
+    assert ep["max_hold_mins"] == 15 and ep["trail_offset"] == 0.1 and why is None
+    assert pct[1].get("max_hold_mins") is None                      # input untouched
+
+    dollars = [{"type": "exit_params", "trail_offset": 0.5, "mode": "dollars"}]
+    out, why = farms.apply_exit_overrides(dollars, {"max_hold_mins": 15, "trail_offset": 0.1})
+    ep = out[0]
+    assert ep["max_hold_mins"] == 15 and ep["trail_offset"] == 0.5 and "dollars" in why
+
+    out, _ = farms.apply_exit_overrides([{"type": "strategy", "value": "X"}], {"max_hold_mins": 15})
+    assert next(n for n in out if n["type"] == "exit_params")["max_hold_mins"] == 15
+
+
+def _settings_store(monkeypatch, saved):
+    import app as a
+    monkeypatch.setattr(a, "_load_setting", lambda k, d=None: saved.get(k, d))
+
+
+def test_select_exits_change_only_select_rules_and_undo(router, monkeypatch):
+    import app as a
+    db, _roster, saved = router
+    _settings_store(monkeypatch, saved)
+    monkeypatch.setattr(a, "MAX_HOLD_MINS", 15.0)
+    before = _rules(db)
+    c = a.app.test_client()
+
+    r = c.post("/api/farms/select_exits", json={"settings": {"max_hold": 15}})
+    body = r.get_json()
+    assert r.status_code == 200, body
+    assert sorted(body["updated"]) == sorted([_s("OLD"), _s("KEEP"), _s("OPEN")])
+    rules = _rules(db)
+    for k in ("OLD", "KEEP", "OPEN"):
+        ep = next(n for n in rules[_s(k) + " · Select"] if n["type"] == "exit_params")
+        assert ep["max_hold_mins"] == 15
+    assert rules[_s("MIX")] == before[_s("MIX")]        # shared rule untouched
+    assert rules[_s("NEW")] == before[_s("NEW")]        # farm pipeline untouched
+    assert json.loads(saved["SELECT_EXIT_OVERRIDES"]) == {"max_hold_mins": 15}
+
+    r = c.post("/api/farms/select_exits/undo")
+    assert r.status_code == 200 and r.get_json()["restored"] == 3
+    assert _rules(db) == before
+    assert json.loads(saved["SELECT_EXIT_OVERRIDES"]) == {}
+
+
+def test_no_max_hold_is_refused_while_the_global_backstop_is_set(router, monkeypatch):
+    import app as a
+    db, _roster, saved = router
+    monkeypatch.setattr(a, "MAX_HOLD_MINS", 15.0)
+    before = _rules(db)
+    r = a.app.test_client().post("/api/farms/select_exits", json={"settings": {"max_hold": 0}})
+    assert r.status_code == 400 and "backstop" in r.get_json()["error"]
+    assert _rules(db) == before
+
+
+def test_roster_apply_reapplies_saved_exit_overrides(router, monkeypatch):
+    import app as a
+    db, roster, saved = router
+    saved["SELECT_EXIT_OVERRIDES"] = json.dumps({"max_hold_mins": 15})
+    _settings_store(monkeypatch, saved)
+    r = a.app.test_client().post("/api/farms/apply_select",
+                                 json={"expect": [x["strategy"] for x in roster]})
+    assert r.status_code == 200, r.get_json()
+    new = _rules(db)[_s("NEW") + " · Select"]
+    ep = next(n for n in new if n["type"] == "exit_params")
+    assert ep["max_hold_mins"] == 15 and ep["trail_offset"] == 0.3    # cloned exits + override
+
+
+def test_engine_uses_the_select_rules_own_exits_for_account_7(monkeypatch, tmp_path):
+    import sqlite3
+    import app as a
+    db = tmp_path / "eng.db"
+    shutil.copy("trades.db", db)
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM routing_rules")
+    X = _s("XYZ")
+    conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)", (X, json.dumps([
+        {"type": "strategy", "value": X}, {"type": "broker", "value": "alpaca-paper"},
+        {"type": "exit_params", "trail_offset": 0.15, "mode": "percent"}])))
+    conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)", (X + " · Select", json.dumps([
+        {"type": "strategy", "value": X}, {"type": "broker", "value": "alpaca-paper-7"},
+        {"type": "exit_params", "trail_offset": 0.15, "mode": "percent", "max_hold_mins": 15}])))
+    conn.commit(); conn.close()
+    monkeypatch.setattr(a, "get_db", lambda: sqlite3.connect(db))
+    monkeypatch.setattr(a, "_routing_broker_to_tag",
+                        lambda v: {"alpaca-paper": "alpaca", "alpaca-paper-7": "alpaca7"}.get(v))
+    monkeypatch.setitem(a._engine_pilot_cache, "rules_ts", 0.0)
+    rules = a._engine_pilot_rules()
+    assert a._engine_pilot_exit_for_target(X, "alpaca7", rules)["max_hold_mins"] == 15
+    assert a._engine_pilot_exit_for_target(X, "alpaca5", rules)["max_hold_mins"] is None   # name lookup, as before
+    monkeypatch.setitem(a._engine_pilot_cache, "rules_ts", 0.0)

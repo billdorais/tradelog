@@ -20211,13 +20211,14 @@ def _engine_pilot_rules():
     now = time.time()
     if now - _engine_pilot_cache["rules_ts"] < 60 and _engine_pilot_cache["rules"]:
         return _engine_pilot_cache["rules"]
-    rules = {}
+    rules, by_target = {}, {}
     try:
         _rc = get_db()
         for _row in _rc.execute("SELECT name, nodes FROM routing_rules WHERE enabled=1").fetchall():
             nm = (_row[0] or "").upper()
+            nodes = json.loads(_row[1] or "[]")
             ep = None
-            for nd in json.loads(_row[1] or "[]"):
+            for nd in nodes:
                 if nd.get("type") == "exit_params":
                     ep = nd
             if ep:
@@ -20230,12 +20231,32 @@ def _engine_pilot_rules():
                     "max_hold_mins": int(float(ep.get("max_hold_mins"))) if ep.get("max_hold_mins") else None,
                     "retest_bars":   int(float(ep.get("retest_bars"))) if ep.get("retest_bars") else 0,
                 }
+                # Also index by (strategy, target account), so a per-account copy of a
+                # pipeline (e.g. "X · Select" on alpaca-paper-7, "X · Crew") arms ITS
+                # OWN exits on engine entries into that account. Name lookup alone
+                # finds the farm pipeline named exactly X, so edits to the copy's
+                # exits silently never applied to engine-entered trades.
+                strats = [(n.get("value") or "").strip().upper() for n in nodes
+                          if n.get("type") == "strategy" and n.get("value") and "*" not in n["value"]]
+                tags = {_routing_broker_to_tag(n.get("value")) for n in nodes if n.get("type") == "broker"}
+                for s in strats:
+                    for tg in tags - {None}:
+                        by_target[(s, tg)] = rules[nm]
         _rc.close()
     except Exception as _e:
         log.debug("engine pilot rules: %s", _e)
     _engine_pilot_cache["rules"] = rules
+    _engine_pilot_cache["by_target"] = by_target
     _engine_pilot_cache["rules_ts"] = now
     return rules
+
+
+def _engine_pilot_exit_for_target(strategy, broker_tag, rules):
+    """Exits for an engine entry into ONE account: the rule wired for this strategy
+    on that account when there is one, else the name/band lookup every account used
+    before (so books without their own rule copy behave exactly as they did)."""
+    r = (_engine_pilot_cache.get("by_target") or {}).get(((strategy or "").upper(), broker_tag))
+    return r if r is not None else _engine_pilot_exit_for(strategy, rules)
 
 def _engine_pilot_exit_for(strategy, rules):
     """Exact rule name, else BREAKOUT_R3S3-style substring (mirrors the stops baseline)."""
@@ -20359,6 +20380,9 @@ def _engine_pilot_tick(now_et, today):
             else (s.get("targets") or [{"broker_tag": "alpaca3", "qty_override": None}])
         for tgt in targets:
             broker_tag   = tgt["broker_tag"]
+            # Exits per TARGET too: an account with its own copy of this strategy's
+            # rule (Kairos Select, Crew) arms that copy's trail/stop/max-hold.
+            xp = _engine_pilot_exit_for_target(strat, broker_tag, rules)
             # Per-account trading hours. Resolved per TARGET: the engine fires into
             # several books (alpaca3 via the snapshot, alpaca5 via ENGINE_PILOT_ALL,
             # any rule broker), and they do not share a window. This used to ask
