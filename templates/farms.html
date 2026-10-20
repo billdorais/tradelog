@@ -196,7 +196,10 @@
         <span class="sep"></span>
         <span id="rtGrid" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></span>
         <button class="btn go" id="rtRun" onclick="runReplay()" style="margin-left:auto">Run replay</button>
+        <button class="btn" id="rtSuggest" onclick="runSuggest()"
+                title="Run all three tests, keep the winners that held up on the newer half, replay them together">Suggest exit settings</button>
       </div>
+      <div id="suggestOut"></div>
       <div id="replayOut"><div class="note">Pick a test and click Run. The first run fetches 1-minute bars for every roster trade
         and can take a minute; re-runs reuse them.</div></div>
     </div>
@@ -245,6 +248,7 @@
     // A new Top N / window / floor is a different roster — old replay results no longer apply.
     document.getElementById('replayOut').innerHTML =
       '<div class="note">The roster changed — run the replay again for these settings.</div>';
+    document.getElementById('suggestOut').innerHTML = '';
     load();
   }
 
@@ -335,6 +339,73 @@
         <tbody>${row(b, true)}${d.variants.map(v => row(v, false)).join('')}</tbody></table></div>
       <div class="note" style="margin-top:8px">The split guards the exit choice, not the roster: these strategies made the roster on
         this same window, so every row is somewhat flattered. Compare rows with each other, not against zero.</div>`;
+  }
+
+  // ── Suggestion: best of the three tests, replayed together ────────────────
+  function _rtVal(k, def) {
+    const el = document.getElementById('rt_' + k);
+    if (el) return el.value;
+    try { return localStorage.getItem('farm_rt_' + k) || def; } catch (_) { return def; }
+  }
+
+  async function runSuggest() {
+    const out = document.getElementById('suggestOut'), btn = document.getElementById('rtSuggest');
+    const body = { ..._opt };
+    Object.values(RT_GRID).flat().forEach(([k, _l, def]) => body[k] = _rtVal(k, def));
+    btn.disabled = true;
+    out.innerHTML = '<div class="note" style="margin-bottom:10px">Running all three tests on the roster…</div>';
+    let res, d;
+    try {
+      res = await fetch('/api/farms/replay_suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify(body) });
+      d = await res.json();
+    } catch (e) {
+      out.innerHTML = '<div class="warn">Suggestion failed: ' + _esc(String(e)) + '</div>';
+      btn.disabled = false; return;
+    }
+    btn.disabled = false;
+    if (!res.ok) { out.innerHTML = '<div class="warn">' + _esc(d.error || ('HTTP ' + res.status)) + '</div>'; return; }
+    _renderSuggest(d);
+  }
+
+  function _renderSuggest(d) {
+    const delta = v => v == null ? '<td class="dim">—</td>' : `<td class="${_cls(v)}">${_money(v)}</td>`;
+    const pct = v => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3) + '%';
+    const chip = t => t.kept ? '<span class="chip add">held — kept</span>'
+      : t.verdict === 'fails' ? '<span class="chip remove">didn\'t hold</span>'
+      : t.verdict === 'none' ? '<span class="chip keep">nothing beat live</span>'
+      : '<span class="chip keep">no split</span>';
+    const tone = { change: ['#3a7a4e', 'rgba(127,224,152,0.06)', '#7FE098', 'Suggested change'],
+                   partial: ['#5a4a2a', 'rgba(240,163,94,0.06)', '#f0a35e', 'Partial suggestion'],
+                   keep: ['#2a2d3e', 'transparent', '#cfd3e0', 'Keep your live exits'],
+                   no_split: ['#2a2d3e', 'transparent', '#cfd3e0', 'Not enough history'] }[d.recommendation];
+    const rows = ['max_hold', 'trail', 'take_profit'].map(k => {
+      const t = d.tests[k], b = t.best || {};
+      // Nothing beat live exits: there's no "best" to show, only the live settings.
+      if (t.verdict === 'none' || !t.best) {
+        return `<tr><td class="l">${_esc(t.name)}</td><td class="l dim">your live settings</td>
+          <td class="dim">—</td><td class="dim">—</td><td class="l">${chip(t)}</td></tr>`;
+      }
+      return `<tr><td class="l">${_esc(t.name)}</td><td class="l">${_esc(b.label)}</td>
+        ${delta(b.tune_delta)}${delta(b.check_delta)}<td class="l">${chip(t)}</td></tr>`;
+    }).join('');
+    const c = d.combined;
+    const combo = c ? `<div class="tbl" style="margin-top:10px"><table><thead><tr><th class="l">Replayed together</th>
+        <th>vs live</th><th>Older half</th><th>Newer half</th><th>Avg / trade</th><th>Win %</th></tr></thead><tbody>
+        <tr><td class="l">${_esc(c.label)}</td>${delta(c.delta)}${delta(c.tune_delta)}${delta(c.check_delta)}
+          <td>${pct(c.avg_pct)} <span class="dim">(live ${pct(c.baseline.avg_pct)})</span></td>
+          <td>${c.win_rate == null ? '—' : c.win_rate + '%'} <span class="dim">(live ${c.baseline.win_rate}%)</span></td></tr>
+        </tbody></table></div>` : '';
+    document.getElementById('suggestOut').innerHTML = `
+      <div class="confirm" style="margin:0 0 12px 0;border-color:${tone[0]};background:${tone[1]}">
+        <strong style="color:${tone[2]}">${tone[3]}:</strong> ${_esc(d.summary)}
+        <div class="tbl" style="margin-top:10px"><table><thead><tr><th class="l">Test</th><th class="l">Best on older half</th>
+          <th>Older half vs live</th><th>Newer half vs live</th><th class="l">Result</th></tr></thead><tbody>${rows}</tbody></table></div>
+        ${combo}
+        <div class="note" style="margin-top:8px">${d.trades} roster trades${d.split_date ? `, split at ${_esc(d.split_date)}` : ''}.
+          A suggestion is one roster-wide value per setting, replacing each rule's own. Nothing changes until you set it in the
+          Signal Router — and with a few weeks more history, run this again before trusting it.</div>
+      </div>`;
   }
 
   async function load() {

@@ -460,3 +460,61 @@ def test_replay_endpoint_runs_the_roster_through_the_real_exit_simulator(monkeyp
     by = {v["label"]: v for v in body["variants"]}
     assert by["30 min"]["pnl"] == 60.0 and by["30 min"]["delta"] == 40.0
     assert body["best"] == "30 min" and body["verdict"] == "holds"
+
+
+# ── suggestion: best of the three tests, replayed together ────────────────────
+
+def _four():
+    return [_td("2026-09-01"), _td("2026-09-02"), _td("2026-09-10"), _td("2026-09-11")]
+
+
+def test_suggestion_keeps_only_winners_that_held_and_replays_them_together():
+    def sim(td, trail, trigger, max_hold, tp):
+        old = td["date"] < "2026-09-10"
+        pnl = 0.0
+        if max_hold == 30:
+            pnl += 1.0                                   # holds on both halves
+        if tp == 1:
+            pnl += 2.0 if old else -2.0                  # fitted to the older half
+        return {"pnl": pnl, "reason": "x"}
+
+    out = farms.suggest_exits(_four(), sim, {})
+    t = out["tests"]
+    assert t["max_hold"]["kept"] and t["max_hold"]["best"]["max_hold"] == 30
+    assert t["take_profit"]["verdict"] == "fails" and not t["take_profit"]["kept"]
+    assert t["trail"]["verdict"] == "none"
+    assert out["recommendation"] == "change"
+    assert out["combined"]["label"] == "max hold 30 min" and "tp" not in out["combined"]
+    assert out["combined"]["check_delta"] == 2
+
+
+def test_suggestion_falls_back_when_the_winners_dont_stack():
+    def sim(td, trail, trigger, max_hold, tp):
+        if max_hold == 30 and tp == 1:
+            return {"pnl": -1.5, "reason": "x"}          # each helps alone, together they hurt
+        if max_hold == 30:
+            return {"pnl": 1.0, "reason": "x"}
+        if tp == 1:
+            return {"pnl": 0.5, "reason": "x"}
+        return {"pnl": 0.0, "reason": "x"}
+
+    out = farms.suggest_exits(_four(), sim, {})
+    assert out["tests"]["max_hold"]["kept"] and out["tests"]["take_profit"]["kept"]
+    assert out["recommendation"] == "partial"
+    assert out["combined"]["fallback"] == "max_hold"     # the stronger single change
+
+
+def test_suggestion_says_keep_when_nothing_holds():
+    out = farms.suggest_exits(_four(), lambda td, *a: {"pnl": 0.0, "reason": "x"}, {})
+    assert out["recommendation"] == "keep" and out["combined"] is None
+
+
+def test_suggest_endpoint(monkeypatch):
+    import app as a
+    monkeypatch.setattr(farms, "_prepare_replay",
+                        lambda: ({"prepared": _four(), "meta": {"trades": 4, "roster": 1},
+                                  "sim": lambda td, trail, trigger, mh, tp:
+                                      {"pnl": 1.0 if mh == 30 else 0.0, "reason": "x"}}, None))
+    d = a.app.test_client().post("/api/farms/replay_suggest", json={}).get_json()
+    assert d["recommendation"] == "change" and d["trades"] == 4
+    assert d["combined"]["label"] == "max hold 30 min"

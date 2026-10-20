@@ -695,6 +695,92 @@ def score_variants(prepared, variants, sim):
             "best": best["label"] if best else None, "verdict": verdict}
 
 
+TEST_LABELS = {"max_hold": "Max hold", "trail": "Trail × trigger", "take_profit": "Take profit"}
+
+
+def _combo_label(v):
+    parts = []
+    if "max_hold" in v:
+        parts.append("no max hold" if v["max_hold"] == 0 else f"max hold {v['max_hold']:g} min")
+    if "trail" in v:
+        parts.append(f"trail {v['trail']:g}% · trigger {v['trigger']:g}%")
+    if "tp" in v:
+        parts.append(f"TP {v['tp']:g}%")
+    return " + ".join(parts)
+
+
+def suggest_exits(prepared, sim, body):
+    """Run all three exit tests and turn their winners into one suggestion.
+
+    1. Each test picks its best setting on the OLDER half (score_variants).
+    2. Only winners that ALSO beat live exits on the newer half are kept; a test
+       whose winner didn't hold (or found nothing) stays at the live setting.
+    3. The kept winners are replayed TOGETHER, because exits interact (a take
+       profit matters less once the trail is tighter; a longer max hold changes
+       what the trail sees), and the combination must hold on the newer half too.
+
+    The suggestion is one roster-wide value per setting, replacing the per-rule
+    values the baseline uses.
+
+    Returns {tests: {test: {...}}, combined: {...} | None, recommendation, split_date}."""
+    tests, combo = {}, {}
+    sd = None
+    for test in REPLAY_TESTS:
+        r = score_variants(prepared, build_variants(test, body), sim)
+        sd = r["split_date"]
+        best = next((v for v in r["variants"] if v["label"] == r["best"]), None)
+        keep = r["verdict"] == "holds"
+        tests[test] = {
+            "name": TEST_LABELS[test], "verdict": r["verdict"], "kept": keep,
+            "best": None if best is None else {
+                k: best.get(k) for k in ("label", "pnl", "delta", "tune_delta", "check_delta",
+                                         "avg_pct", "win_rate", "max_hold", "trail", "trigger", "tp")
+                if k in best},
+        }
+        if keep:
+            combo.update({k: best[k] for k in ("max_hold", "trail", "trigger", "tp") if k in best})
+
+    if sd is None:
+        return {"tests": tests, "combined": None, "split_date": None,
+                "recommendation": "no_split",
+                "summary": "Every roster trade is on one day, so there's no older/newer half to check a "
+                           "setting against. Use a longer window."}
+    if not combo:
+        return {"tests": tests, "combined": None, "split_date": sd,
+                "recommendation": "keep",
+                "summary": "No exit change held up on the newer half. Keep your live exits."}
+
+    combo["label"] = _combo_label(combo)
+    c = score_variants(prepared, [combo], sim)
+    row = c["variants"][0]
+    combined = {k: row.get(k) for k in ("label", "pnl", "delta", "tune_delta", "check_delta",
+                                        "avg_pct", "win_rate", "exits", "max_hold", "trail", "trigger", "tp")
+                if k in row}
+    combined["baseline"] = {k: c["baseline"][k] for k in ("pnl", "avg_pct", "win_rate", "exits")}
+    kept = [t for t in REPLAY_TESTS if tests[t]["kept"]]
+    usd = lambda v: ("+" if v >= 0 else "−") + f"${abs(v):,.2f}"
+    if row["tune_delta"] > 0 and row["check_delta"] > 0:
+        rec = "change"
+        summary = (f"Switch to {combo['label']}. "
+                   + ("Replayed together, they" if len(kept) > 1 else "It")
+                   + f" beat live exits on both halves (older {usd(row['tune_delta'])}, "
+                     f"newer {usd(row['check_delta'])}).")
+    elif len(kept) > 1:
+        # The settings don't stack. Fall back to the single kept winner that did best
+        # on the newer half — it already held on its own.
+        lone = max(kept, key=lambda t: tests[t]["best"]["check_delta"])
+        rec = "partial"
+        summary = (f"The winners don't stack — together they don't hold on the newer half. "
+                   f"The strongest single change is {tests[lone]['best']['label']} "
+                   f"({TEST_LABELS[lone].lower()}); change only that.")
+        combined["fallback"] = lone
+    else:
+        rec = "keep"
+        summary = "The change looked better alone but not once replayed in full. Keep your live exits."
+    return {"tests": tests, "combined": combined, "split_date": sd,
+            "recommendation": rec, "summary": summary}
+
+
 _bars_cache = {}                   # (ticker, date) -> 1-min bars, past days only
 _bars_lock = threading.Lock()
 
@@ -915,30 +1001,27 @@ def api_farm_clear_select():
                     "stripped_from_mixed": stripped})
 
 
-@farms_bp.route("/api/farms/replay", methods=["POST"])
-def api_farm_replay():
-    """Replay the current Select roster's real farm trades with different exits.
-
-    Body: the page's leaderboard params (n, days, period, min_trades, cap) so the
-    roster matches what's on screen, plus test = max_hold | trail | take_profit and
-    its grid (max_holds / trails + triggers / tps, comma lists, % of price).
+def _prepare_replay():
+    """Shared setup for the replay endpoints: build the roster from the page's
+    params, gather each pick's farm round-trips, fetch their 1-minute bars and
+    attach each trade's live exits.
 
     Each roster pick replays the round-trips of the farm it comes from (TV picks:
-    TV Farm, Kairos picks: Kairos Farm) at the farm's $1,000 sizing, on 1-minute
-    bars. Baseline = each trade's live exits (rule trail/trigger with the session
-    trail adjustment, rule max hold else the global backstop), simulated the same
-    way as every variant. TV exit signals are ignored on both sides of the
-    comparison: the test is the broker-side exit settings alone."""
+    TV Farm, Kairos picks: Kairos Farm) at the farm's $1,000 sizing. Baseline =
+    each trade's live exits (rule trail/trigger with the session trail adjustment,
+    rule max hold else the global backstop), simulated the same way as every
+    variant. TV exit signals are ignored on both sides of the comparison: the test
+    is the broker-side exit settings alone.
+
+    Returns (ctx, None) with ctx = {prepared, sim, meta}, or (None, (json, status))."""
     import concurrent.futures as _cf
     a = _app()
-    body = request.get_json(silent=True) or {}
-    test = body.get("test") if body.get("test") in REPLAY_TESTS else "max_hold"
     p = _params()
     _farms, roster, errors, _acc = _build(p)
     if errors:
-        return jsonify({"error": "Farm data is incomplete (" + "; ".join(errors.values()) + ")."}), 409
+        return None, (jsonify({"error": "Farm data is incomplete (" + "; ".join(errors.values()) + ")."}), 409)
     if not roster:
-        return jsonify({"error": "No strategy qualifies with these settings."}), 400
+        return None, (jsonify({"error": "No strategy qualifies with these settings."}), 400)
 
     picks = {(r["farm"], r["strategy"]) for r in roster}
     nums = {key: num for key, num, _label in FARMS}
@@ -946,16 +1029,16 @@ def api_farm_replay():
     for farm in {f for f, _s in picks}:
         rts, err = _farm_round_trips(nums[farm], p["from_date"], p["to_date"], full=p["full"])
         if err:
-            return jsonify({"error": f"{farm} farm: {err}"}), 409
+            return None, (jsonify({"error": f"{farm} farm: {err}"}), 409)
         trades += [dict(c, farm=farm) for c in rts if (farm, c["strategy"]) in picks]
     if not trades:
-        return jsonify({"error": "The roster has no closed trades in this window."}), 404
+        return None, (jsonify({"error": "The roster has no closed trades in this window."}), 404)
 
     days = {((c.get("ticker") or "").upper(), (c.get("entry_time") or "")[:10])
             for c in trades if c.get("ticker") and c.get("entry_time")}
     if len(days) > REPLAY_MAX_TICKER_DAYS:
-        return jsonify({"error": f"{len(days)} ticker-days of 1-minute bars is more than one run "
-                                 f"fetches ({REPLAY_MAX_TICKER_DAYS}). Use a shorter window or Top 10."}), 400
+        return None, (jsonify({"error": f"{len(days)} ticker-days of 1-minute bars is more than one run "
+                                        f"fetches ({REPLAY_MAX_TICKER_DAYS}). Use a shorter window or Top 10."}), 400)
     bars = {}
     with _cf.ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(_day_bars, a, tk, d): (tk, d) for tk, d in days}
@@ -989,7 +1072,7 @@ def api_farm_replay():
                      "max_hold": rule.get("max_hold") or backstop},
         })
     if not prepared:
-        return jsonify({"error": "No roster trade had 1-minute bars to replay."}), 404
+        return None, (jsonify({"error": "No roster trade had 1-minute bars to replay."}), 404)
 
     def sim(td, trail, trigger, max_hold, tp):
         r = a._simulate_exit(td["bars"], td["entry_px"], td["side"],
@@ -1002,11 +1085,41 @@ def api_farm_replay():
         return {"pnl": round((move if td["side"] == "LONG" else -move) * td["qty"], 2),
                 "reason": r["reason"]}
 
-    out = score_variants(prepared, build_variants(test, body), sim)
-    out.update({
-        "test": test, "roster": len(roster), "trades": len(prepared), "no_bars": no_bars,
+    meta = {
+        "roster": len(roster), "trades": len(prepared), "no_bars": no_bars,
         "ticker_days": len(days), "actual_pnl": round(sum(t["actual_pnl"] for t in prepared), 2),
         "backstop_max_hold": backstop or None,
         "from_date": p["from_date"] or min(t["date"] for t in prepared), "to_date": p["to_date"],
-    })
+    }
+    return {"prepared": prepared, "sim": sim, "meta": meta}, None
+
+
+@farms_bp.route("/api/farms/replay", methods=["POST"])
+def api_farm_replay():
+    """Replay the current Select roster's real farm trades with different exits.
+
+    Body: the page's leaderboard params (n, days, period, min_trades, cap) so the
+    roster matches what's on screen, plus test = max_hold | trail | take_profit and
+    its grid (max_holds / trails + triggers / tps, comma lists, % of price)."""
+    body = request.get_json(silent=True) or {}
+    test = body.get("test") if body.get("test") in REPLAY_TESTS else "max_hold"
+    ctx, err = _prepare_replay()
+    if err:
+        return err
+    out = score_variants(ctx["prepared"], build_variants(test, body), ctx["sim"])
+    out.update({"test": test, **ctx["meta"]})
+    return jsonify(out)
+
+
+@farms_bp.route("/api/farms/replay_suggest", methods=["POST"])
+def api_farm_replay_suggest():
+    """Run all three exit tests, keep the winners that held up on the newer half,
+    replay them together, and say what to change. Same body as /api/farms/replay
+    (the grids for all three tests may be passed at once)."""
+    body = request.get_json(silent=True) or {}
+    ctx, err = _prepare_replay()
+    if err:
+        return err
+    out = suggest_exits(ctx["prepared"], ctx["sim"], body)
+    out.update(ctx["meta"])
     return jsonify(out)
