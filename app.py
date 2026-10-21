@@ -9182,6 +9182,46 @@ def _progress_default_nodes(name):
     ]
 
 
+ORB_SLUG = "ORB_RVOL_V01"          # strategies/pine/ORB_RVOL_V01.pine
+
+
+def _orb_default_nodes(name):
+    """Routing rule for an Opening Range Breakout pipeline (ORB_RVOL_V01).
+
+    Differs from the Camarilla default on purpose — the ORB holds to the close and
+    exits on its OWN alerts (ATR stop, end-of-day flatten):
+      - exit_params has NO trail_offset. A rule with a trail hands the exit to a
+        broker-side trailing stop and the webhook drops the Pine's exit alerts.
+      - max_hold_mins 390, a full session. A rule's own max hold overrides the
+        global backstop (15 min on this deployment), which would otherwise close
+        every ORB trade a quarter of an hour in.
+      - Hours 09:30-15:55: the Pine already stops new entries at 15:00 and
+        flattens on the 15:50 bar; the rule window only has to let both through.
+    Broker alpaca-paper = TV Farm, which auditions it at its $1,000 sizing.
+    The name carries no BREAKOUT / REVERSAL / _CAM_, so the engine and the
+    Camarilla-keyed gates don't try to parse it as a level setup."""
+    return [
+        {"type": "strategy",      "value": name},
+        {"type": "quantity",      "amount": 10, "unit": "shares"},
+        {"type": "instrument",    "value": "STK"},
+        {"type": "broker",        "value": "alpaca-paper"},
+        {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
+        {"type": "exit_params",   "stop_loss": None, "trail_trigger": None, "trail_offset": None,
+         "mode": "percent", "max_hold_mins": 390},
+    ]
+
+
+def _orb_spec(ticker):
+    name = f"{ticker}_{ORB_SLUG}_5MIN"
+    return {
+        "name": name, "ticker": ticker, "strategy": "ORB", "level": "", "timeframe": "05MIN",
+        "tv_settings": {"pine_script": ORB_SLUG, "level": "", "interval": "5"},
+        "pine_inputs": {"strategy_id": name, "broker": "alpaca-paper", "qty": 10},
+        "alert_message": "{{strategy.order.alert_message}}",
+        "nodes": _orb_default_nodes(name),
+    }
+
+
 def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares", side_gate=None):
     """Routing-rule nodes for a crew-wired Crew Paper (acct4) pipeline. Mirrors
     _progress_default_nodes but targets alpaca-paper-4 and pins the entry source
@@ -9205,7 +9245,10 @@ def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares", side_gat
 def progress_add_ticker():
     """Create routing rules for a ticker (idempotent) and return the alert checklist.
 
-    Two modes:
+    Modes:
+      - "orb":                 1 Opening Range Breakout rule (ORB_RVOL_V01, 5min) with
+                               no broker trail and a full-session max hold — see
+                               _orb_default_nodes
       - "camarilla" (default): 12 rules = 2 strategies × 2 levels × 3 timeframes
       - "single":              1 rule from `strategy_slug` + `timeframe`, with an
                                optional `rule_name` override. Useful for non-Camarilla
@@ -9219,7 +9262,9 @@ def progress_add_ticker():
 
     mode    = (data.get("mode")    or "camarilla").strip().lower()
     version = (data.get("version") or "").strip().upper()  # e.g. "V02"
-    if mode == "cam5min":
+    if mode == "orb":
+        specs = [_orb_spec(ticker)]
+    elif mode == "cam5min":
         specs = _progress_alert_specs(ticker, timeframes=["05MIN"], version=version)
     elif mode == "camarilla" and version:
         specs = _progress_alert_specs(ticker, version=version)
@@ -9266,7 +9311,7 @@ def progress_add_ticker():
         if spec["name"] in existing:
             skipped.append(spec["name"])
             continue
-        nodes_json = json.dumps(_progress_default_nodes(spec["name"]))
+        nodes_json = json.dumps(spec.get("nodes") or _progress_default_nodes(spec["name"]))
         if DATABASE_URL:
             cur.execute(
                 f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
@@ -9283,12 +9328,26 @@ def progress_add_ticker():
     conn.commit()
     conn.close()
 
+    # An ORB position is held all day, and TV Farm's position gate skips any entry
+    # on a ticker it already holds — so ORB on a ticker the Camarilla pipelines
+    # trade would quietly suppress their farm entries and skew the leaderboards.
+    warning = None
+    if mode == "orb":
+        cam = sorted(n for n in existing
+                     if n.upper().startswith((f"{ticker}_CAM_", f"CAM_{ticker}_")))
+        if cam:
+            warning = (f"{ticker} already has {len(cam)} Camarilla pipeline(s). An ORB trade holds "
+                       f"{ticker} until the close, and TV Farm skips new entries on a ticker it already "
+                       f"holds, so those Camarilla entries would be skipped on TV Farm while it's open. "
+                       f"Prefer a ticker without Camarilla pipelines.")
+
     return jsonify({
         "ticker":   ticker,
         "mode":     mode,
         "created":  created,
         "skipped":  skipped,
         "specs":    specs,
+        "warning":  warning,
     })
 
 

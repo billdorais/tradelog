@@ -1,0 +1,185 @@
+//@version=6
+// =============================================================================
+// ORB_RVOL_V01 — 5-minute Opening Range Breakout on "stocks in play"
+// =============================================================================
+// After Zarattini, Barbon & Aziz, "A Profitable Day Trading Strategy for the U.S.
+// Equity Market" (2024, SSRN), and the earlier QQQ study by Zarattini & Aziz,
+// "Can Day Trading Really Be Profitable?" (2023).
+//
+// THE PAPER'S RULES, AS USED HERE:
+//   - Opening range = the first 5-minute bar of the regular session (9:30-9:35).
+//   - Its direction picks the side: bullish bar -> long only, bearish -> short
+//     only, doji -> no trade that day.
+//   - Long above the range high / short below the range low.
+//   - Stop = 10% of the 14-day ATR from the entry price.
+//   - No target: hold to the close. One trade per ticker per day.
+//   - "Stocks in play": the paper trades the day's top-20 names by opening-bar
+//     relative volume, from a universe filtered on price > $5, 14-day average
+//     volume > 1M shares and ATR > $0.50.
+//
+// DELTAS FROM THE PAPER — each a consequence of running one alert per ticker
+// through Kairos, commented at its site:
+//   1. RVOL is an absolute threshold per ticker, not a cross-sectional top-20
+//      rank (one chart cannot see the other 7,000 names). Default 1.5x, the floor
+//      of the band where Kairos's own RVOL study found the breakout edge
+//      (1.5-3x); an optional cap reproduces that band exactly.
+//   2. Entry is the CLOSE of the first 5-minute bar beyond the range, not a stop
+//      order resting at it. Kairos turns every alert into a market order at bar
+//      close, so this is what the router can actually execute — and what the
+//      backtest should therefore measure. Expect slightly worse entries than the
+//      paper's stop orders.
+//   3. Flatten on the bar that STARTS at 15:50 (fills ~15:55), not 16:00: an alert
+//      at the bell reaches the broker after the market has closed.
+//   4. An entry cutoff (default 15:00) so a late breakout doesn't open a
+//      position minutes before the forced exit.
+//
+// ROUTER SETUP: the ORB holds until the close and exits on its own alerts, so its
+// Kairos rule must have NO broker-side trailing stop (a trail suppresses the TV
+// exit alerts) and its own max hold of a full session (a rule's max hold
+// overrides the 15-min global backstop). The "ORB (stocks in play)" preset on the
+// Progress page creates exactly that rule — name it TICKER_ORB_RVOL_V01_5MIN.
+//
+// ALERTS: create one alert per ticker on a 5-MINUTE chart, condition = this
+// strategy's "alert() function calls only" / order fills, Message box exactly:
+//      {{strategy.order.alert_message}}
+// =============================================================================
+
+strategy(
+     title                   = 'ORB_RVOL_V01',
+     shorttitle              = 'ORB_RVOL',
+     overlay                 = true,
+     pyramiding              = 0,
+     initial_capital         = 25000,
+     currency                = currency.USD,
+     commission_type         = strategy.commission.cash_per_order,
+     commission_value        = 0,
+     slippage                = 1,
+     process_orders_on_close = true)
+
+// ═══════════════════════════════════════════════════════════════
+// WEBHOOK ROUTING
+// ═══════════════════════════════════════════════════════════════
+strategyId = input.string('TICKER_ORB_RVOL_V01_5MIN', 'Routing Strategy ID',
+     group='Webhook',
+     tooltip='Must match the routing rule name on the Kairos server, e.g. SPY_ORB_RVOL_V01_5MIN. Update this for every alert you create.')
+brokerName = input.string('alpaca-paper', 'Broker',
+     options=['alpaca-paper','alpaca-live','ib-paper','ib-live'],
+     group='Webhook',
+     tooltip='alpaca-paper = TV Farm, which auditions the strategy at its own $1,000 sizing (TV_PILOT_ALL overrides the quantity below).')
+notional   = input.float(1000, 'Position size ($)', minval=1, group='Webhook',
+     tooltip='Shares = this / price, rounded. Used for the backtest and sent as the alert quantity; the TV Farm resizes to its own $1,000.')
+
+// ═══════════════════════════════════════════════════════════════
+// STOCKS-IN-PLAY FILTERS
+// ═══════════════════════════════════════════════════════════════
+minRvol   = input.float(1.5, 'Min opening-bar RVOL (0 = off)', minval=0, step=0.1, group='Stocks in play',
+     tooltip='Opening 5-min volume / average opening 5-min volume over the lookback. DELTA 1: the paper ranks the top 20 across the market; one chart can only apply a threshold.')
+maxRvol   = input.float(0,   'Max opening-bar RVOL (0 = off)', minval=0, step=0.1, group='Stocks in play',
+     tooltip='Set 3.0 to reproduce the 1.5-3x band from the Kairos RVOL study.')
+rvolDays  = input.int(14, 'RVOL lookback (days)', minval=2, group='Stocks in play')
+minPrice  = input.float(5,       'Min price ($)',              group='Stocks in play')
+minAtr    = input.float(0.5,     'Min 14-day ATR ($)',         step=0.05, group='Stocks in play')
+minAvgVol = input.float(1000000, 'Min 14-day avg volume (sh)', group='Stocks in play')
+
+// ═══════════════════════════════════════════════════════════════
+// RISK / SESSION
+// ═══════════════════════════════════════════════════════════════
+stopAtrFrac = input.float(0.10, 'Stop (fraction of 14-day ATR)', minval=0.01, step=0.01, group='Risk')
+cutoffHHMM  = input.int(1500, 'No new entries on bars starting at/after (HHMM ET)', group='Session',
+     tooltip='DELTA 4.')
+flatHHMM    = input.int(1550, 'Flatten on the bar starting at (HHMM ET)', group='Session',
+     tooltip='DELTA 3: the 15:50 bar closes at 15:55, so the exit alert reaches the broker before the bell.')
+
+// ═══════════════════════════════════════════════════════════════
+// SESSION — explicit timezone so the chart's tz setting can't break it
+// ═══════════════════════════════════════════════════════════════
+inRTH   = not na(time(timeframe.period, '0930-1600', 'America/New_York'))
+orBar   = inRTH and not inRTH[1]                    // the 9:30-9:35 bar
+hhmm    = hour(time, 'America/New_York') * 100 + minute(time, 'America/New_York')
+is5min  = timeframe.period == '5'
+
+// ═══════════════════════════════════════════════════════════════
+// DAILY INPUTS — previous completed day, non-repainting
+// ═══════════════════════════════════════════════════════════════
+atrD    = request.security(syminfo.tickerid, 'D', ta.atr(14)[1],          lookahead = barmerge.lookahead_on)
+avgVolD = request.security(syminfo.tickerid, 'D', ta.sma(volume, 14)[1],  lookahead = barmerge.lookahead_on)
+
+// ═══════════════════════════════════════════════════════════════
+// OPENING RANGE + RELATIVE VOLUME
+// The opening bar's volume is compared with the opening bars of the previous
+// `rvolDays` sessions — like-for-like, since the first 5 minutes always trade
+// far heavier than an average 5-minute bar.
+// ═══════════════════════════════════════════════════════════════
+var array<float> orVols = array.new_float()
+var float orHigh = na
+var float orLow  = na
+var int   orDir  = 0          // 1 long-only, -1 short-only, 0 no trade today
+var float rvol   = na
+var bool  inPlay = false
+var bool  traded = false
+
+if orBar
+    rvol := array.size(orVols) >= math.max(2, rvolDays / 2) ? volume / array.avg(orVols) : na
+    array.push(orVols, volume)
+    if array.size(orVols) > rvolDays
+        array.shift(orVols)
+    orHigh := high
+    orLow  := low
+    orDir  := close > open ? 1 : close < open ? -1 : 0
+    traded := false
+    rvolOk  = minRvol <= 0 or (not na(rvol) and rvol >= minRvol)
+    rvolCap = maxRvol <= 0 or (not na(rvol) and rvol <= maxRvol)
+    inPlay := rvolOk and rvolCap and close >= minPrice and nz(atrD) >= minAtr and nz(avgVolD) >= minAvgVol
+
+// ═══════════════════════════════════════════════════════════════
+// ALERT MESSAGES — the house format
+// ═══════════════════════════════════════════════════════════════
+shares = math.max(1, math.round(notional / close))
+qtyStr = str.tostring(shares)
+msg(action) =>
+    '{"ticker":"' + syminfo.ticker + '","action":"' + action + '","sentiment":"{{strategy.market_position}}","quantity":' + qtyStr + ',"price":"{{close}}","time":"{{timenow}}","strategy":"' + strategyId + '","interval":"{{interval}}","broker":"' + brokerName + '"}'
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRIES — DELTA 2: the close of the first bar beyond the range
+// ═══════════════════════════════════════════════════════════════
+canEnter = is5min and inRTH and not orBar and inPlay and not traded and hhmm < cutoffHHMM
+              and strategy.position_size == 0 and not na(atrD)
+stopTicks = math.max(1, math.round(stopAtrFrac * nz(atrD) / syminfo.mintick))
+
+if canEnter and orDir == 1 and close > orHigh
+    strategy.entry('Long', strategy.long, qty=shares, alert_message=msg('LONG'))
+    strategy.exit('Stop Long', 'Long', loss=stopTicks, alert_message=msg('EXIT_LONG'))
+    traded := true
+
+if canEnter and orDir == -1 and close < orLow
+    strategy.entry('Short', strategy.short, qty=shares, alert_message=msg('SHORT'))
+    strategy.exit('Stop Short', 'Short', loss=stopTicks, alert_message=msg('EXIT_SHORT'))
+    traded := true
+
+// ═══════════════════════════════════════════════════════════════
+// EXIT AT THE CLOSE — DELTA 3
+// ═══════════════════════════════════════════════════════════════
+if inRTH and hhmm >= flatHHMM and strategy.position_size != 0
+    if strategy.position_size > 0
+        strategy.close('Long',  comment='eod', alert_message=msg('EXIT_LONG'))
+    else
+        strategy.close('Short', comment='eod', alert_message=msg('EXIT_SHORT'))
+
+// ═══════════════════════════════════════════════════════════════
+// DISPLAY
+// ═══════════════════════════════════════════════════════════════
+plot(inRTH ? orHigh : na, 'OR High', color=color.new(color.green, 20), style=plot.style_linebr, linewidth=2)
+plot(inRTH ? orLow  : na, 'OR Low',  color=color.new(color.red,   20), style=plot.style_linebr, linewidth=2)
+bgcolor(orBar ? (inPlay ? color.new(color.aqua, 80) : color.new(color.gray, 85)) : na, title='Opening bar (aqua = in play)')
+
+if orBar
+    label.new(bar_index, high, 'RVOL ' + (na(rvol) ? 'n/a' : str.tostring(rvol, '0.0') + 'x')
+         + (orDir == 1 ? ' · long only' : orDir == -1 ? ' · short only' : ' · doji, no trade')
+         + (inPlay ? '' : ' · filtered out'),
+         style = label.style_label_down, size = size.small,
+         color = inPlay ? color.new(color.aqua, 30) : color.new(color.gray, 40), textcolor = color.white)
+
+var table warn = table.new(position.top_right, 1, 1)
+if barstate.islast and not is5min
+    table.cell(warn, 0, 0, 'ORB_RVOL_V01 needs a 5-minute chart — no trades on ' + timeframe.period,
+         bgcolor = color.new(color.red, 20), text_color = color.white)

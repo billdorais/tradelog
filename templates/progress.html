@@ -190,6 +190,12 @@
                style="accent-color:#7FE098">
         Single custom strategy <span style="color:#666;font-size:0.78rem">(1 rule)</span>
       </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem;color:#ccc"
+             title="Opening Range Breakout on stocks in play (strategies/pine/ORB_RVOL_V01.pine)">
+        <input type="radio" name="addMode" value="orb" onchange="toggleAddMode()"
+               style="accent-color:#7FE098">
+        ORB (stocks in play) <span style="color:#666;font-size:0.78rem">(1 rule)</span>
+      </label>
     </div>
 
     <div class="row">
@@ -652,11 +658,15 @@
   function toggleAddMode() {
     const mode = _currentAddMode();
     document.getElementById('singleModeFields').style.display    = mode === 'single' ? 'inline-flex' : 'none';
-    document.getElementById('presetVersionField').style.display  = mode === 'single' ? 'none' : 'inline-flex';
+    // ORB has a fixed name (TICKER_ORB_RVOL_V01_5MIN), so no Camarilla version field.
+    document.getElementById('presetVersionField').style.display  = (mode === 'single' || mode === 'orb') ? 'none' : 'inline-flex';
     const hints = {
       camarilla: 'Creates 12 routing rules (2 strategies × 2 levels × 3 timeframes). Existing rule names are skipped.',
       cam5min:   'Creates 4 routing rules (BREAKOUT + REVERSAL × R3S3 + R4S4, 5min only). Existing rule names are skipped.',
       single:    'Creates 1 routing rule for this ticker + strategy + timeframe combination.',
+      orb:       'Creates 1 rule TICKER_ORB_RVOL_V01_5MIN for the Opening Range Breakout Pine (5-min chart). '
+               + 'No broker trailing stop and a full-session max hold, so the Pine\'s own ATR stop and end-of-day '
+               + 'exit alerts drive the exits. Routes to TV Farm, which auditions it at $1,000.',
     };
     document.getElementById('addModeHint').textContent = hints[mode] || hints.camarilla;
     if (mode === 'single') populateStrategyDropdown();
@@ -730,7 +740,8 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'failed');
-      stat.innerHTML = `Created <strong style="color:#88BF8B">${data.created.length}</strong>, skipped ${data.skipped.length} existing.`;
+      stat.innerHTML = `Created <strong style="color:#88BF8B">${data.created.length}</strong>, skipped ${data.skipped.length} existing.`
+        + (data.warning ? `<br><span style="color:#f0a35e">⚠ ${data.warning.replace(/</g, '&lt;')}</span>` : '');
       renderChecklist(data);
       inp.value = '';
       // Reset single-mode fields for next add
@@ -768,7 +779,7 @@
         </div>
         <div class="step-settings">
           Pine: <code>${tv.pine_script}</code> &nbsp;·&nbsp;
-          Level: <code>${tv.level}</code> &nbsp;·&nbsp;
+          ${tv.level ? `Level: <code>${tv.level}</code> &nbsp;·&nbsp;` : ''}
           TF: <code>${tv.interval}m</code> &nbsp;·&nbsp;
           Strategy ID: <code>${pi.strategy_id || s.name}</code> &nbsp;·&nbsp;
           Broker: <code>${pi.broker || 'alpaca-paper'}</code> &nbsp;·&nbsp;

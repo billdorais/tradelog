@@ -3,6 +3,7 @@
 Usage:
     python tools/add_ticker.py QQQ
     python tools/add_ticker.py QQQ --base-url https://kairos.up.railway.app
+    python tools/add_ticker.py SPY --orb        # Opening Range Breakout rule
     python tools/add_ticker.py --fix-strategy-mismatch
 
 Defaults to local: http://localhost:5000
@@ -33,9 +34,12 @@ def _post(url, body):
         return e.code, payload
 
 
-def add_ticker(base_url, ticker):
+def add_ticker(base_url, ticker, mode=None):
     url = base_url.rstrip("/") + "/api/progress/add_ticker"
-    code, data = _post(url, {"ticker": ticker})
+    body = {"ticker": ticker}
+    if mode:
+        body["mode"] = mode
+    code, data = _post(url, body)
     if code != 200:
         print(f"Error {code}: {data.get('error') or data}", file=sys.stderr)
         return 1
@@ -89,6 +93,8 @@ def main():
     ap.add_argument("ticker", nargs="?", help="ticker symbol, e.g. QQQ")
     ap.add_argument("--base-url", default=os.environ.get("KAIROS_BASE_URL", "http://localhost:5000"),
                     help="Kairos base URL (default: http://localhost:5000 or $KAIROS_BASE_URL)")
+    ap.add_argument("--orb", action="store_true",
+                    help="create the Opening Range Breakout rule (TICKER_ORB_RVOL_V01_5MIN) instead of the Camarilla set")
     ap.add_argument("--fix-strategy-mismatch", action="store_true",
                     help="run the one-shot cleanup that fixes rules whose strategy node value differs from their name")
     args = ap.parse_args()
@@ -98,7 +104,7 @@ def main():
     if not args.ticker:
         ap.print_help()
         return 2
-    return add_ticker(args.base_url, args.ticker.upper())
+    return add_ticker(args.base_url, args.ticker.upper(), mode="orb" if args.orb else None)
 
 
 if __name__ == "__main__":
