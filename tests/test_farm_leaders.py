@@ -312,9 +312,10 @@ def test_parity_lets_select_carry_the_profit_lock_alone():
 
 def test_select_meta_flags_match_both_farms():
     import app as a
-    # profit_lock excluded: Select carries it deliberately (farms.PARITY_EXEMPT).
+    # profit_lock and daily_loss_guard excluded: Select carries both deliberately
+    # (farms.PARITY_EXEMPT).
     flags = ("daytype_gate", "reversal_gate", "reversal_side",
-             "daily_loss_guard", "rvol_gate", "open_loc_gate", "hours_key", "retest")
+             "rvol_gate", "open_loc_gate", "hours_key", "retest")
     for f in flags:
         assert a.ACCOUNT_META["7"].get(f) == a.ACCOUNT_META["1"].get(f) == a.ACCOUNT_META["5"].get(f), f
 
@@ -616,3 +617,15 @@ def test_engine_uses_the_select_rules_own_exits_for_account_7(monkeypatch, tmp_p
     assert a._engine_pilot_exit_for_target(X, "alpaca7", rules)["max_hold_mins"] == 15
     assert a._engine_pilot_exit_for_target(X, "alpaca5", rules)["max_hold_mins"] is None   # name lookup, as before
     monkeypatch.setitem(a._engine_pilot_cache, "rules_ts", 0.0)
+
+
+def test_parity_lets_select_carry_the_daily_loss_guard_alone():
+    r = farms.gate_parity(_states(select_overrides={"daily-loss": (True, "$-300 daily floor", "shared")}))
+    assert r["mismatches"] == []
+    assert next(x for x in r["rows"] if x["gate"] == "daily-loss")["exempt"] is True
+
+
+def test_select_is_on_the_daily_loss_guard_list():
+    import app as a
+    assert a.ACCOUNT_META["7"]["daily_loss_guard"] is True
+    assert a.ACCOUNT_META["1"]["daily_loss_guard"] is False and a.ACCOUNT_META["5"]["daily_loss_guard"] is False

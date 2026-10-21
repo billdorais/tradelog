@@ -530,10 +530,11 @@ def _select_rules(cur, a):
 # on. Rule-level gates (hours window, side gate, exits) travel on the cloned rule.
 PARITY_GATES = ("hours", "day-type", "rvol", "open-location", "reversal",
                 "strikes", "profit-lock", "daily-loss")
-# Gates Select is allowed to differ on, by deliberate choice. The profit lock only
-# acts once the book is already up a step on the day — it caps give-back rather
-# than filtering which setups enter — so it is shown but never blocks Apply.
-PARITY_EXEMPT = ("profit-lock",)
+# Gates Select is allowed to differ on, by deliberate choice — shown, never blocking
+# Apply. Both are day-level risk stops rather than setup filters: the profit lock
+# caps give-back once the book is up a step, the daily-loss guard halts and
+# liquidates at the day's loss limit (2026-10-20).
+PARITY_EXEMPT = ("profit-lock", "daily-loss")
 FARM_TAGS = {"tv": "alpaca", "kairos": "alpaca5"}
 
 

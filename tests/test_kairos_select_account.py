@@ -25,11 +25,11 @@ import app as a
 SELECT = "7"
 FARM   = "5"          # Kairos Farm — the book the roster was drawn from
 
-# Everything that changes which trades the book is allowed to take. profit_lock is
-# left out on purpose: Select carries it (it caps the day's give-back, it doesn't
-# pick setups) -- see test_profit_lock_is_the_one_deliberate_exception.
+# Everything that changes which trades the book is allowed to take. profit_lock and
+# daily_loss_guard are left out on purpose: Select carries both (day-level risk
+# stops, not setup filters) -- see test_the_deliberate_exceptions.
 GATE_FLAGS = ("daytype_gate", "reversal_gate", "reversal_side",
-              "daily_loss_guard", "rvol_gate", "open_loc_gate", "hours_key")
+              "rvol_gate", "open_loc_gate", "hours_key")
 
 
 def test_the_account_is_registered():
@@ -47,10 +47,12 @@ def test_its_gates_mirror_the_farm_it_was_drawn_from():
         assert sel.get(f) == farm.get(f), f"{f}: Select {sel.get(f)!r} != Farm {farm.get(f)!r}"
 
 
-def test_profit_lock_is_the_one_deliberate_exception():
-    """Select runs the profit lock, but must NOT inherit the curated position stops,
-    take-profit or short strike cap that profit_lock used to imply."""
+def test_the_deliberate_exceptions():
+    """Select runs the profit lock (2026-10-19) and the daily-loss guard
+    (2026-10-20), but must NOT inherit the curated position stops, take-profit or
+    short strike cap that profit_lock used to imply."""
     assert a.ACCOUNT_META[SELECT]["profit_lock"] is True
+    assert a.ACCOUNT_META[SELECT]["daily_loss_guard"] is True
     assert "alpaca7" not in a._CURATED_TAGS
 
 

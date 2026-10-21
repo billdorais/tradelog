@@ -262,14 +262,19 @@ ACCOUNT_META = {
     # FORWARD series — what each period's re-ranked top N made the next period —
     # beside the hindsight one. auto_source stays False: nothing re-picks on a timer.
     #
-    # Profit lock is the ONE deliberate exception (2026-10-19, user's call): it only
-    # acts after the book is already up a step on the day, so it caps give-back
-    # rather than filtering which setups enter. /farms gate parity exempts it.
+    # Two deliberate exceptions, both the user's call and both exempted from the
+    # /farms gate parity check:
+    #   - Profit lock (2026-10-19): only acts once the book is already up a step on
+    #     the day, so it caps give-back rather than filtering which setups enter.
+    #   - Daily-loss guard (2026-10-20): halts and liquidates Select once its own
+    #     P&L for the day reaches the shared MAX_DAILY_LOSS, like the curated books.
+    #     It changes what Select trades on a bad day — forward results after a halt
+    #     are no longer comparable trade-for-trade with the farms.
     # "curated": False keeps Select out of _CURATED_TAGS — profit_lock used to
     # double as the curated marker, and inheriting the position stops, take-profit
     # and short strike cap along with it would be a real gate change.
     "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3", "glance": True, "curated": False,
-          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": False},
+          "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
