@@ -1282,3 +1282,176 @@ def api_farm_select_exits_undo():
     a.log.info("Kairos Select exit change of %s undone (%d rules restored, %d gone)",
                rec.get("at"), restored, gone)
     return jsonify({"restored": restored, "gone": gone, "overrides": rec.get("prev_overrides") or {}})
+
+
+# ── Select vs its farms: are the same trades being made? ──────────────────────
+
+PAIR_WINDOW_SECS = 15 * 60         # same rule as Crew Live vs Paper (_LVP_PAIR_WINDOW_SECS)
+
+
+def _rt_pct(t):
+    try:
+        notional = abs(float(t.get("entry_price") or 0)) * abs(float(t.get("qty") or 0))
+        return float(t.get("pnl") or 0) / notional * 100 if notional else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch(ts):
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def pair_books(a_rts, b_rts, window=PAIR_WINDOW_SECS):
+    """One-to-one pairs on strategy + side + ET entry date, nearest entry first
+    within `window` seconds. Returns (pairs, a_only, b_only); pairs are (a, b)."""
+    left = list(b_rts)
+    pairs, a_only = [], []
+    for t in sorted(a_rts, key=lambda x: x.get("entry_time") or ""):
+        key = (t["strategy"], (t.get("side") or "").upper(), et_date(t.get("entry_time")))
+        te = _epoch(t.get("entry_time"))
+        best, lag = None, None
+        for u in left:
+            if (u["strategy"], (u.get("side") or "").upper(), et_date(u.get("entry_time"))) != key:
+                continue
+            ue = _epoch(u.get("entry_time"))
+            if te is None or ue is None or abs(te - ue) > window:
+                continue
+            if lag is None or abs(te - ue) < lag:
+                best, lag = u, abs(te - ue)
+        if best is None:
+            a_only.append(t)
+        else:
+            left.remove(best)
+            pairs.append((t, best))
+    return pairs, a_only, left
+
+
+def compare_select_farms(select_rts, farm_rts, source):
+    """Kairos Select's actual trades against the same strategies on their source farms.
+
+    select_rts: Select's closed round-trips (strategy upper-cased).
+    farm_rts:   {"tv": [...], "kairos": [...]} closed round-trips per farm.
+    source:     {STRATEGY: "tv" | "kairos"} — the farm each Select strategy enters
+                like (TV picks: TV Farm, engine picks: Kairos Farm).
+
+    Both lines start at Select's first trade, so the farms' earlier history (before
+    Select traded at all) doesn't run up a head start. Returns cumulative % per
+    trade (size-independent: Select trades ~$15k, the farms $1k) by ET exit date,
+    plus the trade-by-trade pairing."""
+    # A trade whose entry time can't be read has no date to pair or plot on.
+    sel = [t for t in select_rts if et_date(t.get("entry_time"))]
+    if not sel:
+        return {"dates": [], "select": [], "farm": [], "select_trades": 0, "farm_trades": 0,
+                "start": None, "by_source": {}, "unknown_source": []}
+    start = min(et_date(t["entry_time"]) for t in sel)
+    farm = {f: [t for t in rts if et_date(t.get("entry_time")) >= start
+                and source.get(t["strategy"]) == f]
+            for f, rts in farm_rts.items()}
+
+    def _daily(rts):
+        out = {}
+        for t in rts:
+            p = _rt_pct(t)
+            if p is not None:
+                d = et_date(t.get("exit_time")) or et_date(t.get("entry_time"))
+                out[d] = out.get(d, 0.0) + p
+        return out
+    farm_all = [t for rts in farm.values() for t in rts]
+    ds, df = _daily(sel), _daily(farm_all)
+    dates = sorted(set(ds) | set(df))
+    cs = cf = 0.0
+    sel_line, farm_line = [], []
+    for d in dates:
+        cs += ds.get(d, 0.0); cf += df.get(d, 0.0)
+        sel_line.append(round(cs, 4)); farm_line.append(round(cf, 4))
+
+    def _brief(t):
+        p = _rt_pct(t)
+        return {"strategy": t["strategy"], "ticker": t.get("ticker"), "side": t.get("side"),
+                "entry_time": t.get("entry_time"), "pct": None if p is None else round(p, 4),
+                "pnl": round(float(t.get("pnl") or 0), 2)}
+
+    by_source = {}
+    for f in ("tv", "kairos"):
+        s_rts = [t for t in sel if source.get(t["strategy"]) == f]
+        pairs, s_only, f_only = pair_books(s_rts, farm.get(f, []))
+        deltas = [(_rt_pct(a) or 0) - (_rt_pct(b) or 0) for a, b in pairs]
+        lags = [round(_epoch(a["entry_time"]) - _epoch(b["entry_time"])) for a, b in pairs]
+        by_source[f] = {
+            "select_trades": len(s_rts), "farm_trades": len(farm.get(f, [])),
+            "paired": len(pairs), "select_only": [_brief(t) for t in s_only],
+            "farm_only": [_brief(t) for t in f_only],
+            "mean_pct_delta": round(sum(deltas) / len(deltas), 4) if deltas else None,
+            "median_entry_lag_secs": sorted(lags)[len(lags) // 2] if lags else None,
+        }
+    return {
+        "dates": dates, "select": sel_line, "farm": farm_line, "start": start,
+        "select_trades": len(sel), "farm_trades": len(farm_all), "by_source": by_source,
+        "unknown_source": sorted({t["strategy"] for t in sel if t["strategy"] not in source}),
+    }
+
+
+def _select_sources(a):
+    """{STRATEGY: "tv" | "kairos"} for Select: the entry source on each Select rule,
+    plus the last Apply's picks for strategies no longer wired (they still traded)."""
+    out = {}
+    try:
+        rec = json.loads(a._load_setting("SELECT_LAST_APPLY") or "null") or {}
+        for pk in rec.get("picks") or []:
+            out[pk["strategy"].upper()] = "kairos" if pk.get("entry") == "kairos" else "tv"
+    except Exception:
+        pass
+    conn = a.get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT nodes FROM routing_rules")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        raw = row[0] if a.DATABASE_URL else row["nodes"]
+        try:
+            nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception:
+            continue
+        if not any((n.get("value") or "").lower() in SELECT_BROKERS
+                   for n in nodes if n.get("type") == "broker"):
+            continue
+        src = next(((n.get("value") or "").lower() for n in nodes if n.get("type") == "entry_source"), "tv")
+        for n in nodes:
+            if n.get("type") == "strategy" and n.get("value") and "*" not in n["value"]:
+                out[n["value"].strip().upper()] = "kairos" if src == "kairos" else "tv"
+    return out
+
+
+@farms_bp.route("/api/farms/select_vs_farms")
+def api_select_vs_farms():
+    """Kairos Select's actual trades vs the same strategies on their source farms,
+    over the page's window (clamped to Select's first trade)."""
+    a = _app()
+    p = _params()
+    rec = a.ACCOUNTS_BY_NUM.get("7")
+    if not rec or rec.get("broker") is None:
+        return jsonify({"error": "Kairos Select (account 7) isn't configured."}), 400
+    try:
+        fills = rec["fills_fn"]()
+    except Exception as e:
+        return jsonify({"error": f"Kairos Select fills unavailable: {e}"}), 409
+    if not fills and a._fills_error("7"):
+        return jsonify({"error": "Kairos Select fills unavailable."}), 409
+    paired = a._pair_alpaca_fills_lifo(fills or [], from_date=p["from_date"], to_date=p["to_date"])
+    sel = [{**c, "strategy": (c.get("strategy") or "").strip().upper()}
+           for c in paired.get("closed_clean") or []]
+    sel = [c for c in sel if c["strategy"] and c["strategy"] != "UNKNOWN"]
+    farm = {}
+    for key, num, label in FARMS:
+        rts, err = _farm_round_trips(num, p["from_date"], p["to_date"], full=p["full"])
+        if err:
+            return jsonify({"error": f"{label}: {err}"}), 409
+        farm[key] = rts
+    out = compare_select_farms(sel, farm, _select_sources(a))
+    out.update({"from_date": p["from_date"], "to_date": p["to_date"], "pair_window_mins": PAIR_WINDOW_SECS // 60})
+    return jsonify(out)

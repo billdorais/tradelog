@@ -167,6 +167,22 @@
       <div id="ovList" style="margin-top:12px"></div>
     </div>
 
+    <div class="panel" id="vsPanel">
+      <div class="band-q">Kairos Select vs its farms — same trades?</div>
+      <div class="band-sub">Two running totals from Select's first trade in the window: <span style="color:#3987e5">Select's actual
+        trades</span> (TV and engine), and <span style="color:#cfd3e0">the same strategies on the farm each one enters like</span> —
+        TV picks on TV Farm, engine picks on Kairos Farm. Plotted as % per trade, summed, because Select trades ~$15k positions and
+        the farms $1k. If both books take the same trades the lines move together; the counts say how many actually matched
+        (same strategy and side, entries within <span id="vsWin">15</span> minutes).</div>
+      <div class="tiles" id="vsTiles"></div>
+      <div class="legend">
+        <span><i style="background:#3987e5;height:3px"></i>Kairos Select (actual)</span>
+        <span><i style="background:repeating-linear-gradient(90deg,#cfd3e0 0 5px,transparent 5px 8px)"></i>Same strategies on their farms</span>
+      </div>
+      <div class="chartbox" style="height:280px"><canvas id="chart-vs"></canvas></div>
+      <div id="vsLists" style="margin-top:12px"></div>
+    </div>
+
     <div id="farmTv"></div>
     <div id="farmKairos"></div>
 
@@ -566,6 +582,76 @@
     _renderFarm('farmKairos', 'kairos');
     _renderRoster();
     _renderExitsBar();
+    _loadVsFarms();
+  }
+
+  // ── Select vs its farms ───────────────────────────────────────────────────
+  async function _loadVsFarms() {
+    const tiles = document.getElementById('vsTiles');
+    tiles.innerHTML = '<div class="empty">Loading…</div>';
+    let res, d;
+    try {
+      res = await fetch('/api/farms/select_vs_farms?' + new URLSearchParams(_opt).toString());
+      d = await res.json();
+    } catch (e) { d = { error: String(e) }; res = { ok: false }; }
+    if (_charts.vs) { _charts.vs.destroy(); _charts.vs = null; }
+    document.getElementById('vsLists').innerHTML = '';
+    if (!res.ok || d.error) { tiles.innerHTML = `<div class="empty">${_esc(d.error || 'Could not load.')}</div>`; return; }
+    if (!d.select_trades) { tiles.innerHTML = '<div class="empty">Kairos Select has no closed trades in this window yet.</div>'; return; }
+    document.getElementById('vsWin').textContent = d.pair_window_mins;
+    const tv = d.by_source.tv, ka = d.by_source.kairos;
+    const paired = tv.paired + ka.paired;
+    const sOnly = tv.select_only.length + ka.select_only.length, fOnly = tv.farm_only.length + ka.farm_only.length;
+    const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s}</div></div>`;
+    const sp = (a, b) => `TV ${a} · engine ${b}`;
+    const last = arr => arr.length ? arr[arr.length - 1] : 0;
+    const pctTxt = v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2) + '%';
+    tiles.innerHTML =
+        tile('Select trades', d.select_trades, 'since ' + _esc(_fmtDay(d.start)) + ` · ${pctTxt(last(d.select))} summed`)
+      + tile('Farm trades', d.farm_trades, `same strategies · ${pctTxt(last(d.farm))} summed`)
+      + tile('Both took', paired, sp(tv.paired, ka.paired), paired ? 'pos' : '')
+      + tile('Only Select', sOnly, sp(tv.select_only.length, ka.select_only.length), sOnly ? 'neg' : '')
+      + tile('Only the farm', fOnly, sp(tv.farm_only.length, ka.farm_only.length), fOnly ? 'neg' : '');
+
+    const few = d.dates.length <= 10;
+    const ds = (label, data, color, w, dash) => ({ label, data, borderColor: color, backgroundColor: color, borderWidth: w,
+      borderDash: dash || [], pointRadius: few ? 4 : 0, pointBorderColor: '#13161f', pointBorderWidth: few ? 2 : 0,
+      pointHoverRadius: 5, pointHitRadius: 8, tension: 0 });
+    _charts.vs = new Chart(document.getElementById('chart-vs'), {
+      type: 'line',
+      data: { labels: d.dates, datasets: [ds('Kairos Select', d.select, '#3987e5', 2.5),
+                                           ds('Same strategies on their farms', d.farm, '#cfd3e0', 2, [5, 3])] },
+      options: {
+        responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false }, tooltip: {
+          backgroundColor: '#1a1d2e', borderColor: '#2a2d3e', borderWidth: 1, titleColor: '#e0e0e0', bodyColor: '#cfd3e0', padding: 10,
+          callbacks: { title: it => _fmtDay(it[0].label), label: c => ' ' + c.dataset.label + ': ' + pctTxt(c.raw) } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0,
+               callback: function (v) { return _fmtDay(this.getLabelForValue(v)); } } },
+          y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+               ticks: { color: '#666', font: { size: 10 }, callback: v => v + '%' } },
+        },
+      },
+    });
+
+    const et = iso => { try { return new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York',
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (_) { return iso; } };
+    const list = (title, rows, hint) => !rows.length ? '' : `<details style="margin-top:8px"><summary class="lbl" style="cursor:pointer;margin:0">
+        ${title} (${rows.length})</summary><div class="note" style="margin:4px 0">${hint}</div>
+        <div class="tbl"><table><thead><tr><th class="l">Entry (ET)</th><th class="l">Strategy</th><th class="l">Side</th><th>Return</th><th>P&amp;L</th></tr></thead><tbody>`
+      + rows.map(t => `<tr><td class="l">${_esc(et(t.entry_time))}</td><td class="l">${_esc(t.strategy)}</td><td class="l">${_esc(t.side || '')}</td>
+          <td class="${_cls(t.pct || 0)}">${t.pct == null ? '—' : pctTxt(t.pct)}</td><td class="${_cls(t.pnl)}">${_money(t.pnl)}</td></tr>`).join('')
+      + '</tbody></table></div></details>';
+    const tag = (rows, src) => rows.map(t => ({ ...t, strategy: t.strategy + (src === 'tv' ? ' [TV]' : ' [engine]') }));
+    document.getElementById('vsLists').innerHTML =
+        list('Only Select took these', [...tag(tv.select_only, 'tv'), ...tag(ka.select_only, 'kairos')]
+               .sort((x, y) => (x.entry_time || '').localeCompare(y.entry_time || '')),
+             "The farm didn't take a matching trade — often its position gate (the farm already held the ticker from another strategy), or a different entry time.")
+      + list('Only the farm took these', [...tag(tv.farm_only, 'tv'), ...tag(ka.farm_only, 'kairos')]
+               .sort((x, y) => (x.entry_time || '').localeCompare(y.entry_time || '')),
+             "Select didn't take a matching trade — Select's own position gate (an R3S3/R4S4 twin already held the ticker), strikes, profit lock or daily-loss halt.")
+      + (d.unknown_source.length ? `<div class="note" style="margin-top:8px">Not compared (source farm unknown — no longer wired): ${d.unknown_source.map(_esc).join(', ')}</div>` : '');
   }
 
   function setAccMode(m) {

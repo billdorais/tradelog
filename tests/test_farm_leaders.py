@@ -629,3 +629,40 @@ def test_select_is_on_the_daily_loss_guard_list():
     import app as a
     assert a.ACCOUNT_META["7"]["daily_loss_guard"] is True
     assert a.ACCOUNT_META["1"]["daily_loss_guard"] is False and a.ACCOUNT_META["5"]["daily_loss_guard"] is False
+
+
+# ── Select vs its farms ───────────────────────────────────────────────────────
+
+def _rt2(strategy, entry, pnl, side="LONG", notional=1000.0, exit_=None):
+    return {"strategy": strategy, "ticker": strategy.split("_")[0], "side": side,
+            "entry_time": entry, "exit_time": exit_ or entry, "entry_price": 100.0,
+            "qty": notional / 100.0, "pnl": pnl}
+
+
+def test_select_vs_farms_pairs_trades_with_their_own_source_farm():
+    A, B, C, D = _s("AAA"), _s("BBB"), _s("CCC"), _s("DDD")
+    source = {A: "tv", B: "kairos", C: "tv"}
+    select = [_rt2(A, "2026-10-19T14:00:00Z", 150, notional=15000),     # +1%
+              _rt2(B, "2026-10-19T15:00:00Z", -75, notional=15000)]     # -0.5%, farm skipped it
+    farm = {
+        "tv": [_rt2(A, "2026-10-19T14:04:00Z", 10),                     # pairs with Select's A (+1%)
+               _rt2(C, "2026-10-19T16:00:00Z", 5),                      # Select skipped it
+               _rt2(A, "2026-10-16T14:00:00Z", 99),                     # before Select started: ignored
+               _rt2(D, "2026-10-19T14:00:00Z", 50)],                    # not a Select strategy
+        "kairos": [_rt2(B, "2026-10-19T15:40:00Z", 3)],                 # 40 min apart: not the same trade
+    }
+    out = farms.compare_select_farms(select, farm, source)
+    assert out["start"] == "2026-10-19"
+    assert out["select_trades"] == 2 and out["farm_trades"] == 3
+    tv, ka = out["by_source"]["tv"], out["by_source"]["kairos"]
+    assert tv["paired"] == 1 and [t["strategy"] for t in tv["farm_only"]] == [C]
+    assert tv["mean_pct_delta"] == 0 and tv["median_entry_lag_secs"] == -240
+    assert ka["paired"] == 0 and len(ka["select_only"]) == 1 and len(ka["farm_only"]) == 1
+    assert out["dates"] == ["2026-10-19"]
+    assert out["select"] == [0.5] and out["farm"] == [1.8]                # 1 - 0.5 ; 1 + 0.5 + 0.3
+
+
+def test_select_vs_farms_flags_strategies_with_no_known_source():
+    X = _s("XXX")
+    out = farms.compare_select_farms([_rt2(X, "2026-10-19T14:00:00Z", 1)], {"tv": [], "kairos": []}, {})
+    assert out["unknown_source"] == [X]
