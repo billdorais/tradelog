@@ -1063,6 +1063,10 @@
     // deploy without ALPACA_KEY6 opens on Crew Paper instead of an empty Crew Live.
     const _CONFIGURED = new Set({{ accounts | map(attribute='tab') | list | tojson }});
     window.__ACCT6_ON__ = _CONFIGURED.has('live');
+    // broker tag -> {num, label, paper}, straight from the server's registry, so
+    // per-row actions route to the account that holds the position.
+    const _ACCT_BY_TAG = Object.fromEntries(
+      {{ accounts | tojson }}.map(a => [a.tag, { num: Number(a.num), label: a.label, paper: a.paper }]));
     const _ACCT_TABS = {
       live:    { account: '6', label: 'Cumulative realized P&L from Crew Live fills (acct 6) — REAL MONEY',
                  note:  'Crew Live (account 6) trades REAL MONEY. Same roster as Crew Paper.' },
@@ -4821,15 +4825,18 @@
           // Farms (alpaca / alpaca5) get no row tint; curated books tinted to the pairing.
           const rowCls = isKairos ? ' class="kairos-row"' : (isCrew ? ' class="crew-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : ''));
           const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';
-          const brokerLabel = ({ 'alpaca': 'TV Farm', 'alpaca2': 'TV Refined', 'alpaca3': 'Kairos Refined',
-                                 'alpaca4': 'Crew Paper', 'alpaca5': 'Kairos Farm',
-                                 'alpaca6': 'Crew Live ●' })[p.broker] || escHtml(p.broker);
+          const _rowAcct = _ACCT_BY_TAG[p.broker];
+          const brokerLabel = _rowAcct ? escHtml(_rowAcct.label) + (_rowAcct.paper ? '' : ' ●')
+                                       : escHtml(p.broker);
           // Per-row Stop actions: Break-Even / Halfway / Close. Pass the broker
           // account and symbol so the handler routes to the right alpaca acct.
-          const _acctForBroker = { alpaca: 1, alpaca2: 2, alpaca3: 3, alpaca4: 4, alpaca5: 5, alpaca6: 6 };
-          const _acct = _acctForBroker[p.broker] || 1;
+          // No fallback account: a hard-coded map once stopped at alpaca6, and
+          // alpaca7 rows silently fell back to acct 1 — the buttons acted on TV Farm.
+          const _acct = _rowAcct ? _rowAcct.num : null;
           const _sym  = escHtml((p.symbol || '').toUpperCase());
-          const actionsCell = `
+          const actionsCell = _acct == null
+            ? `<span style="color:#555;font-size:0.7rem" title="Unknown account ${escHtml(p.broker)} — not in this server's account list">—</span>`
+            : `
             <div style="display:flex;gap:3px;justify-content:flex-end">
               <button onclick="pullStop('${_sym}', ${_acct}, 'breakeven', this)"
                 title="Move stop to entry price (breakeven)"

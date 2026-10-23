@@ -188,3 +188,41 @@ def test_select_positions_sort_with_the_curated_books():
     assert "alpaca7" in ranks, "account 7 falls to the default rank"
     assert int(ranks["alpaca7"]) < int(ranks["alpaca5"])
     assert int(ranks["alpaca7"]) < int(ranks["alpaca"])
+
+
+# ── the row actions (BE / ½ / ✕) ────────────────────────────────────────────
+
+def _acct_by_tag(monkeypatch, tmp_path):
+    """Render the real dashboard, then evaluate its _ACCT_BY_TAG in node."""
+    _accounts(monkeypatch)
+    monkeypatch.setattr(a, "_wired_roster", lambda t: [])
+    a.app.config["TESTING"] = True
+    html = a.app.test_client().get("/").get_data(as_text=True)
+    m = re.search(r"const _ACCT_BY_TAG = (Object\.fromEntries\(.*?\]\)\);)", html, re.S)
+    assert m, "_ACCT_BY_TAG not rendered"
+    p = tmp_path / "acct.js"
+    p.write_text("const x = " + m.group(1) + "\nconsole.log(JSON.stringify(x));",
+                 encoding="utf-8")
+    r = subprocess.run(["node", str(p)], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=60)
+    assert r.returncode == 0, r.stderr.strip()
+    return json.loads(r.stdout)
+
+
+@pytestmark_node
+def test_row_actions_route_select_to_its_own_account(monkeypatch, tmp_path):
+    """The row buttons used a hard-coded tag->num map that stopped at alpaca6, with
+    `|| 1` as the fallback -- so ✕ on a Kairos Select row closed the symbol on
+    TV Farm. The map now comes from the registry; every configured tag must
+    resolve to its own slot."""
+    m = _acct_by_tag(monkeypatch, tmp_path)
+    assert m["alpaca7"]["num"] == 7 and m["alpaca7"]["label"] == "Kairos Select"
+    for n in ("1", "2", "3", "4", "5", "6", "7"):
+        assert m[a.ACCOUNT_META[n]["tag"]]["num"] == int(n)
+
+
+def test_row_actions_have_no_silent_account_fallback():
+    src = open(os.path.join(os.path.dirname(a.__file__), "templates", "index.html"),
+               encoding="utf-8").read()
+    assert "_acctForBroker" not in src
+    assert not re.search(r"_ACCT_BY_TAG\[[^\]]+\][^;\n]*\|\|\s*1\b", src)
