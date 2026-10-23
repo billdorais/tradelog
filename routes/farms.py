@@ -1329,26 +1329,45 @@ def pair_books(a_rts, b_rts, window=PAIR_WINDOW_SECS):
     return pairs, a_only, left
 
 
-def compare_select_farms(select_rts, farm_rts, source):
+def strategy_starts(select_rts, wired_since=None):
+    """{STRATEGY: ET date} from which each strategy counts as on Select's roster: the
+    earlier of its first Select trade and the date the last Apply wired it.
+
+    Select's roster changes (it began as a frozen 15-name list; Apply rewires it),
+    so a single window start would count farm trades from before a strategy was
+    even on Select as trades Select "missed". A strategy with neither date has no
+    evidence of ever being on Select and is left out of the farm side."""
+    starts = dict(wired_since or {})
+    for t in select_rts:
+        d = et_date(t.get("entry_time"))
+        if d and (t["strategy"] not in starts or d < starts[t["strategy"]]):
+            starts[t["strategy"]] = d
+    return starts
+
+
+def compare_select_farms(select_rts, farm_rts, source, wired_since=None):
     """Kairos Select's actual trades against the same strategies on their source farms.
 
-    select_rts: Select's closed round-trips (strategy upper-cased).
-    farm_rts:   {"tv": [...], "kairos": [...]} closed round-trips per farm.
-    source:     {STRATEGY: "tv" | "kairos"} — the farm each Select strategy enters
-                like (TV picks: TV Farm, engine picks: Kairos Farm).
+    select_rts:  Select's closed round-trips (strategy upper-cased).
+    farm_rts:    {"tv": [...], "kairos": [...]} closed round-trips per farm.
+    source:      {STRATEGY: "tv" | "kairos"} — the farm each Select strategy enters
+                 like (TV picks: TV Farm, engine picks: Kairos Farm).
+    wired_since: {STRATEGY: ET date} the roster was wired (last Apply), optional.
 
-    Both lines start at Select's first trade, so the farms' earlier history (before
-    Select traded at all) doesn't run up a head start. Returns cumulative % per
-    trade (size-independent: Select trades ~$15k, the farms $1k) by ET exit date,
-    plus the trade-by-trade pairing."""
+    Each strategy's farm trades count only from the day it joined Select (see
+    strategy_starts), and the lines start at Select's first trade, so neither the
+    farms' earlier history nor a later roster change runs up a head start. Returns
+    cumulative % per trade (size-independent: Select trades ~$15k, the farms $1k)
+    by ET exit date, plus the trade-by-trade pairing."""
     # A trade whose entry time can't be read has no date to pair or plot on.
     sel = [t for t in select_rts if et_date(t.get("entry_time"))]
     if not sel:
         return {"dates": [], "select": [], "farm": [], "select_trades": 0, "farm_trades": 0,
-                "start": None, "by_source": {}, "unknown_source": []}
+                "start": None, "by_source": {}, "unknown_source": [], "strategy_starts": {}}
     start = min(et_date(t["entry_time"]) for t in sel)
-    farm = {f: [t for t in rts if et_date(t.get("entry_time")) >= start
-                and source.get(t["strategy"]) == f]
+    starts = {s: max(d, start) for s, d in strategy_starts(sel, wired_since).items()}
+    farm = {f: [t for t in rts if source.get(t["strategy"]) == f and t["strategy"] in starts
+                and et_date(t.get("entry_time")) >= starts[t["strategy"]]]
             for f, rts in farm_rts.items()}
 
     def _daily(rts):
@@ -1391,7 +1410,24 @@ def compare_select_farms(select_rts, farm_rts, source):
         "dates": dates, "select": sel_line, "farm": farm_line, "start": start,
         "select_trades": len(sel), "farm_trades": len(farm_all), "by_source": by_source,
         "unknown_source": sorted({t["strategy"] for t in sel if t["strategy"] not in source}),
+        "strategy_starts": {s: d for s, d in sorted(starts.items()) if s in source},
     }
+
+
+def _select_wired_since(a):
+    """{STRATEGY: ET date} for the strategies the last Apply wired onto Select.
+    Only the latest Apply is recorded, so earlier roster changes fall back to each
+    strategy's first Select trade (strategy_starts)."""
+    try:
+        rec = json.loads(a._load_setting("SELECT_LAST_APPLY") or "null") or {}
+    except Exception:
+        return {}
+    at = rec.get("at") or ""
+    try:
+        d = datetime.strptime(at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(_ET).date().isoformat()
+    except ValueError:
+        return {}
+    return {pk["strategy"].upper(): d for pk in rec.get("picks") or [] if pk.get("strategy")}
 
 
 def _select_sources(a):
@@ -1452,6 +1488,6 @@ def api_select_vs_farms():
         if err:
             return jsonify({"error": f"{label}: {err}"}), 409
         farm[key] = rts
-    out = compare_select_farms(sel, farm, _select_sources(a))
+    out = compare_select_farms(sel, farm, _select_sources(a), _select_wired_since(a))
     out.update({"from_date": p["from_date"], "to_date": p["to_date"], "pair_window_mins": PAIR_WINDOW_SECS // 60})
     return jsonify(out)

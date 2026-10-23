@@ -651,7 +651,7 @@ def test_select_vs_farms_pairs_trades_with_their_own_source_farm():
                _rt2(D, "2026-10-19T14:00:00Z", 50)],                    # not a Select strategy
         "kairos": [_rt2(B, "2026-10-19T15:40:00Z", 3)],                 # 40 min apart: not the same trade
     }
-    out = farms.compare_select_farms(select, farm, source)
+    out = farms.compare_select_farms(select, farm, source, wired_since={C: "2026-10-19"})
     assert out["start"] == "2026-10-19"
     assert out["select_trades"] == 2 and out["farm_trades"] == 3
     tv, ka = out["by_source"]["tv"], out["by_source"]["kairos"]
@@ -666,3 +666,29 @@ def test_select_vs_farms_flags_strategies_with_no_known_source():
     X = _s("XXX")
     out = farms.compare_select_farms([_rt2(X, "2026-10-19T14:00:00Z", 1)], {"tv": [], "kairos": []}, {})
     assert out["unknown_source"] == [X]
+
+
+def test_each_strategy_is_compared_only_from_when_it_joined_select():
+    A, B, C = _s("AAA"), _s("BBB"), _s("CCC")
+    source = {A: "tv", B: "tv", C: "tv"}
+    select = [_rt2(A, "2026-10-02T14:00:00Z", 10),          # A on Select from Oct 2
+              _rt2(B, "2026-10-20T14:00:00Z", 10)]          # B only joined Oct 20
+    farm = {"tv": [
+        _rt2(A, "2026-10-05T14:00:00Z", 5),                 # A on the roster: a real miss
+        _rt2(B, "2026-10-06T14:00:00Z", 5),                 # before B joined: not a miss
+        _rt2(B, "2026-10-21T14:00:00Z", 5),                 # after B joined: a real miss
+        _rt2(C, "2026-10-21T14:00:00Z", 5),                 # C never traded, never wired: left out
+    ], "kairos": []}
+    out = farms.compare_select_farms(select, farm, source)
+    missed = sorted(t["entry_time"][:10] + " " + t["strategy"][:3] for t in out["by_source"]["tv"]["farm_only"])
+    assert missed == ["2026-10-05 AAA", "2026-10-21 BBB"]
+    assert out["strategy_starts"] == {A: "2026-10-02", B: "2026-10-20"}
+
+
+def test_wiring_date_counts_misses_before_a_strategys_first_select_trade():
+    B = _s("BBB")
+    select = [_rt2(B, "2026-10-20T14:00:00Z", 10), _rt2(_s("AAA"), "2026-10-02T14:00:00Z", 1)]
+    farm = {"tv": [_rt2(B, "2026-10-18T14:00:00Z", 5)], "kairos": []}
+    out = farms.compare_select_farms(select, farm, {B: "tv", _s("AAA"): "tv"}, wired_since={B: "2026-10-17"})
+    assert out["strategy_starts"][B] == "2026-10-17"
+    assert len(out["by_source"]["tv"]["farm_only"]) == 1        # Select missed Oct 18
