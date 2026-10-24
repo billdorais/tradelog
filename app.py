@@ -9982,7 +9982,8 @@ def _takeable_by(round_trips, account_tag, classify_budget=400):
     return kept, dict(dropped)
 
 
-def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None):
+def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None,
+                            reversal_as=None):
     """Per-strategy stats from an Alpaca account's fills, using the same
     signal-resolution + LIFO pairing as /api/alpaca/analysis so the leaderboard
     and any Refined snapshot agree on the same numbers.
@@ -10032,6 +10033,15 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
         _ex = _c.get("exit_time") or ""
         if _ex and _ex > last_trade_all.get(_c["strategy"], ""):
             last_trade_all[_c["strategy"]] = _ex
+
+    # reversal_as = a book's tag: drop only the round-trips its REVERSAL POLICY
+    # refuses (2026-10-24). The full takeable filter (gate_as) stays off — ranking on
+    # the raw pool was restored for sample size — but a reversal a book can never
+    # take is not a sample-size question: TV Refined (reversals off) was spending 2
+    # of 7 snapshot slots on reversals it can't trade. Pure in-memory check.
+    if reversal_as:
+        closed_clean = [c for c in closed_clean
+                        if not _reversal_gate_block(c.get("strategy"), c.get("side"), reversal_as)]
 
     if gate_as:
         closed_clean, _drop = _takeable_by(closed_clean, gate_as)
@@ -10467,6 +10477,10 @@ def _compute_refined_qty(score, last_price):
     return max(1, round(target / last_price))
 
 
+# The book a Refined snapshot routes to, whose reversal policy its ranking honours.
+_REFINED_POLICY_TAG = {"alpaca-paper-2": "alpaca2", "alpaca-live-2": "alpaca2"}
+
+
 def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_DAYS, from_date=None):
     """Core logic: remove broker_val from all rules, re-add to top N by composite score.
 
@@ -10491,9 +10505,11 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
     # the walk-forward Selection Test puts the ranking signal at t=0.35σ. With a
     # signal that weak, the variance from a smaller pool outweighs the bias it
     # removes. Pass gate_as="alpaca2" to switch back; _takeable_by is still tested.
-    stats_map    = _compute_strategy_stats(days=days, from_date=from_date)
+    stats_map    = _compute_strategy_stats(days=days, from_date=from_date,
+                                           reversal_as=_REFINED_POLICY_TAG.get(broker_val))
     # 10-day recency window for the blended score
-    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date)
+    stats_map_10d = _compute_strategy_stats(days=10, from_date=from_date,
+                                            reversal_as=_REFINED_POLICY_TAG.get(broker_val))
     # Eligibility: net-positive AND at least _REFINED_MIN_TRADES round-trips.
     # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
     # 100% win) out of the top-N — they need more sample evidence first.
@@ -10858,9 +10874,9 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
 
     # Raw farm pool — see the note on the TV refresh above (reverted 2026-08-21).
     stats_map     = _compute_strategy_stats(days=days, from_date=from_date,
-                                            fills_fn=_fills_fn)
+                                            fills_fn=_fills_fn, reversal_as="alpaca3")
     stats_map_10d = _compute_strategy_stats(days=10,   from_date=from_date,
-                                            fills_fn=_fills_fn)
+                                            fills_fn=_fills_fn, reversal_as="alpaca3")
     demoted = [k for k, v in stats_map.items()
                if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
     if demoted:
