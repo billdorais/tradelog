@@ -17,6 +17,55 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# ── Request accounting (for /api/diagnostics/requests) ────────────────────────
+# Per-route counts and wall time since this worker started, plus who is calling.
+# Registered BEFORE the gzip hook: Flask runs after_request hooks in reverse, so
+# this one runs last and its timing includes compression. Keyed by URL rule, not
+# raw path, so the table stays bounded; unmatched paths fold into one row.
+import threading as _req_threading
+from collections import Counter as _ReqCounter
+_req_lock    = _req_threading.Lock()
+_req_stats   = {}                       # rule -> [count, secs, max_secs, n4xx, n5xx]
+_req_clients = _ReqCounter()            # (ip, user-agent prefix) -> count
+_req_since   = None
+
+
+@app.before_request
+def _req_timer_start():
+    from flask import g
+    import time as _t
+    g._req_t0 = _t.perf_counter()
+
+
+@app.after_request
+def _req_timer_stop(resp):
+    try:
+        from flask import g
+        import time as _t
+        global _req_since
+        t0 = getattr(g, "_req_t0", None)
+        if t0 is None:
+            return resp
+        dt = _t.perf_counter() - t0
+        rule = request.url_rule.rule if request.url_rule else "<unmatched>"
+        ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+        ua = (request.headers.get("User-Agent") or "?")[:60]
+        with _req_lock:
+            if _req_since is None:
+                _req_since = _t.time()
+            s = _req_stats.setdefault(rule, [0, 0.0, 0.0, 0, 0])
+            s[0] += 1; s[1] += dt; s[2] = max(s[2], dt)
+            if 400 <= resp.status_code < 500: s[3] += 1
+            elif resp.status_code >= 500:     s[4] += 1
+            _req_clients[(ip, ua)] += 1
+            if len(_req_clients) > 500:          # keep it bounded
+                for k, _n in _req_clients.most_common()[400:]:
+                    del _req_clients[k]
+    except Exception:
+        pass
+    return resp
+
+
 # gzip large responses. The dashboard pulls every account's 90-day fill history
 # (~3 MB of JSON per farm account) on load; JSON compresses ~10x, so this is most
 # of the page's transfer time on any connection slower than a LAN. Streamed
@@ -11723,6 +11772,119 @@ def set_account_gates():
 @app.route("/diagnostics")
 def diagnostics_page():
     return render_template("diagnostics.html", accounts=_ui_accounts())
+
+
+@app.route("/api/diagnostics/requests")
+def api_diagnostics_requests():
+    """Per-route request counts and time spent since this worker started, slowest
+    total first, plus the busiest callers. One gunicorn worker's view — repeat
+    the call to likely see the other. Read-only; no request bodies or secrets."""
+    with _req_lock:
+        rows = [{"route": r, "count": s[0], "total_secs": round(s[1], 2),
+                 "avg_ms": round(s[1] / s[0] * 1000, 1) if s[0] else 0,
+                 "max_secs": round(s[2], 2), "n4xx": s[3], "n5xx": s[4]}
+                for r, s in _req_stats.items()]
+        clients = [{"ip": ip, "user_agent": ua, "count": n}
+                   for (ip, ua), n in _req_clients.most_common(15)]
+        since = _req_since
+    rows.sort(key=lambda x: -x["total_secs"])
+    mins = ((time.time() - since) / 60) if since else 0
+    return jsonify({"worker_pid": os.getpid(), "minutes": round(mins, 1),
+                    "requests": sum(r["count"] for r in rows),
+                    "per_minute": round(sum(r["count"] for r in rows) / mins, 1) if mins else None,
+                    "routes": rows[:60], "clients": clients})
+
+
+_profile_lock = threading.Lock()
+
+
+@app.route("/api/diagnostics/profile")
+def api_diagnostics_profile():
+    """Where this worker's CPU goes, over ?secs=5 (max 15).
+
+    Per-thread CPU time from /proc (Linux) says WHICH threads burned CPU in the
+    window — sampled stacks alone can't tell a busy thread from one parked in
+    sleep(). Stacks are sampled every 20 ms meanwhile, so for the hottest threads
+    it also says WHERE: the most frequent running line (self) and the functions
+    most often on the stack (inclusive). One gunicorn worker's view. Read-only."""
+    import sys as _sys
+    from collections import Counter as _C
+    if not _profile_lock.acquire(blocking=False):
+        return jsonify({"error": "a profile is already running"}), 409
+    try:
+        try:    secs = min(15.0, max(1.0, float(request.args.get("secs") or 5)))
+        except ValueError: secs = 5.0
+        me = threading.get_ident()
+        tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+        def _cpu():
+            out = {}
+            for t in threading.enumerate():
+                nid = getattr(t, "native_id", None)
+                try:
+                    with open(f"/proc/self/task/{nid}/stat") as fh:
+                        f = fh.read().rsplit(")", 1)[1].split()
+                    out[t.ident] = (int(f[11]) + int(f[12])) / tick      # utime + stime
+                except Exception:
+                    pass
+            return out
+
+        def _proc_cpu():
+            try:
+                with open("/proc/self/stat") as fh:
+                    f = fh.read().rsplit(")", 1)[1].split()
+                return (int(f[11]) + int(f[12])) / tick
+            except Exception:
+                return None
+
+        names = {t.ident: t.name for t in threading.enumerate()}
+        c0, p0, t0 = _cpu(), _proc_cpu(), time.time()
+        leaf, incl, samples = {}, {}, 0
+        while time.time() - t0 < secs:
+            for tid, frame in _sys._current_frames().items():
+                if tid == me or frame is None:
+                    continue
+                # Walk frames directly: traceback.extract_stack reads source lines,
+                # which on a 25k-line app.py made each sample take ~1 s.
+                code = frame.f_code
+                leaf.setdefault(tid, _C())[
+                    f"{os.path.basename(code.co_filename)}:{frame.f_lineno} {code.co_name}"] += 1
+                seen, f = set(), frame
+                while f is not None:
+                    fn = f.f_code.co_filename
+                    if "threading.py" not in fn:
+                        seen.add(f"{os.path.basename(fn)}:{f.f_code.co_name}")
+                    f = f.f_back
+                incl.setdefault(tid, _C()).update(seen)
+            samples += 1
+            time.sleep(0.02)
+        c1, p1, wall = _cpu(), _proc_cpu(), time.time() - t0
+        for t in threading.enumerate():
+            names.setdefault(t.ident, t.name)
+
+        threads = []
+        for tid in set(c0) | set(leaf):
+            used = (c1.get(tid, 0) - c0.get(tid, 0)) if tid in c0 else None
+            threads.append({
+                "thread": names.get(tid, str(tid)),
+                "cpu_secs": None if used is None else round(used, 2),
+                "cpu_pct": None if used is None else round(used / wall * 100, 1),
+                "top_lines": [{"where": k, "share": round(v / samples, 2)}
+                              for k, v in (leaf.get(tid) or _C()).most_common(5)],
+                "top_functions": [{"fn": k, "share": round(v / samples, 2)}
+                                  for k, v in (incl.get(tid) or _C()).most_common(8)],
+            })
+        threads.sort(key=lambda x: -(x["cpu_secs"] or 0))
+        return jsonify({
+            "worker_pid": os.getpid(), "window_secs": round(wall, 1), "samples": samples,
+            "process_cpu_pct": (None if p0 is None or p1 is None
+                                else round((p1 - p0) / wall * 100, 1)),
+            "threads": threads[:12],
+            "note": "cpu_pct is per thread (100 = one full core). Python runs one "
+                    "thread at a time per process, so busy threads share one core.",
+        })
+    finally:
+        _profile_lock.release()
 
 
 @app.route("/api/diagnostics/errors")
