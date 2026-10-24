@@ -794,7 +794,7 @@
               {% for tab, r in (rosters or {}).items() %}
               <span id="rosterChip_{{ tab }}" class="roster-chip" data-tab="{{ tab }}"
                     onclick="toggleRoster('{{ tab }}', event)"
-                    title="Filter to the {{ r.strategies|length }} strategies {{ r.label }} actually trades. Stays on while you page the dates."
+                    title="Filter to the {{ r.strategies|length }} strategies {{ r.label }} actually trades. Stays on while you page the dates. On the TV Farm tab it shows only the roster's TV picks ({{ (r.by_source or {}).tv|length }}), on Kairos Farm only its engine picks ({{ (r.by_source or {}).kairos|length }})."
                     style="font-size:0.68rem;font-weight:700;cursor:pointer;border:1px solid {{ r.color }};
                            border-radius:4px;padding:1px 6px;color:{{ r.color }}">{{ r.label }}</span>
               {% endfor %}
@@ -1099,6 +1099,9 @@
         activeTab = tab;
         // Switch to the per-tab selection set so each tab filters independently
         selectedStrategies = _tabSelections[tab] || (_tabSelections[tab] = new Set());
+        // A pinned roster re-narrows for the new tab: on the farm tabs it is only
+        // the roster's TV (TV Farm) or engine (Kairos Farm) picks.
+        _reapplyRoster();
 
         // Tab button highlighting — driven off the rendered buttons, so a tab the
         // server did not render simply is not here to light up.
@@ -1446,6 +1449,21 @@
       try { return localStorage.getItem('dash_roster') || ''; } catch (_) { return ''; }
     })();
 
+    // A mixed roster (Kairos Select: TV picks AND engine picks) shown on a FARM tab
+    // narrows to the half that farm trades the same way: TV Farm enters on TV
+    // alerts, Kairos Farm on the engine. Elsewhere the whole roster applies.
+    const _FARM_SOURCE = { alpaca: 'tv', farm: 'kairos' };
+    // Matches no strategy: keeps the chart EMPTY when a roster has no picks of this
+    // farm's kind, since an empty selection would mean "show everything".
+    const _NO_PICKS = '(no picks of this kind in the roster)';
+    function _rosterList(rosterTab) {
+      const r = _ROSTERS[rosterTab];
+      if (!r) return [];
+      const src = _FARM_SOURCE[activeTab];
+      if (src && r.by_source) return (r.by_source[src] || []).length ? r.by_source[src] : [_NO_PICKS];
+      return r.strategies;
+    }
+
     function toggleRoster(tab, e) {
       if (e) e.stopPropagation();
       const r = _ROSTERS[tab];
@@ -1458,9 +1476,9 @@
         // Intersect with what this book/range actually has, EXCEPT when that would
         // empty the set — an empty set means "show all" in this picker, so a week
         // in which none of the roster traded would silently show all 233 names.
-        const have = new Set(_allStrategyNames.map(x => x.toUpperCase()));
-        const hit  = _allStrategyNames.filter(x => r.strategies.includes(x.toUpperCase()));
-        selectedStrategies = new Set(hit.length ? hit : r.strategies);
+        const list = _rosterList(tab);
+        const hit  = _allStrategyNames.filter(x => list.includes(x.toUpperCase()));
+        selectedStrategies = new Set(hit.length ? hit : list);
       }
       try {
         if (_rosterOn) localStorage.setItem('dash_roster', _rosterOn);
@@ -1493,10 +1511,12 @@
     // from the new window and the chip would be lit over a stale set.
     function _reapplyRoster() {
       if (!_rosterOn || !_ROSTERS[_rosterOn]) return;
-      const r   = _ROSTERS[_rosterOn];
-      const hit = _allStrategyNames.filter(x => r.strategies.includes(x.toUpperCase()));
-      if (hit.length) {
-        selectedStrategies = new Set(hit);
+      const list = _rosterList(_rosterOn);
+      const hit  = _allStrategyNames.filter(x => list.includes(x.toUpperCase()));
+      // No hit can mean this farm tab has none of the roster's kind (list is the
+      // _NO_PICKS sentinel) — that must still narrow, or the chart shows every name.
+      if (hit.length || list[0] === _NO_PICKS) {
+        selectedStrategies = new Set(hit.length ? hit : list);
         _tabSelections[activeTab] = selectedStrategies;
       }
       _syncRosterChips();

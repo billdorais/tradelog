@@ -118,7 +118,7 @@ def test_the_roster_is_reapplied_after_the_auto_add(monkeypatch):
     paging would widen the basket a name at a time."""
     html = _page(monkeypatch, lambda tag: ["AAPL_X"] if tag == "alpaca7" else [])
     i_add = html.index("Add newly appearing strategies as visible")
-    i_fix = html.index("_reapplyRoster();")
+    i_fix = html.index("_reapplyRoster();", i_add)
     i_pop = html.index("_populateStratPicker();", i_add)
     assert i_add < i_fix < i_pop, "roster is re-applied before the auto-add, or after the repaint"
 
@@ -131,3 +131,40 @@ def test_choosing_a_top_n_unpins_the_chip(monkeypatch):
                    "selectedStrategies = new Set(refined);"):
         i = html.index(anchor)
         assert "_unpinRoster();" in html[i:i + 120], f"no unpin after {anchor}"
+
+
+
+# ── TV picks on TV Farm, engine picks on Kairos Farm ────────────────────────
+
+def test_the_roster_splits_by_how_each_strategy_enters(monkeypatch):
+    _rules(monkeypatch, [
+        [{"type": "strategy", "value": "AAPL_CAM_BREAKOUT_R4S4_V02_5MIN"},
+         {"type": "broker", "value": "alpaca-paper-7"},
+         {"type": "entry_source", "value": "tv"}],
+        [{"type": "strategy", "value": "NVDA_CAM_BREAKOUT_R3S3_V02_5MIN"},
+         {"type": "broker", "value": "alpaca-paper-7"},
+         {"type": "entry_source", "value": "kairos"}],
+        [{"type": "strategy", "value": "MU_CAM_BREAKOUT_R3S3_V02_5MIN"},       # no node = TV alerts
+         {"type": "broker", "value": "alpaca-paper-7"}],
+        [{"type": "strategy", "value": "SPY_CAM_BREAKOUT_R4S4_V02_5MIN"},      # another book
+         {"type": "broker", "value": "alpaca-paper"},
+         {"type": "entry_source", "value": "kairos"}],
+    ])
+    assert a._wired_roster_sources("alpaca7") == {
+        "tv": ["AAPL_CAM_BREAKOUT_R4S4_V02_5MIN", "MU_CAM_BREAKOUT_R3S3_V02_5MIN"],
+        "kairos": ["NVDA_CAM_BREAKOUT_R3S3_V02_5MIN"],
+    }
+
+
+def test_farm_tabs_narrow_a_pinned_roster_to_their_own_kind(monkeypatch):
+    monkeypatch.setattr(a, "_wired_roster_sources",
+                        lambda tag: {"tv": ["AAPL_X"], "kairos": ["NVDA_Y"]} if tag == "alpaca7"
+                        else {"tv": [], "kairos": []})
+    html = _page(monkeypatch, lambda tag: ["AAPL_X", "NVDA_Y"] if tag == "alpaca7" else [])
+    m = re.search(r"const _ROSTERS = (\{.*?\});", html, re.S)
+    assert json.loads(m.group(1))["select"]["by_source"] == {"tv": ["AAPL_X"], "kairos": ["NVDA_Y"]}
+    assert "const _FARM_SOURCE = { alpaca: 'tv', farm: 'kairos' };" in html
+    i = html.index("function toggleRoster")
+    assert "_rosterList(tab)" in html[i:i + 900]
+    i = html.index("async function switchTab")
+    assert "_reapplyRoster();" in html[i:i + 600]                 # re-narrows on a tab switch

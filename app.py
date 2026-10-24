@@ -5014,6 +5014,36 @@ def _wired_roster(tag):
     return sorted(out)
 
 
+def _wired_roster_sources(tag):
+    """The same roster as _wired_roster, split by HOW each strategy enters:
+    {"tv": [...], "kairos": [...]} from each rule's entry_source node (no node =
+    TV alerts, the webhook default). Lets the dashboard show a mixed book's TV picks
+    on the TV Farm tab and its engine picks on the Kairos Farm tab — each farm
+    trades only the version that matches its own entry mechanism."""
+    out = {"tv": set(), "kairos": set()}
+    try:
+        conn = get_db()
+        for (nodes_json,) in conn.execute(
+                "SELECT nodes FROM routing_rules WHERE enabled=1").fetchall():
+            try:    nodes = json.loads(nodes_json or "[]")
+            except Exception: continue
+            if not any(n.get("type") == "broker"
+                       and _routing_broker_to_tag(n.get("value")) == tag for n in nodes):
+                continue
+            src = next(((n.get("value") or "").lower() for n in nodes
+                        if n.get("type") == "entry_source"), "tv")
+            key = "kairos" if src == "kairos" else "tv"
+            for n in nodes:
+                if n.get("type") == "strategy":
+                    v = (n.get("value") or "").strip().upper()
+                    if v and "*" not in v:
+                        out[key].add(v)
+        conn.close()
+    except Exception as e:
+        log.debug("wired roster sources for %s failed: %s", tag, e)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 @app.route("/")
 def dashboard():
     # Pass the webhook token so the Open Positions row actions (BE / ½ / close)
@@ -5027,7 +5057,8 @@ def dashboard():
         _r = _wired_roster(_a["tag"])
         if _r:
             _rosters[_a["tab"]] = {"label": _a["label"], "color": _a["color"],
-                                   "strategies": _r}
+                                   "strategies": _r,
+                                   "by_source": _wired_roster_sources(_a["tag"])}
     return render_template("index.html", webhook_token=WEBHOOK_TOKEN,
                            accounts=_ui_accounts(), rosters=_rosters)
 
