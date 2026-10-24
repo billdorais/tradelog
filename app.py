@@ -5211,6 +5211,19 @@ def _wired_roster_sources(tag):
     return {k: sorted(v) for k, v in out.items()}
 
 
+def _kairos_refined_roster():
+    """The strategies Kairos Refined (acct3) is trading: the current Kairos Refined
+    snapshot's top-N, which the engine fires onto acct3 (_entry_engine_setups
+    Source 1). In-memory snapshot first, the persisted one after a restart."""
+    snap = _kairos_refined_last_result or {}
+    if not snap.get("top_strategies"):
+        try:
+            snap = json.loads(_load_setting("KAIROS_REFINED_LAST_RESULT") or "{}") or {}
+        except Exception:
+            snap = {}
+    return sorted({str(n).strip().upper() for n in (snap.get("top_strategies") or []) if n})
+
+
 @app.route("/")
 def dashboard():
     # Pass the webhook token so the Open Positions row actions (BE / ½ / close)
@@ -5226,6 +5239,15 @@ def dashboard():
             _rosters[_a["tab"]] = {"label": _a["label"], "color": _a["color"],
                                    "strategies": _r,
                                    "by_source": _wired_roster_sources(_a["tag"])}
+        elif _a["tag"] == "alpaca3":
+            # Kairos Refined has no routing rules of its own: the engine trades the
+            # Kairos Refined snapshot's top-N straight onto acct3. Its roster is
+            # therefore the snapshot — all engine entries.
+            _k = _kairos_refined_roster()
+            if _k:
+                _rosters[_a["tab"]] = {"label": _a["label"], "color": _a["color"],
+                                       "strategies": _k,
+                                       "by_source": {"tv": [], "kairos": _k}}
     return render_template("index.html", webhook_token=WEBHOOK_TOKEN,
                            accounts=_ui_accounts(), rosters=_rosters)
 

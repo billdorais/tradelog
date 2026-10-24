@@ -168,3 +168,24 @@ def test_farm_tabs_narrow_a_pinned_roster_to_their_own_kind(monkeypatch):
     assert "_rosterList(tab)" in html[i:i + 900]
     i = html.index("async function switchTab")
     assert "_reapplyRoster();" in html[i:i + 600]                 # re-narrows on a tab switch
+
+
+def test_kairos_refined_chip_comes_from_its_snapshot(monkeypatch):
+    """acct3 has no rules — the engine trades the Kairos Refined snapshot — so its
+    chip is built from the snapshot, all of it engine entries."""
+    monkeypatch.setattr(a, "_ui_accounts", lambda: [
+        {"num": "3", "tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A",
+         "paper": True, "tab": "kairos"},
+        {"num": "5", "tag": "alpaca5", "label": "Kairos Farm", "color": "#5FC8D4",
+         "paper": True, "tab": "farm"}])
+    monkeypatch.setattr(a, "_wired_roster", lambda tag: [])
+    monkeypatch.setattr(a, "_kairos_refined_last_result",
+                        {"top_strategies": ["NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", "mu_cam_breakout_r3s3_v02_5min"]})
+    a.app.config["TESTING"] = True
+    html = a.app.test_client().get("/").get_data(as_text=True)
+    assert 'id="rosterChip_kairos"' in html
+    m = re.search(r"const _ROSTERS = (\{.*?\});", html, re.S)
+    r = json.loads(m.group(1))["kairos"]
+    assert r["strategies"] == ["MU_CAM_BREAKOUT_R3S3_V02_5MIN", "NVDA_CAM_BREAKOUT_R3S3_V02_5MIN"]
+    assert r["by_source"] == {"tv": [], "kairos": r["strategies"]}
+    assert 'id="rosterChip_farm"' not in html          # farms still get no chip
