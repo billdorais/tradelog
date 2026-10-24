@@ -18,6 +18,7 @@ so Select is still not auto-sourced.
 from __future__ import annotations
 
 import copy
+from collections import OrderedDict
 import json
 import threading
 import time
@@ -814,7 +815,26 @@ def suggest_exits(prepared, sim, body):
             "recommendation": rec, "summary": summary}
 
 
-_bars_cache = {}                   # (ticker, date) -> 1-min bars, past days only
+class Bar:
+    """A 1-minute bar with only what the exit simulator reads. The SDK's bar
+    objects carry a dozen fields plus model overhead — kept in a cache across a
+    roster's worth of ticker-days they ran to hundreds of MB per worker."""
+    __slots__ = ("timestamp", "open", "high", "low", "close")
+
+    def __init__(self, timestamp, open, high, low, close):
+        self.timestamp, self.open, self.high, self.low, self.close = timestamp, open, high, low, close
+
+
+def compact_bars(bars):
+    return [Bar(b.timestamp, float(b.open), float(b.high), float(b.low), float(b.close))
+            for b in bars or []]
+
+
+# (ticker, date) -> compact 1-min bars, past days only, least-recently-used out
+# first. A replay touches up to REPLAY_MAX_TICKER_DAYS days; 800 covers a typical
+# roster re-run while capping the cache at ~50-60 MB per gunicorn worker.
+BARS_CACHE_MAX = 800
+_bars_cache = OrderedDict()
 _bars_lock = threading.Lock()
 
 
@@ -824,11 +844,15 @@ def _day_bars(a, ticker, day):
     key = (ticker, day)
     with _bars_lock:
         if key in _bars_cache:
+            _bars_cache.move_to_end(key)
             return _bars_cache[key]
-    bars = a._fetch_day_bars(ticker, day)
+    bars = compact_bars(a._fetch_day_bars(ticker, day))
     if bars and day < datetime.now(_ET).date().isoformat():
         with _bars_lock:
             _bars_cache[key] = bars
+            _bars_cache.move_to_end(key)
+            while len(_bars_cache) > BARS_CACHE_MAX:
+                _bars_cache.popitem(last=False)
     return bars
 
 

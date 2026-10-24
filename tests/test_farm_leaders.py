@@ -692,3 +692,31 @@ def test_wiring_date_counts_misses_before_a_strategys_first_select_trade():
     out = farms.compare_select_farms(select, farm, {B: "tv", _s("AAA"): "tv"}, wired_since={B: "2026-10-17"})
     assert out["strategy_starts"][B] == "2026-10-17"
     assert len(out["by_source"]["tv"]["farm_only"]) == 1        # Select missed Oct 18
+
+
+# ── bar cache: compact and bounded ────────────────────────────────────────────
+
+def test_bar_cache_is_compact_and_least_recently_used(monkeypatch):
+    import datetime as dt
+    import types
+    calls = []
+
+    class _A:
+        @staticmethod
+        def _fetch_day_bars(tk, day):
+            calls.append((tk, day))
+            t0 = dt.datetime.fromisoformat(f"{day}T14:00:00+00:00")
+            return [types.SimpleNamespace(timestamp=t0, open=1, high=2, low=0.5, close=1.5,
+                                          volume=100, vwap=1.2, trade_count=9)]
+
+    monkeypatch.setattr(farms, "_bars_cache", farms.OrderedDict())
+    monkeypatch.setattr(farms, "BARS_CACHE_MAX", 2)
+    b = farms._day_bars(_A, "AAA", "2026-09-01")
+    assert isinstance(b[0], farms.Bar) and b[0].high == 2.0 and not hasattr(b[0], "vwap")
+    farms._day_bars(_A, "BBB", "2026-09-01")
+    farms._day_bars(_A, "AAA", "2026-09-01")          # cache hit, now most recent
+    farms._day_bars(_A, "CCC", "2026-09-01")          # evicts BBB, the least recent
+    assert list(farms._bars_cache) == [("AAA", "2026-09-01"), ("CCC", "2026-09-01")]
+    assert calls.count(("AAA", "2026-09-01")) == 1
+    farms._day_bars(_A, "DDD", "2099-01-01")          # not over yet: never cached
+    assert ("DDD", "2099-01-01") not in farms._bars_cache
