@@ -17,6 +17,38 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# gzip large responses. The dashboard pulls every account's 90-day fill history
+# (~3 MB of JSON per farm account) on load; JSON compresses ~10x, so this is most
+# of the page's transfer time on any connection slower than a LAN. Streamed
+# responses (SSE: crew runs, optimizer) are left alone — compressing them would
+# buffer the stream. Small bodies aren't worth the CPU.
+_GZIP_MIN_BYTES = 20_000
+_GZIP_TYPES = {"application/json", "text/html", "text/plain", "text/csv",
+               "text/css", "application/javascript", "text/javascript"}
+
+
+@app.after_request
+def _gzip_response(resp):
+    try:
+        if (resp.is_streamed or resp.direct_passthrough
+                or resp.headers.get("Content-Encoding")
+                or not (200 <= resp.status_code < 300)
+                or resp.mimetype not in _GZIP_TYPES
+                or "gzip" not in (request.headers.get("Accept-Encoding") or "").lower()):
+            return resp
+        body = resp.get_data()
+        if len(body) < _GZIP_MIN_BYTES:
+            return resp
+        import gzip as _gzip
+        resp.set_data(_gzip.compress(body, compresslevel=5))
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Content-Length"] = str(len(resp.get_data()))
+        vary = resp.headers.get("Vary")
+        resp.headers["Vary"] = (vary + ", Accept-Encoding") if vary else "Accept-Encoding"
+    except Exception as e:          # never let compression break a response
+        log.debug("gzip skipped: %s", e)
+    return resp
+
 # Persist logs to ./logs/app.log so users can grab a copy after a stall/crash.
 try:
     from logging.handlers import RotatingFileHandler
@@ -1066,6 +1098,88 @@ _alpaca_caches          = {n: {"data": [], "ts": 0.0} for n in _ALPACA_NUMS}
 _alpaca_cache_locks     = {n: threading.Lock()        for n in _ALPACA_NUMS}
 _alpaca_analysis_caches = {n: {}                       for n in _ALPACA_NUMS}
 
+# ── Incremental fills refresh ─────────────────────────────────────────────────
+# Re-paginating 90 days of orders on every TTL expiry (≈25 pages for a farm, per
+# account, per gunicorn worker, every 2 min) is what stalled the dashboard for up
+# to a minute: everything that reads a stale cache waits on that walk. Closed
+# orders don't change, and stock orders here are DAY orders, so an order submitted
+# more than a session ago can't still fill or alter. A refresh therefore only asks
+# for orders submitted in the last FILLS_INCR_DAYS and merges them in by order id
+# (newer copy wins — a partial fill that completed later replaces the earlier
+# row). A full re-walk still runs every FILLS_FULL_REFRESH_SECS and whenever the
+# cache is empty, as the backstop for anything the merge could miss.
+FILLS_INCR_DAYS         = 2
+FILLS_FULL_REFRESH_SECS = 6 * 3600
+
+
+def _merge_fills(old, recent, lookback_days, now_dt):
+    """Union of cached fills and a recent re-fetch, keyed by exec_id (order id).
+
+    The recent copy of an order replaces the cached one, keeping the cached
+    strategy annotation when the new row has none (the /api/alpaca/trades
+    annotator adds it; a bare re-fetch doesn't). Fills older than the lookback are
+    dropped so the window matches a full fetch. Newest first, like get_fills."""
+    from datetime import timedelta as _td
+    by = {}
+    for f in old or []:
+        by[f.get("exec_id") or id(f)] = f
+    for f in recent or []:
+        k = f.get("exec_id") or id(f)
+        prev = by.get(k)
+        if prev is not None and prev.get("strategy") and not f.get("strategy"):
+            f = {**f, "strategy": prev["strategy"]}
+        by[k] = f
+    cutoff = (now_dt - _td(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    keep = [f for f in by.values() if not f.get("time") or f["time"] >= cutoff]
+    keep.sort(key=lambda f: f.get("time") or "", reverse=True)
+    return keep
+
+
+def _fetch_fills_for_cache(broker, cache):
+    """The fills a cache refresh should store: a full walk when the cache is empty
+    or its last full walk is older than FILLS_FULL_REFRESH_SECS, else the cached
+    fills merged with the last FILLS_INCR_DAYS. Raises on a failed fetch, like
+    get_fills(raise_on_error=True), so callers keep their error handling."""
+    from brokers.alpaca_broker import FILLS_LOOKBACK_DAYS as _LOOKBACK
+    now = time.time()
+
+    def _full():
+        fills = broker.get_fills(raise_on_error=True)
+        cache["full_ts"] = now
+        return fills
+    # Recorded only AFTER a successful fetch: if the fetch fails, the previous
+    # oldest-open time must survive, or the next refresh could miss an order that
+    # was open then and filled in the meantime.
+    def _commit(fills, oldest):
+        cache["open_since"] = oldest
+        return fills
+
+    # Oldest order open RIGHT NOW, read before the closed-order fetch so an order
+    # that fills in between is still covered. Brokers without the method (tests,
+    # non-Alpaca) get a full walk every time, i.e. the old behaviour.
+    oldest_fn = getattr(broker, "oldest_open_order_ts", None)
+    if oldest_fn is None:
+        return _full()
+    try:
+        oldest_now = oldest_fn()
+    except Exception as e:
+        log.debug("open-order read failed (%s) — full fills walk", e)
+        return _full()
+    prev_open = cache.get("open_since")
+
+    if not cache.get("data") or now - cache.get("full_ts", 0) >= FILLS_FULL_REFRESH_SECS:
+        return _commit(_full(), oldest_now)
+    # Reach back to whichever is oldest: the incremental window, an order that was
+    # open at the last refresh (it may have filled since), or one open now. +1h
+    # margin for clock skew between submission and our timestamps.
+    since = min([now - FILLS_INCR_DAYS * 86400] + [t for t in (prev_open, oldest_now) if t])
+    days = (now - since) / 86400 + 1 / 24
+    if days >= _LOOKBACK:
+        return _commit(_full(), oldest_now)
+    recent = broker.get_fills(days=days, raise_on_error=True)
+    return _commit(_merge_fills(cache["data"], recent, _LOOKBACK, datetime.now(timezone.utc)),
+                   oldest_now)
+
 # Back-compat aliases — the SAME dict objects the registry holds. Mutate in place.
 _alpaca_fills_cache,  _alpaca2_fills_cache,  _alpaca3_fills_cache,  _alpaca4_fills_cache    = (_alpaca_caches[n]          for n in _ALPACA_NUMS[:4])
 _alpaca_fills_lock,   _alpaca2_fills_lock,   _alpaca3_fills_lock,   _alpaca4_fills_lock     = (_alpaca_cache_locks[n]     for n in _ALPACA_NUMS[:4])
@@ -1132,7 +1246,7 @@ def _get_cached_fills_n(num, raise_on_error=False, swr=False):
                     if cache.get("error") and (time.time() - cache.get("error_ts", 0)) < FILLS_ERROR_BACKOFF:
                         return
                     try:
-                        fills = broker.get_fills(raise_on_error=True)
+                        fills = _fetch_fills_for_cache(broker, cache)
                         cache["data"]  = fills
                         cache["ts"]    = time.time()
                         cache["error"] = None
@@ -1158,7 +1272,7 @@ def _get_cached_fills_n(num, raise_on_error=False, swr=False):
         if broker is None:
             return cache["data"]
         try:
-            fills = broker.get_fills(raise_on_error=True)
+            fills = _fetch_fills_for_cache(broker, cache)
         except Exception as e:
             cache["error"]    = str(e)[:200]
             cache["error_ts"] = time.time()
@@ -14001,6 +14115,25 @@ def api_perf_vs_benchmark():
         return jsonify({"error": str(e), "dates": [], "series": []}), 200
 
 
+def _fills_response(account, cache):
+    """jsonify the cached fills with an ETag tied to the cache's fetch time.
+
+    The dashboard re-polls every account's fills every 30 s but the cache only
+    refreshes every ALPACA_CACHE_TTL (120 s), so most polls ask for data the
+    browser already has. With an ETag and Cache-Control: no-cache the browser
+    revalidates each time and gets a body-less 304 while nothing changed —
+    instead of re-downloading (and the server re-serialising) ~3 MB per farm."""
+    data = cache["data"]
+    tag = f'W/"fills-{account}-{cache.get("ts", 0):.3f}-{len(data or [])}"'
+    if tag in (request.headers.get("If-None-Match") or ""):
+        resp = make_response("", 304)
+    else:
+        resp = jsonify(data)
+    resp.headers["ETag"] = tag
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.route("/api/alpaca/trades")
 def alpaca_trades():
     """Return filled Alpaca orders with resolved strategy names, cached.
@@ -14016,7 +14149,7 @@ def alpaca_trades():
     now = time.time()
     _cache = _alpaca_caches.get(str(account), _alpaca_caches["1"])
     if now - _cache["ts"] < ALPACA_CACHE_TTL and _cache["data"]:
-        return jsonify(_cache["data"])
+        return _fills_response(account, _cache)
     if _cache["data"]:
         # Stale-while-revalidate — kick off a refresh + re-annotate in background,
         # return the previously annotated cached data instantly.
@@ -14031,7 +14164,7 @@ def alpaca_trades():
                         return
                     if _cache.get("error") and (time.time() - _cache.get("error_ts", 0)) < FILLS_ERROR_BACKOFF:
                         return
-                    new_fills = br.get_fills(raise_on_error=True)
+                    new_fills = _fetch_fills_for_cache(br, _cache)
                     try:
                         sig_lookup = _signal_lookup()
                         for f in new_fills:
@@ -14059,7 +14192,7 @@ def alpaca_trades():
                 finally:
                     _lock.release()
             threading.Thread(target=_bg_annotate_refresh, daemon=True).start()
-        return jsonify(_cache["data"])
+        return _fills_response(account, _cache)
     try:
         fills = fills_fn()
         if not fills and _fills_error(account):
@@ -14091,8 +14224,9 @@ def alpaca_trades():
             log.debug("alpaca_trades strategy resolution error: %s", _e)
         # Write annotated data back into the cache (keeps ts from _get_cached_fills).
         # Mutate the registry cache dict in place so every alias sees it.
-        _alpaca_caches.get(str(account), _alpaca_caches["1"])["data"] = fills
-        return jsonify(fills)
+        _c = _alpaca_caches.get(str(account), _alpaca_caches["1"])
+        _c["data"] = fills
+        return _fills_response(account, _c)
     except Exception as e:
         log.error("alpaca_trades error: %s", e)
         return jsonify([])
@@ -22563,7 +22697,12 @@ def api_alpaca_analysis():
         if _cached and (time.time() - _cached["ts"] < ALPACA_ANALYSIS_TTL):
             return jsonify(_cached["data"])
 
-        fills = _fills_fn()
+        # Stale-while-revalidate: a dashboard chart is fine at up to one cache TTL
+        # (120 s) old, and blocking on a full 90-day re-pagination here is what made
+        # a date-range change take most of a minute. The risk/position monitors read
+        # the same cache with swr=False, so they still get fresh fills.
+        fills = (_get_cached_fills_n(account, swr=True) if account in ACCOUNTS_BY_NUM
+                 else _fills_fn())
         if not fills:
             # Distinguish "no trades" from "could not load trades". Rendering an
             # empty chart for a failed fetch is how an Alpaca outage read as every

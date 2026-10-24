@@ -1916,9 +1916,18 @@
       // load from account 1; on the Refined tab we need account 2's fills for
       // the chart's JS pairing, otherwise the chart misses everything that
       // happened on the second account.
+      // loadTrades already holds every account's fills (refreshed every 30s), so a
+      // date-range change reuses them instead of re-downloading the account's whole
+      // 90-day history (~3 MB for a farm) just to filter it to the new dates. Only
+      // fetch when this account hasn't loaded yet.
       let execs;
+      const _loaded = { '2': allAlpaca2Execs, '3': allAlpaca3Execs, '4': allAlpaca4Execs,
+                        '5': allAlpaca5Execs, '6': allAlpaca6Execs, '7': allAlpaca7Execs };
       if (account) {
-        execs = await fetch('/api/alpaca/trades?account=' + account).then(r => r.json()).catch(() => []);
+        execs = _loaded[String(account)];
+        if (!Array.isArray(execs) || !execs.length) {
+          execs = await fetch('/api/alpaca/trades?account=' + account).then(r => r.json()).catch(() => []);
+        }
       } else {
         execs = allAlpacaExecs;
       }

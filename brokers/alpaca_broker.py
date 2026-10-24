@@ -1413,6 +1413,24 @@ class AlpacaBroker:
             log.error("Alpaca get_portfolio_history failed: %s", e, exc_info=True)
             return []
 
+    def oldest_open_order_ts(self):
+        """Submission time (epoch seconds) of the oldest order still open, or None
+        when nothing is open. Raises on failure.
+
+        The incremental fills refresh only re-lists recently SUBMITTED orders, but
+        GTC exit stops are submitted at entry and can fill days later (a position
+        held overnight). Remembering the oldest open order at each refresh lets the
+        next refresh reach back far enough to see it close."""
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        self._ensure_client()
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=500)
+        orders = _retry_rate_limited(lambda: self._trading.get_orders(filter=req),
+                                     what="open orders", attempts=3) or []
+        subs = [getattr(o, "submitted_at", None) or getattr(o, "created_at", None) for o in orders]
+        subs = [s.timestamp() for s in subs if s is not None]
+        return min(subs) if subs else None
+
     def get_fills(self, days=FILLS_LOOKBACK_DAYS, raise_on_error=False):
         """Return filled and partially-filled orders for the last `days` days.
 
