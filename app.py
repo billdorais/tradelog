@@ -1356,6 +1356,10 @@ def _get_today_fills_n(num, swr=False):
 _sig_lookup_cache = {"data": None, "ts": 0.0}
 _sig_lookup_lock  = threading.Lock()
 SIG_LOOKUP_TTL    = 60  # seconds — the fills it annotates are themselves cached 120s
+# _build_signal_lookup_for_alpaca's own cache (the pairing-path lookup, with
+# sentiment) — same TTL, separate from _signal_lookup's (ticker,side)->(ts,strat).
+_alpaca_sig_cache = {"data": None, "ts": 0.0}
+_alpaca_sig_lock  = threading.Lock()
 
 
 def _signal_lookup():
@@ -9666,12 +9670,30 @@ def _build_signal_lookup_for_alpaca(trades_db=None):
     DB hit."""
     from datetime import datetime as _dt
     if trades_db is None:
-        conn = get_db()
-        cur  = conn.cursor()
-        cur.execute("SELECT ticker, action, sentiment, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
-        rows = cur.fetchall()
-        trades_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
-        conn.close()
+        # Cached: this scans EVERY signal ever received and parses each timestamp,
+        # and the risk monitor alone called it once per account per cycle (7x a
+        # minute, per worker) just to pair today's fills — the single biggest CPU
+        # cost on the live server. Nothing mutates the returned dict.
+        # Keyed to the current get_db so a swapped database (tests) never reads
+        # another database's cached lookup; in production get_db never changes.
+        now, src = time.time(), id(get_db)
+        hit = _alpaca_sig_cache.get("data")
+        if hit is not None and _alpaca_sig_cache.get("src") == src and now - _alpaca_sig_cache["ts"] < SIG_LOOKUP_TTL:
+            return hit
+        with _alpaca_sig_lock:
+            hit = _alpaca_sig_cache.get("data")
+            if (hit is not None and _alpaca_sig_cache.get("src") == src
+                    and time.time() - _alpaca_sig_cache["ts"] < SIG_LOOKUP_TTL):
+                return hit
+            conn = get_db()
+            cur  = conn.cursor()
+            cur.execute("SELECT ticker, action, sentiment, received_at, strategy, exec_status FROM trades ORDER BY id ASC")
+            rows = cur.fetchall()
+            rows_db = [dict(r) if not DATABASE_URL else dict(zip([d[0] for d in cur.description], r)) for r in rows]
+            conn.close()
+            built = _build_signal_lookup_for_alpaca(rows_db)
+            _alpaca_sig_cache.update(data=built, ts=time.time(), src=src)
+            return built
 
     lookup = {}
     for t in trades_db:

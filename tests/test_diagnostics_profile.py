@@ -41,3 +41,28 @@ def test_profile_samples_a_busy_thread():
     spin_rows = [r for r in d["threads"] if r["thread"] == "spinner-under-test"]
     assert d["samples"] > 10 and spin_rows
     assert any("spin" in f["fn"] for f in spin_rows[0]["top_functions"])
+
+
+def test_signal_lookup_is_built_once_per_ttl(monkeypatch):
+    calls = []
+
+    class _Cur:
+        description = [("ticker",), ("action",), ("sentiment",), ("received_at",), ("strategy",), ("exec_status",)]
+        def execute(self, *a): calls.append(1)
+        def fetchall(self):
+            return [{"ticker": "AAA", "action": "BUY", "sentiment": "long",
+                     "received_at": "2026-10-22T14:00:00Z", "strategy": "AAA_X", "exec_status": "ok"}]
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def close(self): pass
+
+    def fake_db(): return _Conn()
+    monkeypatch.setattr(a, "get_db", fake_db)
+    first = a._build_signal_lookup_for_alpaca()
+    second = a._build_signal_lookup_for_alpaca()
+    assert first is second and len(calls) == 1
+    assert first[("AAA", "BOT")][0][1] == "AAA_X"
+    monkeypatch.setattr(a, "get_db", lambda: _Conn())           # different database
+    a._build_signal_lookup_for_alpaca()
+    assert len(calls) == 2
