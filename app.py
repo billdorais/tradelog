@@ -3711,6 +3711,8 @@ except Exception as _crew_err:
 
 from routes.farms import farms_bp
 app.register_blueprint(farms_bp)
+from routes.book_report import book_report_bp
+app.register_blueprint(book_report_bp)
 
 
 @app.route("/api/trades")

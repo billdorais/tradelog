@@ -1695,26 +1695,20 @@ def _recent_months(n, today=None):
     return list(reversed(out))
 
 
-@farms_bp.route("/api/farms/book_months")
-def api_book_months():
-    """?months=4 — month-by-month on Kairos Farm: the Kairos Refined roster vs the
-    Kairos Select roster (each as it stood at each trade), plus both books' actual
-    results. Read-only. The data pack for a monthly report agent."""
+def build_book_months_pack(n_months=4):
+    """The month-by-month pack as a plain dict (shared by the endpoint and the
+    monthly report). Raises RuntimeError when the Kairos Farm can't be read."""
     a = _app()
-    try:
-        n = max(1, min(12, int(request.args.get("months") or 4)))
-    except ValueError:
-        n = 4
-    months = _recent_months(n)
+    months = _recent_months(max(1, min(12, int(n_months))))
     farm, err = _farm_round_trips("5", "", "", full=True)
     if err:
-        return jsonify({"error": f"Kairos Farm: {err}"}), 409
+        raise RuntimeError(f"Kairos Farm: {err}")
     ref_rts, e1 = _book_rts(a, "3")
     sel_rts, e2 = _book_rts(a, "7")
     pack = book_month_pack(farm, _refined_timeline(a), _select_timeline(a, sel_rts),
                            {"refined": ref_rts, "select": sel_rts}, months)
     errors = {k: v for k, v in (("Kairos Refined", e1), ("Kairos Select", e2)) if v}
-    return jsonify({
+    return {
         "farm": "Kairos Farm", "months": pack, "errors": errors,
         "notes": [
             "Each farm trade is attributed to the roster that held at its entry, not today's roster.",
@@ -1723,4 +1717,19 @@ def api_book_months():
             "each strategy counts from its first to its last actual Select trade.",
             "% per trade (avg_pct) is the comparable number: the farm trades $1k, the books ~$15k.",
         ],
-    })
+    }
+
+
+@farms_bp.route("/api/farms/book_months")
+def api_book_months():
+    """?months=4 — month-by-month on Kairos Farm: the Kairos Refined roster vs the
+    Kairos Select roster (each as it stood at each trade), plus both books' actual
+    results. Read-only. The data pack for the monthly report."""
+    try:
+        n = int(request.args.get("months") or 4)
+    except ValueError:
+        n = 4
+    try:
+        return jsonify(build_book_months_pack(n))
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 409

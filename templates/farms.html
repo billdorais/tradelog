@@ -193,6 +193,17 @@
         trades. "Actual" is each book's own results at its own size and gates. Compare <strong>% per trade</strong>: the farm
         trades $1k, the books ~$15k.</div>
       <div id="bmTable"><div class="empty">Loading…</div></div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2130">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="band-q" style="margin:0">Monthly report</span>
+          <span class="note">Claude reads the table above (the same numbers, nothing else) and writes what it shows. It
+            suggests; it never changes anything.</span>
+          <button class="btn go" id="brRun" onclick="runBookReport()" style="margin-left:auto">Write report</button>
+        </div>
+        <div id="brStatus" class="note" style="margin:8px 0"></div>
+        <div id="brList" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+        <div id="brBody"></div>
+      </div>
     </div>
 
     <div id="farmTv"></div>
@@ -596,9 +607,92 @@
     _renderExitsBar();
     _loadVsFarms();
     _loadBookMonths();
+    if (!_brPoll) _loadBookReports();
   }
 
   // ── Month by month: Kairos Refined vs Kairos Select on Kairos Farm ────────
+  // ── Monthly report (Claude) ───────────────────────────────────────────────
+  let _brReports = [], _brShown = null, _brPoll = null;
+
+  // Minimal, SAFE markdown: everything is HTML-escaped first, then only headings,
+  // bold, bullets and pipe tables are formatted. Model output never becomes markup.
+  function _md(src) {
+    const lines = _esc(src || '').split('\n');
+    const inline = t => t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    let html = '', inList = false, tbl = [];
+    const flushList = () => { if (inList) { html += '</ul>'; inList = false; } };
+    const flushTbl = () => {
+      if (!tbl.length) return;
+      const rows = tbl.filter(r => !/^\s*\|?\s*:?-{2,}/.test(r)).map(r => r.replace(/^\s*\||\|\s*$/g, '').split('|').map(c => inline(c.trim())));
+      html += '<div class="tbl" style="margin:6px 0"><table><thead><tr>' + rows[0].map(c => `<th class="l">${c}</th>`).join('')
+        + '</tr></thead><tbody>' + rows.slice(1).map(r => '<tr>' + r.map(c => `<td class="l">${c}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table></div>';
+      tbl = [];
+    };
+    for (const raw of lines) {
+      const l = raw.trimEnd();
+      if (/^\s*\|/.test(l)) { flushList(); tbl.push(l); continue; }
+      flushTbl();
+      if (/^#{1,3} /.test(l)) { flushList(); html += `<div class="band-q" style="margin:14px 0 4px">${inline(l.replace(/^#+ /, ''))}</div>`; }
+      else if (/^\s*[-*] /.test(l)) { if (!inList) { html += '<ul style="margin:4px 0 4px 18px;font-size:0.8rem;line-height:1.5">'; inList = true; } html += `<li>${inline(l.replace(/^\s*[-*] /, ''))}</li>`; }
+      else if (!l.trim()) { flushList(); }
+      else { flushList(); html += `<p style="font-size:0.8rem;line-height:1.55;margin:4px 0">${inline(l)}</p>`; }
+    }
+    flushList(); flushTbl();
+    return html;
+  }
+
+  async function _loadBookReports() {
+    let d;
+    try { d = await fetch('/api/farms/book_reports').then(r => r.json()); } catch (_) { return; }
+    _brReports = d.reports || [];
+    const running = _brReports.find(r => r.status === 'running');
+    document.getElementById('brRun').disabled = !!running;
+    document.getElementById('brStatus').textContent = running
+      ? `Writing report #${running.id} (started ${running.created_at} UTC) — this takes a minute or two…`
+      : (_brReports.length ? '' : `No reports yet. Model: ${d.model}.`);
+    document.getElementById('brList').innerHTML = _brReports.map(r =>
+      `<button class="btn${r.id === _brShown ? ' on' : ''}" style="padding:3px 9px" onclick="showBookReport(${r.id})">
+         ${_esc(r.created_at.slice(0, 10))}${r.status === 'done' ? '' : ' · ' + _esc(r.status)}</button>`).join('');
+    if (_brShown === null) {
+      const first = _brReports.find(r => r.status === 'done');
+      if (first) showBookReport(first.id);
+    } else {
+      showBookReport(_brShown);
+    }
+    clearTimeout(_brPoll);
+    if (running) _brPoll = setTimeout(_loadBookReports, 10000);
+  }
+
+  function showBookReport(id) {
+    _brShown = id;
+    const r = _brReports.find(x => x.id === id);
+    const body = document.getElementById('brBody');
+    document.querySelectorAll('#brList .btn').forEach(b => b.classList.toggle('on', b.getAttribute('onclick') === `showBookReport(${id})`));
+    if (!r) { body.innerHTML = ''; return; }
+    if (r.status === 'running') { body.innerHTML = '<div class="empty">Still writing…</div>'; return; }
+    if (r.status !== 'done') { body.innerHTML = `<div class="warn">Report #${r.id} failed: ${_esc(r.error || 'unknown error')}</div>`; return; }
+    const u = r.usage || {};
+    body.innerHTML = _md(r.report)
+      + `<div class="note" style="margin-top:10px">Report #${r.id} · ${_esc(r.created_at)} UTC · ${_esc(u.model || r.model || '')}`
+      + (u.input_tokens ? ` · ${u.input_tokens.toLocaleString()} in / ${(u.output_tokens || 0).toLocaleString()} out tokens` : '')
+      + ` · ${r.months} months. Interpretation only — check any claim against the table above before acting on it.</div>`;
+  }
+
+  async function runBookReport() {
+    const btn = document.getElementById('brRun');
+    btn.disabled = true;
+    let res, d;
+    try {
+      res = await fetch('/api/farms/book_report/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ months: 4 }) });
+      d = await res.json();
+    } catch (e) { d = { error: String(e) }; res = { ok: false }; }
+    if (!res.ok && !d.id) { document.getElementById('brStatus').innerHTML = `<span style="color:#e08a8a">${_esc(d.error || 'failed')}</span>`; btn.disabled = false; return; }
+    _brShown = d.id;
+    _loadBookReports();
+  }
+
   let _bmLoaded = false;
   async function _loadBookMonths() {
     if (_bmLoaded) return;            // independent of the page's window; load once
