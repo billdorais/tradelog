@@ -185,6 +185,16 @@
       <div id="vsLists" style="margin-top:12px"></div>
     </div>
 
+    <div class="panel" id="bmPanel">
+      <div class="band-q">Month by month on Kairos Farm — Kairos Refined vs Kairos Select</div>
+      <div class="band-sub">The Kairos Farm's trades, split by which roster held each strategy <strong>at the time of the
+        trade</strong> — not today's roster, which would be hindsight. Kairos Refined's roster comes from its saved daily
+        snapshots; Kairos Select's from logged Applies (from Oct 24) and, before that, each strategy's span of actual Select
+        trades. "Actual" is each book's own results at its own size and gates. Compare <strong>% per trade</strong>: the farm
+        trades $1k, the books ~$15k.</div>
+      <div id="bmTable"><div class="empty">Loading…</div></div>
+    </div>
+
     <div id="farmTv"></div>
     <div id="farmKairos"></div>
 
@@ -585,6 +595,42 @@
     _renderRoster();
     _renderExitsBar();
     _loadVsFarms();
+    _loadBookMonths();
+  }
+
+  // ── Month by month: Kairos Refined vs Kairos Select on Kairos Farm ────────
+  let _bmLoaded = false;
+  async function _loadBookMonths() {
+    if (_bmLoaded) return;            // independent of the page's window; load once
+    _bmLoaded = true;
+    const el = document.getElementById('bmTable');
+    let res, d;
+    try {
+      res = await fetch('/api/farms/book_months?months=4');
+      d = await res.json();
+    } catch (e) { d = { error: String(e) }; res = { ok: false }; }
+    if (!res.ok || d.error) { el.innerHTML = `<div class="empty">${_esc(d.error || 'Could not load.')}</div>`; _bmLoaded = false; return; }
+    const cell = m => {
+      if (!m || !m.trades) return '<td class="dim">—</td>';
+      const p = m.avg_pct;
+      return `<td><span class="${_cls(p || 0)}">${p == null ? '—' : (p >= 0 ? '+' : '−') + Math.abs(p).toFixed(3) + '%'}</span>`
+        + `<div class="note" style="margin:0">${m.trades}t · ${m.win_rate}%${m.profit_factor != null ? ' · PF ' + m.profit_factor : ''}</div></td>`;
+    };
+    const mon = k => { const [y, m] = k.split('-').map(Number);
+      return new Date(y, m - 1, 1).toLocaleString('en-US', { month: 'short', year: 'numeric' }); };
+    el.innerHTML = `<div class="tbl"><table><thead><tr><th class="l">Month</th>
+        <th>Refined roster<div class="note" style="margin:0">on the farm</div></th>
+        <th>Select roster<div class="note" style="margin:0">on the farm</div></th>
+        <th>In both</th><th>Refined only</th><th>Select only</th><th>Rest of farm</th>
+        <th>Kairos Refined<div class="note" style="margin:0">actual</div></th>
+        <th>Kairos Select<div class="note" style="margin:0">actual</div></th></tr></thead><tbody>`
+      + d.months.map(r => `<tr><td class="l">${_esc(mon(r.month))}</td>${cell(r.farm.refined_roster)}${cell(r.farm.select_roster)}`
+          + `${cell(r.farm.both)}${cell(r.farm.refined_only)}${cell(r.farm.select_only)}${cell(r.farm.neither)}`
+          + `${cell(r.actual.refined)}${cell(r.actual.select)}</tr>`).join('')
+      + '</tbody></table></div>'
+      + (Object.keys(d.errors || {}).length ? `<div class="warn" style="margin-top:8px">${Object.entries(d.errors).map(([k, v]) => _esc(k + ': ' + v)).join('<br>')}</div>` : '')
+      + `<div class="note" style="margin-top:8px">Each cell: average % per trade, then trades · win rate · profit factor. `
+      + `"Rest of farm" is every Kairos Farm trade neither roster held — the baseline both rosters should beat.</div>`;
   }
 
   // ── Select vs its farms ───────────────────────────────────────────────────

@@ -1029,6 +1029,9 @@ def api_farm_apply_select():
                          "pnl": r["pnl"], "shares": sizes[r["strategy"]]} for r in roster]}
     try:
         a._save_setting("SELECT_LAST_APPLY", json.dumps(record))
+        # Roster history for the month-by-month pack. Deferred names stay wired
+        # (they hold an open position), so they are still on the roster.
+        _log_select_roster(a, [r["strategy"] for r in roster] + list(deferred), ts)
     except Exception as e:
         a.log.warning("farms: could not persist the Select apply record: %s", e)
     a.log.info("Kairos Select rewired from Farm Leaders: %d picks (+%d ~%d -%d, %d deferred)",
@@ -1058,6 +1061,7 @@ def api_farm_clear_select():
     try:
         a._save_setting("SELECT_LAST_APPLY", json.dumps(
             {"at": ts, "cleared": True, "picks": [], "deferred": deferred}))
+        _log_select_roster(a, list(deferred), ts)
     except Exception as e:
         a.log.warning("farms: could not persist the Select clear record: %s", e)
     a.log.info("Kairos Select cleared from Farm Leaders: -%d, %d deferred, %d shared rules stripped",
@@ -1515,3 +1519,208 @@ def api_select_vs_farms():
     out = compare_select_farms(sel, farm, _select_sources(a), _select_wired_since(a))
     out.update({"from_date": p["from_date"], "to_date": p["to_date"], "pair_window_mins": PAIR_WINDOW_SECS // 60})
     return jsonify(out)
+
+
+# ── Month-by-month book pack: Kairos Refined vs Kairos Select on Kairos Farm ──
+# The data behind a monthly "how did each roster do" read — computed here, so a
+# report agent interprets numbers instead of producing them. Every farm trade is
+# judged against the roster that held AT ITS ENTRY, never today's roster: filtering
+# the past by today's names is hindsight (they were picked for looking good then).
+
+from bisect import bisect_right as _bisect_right
+
+
+def _to_epoch(ts):
+    """'2026-10-23 20:16:21 UTC' / ISO with Z / naive -> epoch seconds, or None."""
+    s = str(ts or "").strip().replace(" UTC", "").replace("Z", "+00:00")
+    if not s:
+        return None
+    if "T" not in s:
+        s = s.replace(" ", "T", 1)
+    try:
+        d = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d.timestamp()
+
+
+class RosterTimeline:
+    """Which strategies a book held at a moment: sorted (epoch, set) snapshots, each
+    in force until the next. Before the first snapshot, falls back to per-strategy
+    (first, last) intervals when given — the proxy for history nobody recorded."""
+
+    def __init__(self, snapshots, proxy=None):
+        snaps = sorted((t, frozenset(s)) for t, s in snapshots if t is not None)
+        self.times = [t for t, _ in snaps]
+        self.sets = [s for _, s in snaps]
+        self.proxy = proxy or {}
+
+    def holds(self, strategy, epoch):
+        if epoch is None:
+            return False
+        i = _bisect_right(self.times, epoch) - 1
+        if i >= 0:
+            return strategy in self.sets[i]
+        iv = self.proxy.get(strategy)
+        return bool(iv) and iv[0] <= epoch <= iv[1]
+
+
+def _metrics(rows):
+    """rows: [(pnl, pct)] -> {trades, win_rate, profit_factor, avg_pct, pnl}."""
+    if not rows:
+        return {"trades": 0, "win_rate": None, "profit_factor": None, "avg_pct": None, "pnl": 0.0}
+    pnls = [p for p, _ in rows]
+    pcts = [q for _, q in rows if q is not None]
+    wins = [p for p in pnls if p > 0]
+    gl = abs(sum(p for p in pnls if p <= 0))
+    return {"trades": len(rows),
+            "win_rate": round(len(wins) / len(rows) * 100, 1),
+            "profit_factor": round(sum(wins) / gl, 2) if gl > 0 else None,
+            "avg_pct": round(sum(pcts) / len(pcts), 4) if pcts else None,
+            "pnl": round(sum(pnls), 2)}
+
+
+def book_month_pack(farm_rts, refined, select, actual, months):
+    """Month-by-month comparison on one farm.
+
+    farm_rts: the farm's closed round-trips.
+    refined / select: RosterTimeline for each book.
+    actual:   {"refined": [...], "select": [...]} each book's own round-trips.
+    months:   ['YYYY-MM', ...] oldest first.
+
+    Per month: the farm's trades split by which roster held the strategy at entry
+    (both / refined only / select only / neither), each roster's farm total, and each
+    book's ACTUAL results (its own size, gates and execution). % per trade is the
+    comparable number — the farm trades $1k, the books ~$15k."""
+    def _row(t):
+        return float(t.get("pnl") or 0), _rt_pct(t)
+
+    out = []
+    for m in months:
+        groups = {k: [] for k in ("both", "refined_only", "select_only", "neither")}
+        ref_all, sel_all = [], []
+        for t in farm_rts:
+            et = t.get("entry_time")
+            if (et_date(et) or "")[:7] != m:
+                continue
+            e, s = _to_epoch(et), t["strategy"]
+            r, q = refined.holds(s, e), select.holds(s, e)
+            key = "both" if r and q else "refined_only" if r else "select_only" if q else "neither"
+            groups[key].append(_row(t))
+            if r:
+                ref_all.append(_row(t))
+            if q:
+                sel_all.append(_row(t))
+        act = {k: _metrics([_row(t) for t in (actual.get(k) or [])
+                            if (et_date(t.get("entry_time")) or "")[:7] == m])
+               for k in ("refined", "select")}
+        farm = {"refined_roster": _metrics(ref_all), "select_roster": _metrics(sel_all)}
+        farm.update({k: _metrics(v) for k, v in groups.items()})
+        out.append({"month": m, "farm": farm, "actual": act})
+    return out
+
+
+def _book_rts(a, num, full=True):
+    """A book's own closed round-trips (no leaderboard exclusions — these are trades
+    it actually made). Returns (rts, error)."""
+    rec = a.ACCOUNTS_BY_NUM.get(num)
+    if not rec:
+        return [], "not configured"
+    try:
+        fills = _full_fills(rec, num) if full else rec["fills_fn"]()
+    except Exception as e:
+        return [], f"fills unavailable: {e}"
+    paired = a._pair_alpaca_fills_lifo(fills or [])
+    return [dict(c, strategy=(c.get("strategy") or "").strip().upper())
+            for c in paired.get("closed_clean") or []], None
+
+
+def _refined_timeline(a):
+    """Kairos Refined's roster over time, from every saved snapshot run."""
+    conn = a.get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT run_at, strategy_name FROM kairos_refined_history")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    runs = {}
+    for r in rows:
+        at = r[0] if a.DATABASE_URL else r["run_at"]
+        nm = r[1] if a.DATABASE_URL else r["strategy_name"]
+        runs.setdefault(at, set()).add((nm or "").strip().upper())
+    return RosterTimeline([(_to_epoch(at), names) for at, names in runs.items()])
+
+
+def _select_timeline(a, select_rts):
+    """Kairos Select's roster over time: every logged Apply (from 2026-10-24) and
+    Clear, and before the first logged one, each strategy's span of actual Select
+    trades — the only record of the roster before Applies were logged."""
+    try:
+        hist = json.loads(a._load_setting("SELECT_APPLY_HISTORY") or "[]") or []
+    except Exception:
+        hist = []
+    snaps = [(_to_epoch(h.get("at")), {s.upper() for s in h.get("picks") or []}) for h in hist]
+    proxy = {}
+    for t in select_rts:
+        e = _to_epoch(t.get("entry_time"))
+        if e is None:
+            continue
+        lo, hi = proxy.get(t["strategy"], (e, e))
+        proxy[t["strategy"]] = (min(lo, e), max(hi, e))
+    return RosterTimeline(snaps, proxy)
+
+
+def _log_select_roster(a, picks, at):
+    """Append one Select roster change to SELECT_APPLY_HISTORY (newest 200 kept) —
+    SELECT_LAST_APPLY only ever holds the latest, which can't reconstruct a month."""
+    try:
+        hist = json.loads(a._load_setting("SELECT_APPLY_HISTORY") or "[]") or []
+    except Exception:
+        hist = []
+    hist.append({"at": at, "picks": sorted({p.upper() for p in picks})})
+    a._save_setting("SELECT_APPLY_HISTORY", json.dumps(hist[-200:]))
+
+
+def _recent_months(n, today=None):
+    d = today or datetime.now(_ET).date()
+    y, m, out = d.year, d.month, []
+    for _ in range(n):
+        out.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return list(reversed(out))
+
+
+@farms_bp.route("/api/farms/book_months")
+def api_book_months():
+    """?months=4 — month-by-month on Kairos Farm: the Kairos Refined roster vs the
+    Kairos Select roster (each as it stood at each trade), plus both books' actual
+    results. Read-only. The data pack for a monthly report agent."""
+    a = _app()
+    try:
+        n = max(1, min(12, int(request.args.get("months") or 4)))
+    except ValueError:
+        n = 4
+    months = _recent_months(n)
+    farm, err = _farm_round_trips("5", "", "", full=True)
+    if err:
+        return jsonify({"error": f"Kairos Farm: {err}"}), 409
+    ref_rts, e1 = _book_rts(a, "3")
+    sel_rts, e2 = _book_rts(a, "7")
+    pack = book_month_pack(farm, _refined_timeline(a), _select_timeline(a, sel_rts),
+                           {"refined": ref_rts, "select": sel_rts}, months)
+    errors = {k: v for k, v in (("Kairos Refined", e1), ("Kairos Select", e2)) if v}
+    return jsonify({
+        "farm": "Kairos Farm", "months": pack, "errors": errors,
+        "notes": [
+            "Each farm trade is attributed to the roster that held at its entry, not today's roster.",
+            "Kairos Refined's roster comes from its saved daily snapshots.",
+            "Kairos Select's roster comes from logged Applies (from 2026-10-24); before that, "
+            "each strategy counts from its first to its last actual Select trade.",
+            "% per trade (avg_pct) is the comparable number: the farm trades $1k, the books ~$15k.",
+        ],
+    })
