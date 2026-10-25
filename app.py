@@ -10368,8 +10368,8 @@ def _apply_ticker_cap(scored, n, cap=None):
 def _refined_scored(stats_map, stats_map_10d, min_trades, rule_ok=None, excluded_bands=()):
     """The Refined ranking, shared by both snapshots and the refresh-policy test.
 
-    Candidates: net-positive, at least `min_trades`, fewer than
-    _REFINED_CONSEC_LOSS_GATE straight losses, matched by an enabled rule, band not
+    Candidates: net-positive, at least `min_trades`, not tripping the
+    consecutive-loss gate (off by default), matched by an enabled rule, band not
     excluded. Score: composite on the window, blended 60/40 with the 10-day
     composite when the strategy has 2+ net-positive trades in the last 10 days.
 
@@ -10378,7 +10378,7 @@ def _refined_scored(stats_map, stats_map_10d, min_trades, rule_ok=None, excluded
         k: v for k, v in stats_map.items()
         if (v.get("total_pnl") or 0) > 0
         and (v.get("trades") or 0) >= min_trades
-        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and not _consec_blocked(v)
         and (rule_ok is None or rule_ok(k))
         and _band_of(k) not in excluded_bands
     }
@@ -10534,10 +10534,19 @@ except (TypeError, ValueError):
 
 _REFINED_SIZE_BANDS = _build_size_bands(REFINED_SIZE_DOLLARS)
 
-# Consecutive live losing trades that trigger auto-demotion from Refined.
-# Strategy stays in catch-all but is excluded from the top-N selection until
-# it records a winning trade and the consecutive count resets.
-_REFINED_CONSEC_LOSS_GATE = 3
+# Consecutive losing trades that demote a strategy from Refined's top-N until it
+# wins again. OFF since 2026-10-25 (0): at a ~40% win rate a strategy sits on three
+# straight losses about one day in five, so the gate mostly churned qualifying
+# strategies out and back in. Set REFINED_CONSEC_LOSS_GATE=3 to restore it.
+try:
+    _REFINED_CONSEC_LOSS_GATE = int(os.environ.get("REFINED_CONSEC_LOSS_GATE", "0") or 0)
+except (TypeError, ValueError):
+    _REFINED_CONSEC_LOSS_GATE = 0
+
+
+def _consec_blocked(stats):
+    """True when the consecutive-loss gate is on and this strategy trips it."""
+    return _REFINED_CONSEC_LOSS_GATE > 0 and (stats.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE
 
 # Minimum closed round-trips a strategy needs before being eligible for Refined.
 # 20 (2026-10-17), with the window widened 45 → 60 days. At 5 trades a strategy's
@@ -10673,7 +10682,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
     # The trades floor keeps lucky 1–2-trade strategies (typically PF=None,
     # 100% win) out of the top-N — they need more sample evidence first.
     demoted = [k for k, v in stats_map.items()
-               if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
+               if _consec_blocked(v)]
     if demoted:
         log.info("Refined: demoting %d strategies with %d+ consecutive losses: %s",
                  len(demoted), _REFINED_CONSEC_LOSS_GATE, demoted)
@@ -10723,7 +10732,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
         _filtered_out = [k for k in stats_map
                          if (stats_map[k].get("total_pnl") or 0) > 0
                          and (stats_map[k].get("trades") or 0) >= _REFINED_MIN_TRADES
-                         and (stats_map[k].get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+                         and not _consec_blocked(stats_map[k])
                          and not _strategy_has_enabled_rule(k)]
         if _filtered_out:
             log.info("Refined: %d strategies filtered out by routing-rule gate: %s",
@@ -10756,7 +10765,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
         k: v for k, v in stats_map.items()
         if (v.get("total_pnl") or 0) > 0
         and (v.get("trades") or 0) >= _REFINED_ONDECK_MIN_TRADES
-        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and not _consec_blocked(v)
         and _strategy_has_enabled_rule(k)
         and k not in _top_names
     }
@@ -11022,7 +11031,7 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
     stats_map_10d = _compute_strategy_stats(days=10,   from_date=from_date,
                                             fills_fn=_fills_fn, reversal_as="alpaca3")
     demoted = [k for k, v in stats_map.items()
-               if (v.get("consec_losses") or 0) >= _REFINED_CONSEC_LOSS_GATE]
+               if _consec_blocked(v)]
     if demoted:
         log.info("Kairos Refined: demoting %d strategies with %d+ consecutive losses: %s",
                  len(demoted), _REFINED_CONSEC_LOSS_GATE, demoted)
@@ -11082,7 +11091,7 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
         k: v for k, v in stats_map.items()
         if (v.get("total_pnl") or 0) > 0
         and (v.get("trades") or 0) >= _KAIROS_REFINED_ONDECK_MIN_TRADES
-        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and not _consec_blocked(v)
         and _strategy_has_enabled_rule(k)
         and k not in _top_names
     }

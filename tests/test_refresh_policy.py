@@ -51,14 +51,21 @@ def test_buffer_ranks_for_a_top_20():
     assert a._buffer_ranks(20) == (15, 30)
 
 
-def test_shared_scorer_filters_and_blends_like_the_snapshot():
+def test_shared_scorer_filters_and_blends_like_the_snapshot(monkeypatch):
     win = {"trades": 25, "total_pnl": 50, "win_rate": 60, "profit_factor": 2.0,
            "expectancy_pct": 0.1, "sharpe": 1.0, "consec_losses": 0}
     sm = {"GOOD": dict(win), "THIN": dict(win, trades=5), "LOSER": dict(win, total_pnl=-1),
-          "STREAK": dict(win, consec_losses=3)}
+          "STREAK": dict(win, consec_losses=3, total_pnl=40)}
     scored, blend = a._refined_scored(sm, {"GOOD": dict(win, trades=3)}, 20)
-    assert [r[0] for r in scored] == ["GOOD"]
-    assert blend("GOOD", sm["GOOD"]) == scored[0][2]
+    assert {r[0] for r in scored} == {"GOOD", "STREAK"}          # loss-streak gate is off
+    assert blend("GOOD", sm["GOOD"]) == next(r[2] for r in scored if r[0] == "GOOD")
+    monkeypatch.setattr(a, "_REFINED_CONSEC_LOSS_GATE", 3)      # REFINED_CONSEC_LOSS_GATE=3 restores it
+    assert [r[0] for r in a._refined_scored(sm, {}, 20)[0]] == ["GOOD"]
+
+
+def test_consecutive_loss_gate_is_off_by_default():
+    assert a._REFINED_CONSEC_LOSS_GATE == 0
+    assert not a._consec_blocked({"consec_losses": 9})
 
 
 # ── scheduling ────────────────────────────────────────────────────────────────
