@@ -129,8 +129,14 @@ def test_recent_timestamps_are_converted_to_et(monkeypatch, tmp_path):
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE trades (received_at TEXT, ticker TEXT, strategy TEXT, "
                  "action TEXT, sentiment TEXT, exec_status TEXT, exec_detail TEXT)")
+    # A recent date (the endpoint caps its window at 60 days), so the test
+    # doesn't age out; the expected ET clock time follows that date's DST.
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    utc = (datetime.now(timezone.utc) - timedelta(days=3)).replace(hour=19, minute=45, second=0, microsecond=0)
+    want = utc.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
     conn.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
-                 ("2026-08-04 19:45:00", "UBER", "UBER_CAM_BREAKOUT_R3S3_V02_5MIN",
+                 (utc.strftime("%Y-%m-%d %H:%M:%S"), "UBER", "UBER_CAM_BREAKOUT_R3S3_V02_5MIN",
                   "BUY", "long", "skipped",
                   "day-type gate: breakout blocked on Neutral day (Outside only)"))
     conn.commit(); conn.close()
@@ -143,5 +149,5 @@ def test_recent_timestamps_are_converted_to_et(monkeypatch, tmp_path):
     with a.app.test_client() as c:
         d = c.get("/api/signals/blocked_breakdown?days=60").get_json()
     row = d["recent"][0]
-    assert row["received_at"].endswith("15:45:00"), \
+    assert row["received_at"].endswith(want), \
         f"UTC leaked into an ET-labelled column: {row['received_at']}"

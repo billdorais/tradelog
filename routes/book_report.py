@@ -176,10 +176,10 @@ def _rows(a, limit):
     try:
         cur = conn.cursor()
         p = a.placeholder()
-        cur.execute(f"SELECT id, created_at, status, months, model, error, usage, report "
+        cur.execute(f"SELECT id, created_at, status, months, model, error, usage, report, pack "
                     f"FROM book_reports ORDER BY id DESC LIMIT {p}", (limit,))
         rows = cur.fetchall()
-        cols = ["id", "created_at", "status", "months", "model", "error", "usage", "report"]
+        cols = ["id", "created_at", "status", "months", "model", "error", "usage", "report", "pack"]
         return [dict(zip(cols, r)) if a.DATABASE_URL else {c: r[c] for c in cols} for r in rows]
     finally:
         conn.close()
@@ -220,5 +220,8 @@ def api_book_reports():
     out = []
     for r in map(_mark_stale, _rows(a, 12)):
         r["usage"] = json.loads(r["usage"]) if r.get("usage") else None
+        # The pack the report was written from, so "Copy with data" can hand both
+        # to a reviewer who checks the report's claims against its numbers.
+        r["pack"] = json.loads(r["pack"]) if r.get("pack") else None
         out.append(r)
     return jsonify({"reports": out, "model": MODEL})

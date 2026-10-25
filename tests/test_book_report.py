@@ -136,3 +136,15 @@ def test_only_one_report_runs_at_a_time_and_stale_runs_expire(db, monkeypatch):
     rep = c.get("/api/farms/book_reports").get_json()["reports"][0]
     assert rep["status"] == "failed" and "stopped" in rep["error"]
     assert c.post("/api/farms/book_report/run", json={}).status_code == 200
+
+
+def test_reports_carry_their_pack_for_copy_with_data(db, monkeypatch):
+    import app as a
+    _sync_threads(monkeypatch)
+    monkeypatch.setattr(br, "call_claude", lambda pack: ("## Summary\n- x", {}, "end_turn"))
+    c = a.app.test_client()
+    c.post("/api/farms/book_report/run", json={"months": 2})
+    rep = c.get("/api/farms/book_reports").get_json()["reports"][0]
+    assert rep["pack"] == {"months": [], "n": 2}
+    html = open("templates/farms.html", encoding="utf-8").read()
+    assert "copyBookReport(${r.id}, false, this)" in html and "copyBookReport(${r.id}, true, this)" in html

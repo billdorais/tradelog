@@ -674,10 +674,34 @@
     if (r.status === 'running') { body.innerHTML = '<div class="empty">Still writing…</div>'; return; }
     if (r.status !== 'done') { body.innerHTML = `<div class="warn">Report #${r.id} failed: ${_esc(r.error || 'unknown error')}</div>`; return; }
     const u = r.usage || {};
-    body.innerHTML = _md(r.report)
+    const copyBar = `<div style="display:flex;gap:6px;align-items:center;margin:6px 0">
+        <button class="btn" style="padding:3px 9px" onclick="copyBookReport(${r.id}, false, this)">Copy report</button>
+        <button class="btn" style="padding:3px 9px" onclick="copyBookReport(${r.id}, true, this)"
+                title="The report plus the month-by-month numbers it was written from">Copy with data</button></div>`;
+    body.innerHTML = copyBar + _md(r.report) + copyBar
       + `<div class="note" style="margin-top:10px">Report #${r.id} · ${_esc(r.created_at)} UTC · ${_esc(u.model || r.model || '')}`
       + (u.input_tokens ? ` · ${u.input_tokens.toLocaleString()} in / ${(u.output_tokens || 0).toLocaleString()} out tokens` : '')
       + ` · ${r.months} months. Interpretation only — check any claim against the table above before acting on it.</div>`;
+  }
+
+  // Plain text (the report's own markdown) so it pastes cleanly into a chat.
+  async function copyBookReport(id, withData, btn) {
+    const r = _brReports.find(x => x.id === id);
+    if (!r) return;
+    let text = `Kairos monthly book report #${r.id} (${r.created_at} UTC, ${r.model}, ${r.months} months)\n\n${r.report}`;
+    if (withData && r.pack) text += `\n\n---\nData pack the report was written from (JSON):\n${JSON.stringify(r.pack, null, 1)}`;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+      // Fallback for browsers that block the async clipboard API.
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+    }
+    const old = btn.textContent;
+    btn.textContent = ok ? 'Copied ✓' : 'Copy failed';
+    setTimeout(() => { btn.textContent = old; }, 1600);
   }
 
   async function runBookReport() {
