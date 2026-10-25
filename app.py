@@ -3713,6 +3713,8 @@ from routes.farms import farms_bp
 app.register_blueprint(farms_bp)
 from routes.book_report import book_report_bp
 app.register_blueprint(book_report_bp)
+from routes.refresh_policy import refresh_policy_bp
+app.register_blueprint(refresh_policy_bp)
 
 
 @app.route("/api/trades")
@@ -10075,8 +10077,19 @@ def _compute_strategy_stats(days=45, from_date=None, fills_fn=None, gate_as=None
                      sum(_drop.values()) + len(closed_clean),
                      ", ".join(f"{k} {v}" for k, v in sorted(_drop.items())))
 
-    excluded         = _load_excluded_strategies()
-    excluded_tickers = _load_excluded_tickers()
+    return _stats_from_round_trips(closed_clean, last_trade_all)
+
+
+def _stats_from_round_trips(closed_clean, last_trade_all=None, apply_exclusions=True):
+    """Per-strategy stats from paired round-trips (the body of
+    _compute_strategy_stats, split out so the refresh-policy simulation scores a
+    past window with exactly the code the live snapshot uses)."""
+    last_trade_all = last_trade_all or {}
+    if apply_exclusions:
+        excluded         = _load_excluded_strategies()
+        excluded_tickers = _load_excluded_tickers()
+    else:
+        excluded, excluded_tickers = set(), set()
     strat_map = {}
     last_trade_at = {}   # strategy -> most recent exit_time ISO string
     for c in closed_clean:
@@ -10352,6 +10365,128 @@ def _apply_ticker_cap(scored, n, cap=None):
     return taken[:n], [r[0] for r in held]
 
 
+def _refined_scored(stats_map, stats_map_10d, min_trades, rule_ok=None, excluded_bands=()):
+    """The Refined ranking, shared by both snapshots and the refresh-policy test.
+
+    Candidates: net-positive, at least `min_trades`, fewer than
+    _REFINED_CONSEC_LOSS_GATE straight losses, matched by an enabled rule, band not
+    excluded. Score: composite on the window, blended 60/40 with the 10-day
+    composite when the strategy has 2+ net-positive trades in the last 10 days.
+
+    Returns (scored, blended_score_fn): scored = [(name, stats, score)] best first."""
+    candidates = {
+        k: v for k, v in stats_map.items()
+        if (v.get("total_pnl") or 0) > 0
+        and (v.get("trades") or 0) >= min_trades
+        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
+        and (rule_ok is None or rule_ok(k))
+        and _band_of(k) not in excluded_bands
+    }
+    max_pnl     = max((v["total_pnl"] for v in candidates.values()), default=0)
+    max_pnl_10d = max((v["total_pnl"] for v in stats_map_10d.values()
+                       if (v.get("total_pnl") or 0) > 0), default=1)
+
+    def _blended_score(name, stats_20d):
+        """60% primary window + 40% recency (10-day) when recent data is available."""
+        score_20d = _composite_score(stats_20d, max_pnl)
+        stats_10d = stats_map_10d.get(name, {})
+        # Only apply the recency bonus when the strategy has meaningful recent activity
+        if (stats_10d.get("trades") or 0) >= 2 and (stats_10d.get("total_pnl") or 0) > 0:
+            score_10d = _composite_score(stats_10d, max_pnl_10d)
+            return round(0.60 * score_20d + 0.40 * score_10d, 4)
+        return score_20d
+
+    scored = sorted(((name, stats, _blended_score(name, stats)) for name, stats in candidates.items()),
+                    key=lambda x: x[2], reverse=True)
+    return scored, _blended_score
+
+
+REFINED_MODE_KEYS = {"tv": "REFINED_REFRESH_MODE", "kairos": "KAIROS_REFINED_REFRESH_MODE"}
+REFINED_MODES     = ("daily", "weekly_buffer")
+_REFINED_SNAP_KEYS = {"tv": "REFINED_LAST_RESULT", "kairos": "KAIROS_REFINED_LAST_RESULT"}
+
+
+def _refined_refresh_mode(book):
+    """"daily" (default: re-rank every weekday, plain top N) or "weekly_buffer"
+    (re-rank on Fridays only, with the entry/exit rank buffer)."""
+    v = (_load_setting(REFINED_MODE_KEYS[book]) or "daily").strip()
+    return v if v in REFINED_MODES else "daily"
+
+
+def _buffer_ranks(n):
+    """(entry_rank, exit_rank) for a top-n book: 15/30 for a top 20."""
+    return max(1, round(n * 0.75)), max(n, round(n * 1.5))
+
+
+def _refined_incumbents(book):
+    """The roster the last snapshot chose, read from the persisted copy so both
+    web workers agree (the in-memory one can be another worker's stale copy)."""
+    try:
+        snap = json.loads(_load_setting(_REFINED_SNAP_KEYS[book]) or "{}") or {}
+    except Exception:
+        snap = {}
+    if not snap.get("top_strategies"):
+        snap = (_refined_last_result if book == "tv" else _kairos_refined_last_result) or {}
+    return [str(x).strip() for x in (snap.get("top_strategies") or []) if x]
+
+
+def _refined_due_today(book, today):
+    """Should the 4:15 PM scheduler refresh this book today? Daily mode: every
+    weekday. Weekly mode: Fridays (the roster then holds all next week), or any
+    weekday once the last refresh is 7+ days old (a Friday holiday or outage)."""
+    import datetime as _dt
+    if _refined_refresh_mode(book) != "weekly_buffer":
+        return True
+    if today.weekday() == 4:
+        return True
+    try:
+        snap = json.loads(_load_setting(_REFINED_SNAP_KEYS[book]) or "{}") or {}
+        last = _dt.date.fromisoformat(str(snap.get("run_at") or "")[:10])
+    except Exception:
+        return True                      # no usable record of a last run: refresh
+    return (today - last).days >= 7
+
+
+def _select_with_buffer(scored, n, incumbents, entry_rank, exit_rank, cap=None):
+    """Weekly-refresh selection with a rank buffer (hysteresis).
+
+    An incumbent stays while it ranks within `exit_rank`; an open slot goes to the
+    best non-incumbent ranked within `entry_rank` (per-ticker cap respected). A
+    strategy must be clearly good to get in and clearly worse to fall out, so the
+    roster stops churning on noise. With no incumbents it seeds like the daily rule.
+    Slots stay open rather than admit a name outside `entry_rank`.
+
+    Returns (selected rows, {"kept": [...], "added": [...], "dropped": [...]})."""
+    cap = _REFINED_MAX_PER_TICKER if cap is None else cap
+    inc = [s for s in (incumbents or []) if s]
+    if not inc:
+        taken, _ = _apply_ticker_cap(scored, n, cap)
+        return taken, {"kept": [], "added": [r[0] for r in taken], "dropped": []}
+    rank = {row[0]: i + 1 for i, row in enumerate(scored)}
+    inc_set = set(inc)
+    kept = [row for row in scored if row[0] in inc_set and rank[row[0]] <= exit_rank][:n]
+    taken, per = list(kept), {}
+    for row in kept:
+        tk = (row[0] or "").split("_", 1)[0].upper()
+        per[tk] = per.get(tk, 0) + 1
+    added = []
+    for row in scored:
+        if len(taken) >= n or rank[row[0]] > entry_rank:
+            break
+        if row[0] in inc_set:
+            continue
+        tk = (row[0] or "").split("_", 1)[0].upper()
+        if cap > 0 and per.get(tk, 0) >= cap:
+            continue
+        per[tk] = per.get(tk, 0) + 1
+        taken.append(row)
+        added.append(row[0])
+    taken.sort(key=lambda r: rank[r[0]])
+    kept_names = {r[0] for r in kept}
+    return taken, {"kept": [r[0] for r in kept], "added": added,
+                   "dropped": sorted(s for s in inc if s not in kept_names)}
+
+
 # Refined sizing: per-strategy dollar target by composite-score band.
 # Score is 0..1 from _composite_score; bands are score-percent thresholds.
 # First matching band wins (highest score-floor first).
@@ -10580,14 +10715,8 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
         return False
 
     _excluded_bands = _load_excluded_bands()
-    candidates = {
-        k: v for k, v in stats_map.items()
-        if (v.get("total_pnl") or 0) > 0
-        and (v.get("trades") or 0) >= _REFINED_MIN_TRADES
-        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
-        and _strategy_has_enabled_rule(k)
-        and _band_of(k) not in _excluded_bands
-    }
+    scored, _blended_score = _refined_scored(stats_map, stats_map_10d, _REFINED_MIN_TRADES,
+                                             _strategy_has_enabled_rule, _excluded_bands)
     if _excluded_bands:
         log.info("Refined: excluding bands from leaderboard: %s", sorted(_excluded_bands))
     if _patterns_loaded:
@@ -10599,28 +10728,6 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
         if _filtered_out:
             log.info("Refined: %d strategies filtered out by routing-rule gate: %s",
                      len(_filtered_out), _filtered_out)
-    max_pnl    = max((v["total_pnl"] for v in candidates.values()), default=0)
-    max_pnl_10d = max(
-        (v["total_pnl"] for v in stats_map_10d.values() if (v.get("total_pnl") or 0) > 0),
-        default=1,
-    )
-
-    def _blended_score(name, stats_20d):
-        """60% primary (20-day) + 40% recency (10-day) when recent data is available."""
-        score_20d  = _composite_score(stats_20d, max_pnl)
-        stats_10d  = stats_map_10d.get(name, {})
-        # Only apply recency bonus when the strategy has meaningful recent activity
-        if (stats_10d.get("trades") or 0) >= 2 and (stats_10d.get("total_pnl") or 0) > 0:
-            score_10d = _composite_score(stats_10d, max_pnl_10d)
-            return round(0.60 * score_20d + 0.40 * score_10d, 4)
-        return score_20d
-
-    scored = sorted(
-        ((name, stats, _blended_score(name, stats))
-         for name, stats in candidates.items()),
-        key=lambda x: x[2],
-        reverse=True,
-    )
     # Cap per underlying so the book cannot fill up with one instrument's level
     # pairs. Backfills if there are not enough distinct tickers, so this changes
     # the MIX and never the size.
@@ -10628,6 +10735,17 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
     if _capped_out:
         log.info("Refined: ticker cap (max %d/ticker) displaced %d: %s",
                  _REFINED_MAX_PER_TICKER, len(_capped_out), _capped_out)
+    # Weekly mode: keep incumbents inside the exit rank, admit only names inside
+    # the entry rank (see _select_with_buffer). Daily mode = plain top N above.
+    _refresh_mode = _refined_refresh_mode("tv")
+    _buffer_info  = None
+    if _refresh_mode == "weekly_buffer":
+        _entry_rank, _exit_rank = _buffer_ranks(n)
+        top_scored, _buffer_info = _select_with_buffer(
+            scored, n, _refined_incumbents("tv"), _entry_rank, _exit_rank)
+        _buffer_info.update({"entry_rank": _entry_rank, "exit_rank": _exit_rank})
+        log.info("Refined: weekly buffer kept %d, added %d, dropped %d",
+                 len(_buffer_info["kept"]), len(_buffer_info["added"]), len(_buffer_info["dropped"]))
     top        = [name for name, _, _ in top_scored]
     _top_names = {name for name, _, _ in top_scored}
 
@@ -10807,6 +10925,8 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
     _refined_last_result = {
         "run_at": _refined_last_run,
         "top_strategies": top,
+        "refresh_mode": _refresh_mode,
+        "buffer": _buffer_info,
         "added_strategies":   added_strategies,
         "removed_strategies": removed_strategies,
         "tenure_runs":        tenure_runs,
@@ -10938,33 +11058,23 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
         return False
 
     _excluded_bands = _load_excluded_bands()
-    candidates = {
-        k: v for k, v in stats_map.items()
-        if (v.get("total_pnl") or 0) > 0
-        and (v.get("trades") or 0) >= _KAIROS_REFINED_MIN_TRADES
-        and (v.get("consec_losses") or 0) < _REFINED_CONSEC_LOSS_GATE
-        and _strategy_has_enabled_rule(k)
-        and _band_of(k) not in _excluded_bands
-    }
-    max_pnl     = max((v["total_pnl"] for v in candidates.values()), default=0)
-    max_pnl_10d = max((v["total_pnl"] for v in stats_map_10d.values() if (v.get("total_pnl") or 0) > 0), default=1)
-
-    def _blended_score(name, stats_20d):
-        score_20d  = _composite_score(stats_20d, max_pnl)
-        stats_10d  = stats_map_10d.get(name, {})
-        if (stats_10d.get("trades") or 0) >= 2 and (stats_10d.get("total_pnl") or 0) > 0:
-            score_10d = _composite_score(stats_10d, max_pnl_10d)
-            return round(0.60 * score_20d + 0.40 * score_10d, 4)
-        return score_20d
-
-    scored = sorted(
-        ((name, stats, _blended_score(name, stats)) for name, stats in candidates.items()),
-        key=lambda x: x[2], reverse=True,
-    )
+    scored, _blended_score = _refined_scored(stats_map, stats_map_10d, _KAIROS_REFINED_MIN_TRADES,
+                                             _strategy_has_enabled_rule, _excluded_bands)
     top_scored, _capped_out = _apply_ticker_cap(scored, n)
     if _capped_out:
         log.info("Kairos Refined: ticker cap (max %d/ticker) displaced %d: %s",
                  _REFINED_MAX_PER_TICKER, len(_capped_out), _capped_out)
+    # Weekly mode: keep incumbents inside the exit rank, admit only names inside
+    # the entry rank (see _select_with_buffer). Daily mode = plain top N above.
+    _refresh_mode = _refined_refresh_mode("kairos")
+    _buffer_info  = None
+    if _refresh_mode == "weekly_buffer":
+        _entry_rank, _exit_rank = _buffer_ranks(n)
+        top_scored, _buffer_info = _select_with_buffer(
+            scored, n, _refined_incumbents("kairos"), _entry_rank, _exit_rank)
+        _buffer_info.update({"entry_rank": _entry_rank, "exit_rank": _exit_rank})
+        log.info("Kairos Refined: weekly buffer kept %d, added %d, dropped %d",
+                 len(_buffer_info["kept"]), len(_buffer_info["added"]), len(_buffer_info["dropped"]))
     top        = [name for name, _, _ in top_scored]
     _top_names = {name for name, _, _ in top_scored}
 
@@ -11058,6 +11168,8 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
 
     _kairos_refined_last_result = {
         "run_at": _kairos_refined_last_run,
+        "refresh_mode":       _refresh_mode,
+        "buffer":             _buffer_info,
         "top_strategies":     top,
         "added_strategies":   added_strategies,
         "removed_strategies": removed_strategies,
@@ -11308,8 +11420,11 @@ def _refined_scheduler_loop():
                 _sched_days_raw = _load_setting("REFINED_DAYS")
                 try:    _sched_days = int(_sched_days_raw) if _sched_days_raw else REFINED_WINDOW_DAYS
                 except (TypeError, ValueError): _sched_days = REFINED_WINDOW_DAYS
-                _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
-                log.info("Scheduled Refined refresh complete for %s (rolling %dd window)", today, _sched_days)
+                if _refined_due_today("tv", today):
+                    _do_refresh_refined(days=_sched_days)  # rolling window with 10-day recency blend
+                    log.info("Scheduled Refined refresh complete for %s (rolling %dd window)", today, _sched_days)
+                else:
+                    log.info("Refined: weekly mode, no refresh today (%s)", today)
             except Exception as _re:
                 log.warning("Scheduled Refined refresh failed: %s", _re)
         # Kairos Refined snapshot — offset 1 min from the TV refresh so the two
@@ -11321,8 +11436,11 @@ def _refined_scheduler_loop():
                 try:    _kdays = int(_kdays_raw) if _kdays_raw else REFINED_WINDOW_DAYS
                 except (TypeError, ValueError): _kdays = REFINED_WINDOW_DAYS
                 _kfrom = (_load_setting("KAIROS_REFINED_FROM_DATE") or "").strip() or None
-                _do_refresh_kairos_refined(days=_kdays, from_date=_kfrom)
-                log.info("Scheduled Kairos Refined refresh complete for %s", today)
+                if _refined_due_today("kairos", today):
+                    _do_refresh_kairos_refined(days=_kdays, from_date=_kfrom)
+                    log.info("Scheduled Kairos Refined refresh complete for %s", today)
+                else:
+                    log.info("Kairos Refined: weekly mode, no refresh today (%s)", today)
             except Exception as _kre:
                 log.warning("Scheduled Kairos Refined refresh failed: %s", _kre)
         # Capture the entry-engine dry-run into the daily log after the close

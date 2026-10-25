@@ -420,6 +420,28 @@
     </div>
   </div>
 
+  <!-- Refresh policy: daily top N vs weekly with a rank buffer, replayed on each
+       book's farm with the live ranking code (routes/refresh_policy.py). -->
+  <div id="rpPanel" style="background:#13161f;border:1px solid #1e2130;border-radius:10px;padding:14px 20px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.07em;color:#f0a35e">Refresh policy: daily vs weekly with a rank buffer</span>
+      <div style="display:inline-flex;gap:2px;margin-left:auto">
+        <button class="rp-btn" data-rpbook="tv" onclick="rpSetBook('tv')">TV Refined</button>
+        <button class="rp-btn" data-rpbook="kairos" onclick="rpSetBook('kairos')">Kairos Refined</button>
+      </div>
+      <button class="rp-btn" id="rpRun" onclick="rpRun()">Run test</button>
+    </div>
+    <div style="font-size:0.72rem;color:#777;line-height:1.5;margin-bottom:10px">
+      Replays the book's roster over its farm's history with the live ranking (same score, window, trade floor and ticker cap),
+      deciding each day's roster only from trades before that day. <strong style="color:#cfd3e0">Daily, top N</strong> is today's rule.
+      <strong style="color:#3987e5">Weekly, rank buffer</strong> re-ranks on Fridays: an incumbent stays while it ranks inside
+      <span class="rp-exit">30</span>, and an open slot goes only to a name ranked inside <span class="rp-entry">15</span>.
+      Scored on the farm's own trades ($1k, ungated), so this tests the selection rule, not the book's gates or fills.
+    </div>
+    <div id="rpMode" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:0.74rem;color:#9aa0b5;margin-bottom:10px"></div>
+    <div id="rpOut"><div style="font-size:0.75rem;color:#666">Pick a book and run the test (it replays the full farm history, so the first run can take a minute).</div></div>
+  </div>
+
   <!-- Top-N performance breakdown: how much of the edge comes from the top ranks?
        Both tables use the Refined Snapshot's ordered top_strategies as the ranking,
        and aggregate stats from analysisData.per_strategy (current date range). -->
@@ -3545,6 +3567,141 @@
     const menu = document.getElementById('navMenu');
     if (menu && !menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
   });
+</script>
+<style>
+  .rp-btn { border:1px solid #2a2d3e; background:transparent; color:#aaa; padding:4px 10px; border-radius:6px; font-size:0.72rem; cursor:pointer; font-family:inherit; }
+  .rp-btn:hover { border-color:#4a5568; }
+  .rp-btn.on { border-color:#3a7a4e; color:#7FE098; background:rgba(127,224,152,0.10); }
+  .rp-btn.warn { border-color:#8a6a3a; color:#f0a35e; }
+  .rp-btn:disabled { opacity:0.4; cursor:default; }
+  #rpOut table { width:100%; border-collapse:collapse; font-size:0.74rem; }
+  #rpOut th { text-align:right; padding:5px 8px; color:#666; font-weight:500; font-size:0.62rem; text-transform:uppercase; white-space:nowrap; }
+  #rpOut td { text-align:right; padding:5px 8px; border-top:1px solid #1e2130; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #rpOut th:first-child, #rpOut td:first-child { text-align:left; }
+  #rpOut .pos { color:#7FE098; } #rpOut .neg { color:#e08a8a; }
+</style>
+<script>
+(function () {
+  const COLORS = { daily_top: '#d95926', weekly_top: '#9085e9', weekly_buffer: '#3987e5', daily_buffer: '#199e70' };
+  let book = 'kairos', modes = {}, chart = null, armed = null;
+  try { book = localStorage.getItem('rp_book') === 'tv' ? 'tv' : 'kairos'; } catch (_) {}
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const pct = (v, dp) => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(dp == null ? 3 : dp) + '%';
+  const cls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  const label = b => b === 'tv' ? 'TV Refined' : 'Kairos Refined';
+  const modeName = x => x === 'daily' ? 'Daily, top N' : 'Weekly, rank buffer';
+
+  function syncBook() {
+    document.querySelectorAll('.rp-btn[data-rpbook]').forEach(b => b.classList.toggle('on', b.dataset.rpbook === book));
+  }
+
+  function renderMode() {
+    const m = modes[book] || 'daily', el = document.getElementById('rpMode');
+    const other = m === 'daily' ? 'weekly_buffer' : 'daily';
+    el.innerHTML = `<span>${label(book)} refreshes: <strong style="color:#e0e0e0">${modeName(m)}</strong>.</span>`
+      + `<button class="rp-btn ${armed === other ? 'warn' : ''}" onclick="rpSetMode('${other}')">`
+      + (armed === other ? `Confirm: switch ${label(book)} to ${modeName(other)}` : `Switch to ${modeName(other)}`) + '</button>'
+      + `<span style="color:#666">${m === 'weekly_buffer'
+          ? 'Re-ranks at the Friday close; the roster then holds all week.'
+          : 'Re-ranks every weekday at 4:15 PM ET.'} A switch takes effect at the next scheduled refresh and leaves today's roster alone.</span>`;
+  }
+
+  async function loadModes() {
+    try {
+      const d = await (await fetch('/api/refined/refresh_mode')).json();
+      modes = d.modes || {};
+      document.querySelectorAll('.rp-entry').forEach(e => { e.textContent = d.entry_rank; });
+      document.querySelectorAll('.rp-exit').forEach(e => { e.textContent = d.exit_rank; });
+    } catch (_) {}
+    renderMode();
+  }
+
+  window.rpSetBook = function (b) {
+    book = b; armed = null;
+    try { localStorage.setItem('rp_book', b); } catch (_) {}
+    syncBook(); renderMode();
+    document.getElementById('rpOut').innerHTML = '<div style="font-size:0.75rem;color:#666">Run the test for ' + label(b) + '.</div>';
+    if (chart) { chart.destroy(); chart = null; }
+  };
+
+  window.rpSetMode = async function (mode) {
+    if (armed !== mode) {                      // two clicks: the page has no confirm dialogs
+      armed = mode; renderMode();
+      setTimeout(() => { if (armed === mode) { armed = null; renderMode(); } }, 4000);
+      return;
+    }
+    armed = null;
+    try {
+      const r = await fetch('/api/refined/refresh_mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                          body: JSON.stringify({ book, mode }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.status);
+      modes = d.modes || modes;
+    } catch (e) {
+      document.getElementById('rpMode').insertAdjacentHTML('beforeend', `<span style="color:#e08a8a">${esc(e.message || e)}</span>`);
+      return;
+    }
+    renderMode();
+  };
+
+  window.rpRun = async function () {
+    const out = document.getElementById('rpOut'), btn = document.getElementById('rpRun');
+    btn.disabled = true;
+    out.innerHTML = '<div style="font-size:0.75rem;color:#666">Replaying ' + label(book) + ' day by day…</div>';
+    let d;
+    try {
+      const r = await fetch('/api/refined/refresh_test?book=' + book + '&n=20');
+      d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+    } catch (e) {
+      out.innerHTML = `<div style="font-size:0.75rem;color:#e08a8a">${esc(e.message || e)}</div>`;
+      btn.disabled = false;
+      return;
+    }
+    btn.disabled = false;
+    const P = d.policies;
+    const rows = P.map(p => `<tr><td><i style="display:inline-block;width:12px;height:3px;background:${COLORS[p.key]};vertical-align:middle;margin-right:6px"></i>${esc(p.label)}${p.key === 'daily_top' ? ' <span style="color:#666">(today)</span>' : ''}</td>
+        <td class="${cls(p.avg_pct)}">${pct(p.avg_pct)}</td><td class="${cls(p.sum_pct)}">${pct(p.sum_pct, 2)}</td>
+        <td>${p.trades}</td><td>${p.win_rate ?? '—'}%</td><td>${p.profit_factor ?? '—'}</td>
+        <td>${p.adds}</td><td>${p.avg_roster}</td>
+        <td>${p.key === 'daily_top' ? '—' : `${p.weeks_beat_daily} of ${d.weeks.length}`}</td></tr>`).join('');
+    const f = d.farm;
+    out.innerHTML = `<div style="overflow-x:auto"><table><thead><tr><th>Policy</th><th>Avg % / trade</th><th>Summed %</th><th>Trades</th>
+        <th>Win %</th><th>PF</th><th title="Strategies added to the roster after the first pick">Roster changes</th><th>Avg roster</th>
+        <th>Weeks beat daily</th></tr></thead><tbody>${rows}
+        <tr><td style="color:#9aa0b5">Whole ${esc(d.farm_label)} (every strategy)</td><td class="${cls(f.avg_pct)}">${pct(f.avg_pct)}</td>
+        <td></td><td>${f.trades}</td><td>${f.win_rate ?? '—'}%</td><td>${f.profit_factor ?? '—'}</td><td></td><td></td><td></td></tr>
+        </tbody></table></div>
+      <div style="position:relative;height:260px;margin-top:12px"><canvas id="rpChart"></canvas></div>
+      <div style="font-size:0.7rem;color:#666;line-height:1.5;margin-top:8px">
+        ${esc(d.farm_label)} from ${esc(d.first_farm_date)}; judged ${esc(d.eval_from)} to ${esc(d.eval_to)} (${d.dates.length} trading days, ${d.weeks.length} weeks)
+        after a four-week warm-up. Top ${d.n}, ${d.window_days}-day window, at least ${d.min_trades} trades, buffer ${d.entry_rank}/${d.exit_rank}.
+        "Summed %" adds each trade's % return, which is the dollar result at equal size. Judge on summed % and weeks beaten, not on one
+        good stretch: a policy that wins most weeks by a little beats one that wins one week by a lot.
+        ${d.anchor_from_date ? ` Kairos Refined is anchored to ${esc(d.anchor_from_date)} live, which this replay doesn't reproduce.` : ''}
+        The enabled-rule filter uses today's routing rules for every past day.
+        ${(P.find(p => p.key === 'daily_top') || {}).avg_roster < d.entry_rank
+          ? `<br><strong style="color:#f0a35e">Fewer than ${d.entry_rank} strategies qualified on an average day</strong>, so nearly every
+             qualifier gets in under any rule and the buffer rarely binds. Differences here come mostly from weekly versus daily timing.` : ''}</div>`;
+    if (chart) chart.destroy();
+    chart = new Chart(document.getElementById('rpChart'), {
+      type: 'line',
+      data: { labels: d.dates, datasets: P.map(p => ({ label: p.label, data: p.line, borderColor: COLORS[p.key], backgroundColor: COLORS[p.key],
+              borderWidth: p.key === 'weekly_buffer' || p.key === 'daily_top' ? 2.5 : 1.5, pointRadius: 0, pointHoverRadius: 4,
+              pointHitRadius: 8, tension: 0 })) },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: '#9aa0b5', boxWidth: 12, boxHeight: 3, font: { size: 10 } } },
+          tooltip: { backgroundColor: '#1a1d2e', borderColor: '#2a2d3e', borderWidth: 1, titleColor: '#e0e0e0', bodyColor: '#cfd3e0',
+                     callbacks: { label: c => ' ' + c.dataset.label + ': ' + pct(c.raw, 2) } } },
+        scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0 } },
+                  y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+                       ticks: { color: '#666', font: { size: 10 }, callback: v => v + '%' } } } },
+    });
+  };
+
+  syncBook();
+  loadModes();
+})();
 </script>
 </body>
 </html>
