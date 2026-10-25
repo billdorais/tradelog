@@ -1373,7 +1373,50 @@ def strategy_starts(select_rts, wired_since=None):
     return starts
 
 
-def compare_select_farms(select_rts, farm_rts, source, wired_since=None):
+def _median(xs):
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    n = len(xs)
+    return round(xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2, 2)
+
+
+def execution_gaps(pairs):
+    """Where a book's return differs from the farm's on the SAME trades.
+
+    pairs: [(book_trade, farm_trade)]. In basis points, positive = the book got the
+    WORSE price (paid more on a long entry / received less on a long exit; mirrored
+    for shorts), so a mixed long/short book doesn't average to zero:
+      entry_bps — the book's entry vs the farm's entry
+      exit_bps  — the book's exit vs the farm's exit
+    hold_diff_mins — book hold minus farm hold (negative = the book got out sooner).
+    Medians, so one bad fill doesn't define the picture."""
+    entry, exit_, hold = [], [], []
+    earlier = later = 0
+    for b, f in pairs:
+        try:
+            be, fe = float(b["entry_price"]), float(f["entry_price"])
+            bx, fx = float(b.get("exit_price") or 0), float(f.get("exit_price") or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        sgn = 1 if (b.get("side") or "").upper() == "LONG" else -1
+        if fe > 0:
+            entry.append(sgn * (be - fe) / fe * 1e4)
+        if fx > 0 and bx > 0:
+            exit_.append(sgn * (fx - bx) / fx * 1e4)
+        bh = (_epoch(b.get("exit_time")) or 0) - (_epoch(b.get("entry_time")) or 0)
+        fh = (_epoch(f.get("exit_time")) or 0) - (_epoch(f.get("entry_time")) or 0)
+        if b.get("exit_time") and f.get("exit_time"):
+            d = (bh - fh) / 60
+            hold.append(d)
+            earlier += d < -1
+            later += d > 1
+    return {"median_entry_bps": _median(entry), "median_exit_bps": _median(exit_),
+            "median_hold_diff_mins": _median(hold),
+            "book_exited_earlier": earlier, "book_exited_later": later}
+
+
+def compare_select_farms(select_rts, farm_rts, source, wired_since=None, roster=None):
     """Kairos Select's actual trades against the same strategies on their source farms.
 
     select_rts:  Select's closed round-trips (strategy upper-cased).
@@ -1394,9 +1437,17 @@ def compare_select_farms(select_rts, farm_rts, source, wired_since=None):
                 "start": None, "by_source": {}, "unknown_source": [], "strategy_starts": {}}
     start = min(et_date(t["entry_time"]) for t in sel)
     starts = {s: max(d, start) for s, d in strategy_starts(sel, wired_since).items()}
-    farm = {f: [t for t in rts if source.get(t["strategy"]) == f and t["strategy"] in starts
-                and et_date(t.get("entry_time")) >= starts[t["strategy"]]]
-            for f, rts in farm_rts.items()}
+    if roster is not None:
+        # A book with a recorded roster history (Kairos Refined's daily snapshots):
+        # a farm trade counts only if the strategy was on the roster at that moment.
+        farm = {f: [t for t in rts if source.get(t["strategy"]) == f
+                    and et_date(t.get("entry_time")) >= start
+                    and roster.holds(t["strategy"], _to_epoch(t.get("entry_time")))]
+                for f, rts in farm_rts.items()}
+    else:
+        farm = {f: [t for t in rts if source.get(t["strategy"]) == f and t["strategy"] in starts
+                    and et_date(t.get("entry_time")) >= starts[t["strategy"]]]
+                for f, rts in farm_rts.items()}
 
     def _daily(rts):
         out = {}
@@ -1427,12 +1478,14 @@ def compare_select_farms(select_rts, farm_rts, source, wired_since=None):
         pairs, s_only, f_only = pair_books(s_rts, farm.get(f, []))
         deltas = [(_rt_pct(a) or 0) - (_rt_pct(b) or 0) for a, b in pairs]
         lags = [round(_epoch(a["entry_time"]) - _epoch(b["entry_time"])) for a, b in pairs]
+        ex = execution_gaps(pairs)
         by_source[f] = {
             "select_trades": len(s_rts), "farm_trades": len(farm.get(f, [])),
             "paired": len(pairs), "select_only": [_brief(t) for t in s_only],
             "farm_only": [_brief(t) for t in f_only],
             "mean_pct_delta": round(sum(deltas) / len(deltas), 4) if deltas else None,
             "median_entry_lag_secs": sorted(lags)[len(lags) // 2] if lags else None,
+            **ex,
         }
     return {
         "dates": dates, "select": sel_line, "farm": farm_line, "start": start,
@@ -1497,27 +1550,41 @@ def api_select_vs_farms():
     over the page's window (clamped to Select's first trade)."""
     a = _app()
     p = _params()
-    rec = a.ACCOUNTS_BY_NUM.get("7")
+    book = "refined" if (request.args.get("book") or "").lower() == "refined" else "select"
+    num, label = ("3", "Kairos Refined") if book == "refined" else ("7", "Kairos Select")
+    rec = a.ACCOUNTS_BY_NUM.get(num)
     if not rec or rec.get("broker") is None:
-        return jsonify({"error": "Kairos Select (account 7) isn't configured."}), 400
+        return jsonify({"error": f"{label} (account {num}) isn't configured."}), 400
     try:
         fills = rec["fills_fn"]()
     except Exception as e:
-        return jsonify({"error": f"Kairos Select fills unavailable: {e}"}), 409
-    if not fills and a._fills_error("7"):
-        return jsonify({"error": "Kairos Select fills unavailable."}), 409
+        return jsonify({"error": f"{label} fills unavailable: {e}"}), 409
+    if not fills and a._fills_error(num):
+        return jsonify({"error": f"{label} fills unavailable."}), 409
     paired = a._pair_alpaca_fills_lifo(fills or [], from_date=p["from_date"], to_date=p["to_date"])
     sel = [{**c, "strategy": (c.get("strategy") or "").strip().upper()}
            for c in paired.get("closed_clean") or []]
     sel = [c for c in sel if c["strategy"] and c["strategy"] != "UNKNOWN"]
     farm = {}
-    for key, num, label in FARMS:
-        rts, err = _farm_round_trips(num, p["from_date"], p["to_date"], full=p["full"])
+    for key, fnum, flabel in FARMS:
+        if book == "refined" and key != "kairos":
+            farm[key] = []                       # Kairos Refined enters on the engine only
+            continue
+        rts, err = _farm_round_trips(fnum, p["from_date"], p["to_date"], full=p["full"])
         if err:
-            return jsonify({"error": f"{label}: {err}"}), 409
+            return jsonify({"error": f"{flabel}: {err}"}), 409
         farm[key] = rts
-    out = compare_select_farms(sel, farm, _select_sources(a), _select_wired_since(a))
-    out.update({"from_date": p["from_date"], "to_date": p["to_date"], "pair_window_mins": PAIR_WINDOW_SECS // 60})
+    if book == "refined":
+        # Every Kairos Refined trade is an engine entry, and its roster history is
+        # the saved daily snapshots — so the farm side is the Kairos Farm, counted
+        # only while each strategy was actually on Refined's roster.
+        timeline = _refined_timeline(a)
+        names = {t["strategy"] for t in sel} | set().union(*timeline.sets) if timeline.sets else {t["strategy"] for t in sel}
+        out = compare_select_farms(sel, farm, {n: "kairos" for n in names}, roster=timeline)
+    else:
+        out = compare_select_farms(sel, farm, _select_sources(a), _select_wired_since(a))
+    out.update({"book": book, "book_label": label, "from_date": p["from_date"], "to_date": p["to_date"],
+                "pair_window_mins": PAIR_WINDOW_SECS // 60})
     return jsonify(out)
 
 

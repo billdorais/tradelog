@@ -168,17 +168,18 @@
     </div>
 
     <div class="panel" id="vsPanel">
-      <div class="band-q">Kairos Select vs its farms — same trades?</div>
-      <div class="band-sub">Two running totals from Select's first trade in the window: <span style="color:#3987e5">Select's actual
-        trades</span> (TV and engine), and <span style="color:#cfd3e0">the same strategies on the farm each one enters like</span> —
-        TV picks on TV Farm, engine picks on Kairos Farm. Plotted as % per trade, summed, because Select trades ~$15k positions and
-        the farms $1k. If both books take the same trades the lines move together; the counts say how many actually matched
-        (same strategy and side, entries within <span id="vsWin">15</span> minutes). Each strategy's farm trades count only from
-        the day it joined Select — its first Select trade, or the last Apply that wired it — so a roster change doesn't show up
-        as trades Select "missed".</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div class="band-q" id="vsTitle">Kairos Select vs its farms — same trades?</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn" data-vsbook="select" onclick="setVsBook('select')">Kairos Select</button>
+          <button class="btn" data-vsbook="refined" onclick="setVsBook('refined')">Kairos Refined</button>
+        </div>
+      </div>
+      <div class="band-sub" id="vsSub"></div>
       <div class="tiles" id="vsTiles"></div>
+      <div class="tiles" id="vsExec" style="margin-top:-4px"></div>
       <div class="legend">
-        <span><i style="background:#3987e5;height:3px"></i>Kairos Select (actual)</span>
+        <span><i style="background:#3987e5;height:3px"></i><span id="vsLegendBook">Kairos Select</span> (actual)</span>
         <span><i style="background:repeating-linear-gradient(90deg,#cfd3e0 0 5px,transparent 5px 8px)"></i>Same strategies on their farms</span>
       </div>
       <div class="chartbox" style="height:280px"><canvas id="chart-vs"></canvas></div>
@@ -727,33 +728,76 @@
       + `"Rest of farm" is every Kairos Farm trade neither roster held — the baseline both rosters should beat.</div>`;
   }
 
-  // ── Select vs its farms ───────────────────────────────────────────────────
+  // ── A book vs its farms: Kairos Select (TV + engine) or Kairos Refined (engine) ──
+  let _vsBook = 'select';
+  try { _vsBook = localStorage.getItem('farm_vs_book') === 'refined' ? 'refined' : 'select'; } catch (_) {}
+
+  function setVsBook(b) {
+    _vsBook = b;
+    try { localStorage.setItem('farm_vs_book', b); } catch (_) {}
+    _loadVsFarms();
+  }
+
   async function _loadVsFarms() {
-    const tiles = document.getElementById('vsTiles');
-    tiles.innerHTML = '<div class="empty">Loading…</div>';
+    const tiles = document.getElementById('vsTiles'), execEl = document.getElementById('vsExec');
+    const refined = _vsBook === 'refined', name = refined ? 'Kairos Refined' : 'Kairos Select';
+    document.querySelectorAll('.btn[data-vsbook]').forEach(b => b.classList.toggle('on', b.dataset.vsbook === _vsBook));
+    document.getElementById('vsTitle').textContent = name + (refined ? ' vs Kairos Farm — same trades?' : ' vs its farms — same trades?');
+    document.getElementById('vsLegendBook').textContent = name;
+    document.getElementById('vsSub').innerHTML = refined
+      ? `Two running totals from Kairos Refined's first trade in the window: <span style="color:#3987e5">its actual trades</span>
+         (all engine entries) and <span style="color:#cfd3e0">the same strategies on the Kairos Farm</span>, counted only while each
+         strategy was on Refined's roster (its saved daily snapshots). % per trade, summed — Refined trades ~$15k, the farm $1k.
+         Matched = same strategy and side, entries within <span id="vsWin">15</span> minutes. The execution row shows, on matched
+         trades only, whether Refined's shortfall comes from worse entries, worse exits or different hold times.`
+      : `Two running totals from Select's first trade in the window: <span style="color:#3987e5">Select's actual trades</span>
+         (TV and engine), and <span style="color:#cfd3e0">the same strategies on the farm each one enters like</span> — TV picks on
+         TV Farm, engine picks on Kairos Farm. % per trade, summed — Select trades ~$15k, the farms $1k. Matched = same strategy and
+         side, entries within <span id="vsWin">15</span> minutes. Each strategy's farm trades count only from the day it joined Select.`;
+    tiles.innerHTML = '<div class="empty">Loading…</div>'; execEl.innerHTML = '';
     let res, d;
     try {
-      res = await fetch('/api/farms/select_vs_farms?' + new URLSearchParams(_opt).toString());
+      res = await fetch('/api/farms/select_vs_farms?' + new URLSearchParams({ ..._opt, book: _vsBook }).toString());
       d = await res.json();
     } catch (e) { d = { error: String(e) }; res = { ok: false }; }
     if (_charts.vs) { _charts.vs.destroy(); _charts.vs = null; }
     document.getElementById('vsLists').innerHTML = '';
     if (!res.ok || d.error) { tiles.innerHTML = `<div class="empty">${_esc(d.error || 'Could not load.')}</div>`; return; }
-    if (!d.select_trades) { tiles.innerHTML = '<div class="empty">Kairos Select has no closed trades in this window yet.</div>'; return; }
+    if (!d.select_trades) { tiles.innerHTML = `<div class="empty">${name} has no closed trades in this window yet.</div>`; return; }
     document.getElementById('vsWin').textContent = d.pair_window_mins;
     const tv = d.by_source.tv, ka = d.by_source.kairos;
     const paired = tv.paired + ka.paired;
     const sOnly = tv.select_only.length + ka.select_only.length, fOnly = tv.farm_only.length + ka.farm_only.length;
     const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s}</div></div>`;
-    const sp = (a, b) => `TV ${a} · engine ${b}`;
+    const sp = (a, b) => refined ? 'engine entries' : `TV ${a} · engine ${b}`;
     const last = arr => arr.length ? arr[arr.length - 1] : 0;
     const pctTxt = v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2) + '%';
+    const short = refined ? 'Refined' : 'Select';
     tiles.innerHTML =
-        tile('Select trades', d.select_trades, 'since ' + _esc(_fmtDay(d.start)) + ` · ${pctTxt(last(d.select))} summed`)
+        tile(short + ' trades', d.select_trades, 'since ' + _esc(_fmtDay(d.start)) + ` · ${pctTxt(last(d.select))} summed`)
       + tile('Farm trades', d.farm_trades, `same strategies · ${pctTxt(last(d.farm))} summed`)
       + tile('Both took', paired, sp(tv.paired, ka.paired), paired ? 'pos' : '')
-      + tile('Only Select', sOnly, sp(tv.select_only.length, ka.select_only.length), sOnly ? 'neg' : '')
+      + tile('Only ' + short, sOnly, sp(tv.select_only.length, ka.select_only.length), sOnly ? 'neg' : '')
       + tile('Only the farm', fOnly, sp(tv.farm_only.length, ka.farm_only.length), fOnly ? 'neg' : '');
+
+    // Execution on matched trades (both sources pooled by trade count).
+    const srcs = [tv, ka].filter(x => x.paired);
+    const pool = k => {
+      const w = srcs.filter(x => x[k] != null);
+      const n = w.reduce((t, x) => t + x.paired, 0);
+      return n ? w.reduce((t, x) => t + x[k] * x.paired, 0) / n : null;
+    };
+    if (paired) {
+      const bps = v => v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1) + ' bps';
+      const gap = pool('mean_pct_delta'), ent = pool('median_entry_bps'), exi = pool('median_exit_bps'), hold = pool('median_hold_diff_mins');
+      const early = srcs.reduce((t, x) => t + (x.book_exited_earlier || 0), 0), late = srcs.reduce((t, x) => t + (x.book_exited_later || 0), 0);
+      execEl.innerHTML =
+          tile('Return gap · matched', gap == null ? '—' : pctTxt(gap), `${short} minus farm, per trade, on the ${paired} matched trades`, gap == null ? '' : (gap >= 0 ? 'pos' : 'neg'))
+        + tile('Entry slippage', bps(ent), 'median · + means ' + short + ' got the worse entry price', ent > 0 ? 'neg' : '')
+        + tile('Exit slippage', bps(exi), 'median · + means ' + short + ' got the worse exit price', exi > 0 ? 'neg' : '')
+        + tile('Hold time', hold == null ? '—' : (hold > 0 ? '+' : '') + hold.toFixed(1) + ' min',
+               `median vs farm · exited earlier ${early}× · later ${late}×`);
+    }
 
     const few = d.dates.length <= 10;
     const ds = (label, data, color, w, dash) => ({ label, data, borderColor: color, backgroundColor: color, borderWidth: w,
@@ -761,8 +805,8 @@
       pointHoverRadius: 5, pointHitRadius: 8, tension: 0 });
     _charts.vs = new Chart(document.getElementById('chart-vs'), {
       type: 'line',
-      data: { labels: d.dates, datasets: [ds('Kairos Select', d.select, '#3987e5', 2.5),
-                                           ds('Same strategies on their farms', d.farm, '#cfd3e0', 2, [5, 3])] },
+      data: { labels: d.dates, datasets: [ds(name, d.select, '#3987e5', 2.5),
+                                           ds(refined ? 'Same strategies on Kairos Farm' : 'Same strategies on their farms', d.farm, '#cfd3e0', 2, [5, 3])] },
       options: {
         responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
         plugins: { legend: { display: false }, tooltip: {
@@ -785,14 +829,15 @@
       + rows.map(t => `<tr><td class="l">${_esc(et(t.entry_time))}</td><td class="l">${_esc(t.strategy)}</td><td class="l">${_esc(t.side || '')}</td>
           <td class="${_cls(t.pct || 0)}">${t.pct == null ? '—' : pctTxt(t.pct)}</td><td class="${_cls(t.pnl)}">${_money(t.pnl)}</td></tr>`).join('')
       + '</tbody></table></div></details>';
-    const tag = (rows, src) => rows.map(t => ({ ...t, strategy: t.strategy + (src === 'tv' ? ' [TV]' : ' [engine]') }));
+    const tag = (rows, src) => rows.map(t => ({ ...t, strategy: t.strategy + (refined ? '' : src === 'tv' ? ' [TV]' : ' [engine]') }));
+    const byTime = (x, y) => (x.entry_time || '').localeCompare(y.entry_time || '');
     document.getElementById('vsLists').innerHTML =
-        list('Only Select took these', [...tag(tv.select_only, 'tv'), ...tag(ka.select_only, 'kairos')]
-               .sort((x, y) => (x.entry_time || '').localeCompare(y.entry_time || '')),
+        list(`Only ${short} took these`, [...tag(tv.select_only, 'tv'), ...tag(ka.select_only, 'kairos')].sort(byTime),
              "The farm didn't take a matching trade — often its position gate (the farm already held the ticker from another strategy), or a different entry time.")
-      + list('Only the farm took these', [...tag(tv.farm_only, 'tv'), ...tag(ka.farm_only, 'kairos')]
-               .sort((x, y) => (x.entry_time || '').localeCompare(y.entry_time || '')),
-             "Select didn't take a matching trade — Select's own position gate (an R3S3/R4S4 twin already held the ticker), strikes, profit lock or daily-loss halt.")
+      + list('Only the farm took these', [...tag(tv.farm_only, 'tv'), ...tag(ka.farm_only, 'kairos')].sort(byTime),
+             refined
+               ? "Kairos Refined didn't take a matching trade. Most of these are its gates working — outside its trading hours, a blocked day type, RVOL, open-location, reversal policy, strikes — plus its own position gate, profit lock or daily-loss halt."
+               : "Select didn't take a matching trade — Select's own position gate (an R3S3/R4S4 twin already held the ticker), strikes, profit lock or daily-loss halt.")
       + (d.unknown_source.length ? `<div class="note" style="margin-top:8px">Not compared (source farm unknown — no longer wired): ${d.unknown_source.map(_esc).join(', ')}</div>` : '');
   }
 

@@ -720,3 +720,54 @@ def test_bar_cache_is_compact_and_least_recently_used(monkeypatch):
     assert calls.count(("AAA", "2026-09-01")) == 1
     farms._day_bars(_A, "DDD", "2099-01-01")          # not over yet: never cached
     assert ("DDD", "2099-01-01") not in farms._bars_cache
+
+
+# ── execution gaps + Kairos Refined vs Kairos Farm ────────────────────────────
+
+def test_execution_gaps_sign_entries_and_exits_from_the_books_side():
+    book_long = {"side": "LONG", "entry_price": 100.10, "exit_price": 100.90,
+                 "entry_time": "2026-10-20T14:00:00Z", "exit_time": "2026-10-20T14:10:00Z"}
+    farm_long = {"side": "LONG", "entry_price": 100.00, "exit_price": 101.00,
+                 "entry_time": "2026-10-20T14:00:00Z", "exit_time": "2026-10-20T14:15:00Z"}
+    book_short = {"side": "SHORT", "entry_price": 49.95, "exit_price": 49.50,
+                  "entry_time": "2026-10-20T15:00:00Z", "exit_time": "2026-10-20T15:20:00Z"}
+    farm_short = {"side": "SHORT", "entry_price": 50.00, "exit_price": 49.50,
+                  "entry_time": "2026-10-20T15:00:00Z", "exit_time": "2026-10-20T15:20:00Z"}
+    g = farms.execution_gaps([(book_long, farm_long), (book_short, farm_short)])
+    # Long: paid 10 bps more in, got ~9.9 bps less out. Short: sold 10 bps lower (worse), same exit.
+    assert g["median_entry_bps"] == 10.0
+    assert g["median_exit_bps"] == round((9.90099 + 0.0) / 2, 2)
+    assert g["median_hold_diff_mins"] == -2.5 and g["book_exited_earlier"] == 1
+
+
+def test_refined_comparison_counts_farm_trades_only_while_on_its_roster():
+    S = _s("NVDA")
+    roster = farms.RosterTimeline([(farms._to_epoch("2026-10-01 20:16:00 UTC"), {S}),
+                                   (farms._to_epoch("2026-10-15 20:16:00 UTC"), set())])
+    book = [_rt2(S, "2026-10-02T14:00:00Z", 30, notional=15000)]
+    farm_rts = {"kairos": [_rt2(S, "2026-10-02T14:01:00Z", 2),     # matched
+                           _rt2(S, "2026-10-08T14:00:00Z", 1),     # on roster, missed
+                           _rt2(S, "2026-10-20T14:00:00Z", 5)],    # off the roster: excluded
+                "tv": []}
+    out = farms.compare_select_farms(book, farm_rts, {S: "kairos"}, roster=roster)
+    k = out["by_source"]["kairos"]
+    assert k["paired"] == 1 and len(k["farm_only"]) == 1 and out["farm_trades"] == 2
+    assert k["median_entry_bps"] == 0.0
+
+
+def test_vs_endpoint_switches_to_kairos_refined(monkeypatch):
+    import app as a
+    S = _s("MU")
+    book = [{**_rt2(S, "2026-10-02T14:00:00Z", 30, notional=15000), "ticker": "MU"}]
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {**a.ACCOUNTS_BY_NUM,
+                                               "3": {"broker": object(), "fills_fn": lambda: [1]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", lambda *x, **k: {"closed_clean": list(book)})
+    calls = []
+    monkeypatch.setattr(farms, "_farm_round_trips",
+                        lambda num, f, t, full=False: (calls.append(num) or [_rt2(S, "2026-10-02T14:02:00Z", 2)], None))
+    monkeypatch.setattr(farms, "_refined_timeline",
+                        lambda a_: farms.RosterTimeline([(farms._to_epoch("2026-10-01 20:16:00 UTC"), {S})]))
+    d = a.app.test_client().get("/api/farms/select_vs_farms?book=refined&days=30").get_json()
+    assert d["book"] == "refined" and d["book_label"] == "Kairos Refined"
+    assert calls == ["5"]                                        # Kairos Farm only
+    assert d["by_source"]["kairos"]["paired"] == 1 and d["by_source"]["tv"]["paired"] == 0
