@@ -1649,13 +1649,38 @@ def _metrics(rows):
             "pnl": round(sum(pnls), 2)}
 
 
-def book_month_pack(farm_rts, refined, select, actual, months):
+PICK_LOOKBACK_DAYS = 90
+
+
+def monthly_picks(trips, months, n, lookback=PICK_LOOKBACK_DAYS,
+                  min_trades=DEFAULT_MIN_TRADES, cap=DEFAULT_CAP):
+    """The 90-day rule, month by month: at the close of the day before each month
+    starts, rank the top `n` on the `lookback` days up to it, and freeze that list
+    for the month. trips: [{strategy, pnl, date}] with ET exit dates.
+
+    Returns {month: {pick_date, audition_start, first_audition_trade, names}}."""
+    out = {}
+    for m in months:
+        y, mo = int(m[:4]), int(m[5:7])
+        pick = (datetime(y, mo, 1).date() - timedelta(days=1)).isoformat()
+        start = (datetime.strptime(pick, "%Y-%m-%d").date() - timedelta(days=lookback)).isoformat()
+        aud = [t for t in trips if start <= (t["date"] or "") <= pick]
+        out[m] = {"pick_date": pick, "audition_start": start,
+                  "first_audition_trade": min((t["date"] for t in aud if t["date"]), default=None),
+                  "names": [nm for nm, _ in rank_top(aud, n, min_trades, cap)]}
+    return out
+
+
+def book_month_pack(farm_rts, refined, select, actual, months, picks=None):
     """Month-by-month comparison on one farm.
 
     farm_rts: the farm's closed round-trips.
     refined / select: RosterTimeline for each book.
     actual:   {"refined": [...], "select": [...]} each book's own round-trips.
     months:   ['YYYY-MM', ...] oldest first.
+    picks:    monthly_picks() output — the frozen 90-day top N for each month. Its
+              trades that month are "pick90", everything else on the farm
+              "pick90_rest" (the baseline the rule has to beat).
 
     Per month: the farm's trades split by which roster held the strategy at entry
     (both / refined only / select only / neither), each roster's farm total, and each
@@ -1667,7 +1692,9 @@ def book_month_pack(farm_rts, refined, select, actual, months):
     out = []
     for m in months:
         groups = {k: [] for k in ("both", "refined_only", "select_only", "neither")}
-        ref_all, sel_all = [], []
+        ref_all, sel_all, p90, p90_rest = [], [], [], []
+        pk = (picks or {}).get(m)
+        pick_set = set(pk["names"]) if pk else set()
         for t in farm_rts:
             et = t.get("entry_time")
             if (et_date(et) or "")[:7] != m:
@@ -1680,12 +1707,19 @@ def book_month_pack(farm_rts, refined, select, actual, months):
                 ref_all.append(_row(t))
             if q:
                 sel_all.append(_row(t))
+            (p90 if s in pick_set else p90_rest).append(_row(t))
         act = {k: _metrics([_row(t) for t in (actual.get(k) or [])
                             if (et_date(t.get("entry_time")) or "")[:7] == m])
                for k in ("refined", "select")}
         farm = {"refined_roster": _metrics(ref_all), "select_roster": _metrics(sel_all)}
         farm.update({k: _metrics(v) for k, v in groups.items()})
-        out.append({"month": m, "farm": farm, "actual": act})
+        row = {"month": m, "farm": farm, "actual": act}
+        if picks is not None:
+            farm["pick90"], farm["pick90_rest"] = _metrics(p90), _metrics(p90_rest)
+            row["pick90_info"] = {k: pk[k] for k in ("pick_date", "audition_start", "first_audition_trade")} if pk else None
+            if pk:
+                row["pick90_info"]["picks"] = len(pk["names"])
+        out.append(row)
     return out
 
 
@@ -1762,9 +1796,10 @@ def _recent_months(n, today=None):
     return list(reversed(out))
 
 
-def build_book_months_pack(n_months=4):
+def build_book_months_pack(n_months=4, n=20, min_trades=DEFAULT_MIN_TRADES, cap=DEFAULT_CAP):
     """The month-by-month pack as a plain dict (shared by the endpoint and the
-    monthly report). Raises RuntimeError when the Kairos Farm can't be read."""
+    monthly report). Raises RuntimeError when the Kairos Farm can't be read.
+    n / min_trades / cap set the 90-day pick (the page passes its own settings)."""
     a = _app()
     months = _recent_months(max(1, min(12, int(n_months))))
     farm, err = _farm_round_trips("5", "", "", full=True)
@@ -1772,12 +1807,20 @@ def build_book_months_pack(n_months=4):
         raise RuntimeError(f"Kairos Farm: {err}")
     ref_rts, e1 = _book_rts(a, "3")
     sel_rts, e2 = _book_rts(a, "7")
+    trips = [{"strategy": c["strategy"], "pnl": float(c.get("pnl") or 0),
+              "date": et_date(c.get("exit_time")) or c.get("date") or ""} for c in farm]
+    picks = monthly_picks(trips, months, n, PICK_LOOKBACK_DAYS, min_trades, cap)
     pack = book_month_pack(farm, _refined_timeline(a), _select_timeline(a, sel_rts),
-                           {"refined": ref_rts, "select": sel_rts}, months)
+                           {"refined": ref_rts, "select": sel_rts}, months, picks=picks)
     errors = {k: v for k, v in (("Kairos Refined", e1), ("Kairos Select", e2)) if v}
     return {
         "farm": "Kairos Farm", "months": pack, "errors": errors,
+        "pick90": {"n": n, "lookback_days": PICK_LOOKBACK_DAYS, "min_trades": min_trades, "cap": cap},
         "notes": [
+            f"pick90 is the simple rule: at the close of the day before each month, the Kairos Farm's top {n} "
+            f"by net P&L over the previous {PICK_LOOKBACK_DAYS} days (at least {min_trades} trades, at most "
+            f"{cap or 'any'} per ticker), frozen for the month. pick90_rest is every other farm trade that month. "
+            "pick90_info.first_audition_trade later than audition_start means the farm had less history than the lookback.",
             "Each farm trade is attributed to the roster that held at its entry, not today's roster.",
             "Kairos Refined's roster comes from its saved daily snapshots.",
             "Kairos Select's roster comes from logged Applies (from 2026-10-24); before that, "
@@ -1787,17 +1830,25 @@ def build_book_months_pack(n_months=4):
     }
 
 
+def _pack_args(src):
+    def _int(k, d, lo, hi):
+        try:
+            return min(hi, max(lo, int(src.get(k, d))))
+        except (TypeError, ValueError):
+            return d
+    return {"n_months": _int("months", 4, 1, 12), "n": _int("n", 20, 1, 50),
+            "min_trades": _int("min_trades", DEFAULT_MIN_TRADES, 1, 100),
+            "cap": _int("cap", DEFAULT_CAP, 0, 50)}
+
+
 @farms_bp.route("/api/farms/book_months")
 def api_book_months():
-    """?months=4 — month-by-month on Kairos Farm: the Kairos Refined roster vs the
-    Kairos Select roster (each as it stood at each trade), plus both books' actual
-    results. Read-only. The data pack for the monthly report."""
+    """?months=4 &n=20 &min_trades &cap — month-by-month on Kairos Farm: the frozen
+    90-day top N, the Kairos Refined roster and the Kairos Select roster (each as it
+    stood at each trade), plus both books' actual results. Read-only. The data pack
+    for the monthly report."""
     try:
-        n = int(request.args.get("months") or 4)
-    except ValueError:
-        n = 4
-    try:
-        return jsonify(build_book_months_pack(n))
+        return jsonify(build_book_months_pack(**_pack_args(request.args)))
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 409
 

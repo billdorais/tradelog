@@ -82,7 +82,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(a, "get_db", _db)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     import routes.farms as farms
-    monkeypatch.setattr(farms, "build_book_months_pack", lambda n: {"months": [], "n": n})
+    monkeypatch.setattr(farms, "build_book_months_pack", lambda months, **kw: {"months": [], "n": months})
     return path
 
 

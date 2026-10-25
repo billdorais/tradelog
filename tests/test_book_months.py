@@ -77,3 +77,40 @@ def test_select_applies_and_clears_are_logged(monkeypatch):
     hist = json.loads(saved["SELECT_APPLY_HISTORY"])
     assert hist == [{"at": "2026-10-24 14:00:00", "picks": ["AAA_X", "BBB_Y"]},
                     {"at": "2026-10-25 14:00:00", "picks": []}]
+
+
+# ── the 90-day pick, month by month ──────────────────────────────────────────
+
+def _tr(s, pnl, d):
+    return {"strategy": s, "pnl": pnl, "date": d}
+
+
+def test_monthly_pick_ranks_the_90_days_before_each_month_only():
+    trips = ([_tr(A, 5, f"2026-08-{d:02d}") for d in range(3, 8)]
+             + [_tr(B, 2, f"2026-08-{d:02d}") for d in range(3, 8)]
+             + [_tr(B, 50, f"2026-09-{d:02d}") for d in range(1, 6)])   # B's big month is September
+    p = farms.monthly_picks(trips, ["2026-09", "2026-10"], n=1, min_trades=5)
+    assert p["2026-09"]["pick_date"] == "2026-08-31" and p["2026-09"]["names"] == [A]
+    assert p["2026-10"]["names"] == [B]                 # ranked with September in, frozen for October
+    assert p["2026-09"]["audition_start"] == "2026-06-02"
+    assert p["2026-09"]["first_audition_trade"] == "2026-08-03"
+
+
+def test_pack_scores_the_frozen_pick_against_the_rest_of_the_farm():
+    none = farms.RosterTimeline([])
+    farm = [_rt(A, "2026-10-05T14:00:00Z", 3), _rt(B, "2026-10-06T14:00:00Z", -1),
+            _rt(C, "2026-10-07T14:00:00Z", -2), _rt(A, "2026-09-07T14:00:00Z", 9)]
+    picks = {"2026-10": {"pick_date": "2026-09-30", "audition_start": "2026-07-02",
+                         "first_audition_trade": "2026-07-20", "names": [A]}}
+    (row,) = farms.book_month_pack(farm, none, none, {}, ["2026-10"], picks=picks)
+    assert row["farm"]["pick90"]["trades"] == 1 and row["farm"]["pick90"]["pnl"] == 3
+    assert row["farm"]["pick90_rest"]["trades"] == 2 and row["farm"]["pick90_rest"]["pnl"] == -3
+    assert row["pick90_info"]["picks"] == 1 and row["pick90_info"]["first_audition_trade"] == "2026-07-20"
+    # Without picks the pack keeps its old shape.
+    (plain,) = farms.book_month_pack(farm, none, none, {}, ["2026-10"])
+    assert "pick90" not in plain["farm"] and "pick90_info" not in plain
+
+
+def test_pack_args_clamp():
+    assert farms._pack_args({"months": "99", "n": "0", "cap": "x"}) == {
+        "n_months": 12, "n": 1, "min_trades": farms.DEFAULT_MIN_TRADES, "cap": farms.DEFAULT_CAP}

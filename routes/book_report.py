@@ -22,7 +22,7 @@ book_report_bp = Blueprint("book_report", __name__)
 MODEL = "claude-opus-5-5"
 STALE_RUN_SECS = 20 * 60          # a "running" row older than this died with its worker
 
-SYSTEM_PROMPT = """You are the analyst for one trader's systematic trading system. You write a short monthly report comparing two of their paper books, Kairos Refined and Kairos Select, against the Kairos Farm they are drawn from.
+SYSTEM_PROMPT = """You are the analyst for one trader's systematic trading system. You write a short monthly report comparing two of their paper books, Kairos Refined and Kairos Select, and a simple frozen 90-day pick, against the Kairos Farm they are drawn from.
 
 How the system works:
 - The Kairos Farm trades every strategy pipeline at $1,000 per trade, ungated and all day. It is the full audition pool.
@@ -33,6 +33,7 @@ The data pack you receive, per month:
 - farm.refined_roster / farm.select_roster: the farm's trades in strategies each book held AT THE TIME of the trade (never today's roster).
 - farm.both / refined_only / select_only: the overlap split.
 - farm.neither: every farm trade neither book held. This is the baseline a roster has to beat to show its selection adds anything.
+- farm.pick90 / pick90_rest: the simple rule. At the close of the day before each month, the farm's top N by net P&L over the previous 90 days, frozen for that month, and every other farm trade that month. pick90_info gives the pick date, the audition window and how many strategies qualified; a first_audition_trade later than audition_start means the farm had less history than 90 days, so that month's pick is weaker evidence.
 - actual.refined / actual.select: each book's own trades at its own size, gates and execution.
 - Each group has trades, win_rate (%), profit_factor, avg_pct (average % return per trade) and pnl (dollars).
 
@@ -47,8 +48,10 @@ Rules:
 Write markdown with exactly these sections:
 ## Summary
 Three bullets: the most important things this month and across the months shown.
+## The 90-day pick
+Month by month, did the frozen 90-day top N beat pick90_rest? This is the question of whether picking past leaders works at all.
 ## Refined vs Select
-Which roster did better on the farm, month by month, against the rest-of-farm baseline.
+Which roster did better on the farm, month by month, against the rest-of-farm baseline and against the 90-day pick. A book that can't beat the simple 90-day rule isn't adding anything with its own selection.
 ## Gates and execution
 For each book, actual vs its roster on the farm, and what the gap suggests.
 ## Worth watching
@@ -150,11 +153,11 @@ def call_claude(pack, client=None):
     return text, usage, msg.stop_reason
 
 
-def _run(rid, months):
+def _run(rid, months, pick=None):
     a = _app()
     try:
         from routes.farms import build_book_months_pack
-        pack = build_book_months_pack(months)
+        pack = build_book_months_pack(months, **(pick or {}))
         _update(a, rid, pack=json.dumps(pack))
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set on the server")
@@ -201,15 +204,15 @@ def _mark_stale(row):
 def api_book_report_run():
     """Start a report in the background. Body: {months: 4}. Returns its id."""
     a = _app()
-    try:
-        months = max(1, min(12, int((request.get_json(silent=True) or {}).get("months") or 4)))
-    except (TypeError, ValueError):
-        months = 4
+    body = request.get_json(silent=True) or {}
+    from routes.farms import _pack_args
+    args = _pack_args(body)
+    months = args.pop("n_months")
     running = [r for r in map(_mark_stale, _rows(a, 5)) if r["status"] == "running"]
     if running:
         return jsonify({"error": "a report is already being written", "id": running[0]["id"]}), 409
     rid = _insert(a, months)
-    threading.Thread(target=_run, args=(rid, months), daemon=True, name=f"book-report-{rid}").start()
+    threading.Thread(target=_run, args=(rid, months, args), daemon=True, name=f"book-report-{rid}").start()
     return jsonify({"id": rid, "status": "running"})
 
 
