@@ -1800,3 +1800,217 @@ def api_book_months():
         return jsonify(build_book_months_pack(n))
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 409
+
+
+# ── Pick and hold: rank once on a lookback, freeze the list, watch what follows ──
+# How the trader actually runs Kairos Select: look back ~90 days, take the top N,
+# and keep them. Everything up to the pick date is the AUDITION (it looks good by
+# construction — that is why they were picked); everything after is the TEST.
+
+FORWARD_TESTS_KEY = "FARM_FORWARD_TESTS"
+FORWARD_TESTS_MAX = 30
+PICK_FARMS = ("kairos", "tv", "both")
+
+
+def _group(trips):
+    """[{pnl}] -> {trades, win_rate, profit_factor, pnl}."""
+    pnls = [float(t["pnl"]) for t in trips]
+    if not pnls:
+        return {"trades": 0, "win_rate": None, "profit_factor": None, "pnl": 0.0}
+    wins = [p for p in pnls if p > 0]
+    gl = abs(sum(p for p in pnls if p <= 0))
+    return {"trades": len(pnls), "win_rate": round(len(wins) / len(pnls) * 100, 1),
+            "profit_factor": round(sum(wins) / gl, 2) if gl > 0 else None,
+            "pnl": round(sum(pnls), 2)}
+
+
+def pick_and_hold(trips_by_farm, pick_date, lookback_days, n, farm="kairos",
+                  min_trades=DEFAULT_MIN_TRADES, cap=DEFAULT_CAP, picks=None):
+    """Rank on [pick_date - lookback_days, pick_date] (inclusive: "picked at the
+    close of pick_date"), freeze, and score what the frozen list did afterwards.
+
+    trips_by_farm: {"tv": [{strategy, pnl, date}], "kairos": [...]}, ET dates.
+    farm:  "kairos" | "tv" | "both" (both = the two top lists merged the way Apply
+           merges them, each strategy counted from one farm only).
+    picks: a frozen {strategy: farm} from a saved test; None ranks now.
+
+    The baseline is what the same NUMBER of average strategies on the same farm(s)
+    made over the test: the bar a pick has to clear to show selection works."""
+    used = ["tv", "kairos"] if farm == "both" else [farm]
+    start = (datetime.strptime(pick_date, "%Y-%m-%d").date()
+             - timedelta(days=int(lookback_days))).isoformat()
+    aud = {f: [t for t in trips_by_farm.get(f) or [] if start <= (t["date"] or "") <= pick_date] for f in used}
+    test = {f: [t for t in trips_by_farm.get(f) or [] if (t["date"] or "") > pick_date] for f in used}
+
+    if picks is None:
+        tops = {f: [{"strategy": nm, "pnl": s["pnl"], "profit_factor": s["profit_factor"],
+                     "win_rate": s["win_rate"]} for nm, s in rank_top(aud[f], n, min_trades, cap)]
+                for f in used}
+        if farm == "both":
+            picks = {r["strategy"]: r["farm"] for r in merge_roster(tops)}
+        else:
+            picks = {r["strategy"]: farm for r in tops[farm]}
+    picks = {s.upper(): f for s, f in picks.items() if f in used}
+
+    def _mine(trips_f):
+        return [(f, t) for f, ts in trips_f.items() for t in ts if picks.get(t["strategy"]) == f]
+
+    aud_mine, test_mine = _mine(aud), _mine(test)
+
+    # Daily running totals, one axis from the audition's start to the latest trade.
+    dates = sorted({t["date"] for ts in list(aud.values()) + list(test.values()) for t in ts if t["date"]})
+    by_day = {}
+    for _f, t in aud_mine + test_mine:
+        by_day[t["date"]] = by_day.get(t["date"], 0.0) + float(t["pnl"])
+    test_all = [t for ts in test.values() for t in ts]
+    active = len({(f, t["strategy"]) for f, ts in test.items() for t in ts})
+    scale = (len(picks) / active) if active else 0.0
+    base_day = {}
+    for t in test_all:
+        base_day[t["date"]] = base_day.get(t["date"], 0.0) + float(t["pnl"]) * scale
+    run, base_run, picks_line, base_line = 0.0, 0.0, [], []
+    for d in dates:
+        run += by_day.get(d, 0.0)
+        picks_line.append(round(run, 2))
+        if d > pick_date:
+            base_run += base_day.get(d, 0.0)
+            base_line.append(round(base_run, 2))
+        else:
+            base_line.append(None)
+
+    # Week by week after the pick: did the frozen list beat N average strategies?
+    weeks = {}
+    for t in test_all:
+        w = weeks.setdefault(period_key(t["date"], "week"), {"picks": 0.0, "base": 0.0})
+        w["base"] += float(t["pnl"]) * scale
+    for _f, t in test_mine:
+        weeks[period_key(t["date"], "week")]["picks"] += float(t["pnl"])
+    week_rows = [{"week": k, "picks": round(v["picks"], 2), "baseline": round(v["base"], 2)}
+                 for k, v in sorted(weeks.items())]
+
+    rows = []
+    for s, f in picks.items():
+        a_t = [t for t in aud[f] if t["strategy"] == s]
+        t_t = [t for t in test[f] if t["strategy"] == s]
+        rows.append({"strategy": s, "farm": f, "audition": _group(a_t), "test": _group(t_t)})
+    rows.sort(key=lambda r: (-r["audition"]["pnl"], r["strategy"]))
+
+    return {
+        "pick_date": pick_date, "audition_start": start, "lookback_days": int(lookback_days),
+        "farm": farm, "n": n, "picks": picks,
+        "first_audition_trade": min((t["date"] for ts in aud.values() for t in ts if t["date"]), default=None),
+        "dates": dates, "picks_line": picks_line, "baseline_line": base_line,
+        "audition": _group([t for _f, t in aud_mine]),
+        "test": _group([t for _f, t in test_mine]),
+        "test_days": len({t["date"] for t in test_all if t["date"]}),
+        "baseline_test_pnl": round(sum(float(t["pnl"]) for t in test_all) * scale, 2),
+        "baseline_strategies": active,
+        "weeks": week_rows,
+        "weeks_beaten": sum(1 for w in week_rows if w["picks"] > w["baseline"]),
+        "rows": rows,
+    }
+
+
+def _load_forward_tests(a):
+    try:
+        v = json.loads(a._load_setting(FORWARD_TESTS_KEY) or "[]")
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
+def _pick_params(src):
+    def _int(k, d, lo, hi):
+        try:
+            return min(hi, max(lo, int(src.get(k, d))))
+        except (TypeError, ValueError):
+            return d
+    today = datetime.now(_ET).date().isoformat()
+    pd = str(src.get("pick_date") or today)[:10]
+    try:
+        datetime.strptime(pd, "%Y-%m-%d")
+    except ValueError:
+        pd = today
+    farm = (src.get("farm") or "kairos").lower()
+    return {"pick_date": min(pd, today),
+            "lookback": _int("lookback", 90, 7, 365),
+            "n": _int("n", 20, 1, 50),
+            "farm": farm if farm in PICK_FARMS else "kairos",
+            "min_trades": _int("min_trades", DEFAULT_MIN_TRADES, 1, 100),
+            "cap": _int("cap", DEFAULT_CAP, 0, 50)}
+
+
+def _pick_trips(farm):
+    """Full-history trips for the farm(s) a pick uses. Returns (trips_by_farm, error)."""
+    out = {}
+    for key, num, label in FARMS:
+        if farm != "both" and key != farm:
+            continue
+        trips, err = _farm_trips(num, "", "", full=True)
+        if err:
+            return None, f"{label}: {err}"
+        out[key] = trips
+    return out, None
+
+
+def _run_pick(p, picks=None):
+    trips, err = _pick_trips(p["farm"])
+    if err:
+        return None, err
+    return pick_and_hold(trips, p["pick_date"], p["lookback"], p["n"], p["farm"],
+                         p["min_trades"], p["cap"], picks=picks), None
+
+
+@farms_bp.route("/api/farms/pick_hold")
+def api_pick_hold():
+    """?pick_date=YYYY-MM-DD &lookback=90 &n=20 &farm=kairos|tv|both &min_trades &cap
+    or ?test_id=... to score a saved, frozen forward test. Read-only."""
+    a = _app()
+    tid = request.args.get("test_id")
+    if tid:
+        rec = next((t for t in _load_forward_tests(a) if t.get("id") == tid), None)
+        if not rec:
+            return jsonify({"error": "That forward test no longer exists."}), 404
+        out, err = _run_pick(_pick_params(rec), picks=rec.get("picks") or {})
+        if err:
+            return jsonify({"error": err}), 409
+        out["saved"] = {k: rec.get(k) for k in ("id", "name", "created_at")}
+        return jsonify(out)
+    out, err = _run_pick(_pick_params(request.args))
+    if err:
+        return jsonify({"error": err}), 409
+    return jsonify(out)
+
+
+@farms_bp.route("/api/farms/forward_tests", methods=["GET", "POST"])
+def api_forward_tests():
+    """GET lists saved forward tests. POST {name?, pick_date, lookback, n, farm,
+    min_trades, cap} ranks on the server's own data and freezes the result. The
+    list is never taken from the client, so a saved test is what the ranking said."""
+    a = _app()
+    tests = _load_forward_tests(a)
+    if request.method == "GET":
+        return jsonify({"tests": tests})
+    body = request.get_json(silent=True) or {}
+    p = _pick_params(body)
+    out, err = _run_pick(p)
+    if err:
+        return jsonify({"error": err}), 409
+    if not out["picks"]:
+        return jsonify({"error": "Nothing qualified in that lookback, so there are no strategies to freeze."}), 400
+    farm_lbl = {"kairos": "Kairos Farm", "tv": "TV Farm", "both": "Both farms"}[p["farm"]]
+    name = str(body.get("name") or "").strip()[:80] or f"{farm_lbl} top {p['n']} · {p['lookback']}d to {p['pick_date']}"
+    rec = {**p, "id": f"ft{int(time.time() * 1000)}", "name": name,
+           "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+           "picks": out["picks"]}
+    tests = (tests + [rec])[-FORWARD_TESTS_MAX:]
+    a._save_setting(FORWARD_TESTS_KEY, json.dumps(tests))
+    return jsonify({"saved": rec, "tests": tests})
+
+
+@farms_bp.route("/api/farms/forward_tests/<tid>/delete", methods=["POST"])
+def api_forward_test_delete(tid):
+    a = _app()
+    tests = [t for t in _load_forward_tests(a) if t.get("id") != tid]
+    a._save_setting(FORWARD_TESTS_KEY, json.dumps(tests))
+    return jsonify({"tests": tests})

@@ -144,6 +144,41 @@
       <div class="chartbox" style="height:300px"><canvas id="chart-acc"></canvas></div>
     </div>
 
+    <div class="panel" id="phPanel">
+      <div class="band-q">Pick and hold: forward test a frozen roster</div>
+      <div class="band-sub">How you run Kairos Select: look back, take the top N, keep them. Choose a pick date. The top N
+        (and the min-trades and per-ticker settings above) are ranked on the lookback <em>before</em> it and frozen.
+        <span style="color:#6b7080">The grey part of the line is the audition</span>: it looks good because that's why they were
+        picked. <span style="color:#3987e5">The blue part is the test</span>: what the frozen list did after the pick, against
+        <span style="color:#cfd3e0">the same number of average strategies</span> on the same farm. Save a pick to keep that exact
+        list and watch it build a record.</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <span class="lbl" style="margin-left:0">Farm</span>
+        <button class="btn" data-phfarm="kairos" onclick="phSet('farm','kairos')">Kairos Farm</button>
+        <button class="btn" data-phfarm="tv" onclick="phSet('farm','tv')">TV Farm</button>
+        <button class="btn" data-phfarm="both" onclick="phSet('farm','both')" title="Both top lists merged the way Apply merges them">Both</button>
+        <span class="sep"></span>
+        <span class="lbl">Picked at close of</span>
+        <input class="f" id="phDate" type="date" onchange="phSet('pick_date', this.value)">
+        <button class="btn" onclick="phSet('pick_date', '')" title="Pick on everything up to today">Today</button>
+        <span class="lbl">Lookback</span>
+        <select class="f" id="phLook" onchange="phSet('lookback', this.value)">
+          <option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option>
+        </select>
+        <button class="btn go" onclick="phSave()" style="margin-left:auto" title="Freeze this exact list so it can be tracked from here on">Save as forward test</button>
+      </div>
+      <div id="phSaved" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+      <div id="phStatus" class="note" style="margin-bottom:8px"></div>
+      <div class="tiles" id="phTiles"></div>
+      <div class="legend">
+        <span><i style="background:#6b7080"></i>Frozen picks · audition</span>
+        <span><i style="background:#3987e5;height:3px"></i>Frozen picks · after the pick</span>
+        <span><i style="background:repeating-linear-gradient(90deg,#cfd3e0 0 5px,transparent 5px 8px)"></i>Same number of average strategies</span>
+      </div>
+      <div class="chartbox" style="height:300px"><canvas id="chart-ph"></canvas></div>
+      <div id="phTable" style="margin-top:12px"></div>
+    </div>
+
     <div class="panel" id="ovPanel">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div>
@@ -608,7 +643,177 @@
     _renderExitsBar();
     _loadVsFarms();
     _loadBookMonths();
+    _loadPickHold();
     if (!_brPoll) _loadBookReports();
+  }
+
+  // ── Pick and hold ─────────────────────────────────────────────────────────
+  // Rank once on a lookback, freeze, and watch what the frozen list does after.
+  let _ph = { farm: 'kairos', pick_date: '', lookback: 90, test_id: null };
+  try { _ph = { ..._ph, ...JSON.parse(localStorage.getItem('farm_pick_hold') || '{}') }; } catch (_) {}
+  let _phTests = [], _phSeq = 0;
+
+  function _phStore() { try { localStorage.setItem('farm_pick_hold', JSON.stringify(_ph)); } catch (_) {} }
+
+  function phSet(k, v) {
+    _ph[k] = k === 'lookback' ? Number(v) : v;
+    _ph.test_id = null;                       // changing a setting leaves the saved test
+    _phStore();
+    _loadPickHold();
+  }
+
+  function phOpen(id) { _ph.test_id = _ph.test_id === id ? null : id; _phStore(); _loadPickHold(); }
+
+  async function phDelete(id, ev) {
+    ev.stopPropagation();
+    const btn = ev.currentTarget;
+    if (btn.dataset.armed !== '1') {           // two clicks to delete (no confirm dialogs here)
+      btn.dataset.armed = '1'; btn.textContent = 'delete?';
+      setTimeout(() => { btn.dataset.armed = ''; btn.textContent = '×'; }, 2500);
+      return;
+    }
+    const r = await fetch(`/api/farms/forward_tests/${encodeURIComponent(id)}/delete`, { method: 'POST' });
+    _phTests = (await r.json()).tests || [];
+    if (_ph.test_id === id) { _ph.test_id = null; _phStore(); }
+    _loadPickHold();
+  }
+
+  async function phSave() {
+    const st = document.getElementById('phStatus');
+    st.textContent = 'Saving: ranking on the server and freezing the list…';
+    try {
+      const r = await fetch('/api/farms/forward_tests', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ farm: _ph.farm, pick_date: _ph.pick_date, lookback: _ph.lookback,
+                               n: _opt.n, min_trades: _opt.min_trades, cap: _opt.cap }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.status);
+      _phTests = d.tests || [];
+      _ph.test_id = d.saved.id; _phStore();
+      _loadPickHold();
+    } catch (e) { st.textContent = 'Could not save: ' + (e.message || e); }
+  }
+
+  function _phSyncControls(d) {
+    const saved = _ph.test_id ? _phTests.find(t => t.id === _ph.test_id) : null;
+    const farm = saved ? saved.farm : _ph.farm;
+    document.querySelectorAll('.btn[data-phfarm]').forEach(b => b.classList.toggle('on', b.dataset.phfarm === farm));
+    document.getElementById('phDate').value = (saved ? saved.pick_date : _ph.pick_date) || (d && d.pick_date) || '';
+    document.getElementById('phLook').value = String(saved ? saved.lookback : _ph.lookback);
+    document.getElementById('phSaved').innerHTML = !_phTests.length ? '' :
+      '<span class="lbl" style="margin-left:0;align-self:center">Saved</span>' + _phTests.slice().reverse().map(t =>
+        `<span class="btn ${t.id === _ph.test_id ? 'on' : ''}" style="display:inline-flex;gap:8px;align-items:center;padding:3px 4px 3px 9px"
+           onclick="phOpen('${_esc(t.id)}')" title="Frozen ${_esc(t.created_at)} UTC · ${Object.keys(t.picks || {}).length} strategies">
+           ${_esc(t.name)}<button class="btn" style="padding:0 6px;border:none" onclick="phDelete('${_esc(t.id)}', event)">×</button></span>`).join('');
+  }
+
+  async function _loadPickHold() {
+    const seq = ++_phSeq;
+    const st = document.getElementById('phStatus'), tiles = document.getElementById('phTiles');
+    try { _phTests = (await (await fetch('/api/farms/forward_tests')).json()).tests || []; } catch (_) {}
+    if (_ph.test_id && !_phTests.some(t => t.id === _ph.test_id)) { _ph.test_id = null; _phStore(); }
+    _phSyncControls(null);
+    st.textContent = 'Loading the full farm history (the first load can take a minute)…';
+    const qs = _ph.test_id ? new URLSearchParams({ test_id: _ph.test_id })
+      : new URLSearchParams({ farm: _ph.farm, pick_date: _ph.pick_date || '', lookback: _ph.lookback,
+                              n: _opt.n, min_trades: _opt.min_trades, cap: _opt.cap });
+    let d;
+    try {
+      const r = await fetch('/api/farms/pick_hold?' + qs.toString());
+      d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.status);
+    } catch (e) {
+      if (seq !== _phSeq) return;
+      st.textContent = ''; tiles.innerHTML = `<div class="empty">${_esc(String(e.message || e))}</div>`;
+      document.getElementById('phTable').innerHTML = '';
+      if (_charts.ph) { _charts.ph.destroy(); _charts.ph = null; }
+      return;
+    }
+    if (seq !== _phSeq) return;              // a newer request superseded this one
+    _phSyncControls(d);
+    _renderPickHold(d);
+  }
+
+  function _renderPickHold(d) {
+    const st = document.getElementById('phStatus'), tiles = document.getElementById('phTiles');
+    const farmLbl = { kairos: 'Kairos Farm', tv: 'TV Farm', both: 'both farms' }[d.farm];
+    const nPicks = Object.keys(d.picks).length;
+    const short = d.first_audition_trade && d.first_audition_trade > d.audition_start;
+    st.innerHTML = (d.saved ? `<strong style="color:#cfd3e0">${_esc(d.saved.name)}</strong>, frozen ${_esc(d.saved.created_at)} UTC. ` : '')
+      + `${nPicks} strategies ranked on ${farmLbl} from ${_esc(_fmtDay(d.audition_start))} to ${_esc(_fmtDay(d.pick_date))}`
+      + (short ? ` (the farm's first trade in that window is ${_esc(_fmtDay(d.first_audition_trade))}, so the audition is shorter than ${d.lookback_days} days)` : '')
+      + (d.saved ? '' : `, top ${d.n}, min ${_opt.min_trades} trades, max ${_opt.cap || 'any'} per ticker.`)
+      + (!d.saved && !d.test.trades ? ' Nothing has traded since this pick yet. Save it to keep this exact list and come back.' : '');
+    const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s}</div></div>`;
+    const t = d.test, a = d.audition;
+    const edge = t.pnl - d.baseline_test_pnl;
+    tiles.innerHTML =
+        tile('Audition', _money(a.pnl), `${a.trades} trades · WR ${a.win_rate ?? '—'}% · PF ${_pf(a.profit_factor)} · hindsight`, _cls(a.pnl))
+      + tile('After the pick', t.trades ? _money(t.pnl) : '—',
+             t.trades ? `${t.trades} trades over ${d.test_days} days · WR ${t.win_rate}% · PF ${_pf(t.profit_factor)}` : 'no trades yet', t.trades ? _cls(t.pnl) : '')
+      + tile(`${nPicks} average strategies`, d.test_days ? _money(d.baseline_test_pnl) : '—',
+             d.test_days ? `same farm, same period · ${d.baseline_strategies} strategies traded` : 'no trades yet', d.test_days ? _cls(d.baseline_test_pnl) : '')
+      + tile('Picks minus average', d.test_days ? _money(edge) : '—',
+             d.weeks.length ? `beat the average in ${d.weeks_beaten} of ${d.weeks.length} weeks` : 'no trades yet', d.test_days ? _cls(edge) : '');
+
+    if (_charts.ph) { _charts.ph.destroy(); _charts.ph = null; }
+    const pickIdx = d.dates.findIndex(x => x > d.pick_date);       // first test day, -1 if none
+    const cut = pickIdx === -1 ? d.dates.length : pickIdx;
+    const pickLine = { id: 'pickLine', afterDatasetsDraw(c) {
+      if (cut <= 0 || cut >= d.dates.length + 1) return;
+      const x = c.scales.x, y = c.scales.y;
+      const px = cut >= d.dates.length ? x.getPixelForValue(d.dates.length - 1) : (x.getPixelForValue(cut - 1) + x.getPixelForValue(cut)) / 2;
+      const g = c.ctx; g.save(); g.strokeStyle = '#f0a35e'; g.setLineDash([3, 3]); g.lineWidth = 1;
+      g.beginPath(); g.moveTo(px, y.top); g.lineTo(px, y.bottom); g.stroke();
+      g.setLineDash([]); g.fillStyle = '#f0a35e'; g.font = '10px DM Sans, sans-serif';
+      g.textAlign = cut >= d.dates.length ? 'right' : 'left';
+      g.fillText('pick', px + (cut >= d.dates.length ? -4 : 4), y.top + 10); g.restore();
+    } };
+    _charts.ph = new Chart(document.getElementById('chart-ph'), {
+      type: 'line',
+      data: { labels: d.dates, datasets: [
+        { label: 'Frozen picks', data: d.picks_line, borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8, tension: 0,
+          borderColor: C_BASE, backgroundColor: C_BASE,
+          segment: { borderColor: s => s.p1DataIndex >= cut ? C_FWD : C_BASE } },
+        { label: 'Average strategies', data: d.baseline_line.map((v, i) => v == null ? null : v + (cut > 0 ? d.picks_line[cut - 1] : 0)),
+          borderColor: '#cfd3e0', backgroundColor: '#cfd3e0', borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0,
+          pointHoverRadius: 4, pointHitRadius: 8, tension: 0, spanGaps: false },
+      ] },
+      options: {
+        responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false }, tooltip: {
+          backgroundColor: '#1a1d2e', borderColor: '#2a2d3e', borderWidth: 1, titleColor: '#e0e0e0', bodyColor: '#cfd3e0', padding: 10,
+          callbacks: {
+            title: it => _fmtDay(it[0].label) + (it[0].dataIndex >= cut ? ' · after the pick' : ' · audition'),
+            label: c => {
+              if (c.datasetIndex === 1) return ' Average strategies since pick: ' + _money(d.baseline_line[c.dataIndex]);
+              const since = c.dataIndex >= cut ? '  (since pick ' + _money(c.raw - (cut > 0 ? d.picks_line[cut - 1] : 0)) + ')' : '';
+              return ' Frozen picks: ' + _money(c.raw) + since;
+            } } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0,
+               callback: function (v) { return _fmtDay(this.getLabelForValue(v)); } } },
+          y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+               ticks: { color: '#666', font: { size: 10 }, callback: v => '$' + v } },
+        },
+      },
+      plugins: [pickLine],
+    });
+
+    const g = x => x.trades ? `${x.trades}` : '—';
+    const rows = d.rows.map(r => `<tr><td class="l">${_esc(r.strategy)}${d.farm === 'both' ? ` <span class="chip ${r.farm}">${r.farm === 'tv' ? 'TV' : 'Kairos'}</span>` : ''}</td>
+        <td>${g(r.audition)}</td><td class="${_cls(r.audition.pnl)}">${_money(r.audition.pnl)}</td>
+        <td>${g(r.test)}</td><td class="${r.test.trades ? _cls(r.test.pnl) : 'dim'}">${r.test.trades ? _money(r.test.pnl) : '—'}</td>
+        <td>${r.test.trades ? r.test.win_rate + '%' : '—'}</td><td>${r.test.trades ? _pf(r.test.profit_factor) : '—'}</td></tr>`).join('');
+    const wk = d.weeks.map(w => `<tr><td class="l">Week of ${_esc(_fmtDay(w.week))}</td><td class="${_cls(w.picks)}">${_money(w.picks)}</td>
+        <td class="${_cls(w.baseline)}">${_money(w.baseline)}</td><td class="${_cls(w.picks - w.baseline)}">${_money(w.picks - w.baseline)}</td></tr>`).join('');
+    document.getElementById('phTable').innerHTML =
+      `<div class="tbl"><table><thead><tr><th class="l">Frozen pick</th><th>Audition trades</th><th>Audition P&amp;L</th>
+        <th>Since pick trades</th><th>Since pick P&amp;L</th><th>WR</th><th>PF</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      + (wk ? `<details style="margin-top:8px"><summary class="lbl" style="cursor:pointer;margin:0">Week by week after the pick (${d.weeks.length})</summary>
+        <div class="tbl"><table><thead><tr><th class="l">Week</th><th>Frozen picks</th><th>${nPicks} average strategies</th><th>Difference</th></tr></thead>
+        <tbody>${wk}</tbody></table></div></details>` : '')
+      + `<div class="note" style="margin-top:8px">Farm dollars at $1,000 a trade. A few weeks after the pick is a small sample;
+        judge it on whether the blue line keeps clearing the dashed one, not on one good week.</div>`;
   }
 
   // ── Month by month: Kairos Refined vs Kairos Select on Kairos Farm ────────
