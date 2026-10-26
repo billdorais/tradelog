@@ -63,9 +63,25 @@ def test_equity_mode_rebases_account_equity(_closes, monkeypatch):
             ]
     monkeypatch.setattr(a, "_alpaca_account_ctx",
                         lambda acct: (_FakeBroker(), "alpaca2", "TV Refined", None))
+    monkeypatch.setitem(a.ACCOUNTS_BY_NUM, "2", {"tag": "alpaca2", "label": "TV Refined"})
     a.app.config["TESTING"] = True
     with a.app.test_client() as c:
         d = c.get("/api/perf/vs_benchmark?accounts=2&base=equity").get_json()
     book = next(s for s in d["series"] if s["key"] == "2")
     assert book["label"] == "TV Refined"
     assert book["values"] == [0.0, 0.5, 0.5, 1.0]   # rebased to 100000, ff on 01-06
+
+
+def test_unconfigured_account_is_skipped_not_shown_as_account_1(_closes, monkeypatch):
+    """_alpaca_account_ctx falls back to account 1 for an unknown number; the chart
+    must skip it rather than plot the TV Farm under another book's name."""
+    monkeypatch.delitem(a.ACCOUNTS_BY_NUM, "7", raising=False)
+    a.app.config["TESTING"] = True
+    with a.app.test_client() as c:
+        d = c.get("/api/perf/vs_benchmark?accounts=7&base=equity").get_json()
+    assert [s["key"] for s in d["series"]] == ["SPY"]
+
+
+def test_analysis_chart_includes_kairos_select():
+    html = open("templates/analysis.html", encoding="utf-8").read()
+    assert "accounts: '4,2,3,7'" in html and "'7': '#3987e5'" in html

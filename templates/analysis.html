@@ -3506,7 +3506,7 @@
   loadBenchmarkChart();
 
   // ── Performance vs SPY (rebased-% overlay) ──────────────────────────────────
-  // Account-agnostic (fixed: Crew / TV Refined / Kairos Refined vs SPY), driven
+  // Account-agnostic (fixed: Crew / TV Refined / Kairos Refined / Kairos Select vs SPY), driven
   // by its own Range/Base selectors — independent of the page's account tab.
   let _benchChartInstance = null;
   async function loadBenchmarkChart() {
@@ -3515,14 +3515,14 @@
     const base = document.getElementById('benchBase')?.value || '25000';
     try {
       meta.textContent = 'loading…';
-      const p = new URLSearchParams({ accounts: '4,2,3', benchmark: 'SPY', days, base });
+      const p = new URLSearchParams({ accounts: '4,2,3,7', benchmark: 'SPY', days, base });
       const d = await fetch('/api/perf/vs_benchmark?' + p).then(r => r.json());
       if (d.error || !d.dates || !d.dates.length) {
         meta.textContent = d.error ? ('— ' + d.error) : '— no data';
         if (_benchChartInstance) { _benchChartInstance.destroy(); _benchChartInstance = null; }
         return;
       }
-      const COLORS = { 'SPY': '#9aa4b8', '4': '#7FE098', '2': '#c4b5fd', '3': '#F2C07A' };
+      const COLORS = { 'SPY': '#9aa4b8', '4': '#7FE098', '2': '#c4b5fd', '3': '#F2C07A', '7': '#3987e5' };
       const datasets = d.series.map(s => {
         const color = COLORS[s.key] || '#888';
         return {

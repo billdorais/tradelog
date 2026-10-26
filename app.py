@@ -14420,6 +14420,10 @@ def api_perf_vs_benchmark():
         _from = start.isoformat()
         _to   = end.isoformat()
         for acct in accounts:
+            # An unconfigured account would fall back to account 1 in
+            # _alpaca_account_ctx and plot the TV Farm under the wrong name.
+            if acct not in ACCOUNTS_BY_NUM:
+                continue
             _broker, _tag, _label, _ = _alpaca_account_ctx(acct)
             if _broker is None:
                 continue
