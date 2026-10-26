@@ -1503,12 +1503,19 @@ def _select_wired_since(a):
         rec = json.loads(a._load_setting("SELECT_LAST_APPLY") or "null") or {}
     except Exception:
         return {}
-    at = rec.get("at") or ""
-    try:
-        d = datetime.strptime(at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(_ET).date().isoformat()
-    except ValueError:
-        return {}
-    return {pk["strategy"].upper(): d for pk in rec.get("picks") or [] if pk.get("strategy")}
+    def _day(at):
+        try:
+            return datetime.strptime(at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(_ET).date().isoformat()
+        except (TypeError, ValueError):
+            return None
+    d = _day(rec.get("at") or "")
+    out = {}
+    for pk in rec.get("picks") or []:
+        # A pick added on its own (Ticker Breakdown) carries its own date.
+        day = _day(pk.get("at")) if pk.get("at") else d
+        if pk.get("strategy") and day:
+            out[pk["strategy"].upper()] = day
+    return out
 
 
 def _select_sources(a):
@@ -2065,3 +2072,116 @@ def api_forward_test_delete(tid):
     tests = [t for t in _load_forward_tests(a) if t.get("id") != tid]
     a._save_setting(FORWARD_TESTS_KEY, json.dumps(tests))
     return jsonify({"tests": tests})
+
+
+# ── Add one strategy to Kairos Select (from the Ticker Breakdown page) ─────────
+# Apply rewires the whole roster from the leaderboard; this wires ONE strategy the
+# trader picked by hand, built exactly like an Apply pick (cloned pipeline, Select
+# broker, ~$15k in shares, entry source = the farm it was measured on), and leaves
+# every other Select rule alone. The next Apply from Farm Leaders rebuilds the
+# roster from the leaderboard and will drop it unless it ranks there.
+
+FARM_BY_ACCOUNT = {"1": "tv", "5": "kairos"}
+
+
+def _select_state(a, slug):
+    """(rule id or None, entry source or None) for this strategy's own Select rule."""
+    conn = a.get_db()
+    try:
+        cur = conn.cursor()
+        own, _mixed, _src = _select_rules(cur, a)
+        rid = own.get(slug)
+        if rid is None:
+            return None, None
+        ph = a.placeholder()
+        cur.execute(f"SELECT nodes FROM routing_rules WHERE id={ph}", (rid,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    raw = (row[0] if a.DATABASE_URL else row["nodes"]) if row else "[]"
+    try:
+        nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    except Exception:
+        nodes = []
+    src = next(((n.get("value") or "").lower() for n in nodes if n.get("type") == "entry_source"), "tv")
+    return rid, ("kairos" if src == "kairos" else "tv")
+
+
+@farms_bp.route("/api/farms/select_add", methods=["GET", "POST"])
+def api_farm_select_add():
+    """GET ?strategy=X — is it on Kairos Select, and entering on which source.
+    POST {strategy, farm: tv|kairos} — wire it onto Kairos Select (or switch its
+    entry source to that farm's). Refused when Select's gates don't match the
+    farms', when there's no live price to size it, or for a wildcard name."""
+    a = _app()
+    src = request.get_json(silent=True) if request.method == "POST" else request.args
+    src = src or {}
+    slug = str(src.get("strategy") or "").strip().upper()
+    if not slug or "*" in slug or "_" not in slug:
+        return jsonify({"error": "Pick one strategy (not a wildcard) first."}), 400
+    configured = SELECT_TAG in a.ACCOUNTS_BY_TAG
+    rid, entry_now = _select_state(a, slug)
+    if request.method == "GET":
+        return jsonify({"strategy": slug, "on_select": rid is not None, "entry": entry_now,
+                        "configured": configured})
+
+    farm = str(src.get("farm") or "").lower()
+    if farm not in ENTRY_BY_FARM:
+        return jsonify({"error": "Choose TV Farm or Kairos Farm as the book first: the farm "
+                                 "decides how Select enters (TV alerts or the engine)."}), 400
+    if not configured:
+        return jsonify({"error": "Kairos Select (account 7) isn't configured. Nothing was changed."}), 400
+    entry = ENTRY_BY_FARM[farm]
+    if rid is not None and entry_now == entry:
+        return jsonify({"strategy": slug, "already": True, "entry": entry})
+    parity = _parity_or_error(a)
+    if parity.get("error") or parity["mismatches"]:
+        return jsonify({"error": "Kairos Select's gates don't match the farms ("
+                                 + (parity.get("error") or ", ".join(parity["mismatches"]))
+                                 + "). Fix the gate overrides on the Routing page first. "
+                                 "Nothing was changed."}), 409
+    tkr = slug.split("_", 1)[0]
+    price = (a._fetch_alpaca_last_prices([tkr]) or {}).get(tkr)
+    if not price:
+        return jsonify({"error": f"No live price for {tkr}, so it can't be sized. Nothing was changed."}), 409
+    try:
+        last = json.loads(a._load_setting("SELECT_LAST_APPLY") or "null") or {}
+    except Exception:
+        last = {}
+    size = float(last.get("size_dollars") or DEFAULT_SIZE)
+    shares = max(1, round(size / float(price)))
+
+    conn = a.get_db(); cur = conn.cursor(); ph = a.placeholder()
+    own, mixed, source = _select_rules(cur, a)
+    built = select_nodes(slug, shares, entry, (source.get(slug) or (0, None))[1])
+    exit_ovr = _load_exit_overrides(a)
+    if exit_ovr:
+        built, _skip = apply_exit_overrides(built, exit_ovr)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if rid is not None:
+        cur.execute(f"UPDATE routing_rules SET nodes={ph}, enabled=1 WHERE id={ph}", (json.dumps(built), rid))
+        action = "switched"
+    else:
+        cur.execute(f"INSERT INTO routing_rules (name,enabled,nodes,created_at,tv_alert_created) "
+                    f"VALUES ({ph},{ph},{ph},{ph},{ph})",
+                    (slug + SELECT_SUFFIX, 1, json.dumps(built), ts, 0))
+        action = "added"
+    conn.commit(); conn.close()
+
+    # Keep the apply record and roster history in step, so the comparison panels
+    # know this pick's source farm and count its farm trades from today.
+    try:
+        picks = [p for p in (last.get("picks") or []) if (p.get("strategy") or "").upper() != slug]
+        picks.append({"strategy": slug, "farm": farm, "entry": entry, "pnl": None,
+                      "shares": shares, "at": ts, "added_from": "tickers"})
+        last = {**last, "picks": picks}
+        last.setdefault("at", ts)
+        last.pop("cleared", None)
+        a._save_setting("SELECT_LAST_APPLY", json.dumps(last))
+        roster = set(own) | {s for _rid, _n, ss in mixed for s in ss} | {slug}
+        _log_select_roster(a, sorted(roster), ts)
+    except Exception as e:
+        a.log.warning("farms: could not record the Select add: %s", e)
+    a.log.info("Kairos Select: %s %s (%s entry, %d shares) from Ticker Breakdown", action, slug, entry, shares)
+    return jsonify({"strategy": slug, action: True, "entry": entry, "shares": shares,
+                    "size_dollars": size, "price": price})

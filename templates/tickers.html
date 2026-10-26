@@ -104,7 +104,10 @@
       <button class="btn on" data-days="30" onclick="setDays(30)">30d</button>
       <button class="btn" data-days="60" onclick="setDays(60)">60d</button>
       <button class="btn" data-days="90" onclick="setDays(90)">90d</button>
-      <button class="btn" onclick="load()" style="margin-left:auto">&#8635; Refresh</button>
+      <button class="btn" id="selAddBtn" onclick="addToSelect()" hidden style="margin-left:auto;border-color:#3a7a4e;color:#7FE098"
+              title="Wire this strategy onto Kairos Select, entering the way this farm does">+ Add to Kairos Select</button>
+      <span id="selAddNote" style="font-size:0.72rem;color:#9aa0b5" hidden></span>
+      <button class="btn" id="refreshBtn" onclick="load()" style="margin-left:auto">&#8635; Refresh</button>
     </div>
 
     <div id="warnBox"></div>
@@ -275,6 +278,7 @@
       } else {
         _data = null;
         render();
+        _syncSelectBtn();
       }
     } catch (e) {
       document.getElementById('warnBox').innerHTML =
@@ -370,6 +374,72 @@
       _populateTickerPicker(d.tickers || Object.keys(_tickerTotals));
     }
     render();
+    _syncSelectBtn();
+  }
+
+  // ── Add the selected farm strategy to Kairos Select ───────────────────────
+  // Only from a farm: the farm decides how Select enters (TV Farm = TV alerts,
+  // Kairos Farm = the engine), matching how the record on screen was earned.
+  const _FARM_OF = { '1': 'tv', '5': 'kairos' };
+  let _selArmed = false, _selSeq = 0;
+
+  async function _syncSelectBtn() {
+    const btn = document.getElementById('selAddBtn'), note = document.getElementById('selAddNote');
+    const strat = document.getElementById('stratSel').value, farm = _FARM_OF[_acct];
+    const seq = ++_selSeq;
+    _selArmed = false;
+    btn.hidden = true; note.hidden = true;
+    document.getElementById('refreshBtn').style.marginLeft = 'auto';
+    if (!farm || !strat) return;
+    let st;
+    try { st = await (await fetch('/api/farms/select_add?strategy=' + encodeURIComponent(strat))).json(); }
+    catch (_) { return; }
+    if (seq !== _selSeq || st.error || st.configured === false) return;
+    const entry = farm === 'kairos' ? 'kairos' : 'tv';
+    document.getElementById('refreshBtn').style.marginLeft = '0';
+    if (st.on_select && st.entry === entry) {
+      note.textContent = '✓ On Kairos Select (' + (entry === 'kairos' ? 'engine' : 'TV') + ' entries)';
+      note.style.marginLeft = 'auto'; note.hidden = false;
+      return;
+    }
+    btn.textContent = st.on_select
+      ? '⇄ Switch Kairos Select to ' + (entry === 'kairos' ? 'engine' : 'TV') + ' entries'
+      : '+ Add to Kairos Select';
+    btn.hidden = false;
+  }
+
+  async function addToSelect() {
+    const btn = document.getElementById('selAddBtn'), note = document.getElementById('selAddNote');
+    const strat = document.getElementById('stratSel').value, farm = _FARM_OF[_acct];
+    if (!strat || !farm) return;
+    if (!_selArmed) {                         // two clicks: this changes live paper routing
+      _selArmed = true;
+      btn.dataset.label = btn.textContent;
+      btn.textContent = 'Confirm: ' + strat + ' → Kairos Select';
+      setTimeout(() => { if (_selArmed) { _selArmed = false; btn.textContent = btn.dataset.label; } }, 4000);
+      return;
+    }
+    _selArmed = false;
+    btn.disabled = true;
+    let r, d;
+    try {
+      r = await fetch('/api/farms/select_add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                 body: JSON.stringify({ strategy: strat, farm }) });
+      d = await r.json();
+    } catch (e) { d = { error: String(e) }; r = { ok: false }; }
+    btn.disabled = false;
+    if (!r.ok || d.error) {
+      btn.textContent = btn.dataset.label || '+ Add to Kairos Select';
+      note.textContent = d.error || 'Could not add it.'; note.style.color = '#e08a8a'; note.style.marginLeft = '0';
+      note.hidden = false;
+      return;
+    }
+    btn.hidden = true;
+    note.style.color = '#7FE098'; note.style.marginLeft = 'auto';
+    note.textContent = d.already ? '✓ Already on Kairos Select'
+      : `✓ ${d.added ? 'Added to' : 'Switched on'} Kairos Select: ${d.shares} shares (~$${Math.round(d.size_dollars).toLocaleString()}), `
+        + (d.entry === 'kairos' ? 'engine' : 'TV') + ' entries';
+    note.hidden = false;
   }
 
   function render() {

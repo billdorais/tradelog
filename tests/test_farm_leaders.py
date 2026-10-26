@@ -771,3 +771,66 @@ def test_vs_endpoint_switches_to_kairos_refined(monkeypatch):
     assert d["book"] == "refined" and d["book_label"] == "Kairos Refined"
     assert calls == ["5"]                                        # Kairos Farm only
     assert d["by_source"]["kairos"]["paired"] == 1 and d["by_source"]["tv"]["paired"] == 0
+
+
+# ── Add one strategy to Select from the Ticker Breakdown page ────────────────
+
+def _load(saved):
+    return lambda k, d=None: saved.get(k, d)
+
+
+def test_add_wires_one_strategy_and_leaves_the_rest(router, monkeypatch):
+    import app as a
+    db, _roster, saved = router
+    monkeypatch.setattr(a, "_load_setting", _load(saved))
+    c = a.app.test_client()
+    st = c.get("/api/farms/select_add?strategy=" + _s("NEW")).get_json()
+    assert st["on_select"] is False and st["configured"] is True
+    r = c.post("/api/farms/select_add", json={"strategy": _s("NEW").lower(), "farm": "tv"})
+    body = r.get_json()
+    assert r.status_code == 200, body
+    assert body["added"] and body["entry"] == "tv" and body["shares"] == 150   # $15k / $100
+    rules = _rules(db)
+    nodes = rules[_s("NEW") + " · Select"]
+    assert {"type": "broker", "value": "alpaca-paper-7"} in nodes
+    assert {"type": "entry_source", "value": "tv"} in nodes
+    assert any(n.get("type") == "exit_params" and n.get("trail_offset") == 0.3 for n in nodes)  # cloned
+    # Nothing else touched: the other Select rules are all still there.
+    for other in ("OLD", "KEEP", "OPEN"):
+        assert _s(other) + " · Select" in rules
+    rec = json.loads(saved["SELECT_LAST_APPLY"])
+    pick = next(p for p in rec["picks"] if p["strategy"] == _s("NEW"))
+    assert pick["entry"] == "tv" and pick["added_from"] == "tickers" and pick["at"]
+    hist = json.loads(saved["SELECT_APPLY_HISTORY"])[-1]["picks"]
+    assert _s("NEW") in hist and _s("KEEP") in hist
+    assert farms._select_wired_since(a)[_s("NEW")]                  # dated by its own add
+
+
+def test_add_is_a_no_op_when_already_wired_the_same_way(router, monkeypatch):
+    import app as a
+    db, _roster, saved = router
+    monkeypatch.setattr(a, "_load_setting", _load(saved))
+    c = a.app.test_client()
+    c.post("/api/farms/select_add", json={"strategy": _s("NEW"), "farm": "kairos"})
+    again = c.post("/api/farms/select_add", json={"strategy": _s("NEW"), "farm": "kairos"}).get_json()
+    assert again["already"] is True
+    switched = c.post("/api/farms/select_add", json={"strategy": _s("NEW"), "farm": "tv"}).get_json()
+    assert switched["switched"] and switched["entry"] == "tv"
+    assert sum(1 for n in _rules(db) if n.startswith(_s("NEW") + " · Select")) == 1
+
+
+def test_add_refuses_without_a_farm_a_price_or_one_named_strategy(router, monkeypatch):
+    import app as a
+    _db, _roster, saved = router
+    monkeypatch.setattr(a, "_load_setting", _load(saved))
+    c = a.app.test_client()
+    assert c.post("/api/farms/select_add", json={"strategy": _s("NEW")}).status_code == 400
+    assert c.post("/api/farms/select_add", json={"strategy": "NEW_*", "farm": "tv"}).status_code == 400
+    monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {})
+    r = c.post("/api/farms/select_add", json={"strategy": _s("NEW"), "farm": "tv"})
+    assert r.status_code == 409 and "price" in r.get_json()["error"]
+
+
+def test_tickers_page_offers_the_add_button():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert 'id="selAddBtn"' in html and "/api/farms/select_add" in html and "_FARM_OF" in html
