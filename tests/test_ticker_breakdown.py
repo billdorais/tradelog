@@ -750,3 +750,21 @@ def test_a_fresh_ticker_lands_on_its_best_strategy():
     assert "autoPick && !d.strategy" in block
     assert "b[1].pnl > a[1].pnl" in block
     assert 'id="stratSel" onchange="load()"' in html        # manual choice: no auto-pick
+
+
+def test_the_picker_shows_each_tickers_best_strategy_not_the_sum(client):
+    """AAPL sums to +$5 over 4 trades, but its best strategy (R3S3, both books) made
+    +$55 over 3, and that's the one the page charts. The picker must match it."""
+    d = _get(client)
+    aapl = d["ticker_totals"]["AAPL"]
+    assert (aapl["pnl"], aapl["trades"]) == (5.0, 4)
+    assert aapl["best"] == {"strategy": "AAPL_CAM_BREAKOUT_R3S3_V02_5MIN", "pnl": 55.0, "trades": 3}
+    # Scoped to one book, the best is that book's own.
+    d2 = _get(client, "?account=2")
+    assert d2["ticker_totals"]["AAPL"]["best"] == {"strategy": "AAPL_CAM_BREAKOUT_R3S3_V02_5MIN",
+                                                   "pnl": 40.0, "trades": 2}
+
+
+def test_the_picker_labels_and_sorts_by_the_best_strategy():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert "totals[t].best" in html

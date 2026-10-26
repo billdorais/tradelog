@@ -24216,6 +24216,16 @@ def _group_stats(trades, key):
     return {k: _ticker_stats(v) for k, v in out.items()}
 
 
+def _best_strategy(by_strat):
+    """{strategy: {pnl, trades}} -> the highest-P&L one as {strategy, pnl, trades}
+    (ties: more trades, then name), or None. Same pick as the page's auto-select."""
+    named = [(k, v) for k, v in by_strat.items() if k and k != "UNKNOWN"] or list(by_strat.items())
+    if not named:
+        return None
+    k, v = min(named, key=lambda kv: (-kv[1]["pnl"], -kv[1]["trades"], kv[0]))
+    return {"strategy": k, "pnl": round(v["pnl"], 2), "trades": v["trades"]}
+
+
 @app.route("/api/ticker/breakdown")
 def api_ticker_breakdown():
     """Every round-trip on one ticker, split by strategy, book, side and exit reason.
@@ -24239,6 +24249,9 @@ def api_ticker_breakdown():
     # {ticker: {"pnl": float, "trades": int}} — populated across every book so the
     # picker can sort by profitability without a second scan.
     ticker_totals: dict = {}
+    # {ticker: {strategy: {"pnl", "trades"}}} — so the picker can show each ticker's
+    # best strategy, the one the page auto-selects and charts, not the ticker sum.
+    strat_totals: dict = {}
     for acct in books:
         num = acct["num"]
         try:
@@ -24263,9 +24276,12 @@ def api_ticker_breakdown():
             _tt  = ticker_totals.setdefault(sym, {"pnl": 0.0, "trades": 0})
             _tt["pnl"]    += _pnl
             _tt["trades"] += 1
+            strat = (c.get("strategy") or "").strip().upper()
+            _st = strat_totals.setdefault(sym, {}).setdefault(strat, {"pnl": 0.0, "trades": 0})
+            _st["pnl"]    += _pnl
+            _st["trades"] += 1
             if not ticker or sym != ticker:
                 continue
-            strat = (c.get("strategy") or "").strip().upper()
             if only_strat and strat != only_strat:
                 continue
             rows.append({**c, "strategy": strat, "account": num, "book": label,
@@ -24285,7 +24301,8 @@ def api_ticker_breakdown():
         # Picker feed: alphabetized for backward compat, plus per-ticker totals so
         # the frontend can offer a "sort by profit" toggle without a second fetch.
         "tickers": sorted(ticker_totals),
-        "ticker_totals": {sym: {"pnl": round(t["pnl"], 2), "trades": t["trades"]}
+        "ticker_totals": {sym: {"pnl": round(t["pnl"], 2), "trades": t["trades"],
+                                "best": _best_strategy(strat_totals.get(sym) or {})}
                           for sym, t in ticker_totals.items()},
         "overall":       _ticker_stats(rows),
         "by_strategy":   _group_stats(rows, lambda t: t["strategy"]),

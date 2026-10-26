@@ -84,7 +84,7 @@
     </div>
 
     <div class="panel" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <select class="f" id="tickerSel" onchange="onTicker()" style="min-width:160px">
+      <select class="f" id="tickerSel" onchange="onTicker()" style="min-width:160px" title="Each ticker shows its best strategy: net P&amp;L (trades) in this book and window">
         <option value="">Loading…</option>
       </select>
       <!-- Sort mode for the ticker picker. Persisted so a refresh keeps the view. -->
@@ -292,11 +292,15 @@
     }
     const currentPick = sel.value;
     const totals = _tickerTotals || {};
-    const withTotals = list.map(t => ({
-      t,
-      pnl:    (totals[t] && totals[t].pnl)    || 0,
-      trades: (totals[t] && totals[t].trades) || 0,
-    }));
+    // Each ticker is shown and sorted by its BEST strategy, the one the page
+    // auto-selects and charts, so the number in the picker matches the chart.
+    // The all-strategy sum mixes winners with losers and matched neither.
+    const withTotals = list.map(t => {
+      const b = (totals[t] && totals[t].best) || null;
+      return { t,
+               pnl:    b ? b.pnl    : ((totals[t] && totals[t].pnl)    || 0),
+               trades: b ? b.trades : ((totals[t] && totals[t].trades) || 0) };
+    });
     const sorters = {
       alpha:       (a, b) => a.t.localeCompare(b.t),
       pnl_desc:    (a, b) => b.pnl - a.pnl,
