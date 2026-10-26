@@ -10556,8 +10556,9 @@ def _consec_blocked(stats):
 # stops the thinnest samples from taking slots. Farm breakouts clear it easily in
 # 60 days; low-frequency names (many reversals) won't. If fewer than N clear the
 # bar, the book trades fewer names rather than lowering it.
-# History: 7 → 5 (relief for the takeable filter) → 7 → 5 (2026-08-21) → 20.
-_REFINED_MIN_TRADES = 20
+# History: 7 → 5 (relief for the takeable filter) → 7 → 5 (2026-08-21) → 20
+# → 15 (2026-10-26, user's call; On-Deck's 10 stays below it).
+_REFINED_MIN_TRADES = 15
 # Looser threshold for the On-Deck watchlist only (display, never routed) — lets
 # ranks beyond the routed set still surface up-and-comers when fewer than `n`
 # strategies clear the strict routing bar above. Must stay BELOW the routing floor
@@ -10566,8 +10567,9 @@ _REFINED_MIN_TRADES = 20
 _REFINED_ONDECK_MIN_TRADES = 10
 
 # Kairos Refined: same floor as TV so the two books are judged on the same bar
-# (raised 3 → 5 as the pool matured, → 20 with TV on 2026-10-17).
-_KAIROS_REFINED_MIN_TRADES        = 20
+# (raised 3 → 5 as the pool matured, → 20 with TV on 2026-10-17, → 15 with TV
+# on 2026-10-26).
+_KAIROS_REFINED_MIN_TRADES        = 15
 _KAIROS_REFINED_ONDECK_MIN_TRADES = 10
 
 # Rolling ranking window for both Refined snapshots when no saved setting exists.

@@ -101,9 +101,10 @@ def test_min_trade_floors_are_pinned():
     A looser bar chosen deliberately is fine; one left behind by a reverted change
     is not. Pinned so the next move is also a decision. Kairos must never exceed TV.
     2026-10-17: both raised to 20, with the window widened 45 -> 60 days.
+    2026-10-26: both lowered to 15 (user's call); window stays 60 days.
     """
-    assert a._REFINED_MIN_TRADES == 20
-    assert a._KAIROS_REFINED_MIN_TRADES == 20
+    assert a._REFINED_MIN_TRADES == 15
+    assert a._KAIROS_REFINED_MIN_TRADES == 15
     assert a.REFINED_WINDOW_DAYS == 60
     assert a._KAIROS_REFINED_MIN_TRADES <= a._REFINED_MIN_TRADES
     # On-Deck (display-only) must stay BELOW its routing floor or the watchlist
