@@ -146,6 +146,10 @@
 
     .empty { text-align: center; padding: 60px; color: #444; font-size: 0.9rem; }
 
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 960px content column. */
+    header { padding-left: max(24px, calc((100% - 960px) / 2 + 24px)); padding-right: max(24px, calc((100% - 960px) / 2 + 24px)); }
   </style>
 </head>
 <body>

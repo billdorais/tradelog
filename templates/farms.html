@@ -49,6 +49,10 @@
     .chip.remove { color: #e08a8a; border-color: #5a3535; }
     .grid2 { display: grid; grid-template-columns: 1fr; gap: 0; }
     .confirm { margin-top: 12px; padding: 10px 12px; border: 1px solid #5a4a2a; background: rgba(240,163,94,0.06); border-radius: 8px; font-size: 0.78rem; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1240px content column. */
+    header { padding-left: max(16px, calc((100% - 1240px) / 2 + 16px)); padding-right: max(16px, calc((100% - 1240px) / 2 + 16px)); }
   </style>
 </head>
 <body>

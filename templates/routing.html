@@ -184,6 +184,10 @@
     .risk-positions-table tr.kairos-row  td { background: rgba(242,231,172,0.07); }
     .pos-pnl-bar-wrap { width: 80px; height: 6px; background: #1e2130; border-radius: 3px; overflow: hidden; }
     .pos-pnl-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1400px content column. */
+    header { padding-left: max(24px, calc((100% - 1400px) / 2 + 24px)); padding-right: max(24px, calc((100% - 1400px) / 2 + 24px)); }
   </style>
 </head>
 <body>

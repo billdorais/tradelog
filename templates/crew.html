@@ -137,6 +137,10 @@
     /* first table = the "Next Month" recommendation card → make it pop */
     .md .md-table:first-of-type { border:1px solid #6d5fa8; border-radius:8px; overflow:hidden; }
     .md .md-table:first-of-type th { background:#241b3a; color:#d7c8ff; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1000px content column. */
+    nav.nav { padding-left: max(24px, calc((100% - 1000px) / 2 + 24px)); padding-right: max(24px, calc((100% - 1000px) / 2 + 24px)); }
   </style>
 </head>
 <body>

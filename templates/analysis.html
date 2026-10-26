@@ -146,6 +146,10 @@
     .pair-tab .count { color: #555; font-size: 0.75rem; margin-left: 4px; }
     .pair-tab.active .count { color: #7FE098; }
     .orphan-reason { color: #888; font-style: italic; font-size: 0.72rem; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1300px content column. */
+    header { padding-left: max(24px, calc((100% - 1300px) / 2 + 24px)); padding-right: max(24px, calc((100% - 1300px) / 2 + 24px)); }
   </style>
 </head>
 <body>

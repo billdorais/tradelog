@@ -39,6 +39,10 @@
     .warn { color: #e08a8a; font-size: 0.74rem; margin-bottom: 8px; }
     .chip { font-size: 0.62rem; color: #9aa0b5; background: #1a1d2e; border: 1px solid #2a2d3e;
             border-radius: 4px; padding: 1px 6px; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1240px content column. */
+    header { padding-left: max(16px, calc((100% - 1240px) / 2 + 16px)); padding-right: max(16px, calc((100% - 1240px) / 2 + 16px)); }
   </style>
 </head>
 <body>

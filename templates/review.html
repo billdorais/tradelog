@@ -77,6 +77,10 @@
     .ts-sub { color: #777; font-size: 0.78rem; margin-bottom: 14px; }
     .ts-head { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr));
                gap: 10px; margin-bottom: 14px; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1300px content column. */
+    nav.nav { padding-left: max(24px, calc((100% - 1300px) / 2 + 24px)); padding-right: max(24px, calc((100% - 1300px) / 2 + 24px)); }
   </style>
 </head>
 <body>

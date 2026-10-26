@@ -237,11 +237,18 @@
     .chat-send-btn:disabled { opacity: 0.4; cursor: default; }
     .chat-toggle-btn { background: transparent; border: 1px solid #3a2d6a; color: #c4b5fd; border-radius: 5px; padding: 3px 12px; font-size: 0.72rem; cursor: pointer; margin-left: 10px; vertical-align: middle; }
     .chat-toggle-btn:hover, .chat-toggle-btn.active { border-color: #c4b5fd; background: rgba(196,181,253,0.08); }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1300px content column. */
+    header { padding-left: max(24px, calc((100% - 1300px) / 2 + 24px)); padding-right: max(24px, calc((100% - 1300px) / 2 + 24px)); }
   </style>
 </head>
 <body>
 <header>
-  <h1>&#127916; Replay</h1>
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+    <h1>&#127916; Replay</h1>
+  </div>
   <div class="nav-menu-wrap">
     <button id="navMenuBtn" onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
     <div id="navMenu">

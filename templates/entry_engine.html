@@ -47,6 +47,10 @@
     .spin { display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;
             border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px }
     @keyframes spin { to { transform: rotate(360deg); } }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1300px content column. */
+    nav.nav { padding-left: max(24px, calc((100% - 1300px) / 2 + 24px)); padding-right: max(24px, calc((100% - 1300px) / 2 + 24px)); }
   </style>
 </head>
 <body>

@@ -55,6 +55,10 @@
     .day-chart { height: 260px; }
     .day-rows { font-size: 0.72rem; }
     .day-rows td, .day-rows th { padding: 4px 10px; border-top: 1px solid #171a24; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1240px content column. */
+    header { padding-left: max(16px, calc((100% - 1240px) / 2 + 16px)); padding-right: max(16px, calc((100% - 1240px) / 2 + 16px)); }
   </style>
 </head>
 <body>

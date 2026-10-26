@@ -125,6 +125,10 @@
     .day-rows td { padding: 5px 12px; border-top: 1px solid #171a24; }
     .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1d2e; border: 1px solid #3a7a4e; color: #7FE098; padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
     .toast.show { opacity: 1; }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 1100px content column. */
+    header { padding-left: max(16px, calc((100% - 1100px) / 2 + 16px)); padding-right: max(16px, calc((100% - 1100px) / 2 + 16px)); }
   </style>
 </head>
 <body>

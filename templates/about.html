@@ -88,6 +88,10 @@
       font-family: monospace;
       white-space: nowrap;
     }
+      /* header-align */
+    /* The logo and menu sit on the content edges, like the dashboard: the bar
+       stays full width, its padding matches the 900px content column. */
+    header { padding-left: max(16px, calc((100% - 900px) / 2 + 0px)); padding-right: max(16px, calc((100% - 900px) / 2 + 0px)); }
   </style>
 </head>
 <body>
