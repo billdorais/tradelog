@@ -986,6 +986,37 @@
           The monthly report below also gets the split of which strategies each roster shared.</div>`;
   }
 
+  // The matched trades where the book and the farm came out furthest apart, worst
+  // for the book first: these are where the "same trade, worse result" gap lives.
+  function _worstMatched(rows, short, et, pctTxt) {
+    const bad = rows.filter(g => g.delta < 0);
+    if (!bad.length) return '';
+    const px = v => v == null ? '—' : Number(v).toFixed(2);
+    const hm = v => v == null ? '—' : v + 'm';
+    const why = g => {
+      const s = g.select, f = g.farm;
+      if (s.hold_mins != null && f.hold_mins != null && Math.abs(s.hold_mins - f.hold_mins) >= 2)
+        return (s.hold_mins > f.hold_mins ? 'held longer' : 'out sooner') + (s.exit_reason ? ' · ' + _esc(s.exit_reason) : '');
+      return s.exit_reason && f.exit_reason && s.exit_reason !== f.exit_reason
+        ? _esc(s.exit_reason) + ' vs ' + _esc(f.exit_reason) : 'price';
+    };
+    return `<details style="margin-top:8px"><summary class="lbl" style="cursor:pointer;margin:0">
+        Biggest differences on matched trades (${bad.length})</summary>
+        <div class="note" style="margin:4px 0">The same trade on both books, where ${short} did worst against the farm. The matched-trade
+          return gap above is mostly these rows.</div>
+        <div class="tbl"><table><thead><tr><th class="l">Entry (ET)</th><th class="l">Strategy</th><th class="l">Side</th>
+          <th>${short} in → out</th><th>Farm in → out</th><th>${short} hold</th><th>Farm hold</th>
+          <th>${short}</th><th>Farm</th><th>Gap</th><th class="l">Why</th></tr></thead><tbody>`
+      + bad.map(g => `<tr><td class="l">${_esc(et(g.select.entry_time))}</td><td class="l">${_esc(g.strategy)}</td>
+          <td class="l">${_esc(g.side || '')}</td>
+          <td>${px(g.select.entry_price)} → ${px(g.select.exit_price)}</td><td>${px(g.farm.entry_price)} → ${px(g.farm.exit_price)}</td>
+          <td>${hm(g.select.hold_mins)}</td><td>${hm(g.farm.hold_mins)}</td>
+          <td class="${_cls(g.select.pct || 0)}">${g.select.pct == null ? '—' : pctTxt(g.select.pct)}</td>
+          <td class="${_cls(g.farm.pct || 0)}">${g.farm.pct == null ? '—' : pctTxt(g.farm.pct)}</td>
+          <td class="neg">${pctTxt(g.delta)}</td><td class="l">${why(g)}</td></tr>`).join('')
+      + '</tbody></table></div></details>';
+  }
+
   // ── A book vs its farms: Kairos Select (TV + engine) or Kairos Refined (engine) ──
   let _vsBook = 'select';
   try { _vsBook = localStorage.getItem('farm_vs_book') === 'refined' ? 'refined' : 'select'; } catch (_) {}
@@ -1096,7 +1127,12 @@
              refined
                ? "Kairos Refined didn't take a matching trade. Most of these are its gates working — outside its trading hours, a blocked day type, RVOL, open-location, reversal policy, strikes — plus its own position gate, profit lock or daily-loss halt."
                : "Select didn't take a matching trade — Select's own position gate (an R3S3/R4S4 twin already held the ticker), strikes, profit lock or daily-loss halt.")
-      + (d.unknown_source.length ? `<div class="note" style="margin-top:8px">Not compared (source farm unknown — no longer wired): ${d.unknown_source.map(_esc).join(', ')}</div>` : '');
+      + _worstMatched(d.worst_matched || [], short, et, pctTxt)
+      + (Object.keys(d.inferred_source || {}).length ? `<div class="note" style="margin-top:8px">No longer on ${short}, matched to their farm by their trades:
+          ${Object.entries(d.inferred_source).map(([k, v]) => _esc(k) + ' (' + (v === 'tv' ? 'TV Farm' : 'Kairos Farm') + ')').join(', ')}.
+          Their farm trades count only while they were on ${short}.</div>` : '')
+      + ((d.unknown_source || []).length ? `<div class="note" style="margin-top:8px">Left out of both lines (no matching farm trades, so the farm side can't be
+          compared): ${d.unknown_source.map(_esc).join(', ')}${d.left_out_trades ? ` (${d.left_out_trades} ${short} trades)` : ''}.</div>` : '');
   }
 
   function setAccMode(m) {

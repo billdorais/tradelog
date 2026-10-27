@@ -849,3 +849,51 @@ def test_roster_rows_carry_their_trade_count_from_the_winning_farm():
 def test_roster_table_has_a_trades_column_and_total():
     html = open("templates/farms.html", encoding="utf-8").read()
     assert "Closed trades in the window" in html and "Total · ${ro.length} strategies" in html
+
+
+# ── comparison fixes: split exits, dropped strategies, biggest gaps ──────────
+
+def test_a_trade_that_exited_in_pieces_counts_once():
+    S = _s("SPCX")
+    a = dict(_rt2(S, "2026-10-26T15:05:02Z", -66.59, notional=101 * 149.38, exit_="2026-10-26T15:06:28Z"),
+             entry_price=149.38, qty=101.0, exit_price=148.72069, exit_reason="Trail")
+    b = dict(_rt2(S, "2026-10-26T15:05:02Z", -0.66, notional=149.38, exit_="2026-10-26T15:06:29Z"),
+             entry_price=149.38, qty=1.0, exit_price=148.72, exit_reason="Trail")
+    (m,) = farms.merge_fragments([a, b])
+    assert m["qty"] == 102.0 and m["pnl"] == -67.25 and m["pieces"] == 2
+    assert m["exit_time"] == "2026-10-26T15:06:29Z" and round(m["exit_price"], 3) == 148.721
+    assert round(farms._rt_pct(m), 3) == -0.441                 # one trade's %, not two
+    other = _rt2(S, "2026-10-26T16:00:00Z", 5)
+    assert len(farms.merge_fragments([a, b, other])) == 2
+
+
+def test_a_strategy_select_dropped_is_matched_to_its_farm_or_left_out_of_both_lines():
+    GONE, LOST, ON = _s("AMD"), _s("SMH"), _s("NVDA")
+    select = [_rt2(GONE, "2026-10-06T14:00:00Z", -30, notional=15000),
+              _rt2(LOST, "2026-10-06T15:00:00Z", -90, notional=15000),
+              _rt2(ON, "2026-10-06T16:00:00Z", 15, notional=15000)]
+    farm = {"tv": [_rt2(GONE, "2026-10-06T14:02:00Z", -1)],
+            "kairos": [_rt2(ON, "2026-10-06T16:01:00Z", 1)]}
+    out = farms.compare_select_farms(select, farm, {ON: "kairos"})
+    assert out["inferred_source"] == {GONE: "tv"}
+    assert out["unknown_source"] == [LOST] and out["left_out_trades"] == 1
+    assert out["select_trades"] == 2                            # LOST's trade left the Select line
+    assert out["by_source"]["tv"]["paired"] == 1
+
+
+def test_biggest_matched_gaps_are_listed_worst_first():
+    S = _s("NVDA")
+    select = [_rt2(S, "2026-10-06T14:00:00Z", -60, notional=15000, exit_="2026-10-06T14:20:00Z"),
+              _rt2(S, "2026-10-07T14:00:00Z", 15, notional=15000)]
+    farm = {"kairos": [_rt2(S, "2026-10-06T14:00:30Z", 1, exit_="2026-10-06T14:05:00Z"),
+                       _rt2(S, "2026-10-07T14:00:10Z", 1)], "tv": []}
+    out = farms.compare_select_farms(select, farm, {S: "kairos"})
+    w = out["worst_matched"]
+    assert [g["delta"] for g in w] == [-0.5, 0.0]
+    assert w[0]["select"]["hold_mins"] == 20.0 and w[0]["farm"]["hold_mins"] == 4.5
+    assert w[0]["source"] == "kairos"
+
+
+def test_vs_panel_lists_biggest_gaps_and_left_out_strategies():
+    html = open("templates/farms.html", encoding="utf-8").read()
+    assert "function _worstMatched" in html and "d.inferred_source" in html and "Left out of both lines" in html

@@ -1416,6 +1416,82 @@ def execution_gaps(pairs):
             "book_exited_earlier": earlier, "book_exited_later": later}
 
 
+def merge_fragments(rts):
+    """Put a round-trip back together when its exit filled in pieces.
+
+    LIFO pairing emits one round-trip per exit fill, so a 102-share trade that
+    exits as 101 + 1 shares comes out as two trades with the same entry and the
+    same % return. Counted per trade, that adds the trade's % twice (and the 1-share
+    piece shows up as a trade only one book took). Pieces sharing strategy, side and
+    entry time are one trade: quantities and P&L add, prices are qty-weighted, the
+    exit time is the last piece's, the exit reason the biggest piece's."""
+    groups, order = {}, []
+    for t in rts:
+        k = (t.get("strategy"), (t.get("side") or "").upper(), t.get("entry_time"))
+        if not k[2]:
+            order.append([t])
+            continue
+        if k not in groups:
+            groups[k] = []
+            order.append(groups[k])
+        groups[k].append(t)
+    out = []
+    for g in order:
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        qty = sum(abs(float(x.get("qty") or 0)) for x in g)
+
+        def _w(field):
+            try:
+                return (sum(float(x.get(field) or 0) * abs(float(x.get("qty") or 0)) for x in g) / qty
+                        if qty else None)
+            except (TypeError, ValueError):
+                return None
+        big = max(g, key=lambda x: abs(float(x.get("qty") or 0)))
+        out.append({**big, "qty": qty, "pnl": round(sum(float(x.get("pnl") or 0) for x in g), 4),
+                    "entry_price": _w("entry_price"), "exit_price": _w("exit_price"),
+                    "exit_time": max((x.get("exit_time") or "") for x in g) or big.get("exit_time"),
+                    "pieces": len(g)})
+    return out
+
+
+def infer_sources(select_rts, farm_rts, names):
+    """{STRATEGY: farm} for Select strategies whose source farm isn't on record (a
+    later Apply took them off Select): the farm whose trades match more of the
+    strategy's Select trades (same rule as the comparison: strategy, side, entry
+    within the pair window). A strategy that matches neither farm is left out."""
+    out = {}
+    for s in names:
+        mine = [t for t in select_rts if t["strategy"] == s]
+        best, hits = None, 0
+        for f, rts in farm_rts.items():
+            n = len(pair_books(mine, [t for t in rts if t["strategy"] == s])[0])
+            if n > hits:
+                best, hits = f, n
+        if best:
+            out[s] = best
+    return out
+
+
+def _gap_row(a, b):
+    """One matched pair, Select vs farm, for the biggest-differences list."""
+    pa, pb = _rt_pct(a), _rt_pct(b)
+
+    def _hold(t):
+        x, e = _epoch(t.get("exit_time")), _epoch(t.get("entry_time"))
+        return round((x - e) / 60, 1) if x is not None and e is not None else None
+
+    def _side(t, p):
+        return {"entry_time": t.get("entry_time"), "exit_time": t.get("exit_time"),
+                "entry_price": t.get("entry_price"), "exit_price": t.get("exit_price"),
+                "pct": None if p is None else round(p, 4), "hold_mins": _hold(t),
+                "exit_reason": t.get("exit_reason")}
+    return {"strategy": a["strategy"], "side": a.get("side"),
+            "delta": round((pa or 0) - (pb or 0), 4),
+            "select": _side(a, pa), "farm": _side(b, pb)}
+
+
 def compare_select_farms(select_rts, farm_rts, source, wired_since=None, roster=None):
     """Kairos Select's actual trades against the same strategies on their source farms.
 
@@ -1431,10 +1507,21 @@ def compare_select_farms(select_rts, farm_rts, source, wired_since=None, roster=
     cumulative % per trade (size-independent: Select trades ~$15k, the farms $1k)
     by ET exit date, plus the trade-by-trade pairing."""
     # A trade whose entry time can't be read has no date to pair or plot on.
-    sel = [t for t in select_rts if et_date(t.get("entry_time"))]
+    sel = merge_fragments([t for t in select_rts if et_date(t.get("entry_time"))])
+    farm_rts = {f: merge_fragments(rts) for f, rts in farm_rts.items()}
+    # Strategies a later Apply took off Select have no source on record: match them
+    # to a farm by their trades. Any that match neither farm leave BOTH lines, so
+    # the two lines always cover the same strategies.
+    unknown = sorted({t["strategy"] for t in sel if t["strategy"] not in source})
+    inferred = infer_sources(sel, farm_rts, unknown)
+    source = {**inferred, **source}
+    dropped = [s for s in unknown if s not in inferred]
+    left_out = len([t for t in sel if t["strategy"] in dropped])
+    sel = [t for t in sel if t["strategy"] not in dropped]
     if not sel:
         return {"dates": [], "select": [], "farm": [], "select_trades": 0, "farm_trades": 0,
-                "start": None, "by_source": {}, "unknown_source": [], "strategy_starts": {}}
+                "start": None, "by_source": {}, "unknown_source": dropped, "strategy_starts": {},
+                "inferred_source": inferred, "left_out_trades": left_out, "worst_matched": []}
     start = min(et_date(t["entry_time"]) for t in sel)
     starts = {s: max(d, start) for s, d in strategy_starts(sel, wired_since).items()}
     if roster is not None:
@@ -1472,10 +1559,11 @@ def compare_select_farms(select_rts, farm_rts, source, wired_since=None, roster=
                 "entry_time": t.get("entry_time"), "pct": None if p is None else round(p, 4),
                 "pnl": round(float(t.get("pnl") or 0), 2)}
 
-    by_source = {}
+    by_source, gaps = {}, []
     for f in ("tv", "kairos"):
         s_rts = [t for t in sel if source.get(t["strategy"]) == f]
         pairs, s_only, f_only = pair_books(s_rts, farm.get(f, []))
+        gaps.extend(dict(_gap_row(a, b), source=f) for a, b in pairs)
         deltas = [(_rt_pct(a) or 0) - (_rt_pct(b) or 0) for a, b in pairs]
         lags = [round(_epoch(a["entry_time"]) - _epoch(b["entry_time"])) for a, b in pairs]
         ex = execution_gaps(pairs)
@@ -1490,8 +1578,10 @@ def compare_select_farms(select_rts, farm_rts, source, wired_since=None, roster=
     return {
         "dates": dates, "select": sel_line, "farm": farm_line, "start": start,
         "select_trades": len(sel), "farm_trades": len(farm_all), "by_source": by_source,
-        "unknown_source": sorted({t["strategy"] for t in sel if t["strategy"] not in source}),
+        "unknown_source": dropped, "left_out_trades": left_out, "inferred_source": inferred,
         "strategy_starts": {s: d for s, d in sorted(starts.items()) if s in source},
+        # The matched trades that explain most of the return gap: worst for the book first.
+        "worst_matched": sorted(gaps, key=lambda g: g["delta"])[:12],
     }
 
 
@@ -1589,7 +1679,11 @@ def api_select_vs_farms():
         names = {t["strategy"] for t in sel} | set().union(*timeline.sets) if timeline.sets else {t["strategy"] for t in sel}
         out = compare_select_farms(sel, farm, {n: "kairos" for n in names}, roster=timeline)
     else:
-        out = compare_select_farms(sel, farm, _select_sources(a), _select_wired_since(a))
+        # Count a farm trade only while its strategy was on Select (logged Applies,
+        # and before them each strategy's span of Select trades), so a strategy a
+        # later Apply removed stops counting on the farm side when it left.
+        out = compare_select_farms(sel, farm, _select_sources(a), _select_wired_since(a),
+                                   roster=_select_timeline(a, merge_fragments(sel)))
     out.update({"book": book, "book_label": label, "from_date": p["from_date"], "to_date": p["to_date"],
                 "pair_window_mins": PAIR_WINDOW_SECS // 60})
     return jsonify(out)
@@ -1741,8 +1835,8 @@ def _book_rts(a, num, full=True):
     except Exception as e:
         return [], f"fills unavailable: {e}"
     paired = a._pair_alpaca_fills_lifo(fills or [])
-    return [dict(c, strategy=(c.get("strategy") or "").strip().upper())
-            for c in paired.get("closed_clean") or []], None
+    return merge_fragments([dict(c, strategy=(c.get("strategy") or "").strip().upper())
+                            for c in paired.get("closed_clean") or []]), None
 
 
 def _refined_timeline(a):
