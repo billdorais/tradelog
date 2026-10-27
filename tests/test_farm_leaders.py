@@ -834,3 +834,18 @@ def test_add_refuses_without_a_farm_a_price_or_one_named_strategy(router, monkey
 def test_tickers_page_offers_the_add_button():
     html = open("templates/tickers.html", encoding="utf-8").read()
     assert 'id="selAddBtn"' in html and "/api/farms/select_add" in html and "_FARM_OF" in html
+
+
+def test_roster_rows_carry_their_trade_count_from_the_winning_farm():
+    S = _s("QQQ")
+    ro, dropped = farms.merge_roster_detail({
+        "tv": [{"strategy": S, "pnl": 9, "profit_factor": 1.2, "win_rate": 50, "trades": 40}],
+        "kairos": [{"strategy": S, "pnl": 5, "profit_factor": 2.0, "win_rate": 50, "trades": 25}],
+    })
+    assert ro[0]["farm"] == "kairos" and ro[0]["trades"] == 25
+    assert dropped[0]["trades"] == 40
+
+
+def test_roster_table_has_a_trades_column_and_total():
+    html = open("templates/farms.html", encoding="utf-8").read()
+    assert "Closed trades in the window" in html and "Total · ${ro.length} strategies" in html

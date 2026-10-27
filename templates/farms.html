@@ -1467,20 +1467,26 @@
         <td class="l">${r.entry === 'tv' ? 'TV alert' : 'Engine'}</td>
         <td>${_pf(r.profit_factor)}</td>
         <td>${r.win_rate == null ? '—' : r.win_rate + '%'}</td>
+        <td>${r.trades == null ? '—' : r.trades}</td>
         <td class="${_cls(r.pnl)}">${_money(r.pnl)}</td>
         <td><span class="chip ${keep.has(r.strategy) ? 'keep' : 'add'}">${keep.has(r.strategy) ? 'already on' : 'add'}</span></td>
-      </tr>`).join('');
+      </tr>`).join('')
+      + (() => {
+        const tr = ro.reduce((t, r) => t + (r.trades || 0), 0), net = ro.reduce((t, r) => t + (r.pnl || 0), 0);
+        return `<tr class="sum"><td></td><td class="l">Total · ${ro.length} strategies</td><td></td><td></td><td></td><td></td>
+          <td>${tr}</td><td class="${_cls(net)}">${_money(net)}</td><td></td></tr>`;
+      })();
     const removed = d.diff.remove.length
       ? '<div class="note" style="margin-top:10px">Comes <span class="chip remove">off</span> Kairos Select: ' + d.diff.remove.map(_esc).join(', ') + '</div>' : '';
     const dr = d.roster_dropped || [];
     const farmName = f => f === 'tv' ? 'TV' : 'Kairos';
     const droppedHtml = dr.length ? `<div style="margin-top:14px">
         <div class="lbl" style="margin:0 0 4px 0">Left out — on both lists; the other farm's version won (${dr.length})</div>
-        <div class="tbl"><table><thead><tr><th class="l">Strategy</th><th class="l">From</th><th>PF</th><th>Win %</th><th>Net</th><th class="l">Lost to</th></tr></thead><tbody>`
+        <div class="tbl"><table><thead><tr><th class="l">Strategy</th><th class="l">From</th><th>PF</th><th>Win %</th><th>Trades</th><th>Net</th><th class="l">Lost to</th></tr></thead><tbody>`
       + dr.map(x => `<tr style="color:#8a8fa3">
           <td class="l">${_esc(x.strategy)}</td><td class="l">${farmName(x.farm)}</td>
           <td>${_pf(x.profit_factor)}</td><td>${x.win_rate == null ? '—' : x.win_rate + '%'}</td>
-          <td>${_money(x.pnl)}</td>
+          <td>${x.trades == null ? '—' : x.trades}</td><td>${_money(x.pnl)}</td>
           <td class="l">${_esc(x.lost_to)} [${farmName(x.lost_to_farm)}] · PF ${_pf(x.lost_to_pf)}, ${x.lost_to_wr == null ? '—' : x.lost_to_wr + '%'}</td></tr>`).join('')
       + '</tbody></table></div></div>' : '';
     const gp = d.gate_parity || { rows: [], mismatches: [] };
@@ -1494,7 +1500,7 @@
       ? `<div class="note" style="margin-top:10px">Last applied ${_esc(d.last_apply.at)} UTC: top ${d.last_apply.n}, ${d.last_apply.days ? d.last_apply.days + 'd window' : 'all history'}, `
         + `${d.last_apply.picks.length} picks at $${Number(d.last_apply.size_dollars).toLocaleString()}.</div>` : '';
     const size = localStorage.getItem('farm_select_size') || '15000';
-    el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>PF</th><th>Win %</th><th>Net in window</th><th>Router</th></tr></thead>
+    el.innerHTML = `<div class="tbl"><table><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">From</th><th class="l">Enters on</th><th>PF</th><th>Win %</th><th title="Closed trades in the window, on the farm the pick comes from">Trades</th><th>Net in window</th><th>Router</th></tr></thead>
       <tbody>${rows}</tbody></table></div>${droppedHtml}${removed}${_gateCheck(gp)}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px">
         <span class="lbl" style="margin-left:0">Size / trade $</span>

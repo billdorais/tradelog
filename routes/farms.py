@@ -206,7 +206,7 @@ def merge_roster_detail(tops):
     Returns (roster, dropped). dropped rows name the version that beat them."""
     cands = [{"strategy": r["strategy"], "farm": farm, "entry": ENTRY_BY_FARM[farm],
               "pnl": r["pnl"], "profit_factor": r.get("profit_factor"),
-              "win_rate": r.get("win_rate")}
+              "win_rate": r.get("win_rate"), "trades": r.get("trades")}
              for farm, rows in tops.items() for r in rows]
     on_lists = {}
     for c in cands:
