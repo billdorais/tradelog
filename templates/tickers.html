@@ -461,7 +461,70 @@
   }
 
   // ── What made it work? ─────────────────────────────────────────────────
-  let _ctxKey = null;
+  let _ctxKey = null, _ctxLast = null;
+
+  function _ctxCopyBar() {
+    return `<div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+      <button class="btn" onclick="copyContext(this)" title="Everything in this panel as plain text, ready to paste into a chat">Copy for Claude</button>
+      <span style="font-size:0.7rem;color:#666">Copies every condition and number below, so you can paste it into Claude and ask what it means.</span></div>`;
+  }
+
+  // Plain text, one line per bucket, so a chat can read the whole panel at once.
+  function _ctxText(d) {
+    const p = v => v == null ? 'n/a' : (v >= 0 ? '+' : '-') + Math.abs(v).toFixed(3) + '%';
+    const book = (document.querySelector('.btn.acct.on') || {}).textContent || (_acct ? 'account ' + _acct : 'All books');
+    const L = [];
+    L.push(`Kairos "What made it work?" analysis`);
+    L.push(`Ticker: ${d.ticker} | Strategy: ${d.strategy || 'all strategies'} | Book: ${book.trim()} | Window: ${d.from_date || '?'} to ${d.to_date || '?'} (${_days} days)`);
+    L.push(`Trades: ${d.n}, avg ${p(d.base.avg_pct)} per trade, ${d.base.win_rate}% winners. Older half ${d.older_n}, newer half ${d.newer_n} (split ${d.split_date}).`);
+    L.push(`Peers: ${d.peer_n} trades on ${d.peer_tickers} other tickers in ${(d.families || []).join(', ')}, avg ${p((d.peer_base || {}).avg_pct)} per trade, ${(d.peer_base || {}).win_rate}% winners.`);
+    L.push(`Rules: a finding needs the same direction in both halves, >=8 trades (>=4 per half) and |t| >= 2.5. Market-wide conditions (VIX, SPY gap/trend, weekday) are judged on daily averages. Side-aware conditions are in the trade's direction ("with" = helping the trade). "vs rest" = this bucket's avg minus all other trades' avg.`);
+    if (!d.vix_available) L.push('VIX data was unavailable.');
+    const find = (title, list) => {
+      L.push('');
+      L.push(title + (list && list.length ? ':' : ': none'));
+      for (const f of list || []) {
+        L.push(`- ${f.feature_label}: ${f.bucket} | n=${f.n} | avg ${p(f.avg_pct)} | vs rest ${p(f.lift)} | t ${f.t} | older ${p(f.older_lift)} | newer ${p(f.newer_lift)}`
+          + (f.peer_agrees == null ? '' : ` | peers ${f.peer_agrees ? 'agree' : 'disagree'}`)
+          + (f.family_confirms === false ? ' | NOT confirmed by the family' : ''));
+      }
+    };
+    find('Findings for this ticker, helped', d.helped);
+    find('Findings for this ticker, hurt', d.hurt);
+    find(`Findings across the whole family (${d.family_n || 0} trades), helped`, d.family_helped);
+    find('Findings across the whole family, hurt', d.family_hurt);
+    L.push('');
+    L.push('All conditions (bucket | trades | win% | avg/trade | vs rest | t | older vs rest (n) | newer vs rest (n) | both halves | peers avg (n)):');
+    let group = null;
+    for (const f of d.features) {
+      if (f.group !== group) { group = f.group; L.push(''); L.push('## ' + group); }
+      L.push(`${f.label}${f.day_level ? ' [judged on days]' : ''}${f.unknown ? ` [${f.unknown} trades without data]` : ''}`);
+      for (const b of f.buckets) {
+        const both = b.holds && b.strong ? (b.lift > 0 ? 'HELPED' : 'HURT') : b.holds ? 'same way, weak' : '-';
+        L.push(`  ${b.label} | ${b.n}${f.day_level ? '/' + b.days + 'd' : ''} | ${b.win_rate ?? 'n/a'}% | ${p(b.avg_pct)} | ${p(b.lift)} | ${b.t ?? 'n/a'}`
+          + ` | ${p(b.older.lift)} (${b.older.n}) | ${p(b.newer.lift)} (${b.newer.n}) | ${both}`
+          + (f.peers ? ` | ${b.peer && b.peer.n ? p(b.peer.avg_pct) + ' (' + b.peer.n + ')' : 'n/a'}` : '')
+          + (b.thin ? ' | thin' : ''));
+      }
+    }
+    return L.join('\n');
+  }
+
+  async function copyContext(btn) {
+    if (!_ctxLast) return;
+    const text = _ctxText(_ctxLast);
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+    }
+    const old = btn.textContent;
+    btn.textContent = ok ? 'Copied ✓' : 'Copy failed';
+    setTimeout(() => { btn.textContent = old; }, 1600);
+  }
   function _ctxArgs() {
     return { ticker: document.getElementById('tickerSel').value, strategy: document.getElementById('stratSel').value,
              account: _acct };
@@ -488,7 +551,8 @@
     btn.disabled = false;
     if (!r.ok || d.error) { out.innerHTML = `<div class="warn">${_esc(d.error || 'Could not analyze.')}</div>`; return; }
     if (!d.n) { out.innerHTML = '<div class="empty">No closed trades for this selection in the window.</div>'; return; }
-    out.innerHTML = _ctxRender(d);
+    _ctxLast = d;
+    out.innerHTML = _ctxCopyBar() + _ctxRender(d) + _ctxCopyBar();
   }
 
   function _ctxRender(d) {

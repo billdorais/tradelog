@@ -162,3 +162,8 @@ def test_a_weak_difference_that_happens_to_agree_in_both_halves_is_not_a_finding
     vix = next(f for f in out["features"] if f["key"] == "vix")
     assert all(not b["strong"] for b in vix["buckets"])
     assert out["helped"] == [] and out["hurt"] == []
+
+
+def test_context_panel_has_a_copy_button():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert "copyContext(this)" in html and "function _ctxText(d)" in html
