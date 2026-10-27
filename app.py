@@ -3715,6 +3715,8 @@ from routes.book_report import book_report_bp
 app.register_blueprint(book_report_bp)
 from routes.refresh_policy import refresh_policy_bp
 app.register_blueprint(refresh_policy_bp)
+from routes.trade_context import trade_context_bp
+app.register_blueprint(trade_context_bp)
 
 
 @app.route("/api/trades")

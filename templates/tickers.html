@@ -126,6 +126,23 @@
       <div id="byStrategy"></div>
     </div>
 
+    <div class="panel" id="ctxPanel">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:280px">
+          <div class="band-q">What made it work?</div>
+          <div class="band-sub" style="line-height:1.5">Every trade tagged with the conditions when it entered (SPY, VIX, the gap,
+            pre-market volume, open location, day type, RVOL, volatility, trend, the move into the entry, timing, earnings), then
+            winners and losers split on each. A condition counts as a pattern only when it points the same way in the
+            <strong>older and newer half</strong> of the trades, on enough trades. <strong>Peers</strong> are every other ticker's
+            trades in the same strategy family, so you can tell a quirk of this ticker from something true of every breakout.
+            Treat a pattern as a gate to <em>test</em>, not a gate to switch on.</div>
+        </div>
+        <button class="btn" id="ctxRun" onclick="runContext()">Analyze conditions</button>
+      </div>
+      <div id="ctxOut"><div class="empty" style="padding:8px 0;text-align:left">Pick a book, ticker and strategy, then Analyze.
+        One book at a time reads cleanest; "All books" counts a signal several books took once.</div></div>
+    </div>
+
     <div class="panel">
       <div class="band-q">Which book, and which side?</div>
       <div class="band-sub">The same setup can land differently per book — sizing, gates and fills all differ.</div>
@@ -375,6 +392,7 @@
     }
     render();
     _syncSelectBtn();
+    _ctxResetIfChanged();
   }
 
   // ── Add the selected farm strategy to Kairos Select ───────────────────────
@@ -440,6 +458,115 @@
       : `✓ ${d.added ? 'Added to' : 'Switched on'} Kairos Select: ${d.shares} shares (~$${Math.round(d.size_dollars).toLocaleString()}), `
         + (d.entry === 'kairos' ? 'engine' : 'TV') + ' entries';
     note.hidden = false;
+  }
+
+  // ── What made it work? ─────────────────────────────────────────────────
+  let _ctxKey = null;
+  function _ctxArgs() {
+    return { ticker: document.getElementById('tickerSel').value, strategy: document.getElementById('stratSel').value,
+             account: _acct };
+  }
+  function _ctxResetIfChanged() {
+    const k = JSON.stringify([_ctxArgs(), _days]);
+    if (k === _ctxKey) return;
+    _ctxKey = k;
+    document.getElementById('ctxOut').innerHTML = '<div class="empty" style="padding:8px 0;text-align:left">'
+      + 'Analyze the conditions behind this selection.</div>';
+  }
+
+  async function runContext() {
+    const a = _ctxArgs(), out = document.getElementById('ctxOut'), btn = document.getElementById('ctxRun');
+    if (!a.ticker) return;
+    btn.disabled = true;
+    out.innerHTML = '<div class="empty" style="padding:8px 0;text-align:left">Fetching market data for every trade '
+      + '(the first run for a ticker can take a minute)…</div>';
+    let r, d;
+    try {
+      r = await fetch('/api/ticker/context?' + new URLSearchParams(a).toString() + '&' + _range());
+      d = await r.json();
+    } catch (e) { d = { error: String(e) }; r = { ok: false }; }
+    btn.disabled = false;
+    if (!r.ok || d.error) { out.innerHTML = `<div class="warn">${_esc(d.error || 'Could not analyze.')}</div>`; return; }
+    if (!d.n) { out.innerHTML = '<div class="empty">No closed trades for this selection in the window.</div>'; return; }
+    out.innerHTML = _ctxRender(d);
+  }
+
+  function _ctxRender(d) {
+    const pct = v => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3) + '%';
+    const cls = (v, thin) => thin ? 'thin' : (v > 0 ? 'pos' : v < 0 ? 'neg' : '');
+    const base = d.base || {};
+    const fam = (d.families || []).join(', ');
+    let h = `<div class="band-sub" style="margin:4px 0 10px">${d.n} trades: ${pct(base.avg_pct)} a trade, ${base.win_rate}% winners.
+      Older half ${d.older_n} trades, newer half ${d.newer_n} (split ${_esc(d.split_date)}).
+      Peers: ${d.peer_n} trades on ${d.peer_tickers} other tickers (${_esc(fam)}), ${pct((d.peer_base || {}).avg_pct)} a trade.
+      ${d.vix_available ? '' : ' VIX data was unavailable, so VIX is left out.'}
+      ${(d.unavailable || []).length ? ' <span class="warn">Could not read: ' + d.unavailable.map(_esc).join(', ') + '.</span>' : ''}</div>`;
+
+    const item = f => {
+      const peer = f.peer_agrees == null ? 'peers: too few to say'
+        : f.peer_agrees ? '<span class="pos">peers agree</span>' : '<span class="neg">peers disagree</span>';
+      return `<li style="margin:4px 0"><strong>${_esc(f.feature_label)}: ${_esc(f.bucket)}</strong> —
+        ${pct(f.avg_pct)} a trade on ${f.n} trades, ${f.win_rate}% winners,
+        <span class="${cls(f.lift)}">${pct(f.lift)} vs the rest</span> <span style="color:#666">(t ${f.t})</span>
+        <span style="color:#666">· older ${pct(f.older_lift)}, newer ${pct(f.newer_lift)} · ${peer}</span>
+        ${f.family_confirms === false ? '<div style="color:#f0a35e;font-size:0.7rem">A market-wide condition the whole family does not confirm: likely a coincidence of which days this ticker traded.</div>' : ''}</li>`;
+    };
+    if (!d.helped.length && !d.hurt.length) {
+      h += `<div class="note" style="font-size:0.78rem;color:#9aa0b5;margin-bottom:10px">No condition was both strong and consistent
+        across the two halves. With this many trades that's a common, honest answer: the splits below are mostly noise.
+        Re-check as trades accumulate.</div>`;
+    } else {
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:12px">';
+      h += `<div class="tile"><div class="k" style="color:#7FE098">Held up in both halves: helped</div>
+        ${d.helped.length ? '<ul style="padding-left:16px;font-size:0.76rem">' + d.helped.map(item).join('') + '</ul>'
+          : '<div class="s">None.</div>'}</div>`;
+      h += `<div class="tile"><div class="k" style="color:#e08a8a">Held up in both halves: hurt</div>
+        ${d.hurt.length ? '<ul style="padding-left:16px;font-size:0.76rem">' + d.hurt.map(item).join('') + '</ul>'
+          : '<div class="s">None.</div>'}</div>`;
+      h += '</div>';
+    }
+
+    if ((d.family_helped || []).length || (d.family_hurt || []).length) {
+      const fitem = f => `<li style="margin:4px 0"><strong>${_esc(f.feature_label)}: ${_esc(f.bucket)}</strong> —
+        ${pct(f.avg_pct)} a trade on ${f.n} trades, <span class="${cls(f.lift)}">${pct(f.lift)} vs the rest</span>
+        <span style="color:#666">(t ${f.t}) · older ${pct(f.older_lift)}, newer ${pct(f.newer_lift)}</span></li>`;
+      h += `<div class="tile" style="margin-bottom:12px"><div class="k">Across the whole family (${_esc(fam)}, ${d.family_n} trades
+          on this ticker and its peers)</div>
+        <ul style="padding-left:16px;font-size:0.76rem">${[...(d.family_helped || []), ...(d.family_hurt || [])].map(fitem).join('')}</ul>
+        <div class="s">These hold for the strategy family, not just this ticker: the strongest candidates to test as gates.</div></div>`;
+    }
+
+    const groups = [];
+    for (const f of d.features) { if (!groups.includes(f.group)) groups.push(f.group); }
+    for (const g of groups) {
+      h += `<details style="margin-top:8px" ${g === groups[0] ? 'open' : ''}><summary class="band-q" style="cursor:pointer;margin:0 0 6px">${_esc(g)}</summary>`;
+      for (const f of d.features.filter(x => x.group === g)) {
+        h += `<div style="font-size:0.74rem;color:#cfd3e0;margin:10px 0 2px">${_esc(f.label)}
+          ${f.day_level ? '<span style="color:#666"> · same for every trade that day, so judged on days (t on daily averages)</span>' : ''}
+          ${f.unknown ? `<span style="color:#666"> · ${f.unknown} trades without data</span>` : ''}</div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Condition</th><th>Trades</th><th>Win %</th><th>Avg % / trade</th>
+          <th>vs rest</th><th title="Difference from the rest in standard errors; 2.5 or more counts as strong">t</th><th>Older half</th><th>Newer half</th><th>Both halves</th>${f.peers ? '<th>Peers</th>' : ''}</tr></thead><tbody>`
+          + f.buckets.map(b => `<tr class="${b.thin ? 'thin' : ''}"><td>${_esc(b.label)}</td><td>${b.n}${f.day_level ? ' <span style="color:#555">/ ' + b.days + 'd</span>' : ''}</td>
+              <td>${b.win_rate ?? '—'}%</td><td class="${cls(b.avg_pct, b.thin)}">${pct(b.avg_pct)}</td>
+              <td class="${cls(b.lift, b.thin)}">${pct(b.lift)}</td>
+              <td style="color:${b.strong ? '#cfd3e0' : '#555'}">${b.t == null ? '—' : b.t}</td>
+              <td class="${cls(b.older.lift, b.older.n < 4)}">${pct(b.older.lift)} <span style="color:#555">(${b.older.n})</span></td>
+              <td class="${cls(b.newer.lift, b.newer.n < 4)}">${pct(b.newer.lift)} <span style="color:#555">(${b.newer.n})</span></td>
+              <td>${b.holds && b.strong ? (b.lift > 0 ? '<span class="pos">✓ helped</span>' : '<span class="neg">✓ hurt</span>')
+                   : b.holds ? '<span style="color:#666" title="Same direction in both halves, but too weak to count">same way, weak</span>'
+                   : '<span style="color:#555">—</span>'}</td>
+              ${f.peers ? `<td class="${cls(b.peer_lift, !b.peer || b.peer.n < 20)}">${b.peer && b.peer.n ? pct(b.peer.avg_pct) + ' <span style="color:#555">(' + b.peer.n + ')</span>' : '—'}</td>` : ''}</tr>`).join('')
+          + '</tbody></table></div>';
+      }
+      h += '</details>';
+    }
+    h += `<div class="note" style="font-size:0.7rem;color:#666;margin-top:10px;line-height:1.5">"vs rest" is this condition's average
+      trade minus every other trade's. Older/newer show the same difference within each half; a pattern needs both to point the
+      same way, with at least 4 trades in each half and 8 overall, and be strong: "t" is the difference in standard errors,
+      and only 2.5 or more counts, because with this many conditions a few always look good by chance. Peers show the same condition's average trade across the peer
+      tickers. Side-aware conditions are in the trade's direction: "with" means helping the trade (up for a long, down for a
+      short). Grey rows are under 8 trades.</div>`;
+    return h;
   }
 
   function render() {
