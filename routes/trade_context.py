@@ -79,7 +79,7 @@ FEATURES = [
      ["against > 0.5%", "against 0–0.5%", "with 0–0.5%", "with > 0.5%"],
      lambda c: _b(c.get("spy_day_dir"), [-0.5, 0, 0.5],
                   ["against > 0.5%", "against 0–0.5%", "with 0–0.5%", "with > 0.5%"])),
-    ("spy_hour", "SPY over the last hour, in the trade's direction", "Market", True,
+    ("spy_hour", "SPY over the last hour (since the open, before 10:30), in the trade's direction", "Market", True,
      ["against > 0.15%", "flat (±0.15%)", "with > 0.15%"],
      lambda c: _b(c.get("spy_hour_dir"), [-0.15, 0.15],
                   ["against > 0.15%", "flat (±0.15%)", "with > 0.15%"])),
@@ -491,7 +491,8 @@ def build_context(t, md, deep):
     ep, cl, _pm = md["spy_min"].get(d) or (array("d"), array("d"), None)
     spy_open = spy_d.get("open") or (cl[0] if cl else None)
     spy_now = _price_at(ep, cl, ts)
-    spy_hr = _price_at(ep, cl, ts - 3600)
+    # Before 10:30 there's no full hour of session yet: measure from the open.
+    spy_hr = _price_at(ep, cl, ts - 3600) or (cl[0] if cl else None)
     if spy_open and spy_now:
         c["spy_day_dir"] = (spy_now / spy_open - 1) * 100 * sgn
     if spy_hr and spy_now:
