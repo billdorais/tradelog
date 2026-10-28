@@ -305,13 +305,13 @@ ACCOUNT_META = {
     # 2026-07-01..17 (−$394, both sides dead) — no edge left to side-gate. TV Farm
     # keeps trading them, so the evidence for a comeback keeps accruing.
     "2": {"tag": "alpaca2", "label": "TV Refined",     "color": "#c4b5fd", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True},
+          "daytype_gate": True,  "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "off", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True, "spy_align_gate": True},
     # reversal_side "long": pause Kairos REVERSAL SHORTS only. The short_filter_test
     # (Jul '26, 309 setups) put reversal shorts at breakeven-at-best even with the
     # confirmation entry (reject -> 20-EMA break); Kairos reversal LONGS have been
     # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A", "hours_key": "refined",
-          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True},
+          "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True, "spy_align_gate": True},
     # reversal_side "long": Crew Paper pauses reversal SHORTS too (same breakeven
     # finding). A hard gate rather than relying on the crew to stop wiring them.
     "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098", "hours_key": "refined",
@@ -464,6 +464,20 @@ OPEN_LOC_GATE_BUCKETS = {b.strip().lower() for b in
 OPEN_LOC_GATE_SIDES   = {x.strip().lower() for x in
                          os.environ.get("OPEN_LOC_GATE_SIDES", "long").split(",") if x.strip()}
 OPEN_LOC_GATE_ACCOUNTS = _accounts_with("open_loc_gate")
+
+# SPY-alignment gate (breakouts only). Takes a breakout only when SPY's last hour
+# has moved at least SPY_ALIGN_MIN_PCT in the trade's direction (up for a long,
+# down for a short); before 10:30, measured from the open. Evidence at build
+# (2026-10-27, "What made it work?" family pass, CAM_BREAKOUT_R3S3 on Kairos Farm,
+# 907 trades / 30 days): SPY flat over the last hour (±0.15%) was 607 trades at
+# -0.069% a trade (t -3.75); SPY moving with the trade >0.15% was 222 trades at
+# +0.011% (t +4.08), both consistent across halves. Default OFF: it would block
+# roughly three trades in four, so price it with the what-if on the Routing page
+# first. Refined books only; farms stay ungated as the control.
+SPY_ALIGN_GATE_ENABLED  = os.environ.get("SPY_ALIGN_GATE_ENABLED", "0") == "1"
+SPY_ALIGN_MIN_PCT       = float(os.environ.get("SPY_ALIGN_MIN_PCT", "0.15") or 0.15)
+SPY_ALIGN_LOOKBACK_SECS = 3600
+SPY_ALIGN_GATE_ACCOUNTS = _accounts_with("spy_align_gate")
 # Which RVOL definition the LIVE gate uses:
 #   'trailing' — entry bar vs prior N bars of the same session (self-deflates at
 #                the open; silent for the first ~5 min until min_bars exist).
@@ -4314,6 +4328,8 @@ def risk_status():
         "strikes":             _strikes_status_list(),
         "rvol_gate_enabled":   RVOL_GATE_ENABLED,
         "open_loc_gate_enabled": OPEN_LOC_GATE_ENABLED,
+        "spy_align_gate_enabled": SPY_ALIGN_GATE_ENABLED,
+        "spy_align_min_pct":      SPY_ALIGN_MIN_PCT,
         "open_loc_gate_sides":   sorted(OPEN_LOC_GATE_SIDES),
         "open_loc_gate_buckets": sorted(OPEN_LOC_GATE_BUCKETS),
         "rvol_gate_min":       RVOL_GATE_MIN,
@@ -4440,7 +4456,7 @@ def api_max_hold_release():
 
 @app.route("/api/risk/limit", methods=["POST"])
 def risk_set_limit():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, OPEN_LOC_GATE_ENABLED, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, OPEN_LOC_GATE_ENABLED, SPY_ALIGN_GATE_ENABLED, SPY_ALIGN_MIN_PCT, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_armed, _profit_lock_halted
     data = request.get_json(silent=True) or {}
     changed = []
 
@@ -4596,6 +4612,23 @@ def risk_set_limit():
                  OPEN_LOC_GATE_ENABLED, ",".join(sorted(OPEN_LOC_GATE_SIDES)),
                  ",".join(sorted(OPEN_LOC_GATE_BUCKETS)))
         changed.append("open_loc_gate_enabled")
+    if "spy_align_gate_enabled" in data:
+        SPY_ALIGN_GATE_ENABLED = bool(data["spy_align_gate_enabled"])
+        _update_env_file("SPY_ALIGN_GATE_ENABLED", "1" if SPY_ALIGN_GATE_ENABLED else "0")
+        _save_setting("SPY_ALIGN_GATE_ENABLED", "1" if SPY_ALIGN_GATE_ENABLED else "0")
+        log.info("SPY_ALIGN_GATE_ENABLED set to %s (Refined breakouts need SPY's last hour >= %.2f%% their way)",
+                 SPY_ALIGN_GATE_ENABLED, SPY_ALIGN_MIN_PCT)
+        changed.append("spy_align_gate_enabled")
+    if "spy_align_min_pct" in data:
+        try:
+            _v = float(data["spy_align_min_pct"])
+            if not (0 <= _v <= 2):
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "spy_align_min_pct must be a number from 0 to 2"}), 400
+        SPY_ALIGN_MIN_PCT = _v
+        _save_setting("SPY_ALIGN_MIN_PCT", str(_v))
+        changed.append("spy_align_min_pct")
     if "rvol_gate_min" in data:
         try:
             RVOL_GATE_MIN = max(0.0, float(data["rvol_gate_min"]))
@@ -16667,6 +16700,19 @@ _GATE_RULES = {
                "single loser in the sample (19 trades, -$385), while SHORT at/past-extreme "
                "was 7 trades at -$23 — noise. That is why it is long-only by default.",
     },
+    "spy-align": {
+        "title": "SPY alignment",
+        "what":  "Takes a breakout only when SPY's last hour has moved its way.",
+        "rule": [
+            "Breakouts only; reversals and every exit pass.",
+            "Long: SPY up at least the minimum over the last hour. Short: SPY down at least the minimum. Before 10:30 the hour is measured from the open.",
+            "FAILS OPEN when SPY's minute bars can't be read.",
+            "Refined books only by default; the farms stay ungated so the gate stays priceable.",
+        ],
+        "why": "The 'What made it work?' family pass (CAM_BREAKOUT_R3S3, Kairos Farm, 907 trades) "
+               "found breakouts taken while SPY was flat lost (-0.069% a trade, t -3.75) and ones "
+               "taken while SPY moved with them roughly broke even (+0.011%, t +4.08), in both halves.",
+    },
     "reversal": {
         "title": "Reversal side",
         "what":  "Restricts, or switches off, reversal entries on this book.",
@@ -16753,6 +16799,7 @@ _GATE_RULES = {
 _GATE_ALIASES = {
     "reversal side": "reversal", "opening location": "open-location",
     "open location": "open-location", "profit lock": "profit-lock",
+    "spy alignment": "spy-align", "spy align": "spy-align",
     "daily loss": "daily-loss", "manual halt": "manual-halt",
     "day type": "day-type", "trading hours": "hours",
 }
@@ -16828,6 +16875,12 @@ def _gate_state(tag):
     out["open-location"] = (on,
                             (f"blocks {', '.join(sorted(sd))} breakouts that opened "
                              f"{', '.join(sorted(bk))}") if on else "off", src)
+
+    _son_sa, _smn_sa = _spy_align_settings(tag)
+    out["spy-align"] = (_son_sa,
+                        f"breakouts need SPY's last hour >= {_smn_sa:g}% in the trade's direction" if _son_sa
+                        else "off",
+                        "override" if _account_gate_overrides(tag).get("spy_align") is not None else "shared")
 
     pol = _REVERSAL_SIDE_BY_TAG.get(tag)
     out["reversal"] = (pol in ("long", "short", "off"),
@@ -17338,7 +17391,7 @@ def _build_recap(account="4", frm="", to="", period=""):
     gates = [{"gate": lbl, "key": k, "on": _docs[k]["on"], "detail": _docs[k]["setting"]}
              for k, lbl in (("hours", "Trading hours"), ("day-type", "Day-type"),
                             ("reversal", "Reversal side"), ("open-location", "Opening location"),
-                            ("rvol", "RVOL"), ("strikes", "Strikes"),
+                            ("rvol", "RVOL"), ("spy-align", "SPY alignment"), ("strikes", "Strikes"),
                             ("profit-lock", "Profit lock"), ("daily-loss", "Daily loss"))]
 
     # Crew-only: the scorecard grades the crew's picks against acct4 results. On any
@@ -21035,6 +21088,12 @@ def _engine_pilot_tick(now_et, today):
                 _record_block(broker_tag, tk, strat, side, "open-location", _ol_reason,
                               source="engine", once_per_day=True)
                 continue
+            _sa_block, _sa_reason, _sa_mv = _spy_align_gate_block(strat, side, broker_tag, now_dt=now_utc)
+            if _sa_block:
+                log.info("ENGINE PILOT skip %s %s [%s]: %s", act, tk, broker_tag, _sa_reason)
+                _record_block(broker_tag, tk, strat, side, "spy-align", _sa_reason,
+                              source="engine", once_per_day=True)
+                continue
             _rv_block, _rv_reason, _rv_val = _rvol_gate_block(strat, side, tk, broker_tag,
                                                               now_dt=now_utc)
             if _rv_block:
@@ -22085,6 +22144,77 @@ def _fetch_day_open(ticker: str, date_str: str):
     except Exception as _oe:
         log.debug("fetch_day_open %s %s: %s", ticker, date_str, _oe)
     return None
+
+
+_spy_min_cache = {"key": None, "at": 0.0, "ep": None, "cl": None}
+_spy_min_lock = threading.Lock()
+
+
+def _live_spy_minutes(now_dt):
+    """Today's regular-session SPY minute closes as (epochs, closes), cached ~30s."""
+    import datetime as _dt
+    from array import array as _array
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    day = now_dt.astimezone(et).date().isoformat()
+    with _spy_min_lock:
+        c = _spy_min_cache
+        if c["key"] == day and time.time() - c["at"] < 30:
+            return c["ep"], c["cl"]
+    ep, cl = _array("d"), _array("d")
+    for b in _fetch_day_bars("SPY", day) or []:
+        ts = b.timestamp if isinstance(b.timestamp, _dt.datetime) else _dt.datetime.fromisoformat(str(b.timestamp))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        hm = ts.astimezone(et).hour * 100 + ts.astimezone(et).minute
+        if 930 <= hm < 1600:
+            ep.append(ts.timestamp()); cl.append(float(b.close))
+    with _spy_min_lock:
+        _spy_min_cache.update(key=day, at=time.time(), ep=ep, cl=cl)
+    return ep, cl
+
+
+def _spy_align_settings(account_tag):
+    """(on, min_pct) for one book: a GATES_BY_ACCOUNT['spy_align'] override wins,
+    else the shared switch for the books flagged spy_align_gate."""
+    _ov = _account_gate_overrides(account_tag).get("spy_align")
+    if _ov is not None:
+        mn = _ov.get("min")
+        return bool(_ov.get("enabled")), float(mn) if mn is not None else SPY_ALIGN_MIN_PCT
+    return bool(SPY_ALIGN_GATE_ENABLED and account_tag in SPY_ALIGN_GATE_ACCOUNTS), SPY_ALIGN_MIN_PCT
+
+
+def _spy_align_gate_block(strategy, side, account_tag, now_dt=None):
+    """SPY-alignment entry gate. Returns (blocked, reason, move_in_trade_direction).
+
+    Blocks a BREAKOUT unless SPY's last hour (from the open before 10:30) moved at
+    least the book's minimum in the trade's direction. Uses the same
+    spy_last_hour_pct the "What made it work?" panel measured the evidence with.
+    FAILS OPEN on missing SPY data or an unknown side, like every other gate."""
+    import datetime as _dt
+    if "BREAKOUT" not in (strategy or "").upper():
+        return False, "", None
+    on, mn = _spy_align_settings(account_tag)
+    if not on:
+        return False, "", None
+    sd = (side or "").strip().upper()
+    if sd not in ("LONG", "SHORT"):
+        return False, "", None
+    try:
+        from routes.trade_context import spy_last_hour_pct
+        now = now_dt or _dt.datetime.now(_dt.timezone.utc)
+        ep, cl = _live_spy_minutes(now)
+        mv = spy_last_hour_pct(ep, cl, now.timestamp(), SPY_ALIGN_LOOKBACK_SECS)
+    except Exception as _e:
+        log.debug("spy-align gate unresolved: %s", _e)
+        return False, "", None
+    if mv is None:
+        return False, "", None
+    mdir = mv if sd == "LONG" else -mv
+    if mdir < mn:
+        return True, (f"SPY-alignment gate: {sd.lower()} breakout blocked — SPY's last hour "
+                      f"{mv:+.2f}% (needs {mn:.2f}% {'up' if sd == 'LONG' else 'down'})"), mdir
+    return False, "", mdir
 
 
 def _open_location_gate_block(strategy, ticker, date, side, account_tag):
@@ -23901,7 +24031,7 @@ init_db()
 # Load persisted risk limits from DB — DB always wins over env vars so
 # changes made via the Signal Router UI survive redeploys.
 def _restore_risk_settings():
-    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, OPEN_LOC_GATE_ENABLED, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor, _daily_loss_day, _manual_halt_day
+    global MAX_DAILY_LOSS, MAX_POSITION_LOSS, MAX_POSITION_LOSS_PCT, MAX_POSITION_LOSS_REFINED, MAX_TRAILING_GIVEBACK, MORNING_TRAIL_PCT, AFTERNOON_TRAIL_PCT, STRIKES_ENABLED, STRIKES_PER_LEVEL, STRIKES_PER_LEVEL_SHORT, RVOL_GATE_ENABLED, RVOL_GATE_MIN, RVOL_GATE_SHORT_CAP, RVOL_GATE_METHOD, OPEN_LOC_GATE_ENABLED, SPY_ALIGN_GATE_ENABLED, SPY_ALIGN_MIN_PCT, PAPER_HOURS_START, PAPER_HOURS_END, REFINED_HOURS_START, REFINED_HOURS_END, BP_PAUSE_PCT, MAX_HOLD_MINS, MAX_HOLD_ENFORCEMENT, TAKE_PROFIT_DOLLARS, TAKE_PROFIT_PCT, ENGINE_PILOT_ENABLED, ENGINE_PILOT_BUFFER, DAYTYPE_GATE_ENABLED, DAYTYPE_REVERSAL_GATE_ENABLED, PROFIT_LOCK_DOLLARS, PROFIT_LOCK_FLATTEN, _profit_lock_day, _profit_lock_armed, _profit_lock_halted, _profit_lock_floor, _daily_loss_day, _manual_halt_day
     stored = _load_setting("MAX_DAILY_LOSS")
     if stored is not None:
         try:
@@ -24031,6 +24161,16 @@ def _restore_risk_settings():
     if stored is not None:
         OPEN_LOC_GATE_ENABLED = stored == "1"
         log.info("Restored OPEN_LOC_GATE_ENABLED=%s from DB", OPEN_LOC_GATE_ENABLED)
+    stored = _load_setting("SPY_ALIGN_GATE_ENABLED")
+    if stored is not None:
+        SPY_ALIGN_GATE_ENABLED = stored == "1"
+        log.info("Restored SPY_ALIGN_GATE_ENABLED=%s from DB", SPY_ALIGN_GATE_ENABLED)
+    stored = _load_setting("SPY_ALIGN_MIN_PCT")
+    if stored is not None:
+        try:
+            SPY_ALIGN_MIN_PCT = float(stored)
+        except (TypeError, ValueError):
+            pass
     stored = _load_setting("RVOL_GATE_MIN")
     if stored is not None:
         try:

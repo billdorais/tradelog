@@ -510,6 +510,39 @@
       </div>
     </div>
 
+    <div class="rg-card" style="margin-top:10px;border-color:#3a6fb0" id="spyAlignCard">
+      <div class="rg-card-title" style="color:#7fb0e8">&#9670; SPY-Alignment Gate — take breakouts only when SPY is moving their way</div>
+      <div class="risk-section">
+        <div class="risk-label" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          A long needs SPY's last hour up at least the minimum; a short needs it down
+          <span style="color:#666;font-size:0.68rem">TV Refined + Kairos Refined · breakouts only · before 10:30 measured from the open · farms ungated</span>
+          <span id="spyAlignBadge" class="risk-status-badge disabled">
+            <span class="risk-dot grey" id="spyAlignDot"></span>
+            <span id="spyAlignText">Disabled</span>
+          </span>
+        </div>
+        <div class="risk-input-row">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="setSpyAlignGate(true)">Enable</button>
+          <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="setSpyAlignGate(false)">Off</button>
+          <span style="color:#888;font-size:0.78rem;margin-left:8px">Minimum move</span>
+          <input id="spyAlignMinInput" class="risk-input" type="number" min="0" max="2" step="0.05" style="width:70px">
+          <span style="color:#888;font-size:0.78rem">%</span>
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveSpyAlignMin()">Set</button>
+        </div>
+        <div class="risk-hint">From the Ticker Breakdown's &ldquo;What made it work?&rdquo; family pass (907 CAM_BREAKOUT_R3S3 trades on Kairos Farm):
+          breakouts taken while SPY was <b>flat</b> over the last hour lost <b>&minus;0.069% a trade</b> (607 trades, t &minus;3.75); ones taken while
+          SPY moved <b>with</b> them made <b>+0.011%</b> (222 trades, t +4.08), the same way in both halves. It would block roughly three
+          trades in four, so price it below before switching it on. Fails open when SPY's bars can't be read.</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+          <span style="color:#aaa;font-size:0.78rem">What-if on past trades (last 60 days):</span>
+          <button class="btn btn-ghost" style="padding:5px 12px;font-size:0.78rem" onclick="runGateWhatIf('3', this)">Kairos Refined</button>
+          <button class="btn btn-ghost" style="padding:5px 12px;font-size:0.78rem" onclick="runGateWhatIf('2', this)">TV Refined</button>
+          <span style="color:#666;font-size:0.72rem">Also prices a 10:00 start instead of 9:30.</span>
+        </div>
+        <div id="gateWhatIfOut" style="margin-top:8px"></div>
+      </div>
+    </div>
+
     <div class="rg-card" style="margin-top:10px;border-color:#5a8fa8">
       <div class="rg-card-title" style="color:#7bb3d6">&#9670; RVOL Entry Gate — block thin-volume breakouts</div>
       <div class="risk-section">
@@ -1326,6 +1359,16 @@
       if (rvCapInput && document.activeElement !== rvCapInput && data.rvol_gate_short_cap != null) {
         rvCapInput.value = data.rvol_gate_short_cap;
       }
+      const saBadge = document.getElementById('spyAlignBadge');
+      if (saBadge) {
+        const on = !!data.spy_align_gate_enabled;
+        saBadge.className = 'risk-status-badge ' + (on ? 'active' : 'disabled');
+        document.getElementById('spyAlignDot').className = 'risk-dot ' + (on ? 'green' : 'grey');
+        document.getElementById('spyAlignText').textContent = on
+          ? 'Active (SPY ≥ ' + (data.spy_align_min_pct ?? 0.15) + '% the trade\'s way)' : 'Disabled';
+        const mi = document.getElementById('spyAlignMinInput');
+        if (mi && document.activeElement !== mi && data.spy_align_min_pct != null) mi.value = data.spy_align_min_pct;
+      }
       const olBadge = document.getElementById('openLocBadge');
       if (olBadge) {
         const on = !!data.open_loc_gate_enabled;
@@ -1758,6 +1801,64 @@
   }
 
   // RVOL entry gate (TV Refined + Kairos Refined breakouts)
+  async function setSpyAlignGate(on) {
+    try { await _postLimit({spy_align_gate_enabled: !!on}); }
+    catch (e) { console.error('setSpyAlignGate failed:', e); }
+  }
+
+  async function saveSpyAlignMin() {
+    const input = document.getElementById('spyAlignMinInput');
+    const val = parseFloat(input.value);
+    if (isNaN(val) || val < 0 || val > 2) { input.classList.add('invalid'); return; }
+    input.classList.remove('invalid');
+    try { await _postLimit({spy_align_min_pct: val}); }
+    catch (e) { console.error('saveSpyAlignMin failed:', e); }
+  }
+
+  // What the SPY-alignment gate and a 10:00 start would have blocked, replayed on
+  // a Refined book's own trades and on its farm's in-hours breakouts.
+  async function runGateWhatIf(book, btn) {
+    const out = document.getElementById('gateWhatIfOut');
+    btn.disabled = true;
+    out.innerHTML = '<div style="color:#888;font-size:0.78rem">Replaying past trades against SPY minute bars (the first run can take a minute)…</div>';
+    let r, d;
+    try { r = await fetch('/api/gates/what_if?book=' + book + '&days=60'); d = await r.json(); }
+    catch (e) { d = { error: String(e) }; r = { ok: false }; }
+    btn.disabled = false;
+    if (!r.ok || d.error) { out.innerHTML = `<div style="color:#e08a8a;font-size:0.78rem">${(d.error || 'Failed').replace(/</g, '&lt;')}</div>`; return; }
+    const pct = v => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2) + '%';
+    const col = v => v > 0 ? '#7FE098' : v < 0 ? '#e08a8a' : '#aaa';
+    const table = (title, w, note) => {
+      const rows = [...w.spy, w.start, w.both].map(x => `<tr>
+          <td style="text-align:left;padding:4px 8px">${x.label}${x.threshold === d.min_pct ? ' <span style="color:#666">(current)</span>' : ''}</td>
+          <td style="padding:4px 8px">${x.blocked.n} of ${w.all.n}</td>
+          <td style="padding:4px 8px;color:${col(x.blocked.avg_pct)}">${pct(x.blocked.avg_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.kept.avg_pct)}">${pct(x.kept.avg_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.saved_pct)};font-weight:600">${pct(x.saved_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.saved_older_pct)}">${pct(x.saved_older_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.saved_newer_pct)}">${pct(x.saved_newer_pct)}</td></tr>`).join('');
+      return `<div style="margin-top:10px;font-size:0.78rem;color:#cfd3e0">${title}
+          <span style="color:#666">· ${w.all.n} trades, ${pct(w.all.avg_pct)} a trade, ${pct(w.all.sum_pct)} summed${w.unknown_spy ? ` · ${w.unknown_spy} without SPY data (kept)` : ''}</span></div>
+        <div style="color:#666;font-size:0.7rem;margin:2px 0 4px">${note}</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem;text-align:right">
+          <thead><tr style="color:#777;font-size:0.66rem;text-transform:uppercase">
+            <th style="text-align:left;padding:4px 8px">Scenario</th><th style="padding:4px 8px">Blocked</th>
+            <th style="padding:4px 8px">Blocked avg</th><th style="padding:4px 8px">Kept avg</th>
+            <th style="padding:4px 8px" title="Minus the blocked trades' summed % return: positive = the gate would have saved this">Saved (summed %)</th>
+            <th style="padding:4px 8px">Older half</th><th style="padding:4px 8px">Newer half</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+    };
+    out.innerHTML = `<div style="font-size:0.8rem;color:#e0e0e0;margin-top:6px"><b>${d.label}</b>, last ${d.days} days ·
+        hours ${(d.hours || []).join(', ') || 'all day'} · gate ${d.spy_gate_on ? 'ON' : 'off'} at ${d.min_pct}%</div>`
+      + table(`${d.label}'s own trades`, d.book_trades,
+              'Already through its other gates and hours. % summed is the dollar result at equal size.')
+      + table(`${d.farm_label} breakouts inside ${d.label}'s hours`, d.farm_trades,
+              'The bigger sample: the same strategies on the farm ($1k, otherwise ungated), within the book\'s trading hours.')
+      + `<div style="color:#888;font-size:0.72rem;margin-top:8px;line-height:1.5">A gate is worth switching on only if
+          <b>Saved</b> is positive in both halves on both samples. A gate that saves in one half and costs in the other is noise.
+          ${(d.unavailable || []).length ? ' <span style="color:#e08a8a">Could not read: ' + d.unavailable.join(', ') + '.</span>' : ''}</div>`;
+  }
+
   async function setOpenLocGate(on) {
     try { await _postLimit({open_loc_gate_enabled: !!on}); }
     catch (e) { console.error('setOpenLocGate failed:', e); }

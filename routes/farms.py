@@ -529,7 +529,7 @@ def _select_rules(cur, a):
 
 # Account-level entry gates a Select pick must share with the farm it was measured
 # on. Rule-level gates (hours window, side gate, exits) travel on the cloned rule.
-PARITY_GATES = ("hours", "day-type", "rvol", "open-location", "reversal",
+PARITY_GATES = ("hours", "day-type", "rvol", "open-location", "spy-align", "reversal",
                 "strikes", "profit-lock", "daily-loss")
 # Gates Select is allowed to differ on, by deliberate choice — shown, never blocking
 # Apply. Both are day-level risk stops rather than setup filters: the profit lock

@@ -461,6 +461,18 @@ def _trend_label(close, s20, s50):
     return {2: "above both", 1: "between", 0: "below both"}[above]
 
 
+def spy_last_hour_pct(ep, cl, ts, lookback_secs=3600):
+    """SPY's % move over the `lookback_secs` before `ts` from regular-session minute
+    closes (epochs `ep`, closes `cl`); before a full hour exists, from the first
+    bar. Shared by the "What made it work?" panel and the live SPY-alignment gate,
+    so the gate enforces exactly the number the evidence was measured on."""
+    now = _price_at(ep, cl, ts)
+    then = _price_at(ep, cl, ts - lookback_secs) or (cl[0] if cl else None)
+    if not now or not then:
+        return None
+    return (now / then - 1) * 100
+
+
 def _price_at(ep, cl, ts):
     if not ep:
         return None
@@ -491,12 +503,11 @@ def build_context(t, md, deep):
     ep, cl, _pm = md["spy_min"].get(d) or (array("d"), array("d"), None)
     spy_open = spy_d.get("open") or (cl[0] if cl else None)
     spy_now = _price_at(ep, cl, ts)
-    # Before 10:30 there's no full hour of session yet: measure from the open.
-    spy_hr = _price_at(ep, cl, ts - 3600) or (cl[0] if cl else None)
     if spy_open and spy_now:
         c["spy_day_dir"] = (spy_now / spy_open - 1) * 100 * sgn
-    if spy_hr and spy_now:
-        c["spy_hour_dir"] = (spy_now / spy_hr - 1) * 100 * sgn
+    hr = spy_last_hour_pct(ep, cl, ts)
+    if hr is not None:
+        c["spy_hour_dir"] = hr * sgn
     if spy_d.get("open") and spy_d.get("prior_close"):
         c["spy_gap"] = (spy_d["open"] / spy_d["prior_close"] - 1) * 100
     c["spy_trend"] = _trend_label(spy_d.get("prior_close"), spy_d.get("sma20"), spy_d.get("sma50"))
@@ -689,5 +700,146 @@ def api_ticker_context():
     except Exception as e:
         _app().log.warning("trade context %s failed: %s", ticker, e)
         return jsonify({"error": f"Could not build the analysis: {e}"}), 500
+    _results.put(key, (time.time(), out))
+    return jsonify(out)
+
+
+# ── What-if: the SPY-alignment gate and a 10:00 start on a Refined book's past ──
+# The gate-cost tool prices a gate from the signals it actually blocked, so it can't
+# judge a gate that's still off. This replays history instead: every past trade is
+# tested against the gate's rule (the same spy_last_hour_pct the live gate uses),
+# and the trades it would have blocked are summed. Two samples: the book's own
+# trades (already through its other gates and hours) and its farm's breakouts inside
+# the book's trading hours (far more trades, but ungated otherwise).
+
+WHATIF_BOOKS = {"2": ("alpaca2", "1", "TV Refined", "TV Farm"),
+                "3": ("alpaca3", "5", "Kairos Refined", "Kairos Farm")}
+SPY_THRESHOLDS = (0.0, 0.10, 0.15, 0.25)
+
+
+def _hhmm(s):
+    try:
+        h, m = str(s).split(":")[:2]
+        return int(h) * 100 + int(m)
+    except (TypeError, ValueError):
+        return None
+
+
+def whatif_scenarios(rows, min_pct, thresholds=SPY_THRESHOLDS, start_hhmm=1000):
+    """rows: [{"pct", "pnl", "date", "hhmm", "breakout", "spy_dir"}] -> scenarios.
+
+    A scenario lists the trades it would have BLOCKED and the ones it keeps. The SPY
+    rule only touches breakouts and lets a trade with no SPY reading through (the
+    live gate fails open the same way)."""
+    def grp(rs):
+        n = len(rs)
+        pcts = [r["pct"] for r in rs if r["pct"] is not None]
+        return {"n": n, "pnl": round(sum(r["pnl"] for r in rs), 2),
+                "sum_pct": round(sum(pcts), 3), "avg_pct": round(sum(pcts) / len(pcts), 4) if pcts else None,
+                "win_rate": round(sum(1 for r in rs if r["pnl"] > 0) / n * 100, 1) if n else None}
+
+    dates = sorted(r["date"] for r in rows)
+    split = dates[len(dates) // 2] if dates else None
+
+    def scen(label, blocked_fn):
+        b = [r for r in rows if blocked_fn(r)]
+        k = [r for r in rows if not blocked_fn(r)]
+        bo = [r for r in b if r["date"] < split]
+        bn = [r for r in b if r["date"] >= split]
+        return {"label": label, "blocked": grp(b), "kept": grp(k),
+                # Positive = the blocked trades lost money, so the gate would have saved it.
+                "saved_pct": round(-sum(r["pct"] or 0 for r in b), 3),
+                "saved_older_pct": round(-sum(r["pct"] or 0 for r in bo), 3),
+                "saved_newer_pct": round(-sum(r["pct"] or 0 for r in bn), 3)}
+
+    spy = lambda thr: (lambda r: r["breakout"] and r["spy_dir"] is not None and r["spy_dir"] < thr)  # noqa: E731
+    early = lambda r: r["hhmm"] is not None and r["hhmm"] < start_hhmm                             # noqa: E731
+    out = {"all": grp(rows), "split_date": split, "unknown_spy": sum(1 for r in rows if r["breakout"] and r["spy_dir"] is None),
+           "spy": [dict(scen(f"SPY's last hour ≥ {t:g}% the trade's way", spy(t)), threshold=t) for t in thresholds],
+           "start": scen(f"Start at {start_hhmm // 100}:{start_hhmm % 100:02d}", early),
+           "both": scen(f"Both (SPY ≥ {min_pct:g}% and start at {start_hhmm // 100}:{start_hhmm % 100:02d})",
+                        lambda r: spy(min_pct)(r) or early(r))}
+    return out
+
+
+def _whatif_rows(rts, md):
+    out = []
+    for t in rts:
+        try:
+            e = datetime.fromisoformat(str(t["entry_time"]).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if e.tzinfo is None:
+            e = e.replace(tzinfo=timezone.utc)
+        et = e.astimezone(_ET)
+        d = et.date().isoformat()
+        ep, cl, _pm = md.get(d) or (array("d"), array("d"), None)
+        mv = spy_last_hour_pct(ep, cl, e.timestamp())
+        sgn = _sgn(t.get("side"))
+        out.append({"pct": _pct(t), "pnl": float(t.get("pnl") or 0), "date": d,
+                    "hhmm": et.hour * 100 + et.minute, "breakout": "BREAKOUT" in t["strategy"],
+                    "spy_dir": None if mv is None else mv * sgn})
+    return out
+
+
+def _in_windows(t, windows):
+    if not windows:
+        return True
+    try:
+        e = datetime.fromisoformat(str(t["entry_time"]).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if e.tzinfo is None:
+        e = e.replace(tzinfo=timezone.utc)
+    hm = e.astimezone(_ET).hour * 100 + e.astimezone(_ET).minute
+    for s, en in windows:
+        a, b = _hhmm(s), _hhmm(en)
+        if a is not None and b is not None and a <= hm < b:
+            return True
+    return False
+
+
+def run_whatif(book, days):
+    a = _app()
+    tag, farm_num, label, farm_label = WHATIF_BOOKS[book]
+    today = datetime.now(_ET).date()
+    frm = (today - timedelta(days=days)).isoformat()
+    book_rts, err1 = _round_trips(a, book, frm, today.isoformat())
+    farm_rts, err2 = _round_trips(a, farm_num, frm, today.isoformat())
+    windows = a._account_hours_windows(tag) or []
+    farm_rts = [t for t in farm_rts if "BREAKOUT" in t["strategy"] and _in_windows(t, windows)]
+    dates = sorted({_minute_key(t["entry_time"])[:10] for t in book_rts + farm_rts if _minute_key(t["entry_time"])})
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {d: ex.submit(_day_minutes, "SPY", d) for d in dates}
+        md = {d: f.result() for d, f in futs.items()}
+    on, mn = a._spy_align_settings(tag)
+    return {"book": book, "label": label, "farm_label": farm_label, "days": days,
+            "hours": [f"{s}-{e}" for s, e in windows], "spy_gate_on": on, "min_pct": mn,
+            "unavailable": (err1 or []) + (err2 or []),
+            "book_trades": whatif_scenarios(_whatif_rows(book_rts, md), mn),
+            "farm_trades": whatif_scenarios(_whatif_rows(farm_rts, md), mn)}
+
+
+@trade_context_bp.route("/api/gates/what_if")
+def api_gates_what_if():
+    """?book=2|3 &days=60 — what the SPY-alignment gate and a 10:00 start would
+    have blocked on this Refined book's past trades and on its farm's in-hours
+    breakouts. Read-only; cached 15 minutes."""
+    book = str(request.args.get("book") or "3")
+    if book not in WHATIF_BOOKS:
+        return jsonify({"error": "book must be 2 (TV Refined) or 3 (Kairos Refined)"}), 400
+    try:
+        days = max(14, min(180, int(request.args.get("days") or 60)))
+    except ValueError:
+        days = 60
+    key = ("whatif", book, days)
+    hit, v = _results.get(key)
+    if hit and time.time() - v[0] < _RESULT_TTL and not request.args.get("fresh"):
+        return jsonify(v[1])
+    try:
+        out = run_whatif(book, days)
+    except Exception as e:
+        _app().log.warning("gate what-if failed: %s", e)
+        return jsonify({"error": f"Could not run the what-if: {e}"}), 500
     _results.put(key, (time.time(), out))
     return jsonify(out)

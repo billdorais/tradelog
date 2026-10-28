@@ -918,6 +918,27 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                 conn.commit()
         alpaca_targets = _ol_kept
 
+    # SPY-alignment gate (entries only, breakouts): drop targets whose account takes
+    # breakouts only when SPY's last hour moved the trade's way. Per-target; fails open.
+    if not _is_exit and alpaca_targets:
+        _sa_kept, _sa_dropped = [], []
+        for bt in alpaca_targets:
+            _acct_tag = _alpaca_broker_name(bt[0])
+            _blk, _why, _mv = app._spy_align_gate_block(strategy_name, _gate_entry_side or "", _acct_tag)
+            if _blk:
+                _sa_dropped.append((_acct_tag, _why))
+            else:
+                _sa_kept.append(bt)
+        if _sa_dropped:
+            app.log.info("SPY-alignment gate: %s %s — skipped %s (%s)", order_action, ticker,
+                         ",".join(t for t, _w in _sa_dropped), _sa_dropped[0][1])
+            for _t, _w in _sa_dropped:
+                app._record_block(_t, ticker, strategy_name, _gate_entry_side, "spy-align", _w)
+            if not _sa_kept and conn:
+                app._update_exec(cur, trade_id, "skipped", _sa_dropped[0][1])
+                conn.commit()
+        alpaca_targets = _sa_kept
+
     # Per-account reversal policy (entries only): drop targets whose account takes
     # reversals on one side only (e.g. "short") or takes none at all ("off", TV
     # Refined). Accounts with no policy (Kairos, Crew Paper, the farms) pass — the
