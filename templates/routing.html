@@ -1834,9 +1834,10 @@
           <td style="padding:4px 8px">${x.blocked.n} of ${w.all.n}</td>
           <td style="padding:4px 8px;color:${col(x.blocked.avg_pct)}">${pct(x.blocked.avg_pct)}</td>
           <td style="padding:4px 8px;color:${col(x.kept.avg_pct)}">${pct(x.kept.avg_pct)}</td>
-          <td style="padding:4px 8px;color:${col(x.saved_pct)};font-weight:600">${pct(x.saved_pct)}</td>
-          <td style="padding:4px 8px;color:${col(x.saved_older_pct)}">${pct(x.saved_older_pct)}</td>
-          <td style="padding:4px 8px;color:${col(x.saved_newer_pct)}">${pct(x.saved_newer_pct)}</td></tr>`).join('');
+          <td style="padding:4px 8px;color:#aaa">${pct(x.saved_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.edge_pct)};font-weight:600">${pct(x.edge_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.edge_older_pct)}">${pct(x.edge_older_pct)}</td>
+          <td style="padding:4px 8px;color:${col(x.edge_newer_pct)}">${pct(x.edge_newer_pct)}</td></tr>`).join('');
       return `<div style="margin-top:10px;font-size:0.78rem;color:#cfd3e0">${title}
           <span style="color:#666">· ${w.all.n} trades, ${pct(w.all.avg_pct)} a trade, ${pct(w.all.sum_pct)} summed${w.unknown_spy ? ` · ${w.unknown_spy} without SPY data (kept)` : ''}</span></div>
         <div style="color:#666;font-size:0.7rem;margin:2px 0 4px">${note}</div>
@@ -1844,8 +1845,9 @@
           <thead><tr style="color:#777;font-size:0.66rem;text-transform:uppercase">
             <th style="text-align:left;padding:4px 8px">Scenario</th><th style="padding:4px 8px">Blocked</th>
             <th style="padding:4px 8px">Blocked avg</th><th style="padding:4px 8px">Kept avg</th>
-            <th style="padding:4px 8px" title="Minus the blocked trades' summed % return: positive = the gate would have saved this">Saved (summed %)</th>
-            <th style="padding:4px 8px">Older half</th><th style="padding:4px 8px">Newer half</th></tr></thead>
+            <th style="padding:4px 8px" title="Minus the blocked trades' summed % return. When most trades lose, almost any big gate looks good on this alone">Saved (summed %)</th>
+            <th style="padding:4px 8px" title="Saved beyond blocking the same number of trades at random: positive = the blocked trades were worse than average">Edge vs random</th>
+            <th style="padding:4px 8px">Edge, older half</th><th style="padding:4px 8px">Edge, newer half</th></tr></thead>
           <tbody>${rows}</tbody></table></div>`;
     };
     out.innerHTML = `<div style="font-size:0.8rem;color:#e0e0e0;margin-top:6px"><b>${d.label}</b>, last ${d.days} days ·
@@ -1855,7 +1857,8 @@
       + table(`${d.farm_label} breakouts inside ${d.label}'s hours`, d.farm_trades,
               'The bigger sample: the same strategies on the farm ($1k, otherwise ungated), within the book\'s trading hours.')
       + `<div style="color:#888;font-size:0.72rem;margin-top:8px;line-height:1.5">A gate is worth switching on only if
-          <b>Saved</b> is positive in both halves on both samples. A gate that saves in one half and costs in the other is noise.
+          <b>Edge vs random</b> is positive in both halves on both samples, meaning the trades it blocks really were worse than average.
+          "Saved" alone misleads when most trades lose: blocking any large group of losers saves money, even a random one.
           ${(d.unavailable || []).length ? ' <span style="color:#e08a8a">Could not read: ' + d.unavailable.join(', ') + '.</span>' : ''}</div>`;
   }
 

@@ -741,16 +741,31 @@ def whatif_scenarios(rows, min_pct, thresholds=SPY_THRESHOLDS, start_hhmm=1000):
     dates = sorted(r["date"] for r in rows)
     split = dates[len(dates) // 2] if dates else None
 
+    def _avg(rs):
+        p = [r["pct"] for r in rs if r["pct"] is not None]
+        return sum(p) / len(p) if p else 0.0
+    avg_all = _avg(rows)
+    avg_old = _avg([r for r in rows if r["date"] < split])
+    avg_new = _avg([r for r in rows if r["date"] >= split])
+
     def scen(label, blocked_fn):
         b = [r for r in rows if blocked_fn(r)]
         k = [r for r in rows if not blocked_fn(r)]
         bo = [r for r in b if r["date"] < split]
         bn = [r for r in b if r["date"] >= split]
+
+        def edge(rs, base):
+            # What blocking these saved BEYOND blocking the same number of trades at
+            # random. When nearly every trade loses, blocking any big group "saves",
+            # so the raw saving can't tell a good gate from a coin flip; this can.
+            return round(sum(base - (r["pct"] or 0) for r in rs), 3)
         return {"label": label, "blocked": grp(b), "kept": grp(k),
                 # Positive = the blocked trades lost money, so the gate would have saved it.
                 "saved_pct": round(-sum(r["pct"] or 0 for r in b), 3),
                 "saved_older_pct": round(-sum(r["pct"] or 0 for r in bo), 3),
-                "saved_newer_pct": round(-sum(r["pct"] or 0 for r in bn), 3)}
+                "saved_newer_pct": round(-sum(r["pct"] or 0 for r in bn), 3),
+                "edge_pct": edge(b, avg_all), "edge_older_pct": edge(bo, avg_old),
+                "edge_newer_pct": edge(bn, avg_new)}
 
     spy = lambda thr: (lambda r: r["breakout"] and r["spy_dir"] is not None and r["spy_dir"] < thr)  # noqa: E731
     early = lambda r: r["hhmm"] is not None and r["hhmm"] < start_hhmm                             # noqa: E731

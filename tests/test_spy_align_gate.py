@@ -123,6 +123,16 @@ def test_whatif_blocks_by_the_rule_and_reports_savings_by_half():
     assert w["unknown_spy"] == 1 and w["all"]["n"] == 6
     assert w["split_date"] == "2026-10-02"
     assert spy15["saved_older_pct"] == 0.3 and spy15["saved_newer_pct"] == 0.0
+    # Edge vs random: the blocked trades against the average trade (here -0.1167%).
+    avg = (-0.2 + 0.3 - 0.1 + 0.1 - 0.5 - 0.4) / 6
+    assert spy15["edge_pct"] == round((avg + 0.2) + (avg + 0.1), 3)
+
+
+def test_a_gate_that_blocks_at_random_has_no_edge_even_when_it_saves():
+    rows = [_r(-0.1, f"2026-09-{i:02d}", 1030, 0.0 if i % 2 else 0.5) for i in range(1, 21)]
+    w = tc.whatif_scenarios(rows, 0.15)
+    spy15 = next(x for x in w["spy"] if x["threshold"] == 0.15)
+    assert spy15["saved_pct"] == 1.0 and spy15["edge_pct"] == 0.0
 
 
 def test_whatif_endpoint_on_fake_books(monkeypatch):
