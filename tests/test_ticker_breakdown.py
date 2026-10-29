@@ -768,3 +768,14 @@ def test_the_picker_shows_each_tickers_best_strategy_not_the_sum(client):
 def test_the_picker_labels_and_sorts_by_the_best_strategy():
     html = open("templates/tickers.html", encoding="utf-8").read()
     assert "totals[t].best" in html
+
+
+def test_the_page_charts_when_to_stop_trading_by_entry_time():
+    """Stopping means taking no NEW entries, so the curve buckets by entry time
+    (the Analysis page's version uses exit time) and shows the halves check."""
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert 'id="stopCurve"' in html and "_renderStopCurve(d.trades" in html
+    i = html.index("function stopCurve(")
+    block = html[i:i + 2000]
+    assert "t.entry_time" in block and "exit_time" not in block
+    assert "older" in block and "newer" in block

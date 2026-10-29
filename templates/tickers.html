@@ -144,6 +144,15 @@
     </div>
 
     <div class="panel">
+      <div class="band-q">When should you have stopped trading?</div>
+      <div class="band-sub">Running P&amp;L if you had taken no new entries after each half hour (ET, by entry time).
+        The 9:30 point is not trading at all. A stop time is worth acting on only when it helps in
+        <strong>both the older and newer half</strong> of the trades.</div>
+      <div id="stopNote" style="font-size:0.78rem;color:#aaa;margin:4px 0 8px;line-height:1.5"></div>
+      <div style="height:220px;position:relative"><canvas id="stopCurve"></canvas></div>
+    </div>
+
+    <div class="panel">
       <div class="band-q">Which book, and which side?</div>
       <div class="band-sub">The same setup can land differently per book — sizing, gates and fills all differ.</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px">
@@ -661,9 +670,10 @@
         : '<div class="empty">No closed trades for this selection.</div>';
       // gateCost and sweepOut too, or a book with no trades keeps showing the
       // previous book's numbers under the new book's name.
-      ['byStrategy','byBook','bySide','byExit','tradeList','gateCost','sweepOut']
+      ['byStrategy','byBook','bySide','byExit','tradeList','gateCost','sweepOut','stopNote']
         .forEach(id => { const n = document.getElementById(id); if (n) n.innerHTML = ''; });
       if (_chart) { _chart.destroy(); _chart = null; }
+      if (_stopChart) { _stopChart.destroy(); _stopChart = null; }
       return;
     }
 
@@ -680,6 +690,7 @@
       + tile('Best / worst', _money(o.best), 'worst ' + _money(o.worst));
 
     _renderCurve(d.curve || []);
+    _renderStopCurve(d.trades || []);
     _renderGroup('byStrategy', d.by_strategy, true);
     _renderGroup('byBook', d.by_book);
     _renderGroup('bySide', d.by_side);
@@ -1056,6 +1067,115 @@
                grid: { color: 'rgba(255,255,255,0.03)' } },
           y: { ticks: { color: '#555', font: { size: 9 }, callback: (v) => '$' + v },
                grid: { color: 'rgba(255,255,255,0.03)' } },
+        },
+      },
+    });
+  }
+
+  // ── When should you have stopped? ─────────────────────────────────────────
+  // Bucketed by ENTRY time: the hours setting stops new entries, so "stop at
+  // 12:00" means skipping every trade entered after 12:00. Empty buckets stay on
+  // the axis (flat) so the x-axis is real clock time.
+  let _stopChart = null;
+  const _etParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric',
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
+  function _etOf(s) {
+    let str = String(s || '').replace(' ', 'T');
+    if (!/([zZ]|[+-]\d\d:?\d\d)$/.test(str)) str += 'Z';
+    const d = new Date(str);
+    if (isNaN(d)) return null;
+    const p = Object.fromEntries(_etParts.formatToParts(d).map(x => [x.type, x.value]));
+    return { date: p.year + '-' + p.month + '-' + p.day, min: Number(p.hour) * 60 + Number(p.minute) };
+  }
+
+  function stopCurve(trades) {
+    const OPEN = 9 * 60 + 30, CLOSE = 16 * 60, STEP = 30;
+    const stops = [];
+    for (let m = OPEN; m <= CLOSE; m += STEP) stops.push(m);
+    const rows = [];
+    let outside = 0;
+    for (const t of trades) {
+      const e = _etOf(t.entry_time);
+      if (!e) continue;
+      if (e.min < OPEN || e.min >= CLOSE) { outside++; continue; }
+      rows.push({ date: e.date, min: e.min, pnl: Number(t.pnl) || 0 });
+    }
+    // Running P&L of trades entered before each stop time.
+    const at = (rs, stop) => rs.reduce((s, r) => s + (r.min < stop ? r.pnl : 0), 0);
+    const points = stops.map(stop => ({
+      stop, pnl: at(rows, stop),
+      taken: rows.filter(r => r.min < stop).length, skipped: rows.filter(r => r.min >= stop).length,
+    }));
+    let best = 0;
+    points.forEach((p, i) => { if (p.pnl > points[best].pnl + 0.005) best = i; });
+    const total = points[points.length - 1].pnl;
+    // Same split as the gate what-if: median entry date, older half strictly before it.
+    const dates = rows.map(r => r.date).sort();
+    const split = dates.length ? dates[Math.floor(dates.length / 2)] : null;
+    const half = rs => ({ n: rs.length, lift: at(rs, stops[best]) - at(rs, CLOSE) });
+    return { points, best, total, outside, n: rows.length, split,
+             older: half(rows.filter(r => r.date < split)), newer: half(rows.filter(r => r.date >= split)) };
+  }
+
+  function _hm(min) { return Math.floor(min / 60) + ':' + _pad(min % 60); }
+
+  function _renderStopCurve(trades) {
+    if (_stopChart) { _stopChart.destroy(); _stopChart = null; }
+    const note = document.getElementById('stopNote');
+    const s = stopCurve(trades);
+    if (!s.n) { note.innerHTML = '<span style="color:#666">No trades entered during market hours.</span>'; return; }
+    const b = s.points[s.best];
+    const lift = b.pnl - s.total;
+    let html;
+    if (s.best === s.points.length - 1) {
+      html = `<span style="color:#7FE098">Trading all day was best — final <strong>${_money(s.total)}</strong> beats every earlier stop.</span>`;
+    } else if (s.best === 0) {
+      html = `<span style="color:#e08a8a">No stop time made money — every one finishes below $0 (all day ${_money(s.total)}).
+        This selection lost across the day, so cutting hours alone will not fix it.</span>`;
+    } else {
+      html = `<span style="color:#F2C76B">&#9873; Stopping at <strong>${_hm(b.stop)}</strong> would have made
+        <strong>${_money(b.pnl)}</strong> vs all day <strong>${_money(s.total)}</strong>
+        (<strong>${_money(lift)}</strong> better, skipping ${b.skipped} of ${s.n} trades).</span>`;
+    }
+    if (s.best > 0 && s.best < s.points.length - 1) {
+      const both = s.older.lift > 0 && s.newer.lift > 0;
+      const c = v => v > 0 ? '#7FE098' : v < 0 ? '#e08a8a' : '#aaa';
+      html += `<br>Stopping at ${_hm(b.stop)} in the older half (before ${_esc(s.split)}):
+        <strong style="color:${c(s.older.lift)}">${_money(s.older.lift)}</strong> over ${s.older.n} trades ·
+        newer half: <strong style="color:${c(s.newer.lift)}">${_money(s.newer.lift)}</strong> over ${s.newer.n} trades —
+        ${both ? '<span style="color:#7FE098">it helped in both halves.</span>'
+               : '<span style="color:#e08a8a">it helped in only one half, so it is likely noise.</span>'}`;
+    }
+    if (s.outside) html += `<br><span style="color:#666">${s.outside} trade${s.outside === 1 ? '' : 's'} entered outside 9:30–16:00 left out.</span>`;
+    note.innerHTML = html;
+
+    const pts = s.points;
+    const ctx = document.getElementById('stopCurve').getContext('2d');
+    _stopChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: pts.map(p => _hm(p.stop)), datasets: [{
+        data: pts.map(p => Math.round(p.pnl * 100) / 100),
+        borderColor: '#7FE098', backgroundColor: 'rgba(127,224,152,0.08)', borderWidth: 2,
+        pointRadius: pts.map((_, i) => i === s.best ? 6 : 3),
+        pointBackgroundColor: pts.map((_, i) => i === s.best ? '#F2C76B' : '#7FE098'),
+        pointBorderColor: pts.map((_, i) => i === s.best ? '#F2C76B' : '#7FE098'),
+        pointHitRadius: 12, tension: 0.2, fill: true,
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            title: items => items[0].dataIndex === 0 ? 'Not trading at all' : 'Stop new entries at ' + items[0].label,
+            label: item => _money(item.parsed.y),
+            afterLabel: item => { const p = pts[item.dataIndex]; return p.taken + ' taken · ' + p.skipped + ' skipped'; },
+          } },
+        },
+        scales: {
+          x: { ticks: { color: '#555', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,0.03)' } },
+          y: { ticks: { color: '#555', font: { size: 9 }, callback: v => '$' + v },
+               grid: { color: c => c.tick && c.tick.value === 0 ? '#3a3d4e' : 'rgba(255,255,255,0.03)' } },
         },
       },
     });
