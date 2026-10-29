@@ -779,3 +779,13 @@ def test_the_page_charts_when_to_stop_trading_by_entry_time():
     block = html[i:i + 2000]
     assert "t.entry_time" in block and "exit_time" not in block
     assert "older" in block and "newer" in block
+
+
+def test_the_clock_button_redraws_the_curve_without_entries_after_the_stop():
+    html = open("templates/tickers.html", encoding="utf-8").read()
+    assert 'id="stopBtn"' in html and 'onclick="toggleStopAt()"' in html
+    i = html.index("function _renderCurve(")
+    block = html[i:i + 3000]
+    assert "_keptByStop(_stopAt)" in block and "'No entries after '" in block
+    # Clicking a point on the stop chart applies that time.
+    assert "setStopAt(pts[els[0].index].stop)" in html

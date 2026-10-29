@@ -113,9 +113,16 @@
     <div id="warnBox"></div>
 
     <div class="panel">
-      <div class="band-q" id="q1">How did this ticker do?</div>
-      <div class="band-sub" id="sub1">Every closed round-trip on the symbol, across the selected books.</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div class="band-q" id="q1">How did this ticker do?</div>
+          <div class="band-sub" id="sub1">Every closed round-trip on the symbol, across the selected books.</div>
+        </div>
+        <button class="btn" id="stopBtn" onclick="toggleStopAt()" hidden
+                title="Redraw the P&amp;L chart as if no new entries were taken after this time (ET)">&#128336; Stop at —</button>
+      </div>
       <div class="tiles" id="tiles"></div>
+      <div id="stopSummary" style="font-size:0.78rem;color:#cfd3e0;margin-top:10px;line-height:1.5" hidden></div>
       <div style="height:250px;position:relative;margin-top:14px"><canvas id="curve"></canvas></div>
     </div>
 
@@ -674,6 +681,7 @@
         .forEach(id => { const n = document.getElementById(id); if (n) n.innerHTML = ''; });
       if (_chart) { _chart.destroy(); _chart = null; }
       if (_stopChart) { _stopChart.destroy(); _stopChart = null; }
+      _stopAt = null; _stopSuggest = null; _syncStopUI();
       return;
     }
 
@@ -689,8 +697,11 @@
       + tile('Max drawdown', _money(o.max_drawdown), 'peak to trough', 'neg')
       + tile('Best / worst', _money(o.best), 'worst ' + _money(o.worst));
 
-    _renderCurve(d.curve || []);
+    // New data starts from the real curve; the stop chart sets the suggestion first.
+    _stopAt = null;
     _renderStopCurve(d.trades || []);
+    _renderCurve(d.curve || []);
+    _syncStopUI();
     _renderGroup('byStrategy', d.by_strategy, true);
     _renderGroup('byBook', d.by_book);
     _renderGroup('bySide', d.by_side);
@@ -1044,22 +1055,41 @@
       return isNaN(d) ? '' : (d.getMonth() + 1) + '/' + d.getDate();
     });
     const up = curve[curve.length - 1].value >= 0;
+    const actual = {
+      label: 'Actual',
+      data: curve.map(p => p.value),
+      borderColor: up ? '#7FE098' : '#e08a8a',
+      backgroundColor: (up ? '#7FE098' : '#e08a8a') + '22',
+      borderWidth: 2, pointRadius: 0, tension: 0.15, fill: true,
+    };
+    const datasets = [actual];
+    // Stop-at overlay: the same trades in the same order, minus every one entered
+    // at or after the stop time. curve[i] is trades[i] (both sorted by exit).
+    const kept = _stopAt == null ? null : _keptByStop(_stopAt);
+    if (kept) {
+      let run = 0;
+      Object.assign(actual, { label: 'Actual (all day)', borderColor: '#5a5f73', backgroundColor: 'transparent',
+                              borderWidth: 1.5, borderDash: [4, 3], fill: false });
+      datasets.push({
+        label: 'No entries after ' + _hm(_stopAt),
+        data: curve.map((p, i) => { if (kept[i]) run += p.pnl; return Math.round(run * 100) / 100; }),
+        borderColor: '#F2C76B', backgroundColor: '#F2C76B22',
+        borderWidth: 2, pointRadius: 0, tension: 0.15, fill: true,
+      });
+    }
     _chart = new Chart(ctx, {
       type: 'line',
-      data: { labels, datasets: [{
-        label: 'Cumulative P&L',
-        data: curve.map(p => p.value),
-        borderColor: up ? '#7FE098' : '#e08a8a',
-        backgroundColor: (up ? '#7FE098' : '#e08a8a') + '22',
-        borderWidth: 2, pointRadius: 0, tension: 0.15, fill: true,
-      }]},
+      data: { labels, datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { display: false },
+          legend: { display: !!kept, labels: { color: '#aaa', font: { size: 10 }, boxWidth: 14 } },
           tooltip: { callbacks: { afterBody: (items) => {
-            const p = curve[items[0].dataIndex];
-            return p ? p.strategy + '  ' + p.side + '  ' + _money(p.pnl) + '  [' + p.book + ']' : '';
+            const i = items[0].dataIndex, p = curve[i];
+            if (!p) return '';
+            return p.strategy + '  ' + p.side + '  ' + _money(p.pnl) + '  [' + p.book + ']'
+              + (kept && !kept[i] ? '\nskipped: entered after ' + _hm(_stopAt) : '');
           } } },
         },
         scales: {
@@ -1120,10 +1150,65 @@
 
   function _hm(min) { return Math.floor(min / 60) + ':' + _pad(min % 60); }
 
+  // ── Stop-at overlay on the P&L chart ──────────────────────────────────────
+  // _stopSuggest is the stop chart's best time (null when all day or no trading
+  // at all wins); _stopAt is what the P&L chart is currently drawn with.
+  let _stopAt = null, _stopSuggest = null, _stopBothHalves = false;
+
+  // trades[i] -> kept under a stop at `stop` (ET minutes). Entries before the
+  // open count as before the stop; unreadable times are kept.
+  function _keptByStop(stop) {
+    return ((_data && _data.trades) || []).map(t => { const e = _etOf(t.entry_time); return !e || e.min < stop; });
+  }
+
+  function toggleStopAt() {
+    _stopAt = _stopAt == null ? _stopSuggest : null;
+    _renderCurve((_data && _data.curve) || []);
+    _syncStopUI();
+  }
+
+  // From a click on the stop chart: try that time instead of the suggestion.
+  function setStopAt(min) {
+    _stopAt = (min == null || min >= 16 * 60) ? null : min;
+    _renderCurve((_data && _data.curve) || []);
+    _syncStopUI();
+  }
+
+  function _syncStopUI() {
+    const btn = document.getElementById('stopBtn'), out = document.getElementById('stopSummary');
+    if (!btn || !out) return;
+    btn.hidden = _stopSuggest == null && _stopAt == null;
+    btn.classList.toggle('on', _stopAt != null);
+    btn.innerHTML = _stopAt != null
+      ? '&#128336; Stopped at ' + _hm(_stopAt) + ' &middot; show actual'
+      : '&#128336; Stop at ' + (_stopSuggest != null ? _hm(_stopSuggest) : '—');
+    if (_stopAt == null) { out.hidden = true; out.innerHTML = ''; return; }
+    const trades = (_data && _data.trades) || [];
+    const kept = _keptByStop(_stopAt);
+    const k = trades.filter((_, i) => kept[i]);
+    const sum = rs => rs.reduce((s, t) => s + (Number(t.pnl) || 0), 0);
+    const kp = sum(k), ap = sum(trades);
+    const wr = k.length ? Math.round(k.filter(t => t.pnl > 0).length / k.length * 100) : 0;
+    const diff = kp - ap;
+    const caveat = _stopAt === _stopSuggest
+      ? (_stopBothHalves ? ' <span style="color:#7FE098">Helped in both halves.</span>'
+                         : ' <span style="color:#e08a8a">Helped in only one half — likely noise.</span>')
+      : ' <span style="color:#888">(picked on the chart below, not the suggestion)</span>';
+    out.hidden = false;
+    out.innerHTML = `&#128336; With no entries after <strong>${_hm(_stopAt)}</strong>:
+      <strong class="${kp >= 0 ? 'pos' : 'neg'}">${_money(kp)}</strong> over ${k.length} trades (${wr}% win)
+      vs actual <strong class="${ap >= 0 ? 'pos' : 'neg'}">${_money(ap)}</strong> over ${trades.length} —
+      <strong class="${diff >= 0 ? 'pos' : 'neg'}">${_money(diff)}</strong>.${caveat}
+      <span style="color:#666">The tiles above stay on the actual trades.</span>`;
+  }
+
   function _renderStopCurve(trades) {
     if (_stopChart) { _stopChart.destroy(); _stopChart = null; }
     const note = document.getElementById('stopNote');
     const s = stopCurve(trades);
+    const mid = s.best > 0 && s.best < s.points.length - 1;
+    _stopSuggest = s.n && mid ? s.points[s.best].stop : null;
+    _stopBothHalves = mid && s.older.lift > 0 && s.newer.lift > 0;
     if (!s.n) { note.innerHTML = '<span style="color:#666">No trades entered during market hours.</span>'; return; }
     const b = s.points[s.best];
     const lift = b.pnl - s.total;
@@ -1148,6 +1233,7 @@
                : '<span style="color:#e08a8a">it helped in only one half, so it is likely noise.</span>'}`;
     }
     if (s.outside) html += `<br><span style="color:#666">${s.outside} trade${s.outside === 1 ? '' : 's'} entered outside 9:30–16:00 left out.</span>`;
+    html += `<br><span style="color:#666">Click a point to redraw the P&amp;L chart above as if you had stopped then.</span>`;
     note.innerHTML = html;
 
     const pts = s.points;
@@ -1164,9 +1250,16 @@
       }]},
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
+        onClick: (_evt, els) => {
+          if (!els.length) return;
+          setStopAt(pts[els[0].index].stop);
+          document.getElementById('curve').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        },
+        onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: {
+            footer: () => 'Click to apply to the P&L chart',
             title: items => items[0].dataIndex === 0 ? 'Not trading at all' : 'Stop new entries at ' + items[0].label,
             label: item => _money(item.parsed.y),
             afterLabel: item => { const p = pts[item.dataIndex]; return p.taken + ' taken · ' + p.skipped + ' skipped'; },
