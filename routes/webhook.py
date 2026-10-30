@@ -649,6 +649,12 @@ def _webhook_locked(data, received_at, broker_name, ticker):
             if _bt_tag and ticker and                     str(ticker).strip().upper() in app._hours_exempt_tickers(_bt_tag):
                 _kept_hours.append(_bt)
                 continue
+            # Same for a stop time set to OVERRIDE the book's hours: it replaces
+            # every window for this strategy, the rule's included; the account
+            # gate below still checks the book's opening time and the stop.
+            if _bt_tag and app._strategy_stop_mode(strategy_name, _bt_tag) == "override":
+                _kept_hours.append(_bt)
+                continue
             try:
                 _now_t = datetime.now(ZoneInfo(_thtz)).strftime("%H:%M")
                 if _ths <= _now_t < _the:
@@ -851,7 +857,8 @@ def _webhook_locked(data, received_at, broker_name, ticker):
     # through. Lets Paper trade all day while Refined only trades the open, etc.
     if not _is_exit and alpaca_targets:
         _in_hours = [bt for bt in alpaca_targets
-                     if app._account_hours_ok(_alpaca_broker_name(bt[0]), ticker=ticker)]
+                     if app._account_hours_ok(_alpaca_broker_name(bt[0]), ticker=ticker,
+                                              strategy=strategy_name)]
         if len(_in_hours) != len(alpaca_targets):
             _dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
                        - {_alpaca_broker_name(bt[0]) for bt in _in_hours}
@@ -864,6 +871,27 @@ def _webhook_locked(data, received_at, broker_name, ticker):
                                  f"Outside trading hours for {', '.join(sorted(_dropped))}")
                 conn.commit()
         alpaca_targets = _in_hours
+
+    # Per-strategy stop time (entries only): drop targets whose book has a stop time
+    # on this strategy that has already passed today. Per-target; exits pass.
+    if not _is_exit and alpaca_targets:
+        _st_kept, _st_dropped = [], []
+        for bt in alpaca_targets:
+            _acct_tag = _alpaca_broker_name(bt[0])
+            _blk, _why = app._strategy_stop_block(strategy_name, _acct_tag)
+            if _blk:
+                _st_dropped.append((_acct_tag, _why))
+            else:
+                _st_kept.append(bt)
+        if _st_dropped:
+            app.log.info("Strategy stop time: %s %s — skipped %s (%s)", order_action, ticker,
+                         ",".join(t for t, _w in _st_dropped), _st_dropped[0][1])
+            for _t, _w in _st_dropped:
+                app._record_block(_t, ticker, strategy_name, _gate_entry_side, "stop-time", _w)
+            if not _st_kept and conn:
+                app._update_exec(cur, trade_id, "skipped", _st_dropped[0][1])
+                conn.commit()
+        alpaca_targets = _st_kept
 
     # Day-type gate (entries only): drop Refined (acct2) targets for BREAKOUT entries
     # on non-Outside days. Paper All (acct1) is never gated — it keeps trading

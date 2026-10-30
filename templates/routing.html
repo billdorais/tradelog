@@ -543,6 +543,17 @@
       </div>
     </div>
 
+    <div class="rg-card" style="margin-top:10px;border-color:#7a6a3a" id="stopTimesCard">
+      <div class="rg-card-title" style="color:#F2C76B">&#9670; Strategy Stop Times — limit a strategy's new entries to a set window</div>
+      <div class="risk-section">
+        <div class="risk-hint" style="margin-top:0">Set from the Ticker Breakdown page (pick a strategy, then
+          <b>&#9881; Apply to Signal Router</b> under the P&amp;L chart). <b>Within book hours</b> only cuts the book's windows
+          short; <b>Overrides book hours</b> lets that strategy trade from the book's opening time to the stop, gaps included.
+          Exits are never touched, and the farms can't carry one.</div>
+        <div id="stopTimesList" style="margin-top:8px;font-size:0.8rem;color:#888">Loading…</div>
+      </div>
+    </div>
+
     <div class="rg-card" style="margin-top:10px;border-color:#5a8fa8">
       <div class="rg-card-title" style="color:#7bb3d6">&#9670; RVOL Entry Gate — block thin-volume breakouts</div>
       <div class="risk-section">
@@ -1801,6 +1812,48 @@
   }
 
   // RVOL entry gate (TV Refined + Kairos Refined breakouts)
+  // Per-strategy stop times (written from the Ticker Breakdown page).
+  async function loadStopTimes() {
+    const el = document.getElementById('stopTimesList');
+    if (!el) return;
+    let d;
+    try { d = await (await fetch('/api/strategy/stop_times')).json(); }
+    catch (e) { el.innerHTML = '<span style="color:#e08a8a">Could not load stop times.</span>'; return; }
+    const esc = x => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const stops = d.stops || [];
+    if (!stops.length) { el.innerHTML = 'None set. Every strategy trades its books\' full hours.'; return; }
+    const lbl = t => (d.labels || {})[t] || t;
+    el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
+      + '<thead><tr style="color:#777;font-size:0.66rem;text-transform:uppercase;text-align:left">'
+      + '<th style="padding:4px 8px">Strategy</th><th style="padding:4px 8px">Window (ET)</th><th style="padding:4px 8px">Mode</th><th style="padding:4px 8px">Books</th>'
+      + '<th style="padding:4px 8px">Set</th><th style="padding:4px 8px">Based on</th><th></th></tr></thead><tbody>'
+      + stops.map(x => {
+          const b = x.basis || {};
+          const basis = b.trades ? `${esc(b.book)}, ${esc(b.days)}d, ${esc(b.trades)} trades${b.both_halves === false ? ' · <span style="color:#e08a8a">one half only</span>' : ''}` : '—';
+          return `<tr style="border-top:1px solid #1f2230">
+            <td style="padding:4px 8px;color:#cfd3e0">${esc(x.strategy)}</td>
+            <td style="padding:4px 8px;color:#F2C76B;font-weight:600">${x.start ? esc(x.start) + '–' : 'until '}${esc(x.stop)}</td>
+            <td style="padding:4px 8px;color:${x.mode === 'override' ? '#F2C76B' : '#888'}">${x.mode === 'override' ? 'Overrides book hours' : 'Within book hours'}</td>
+            <td style="padding:4px 8px;color:#aaa">${(x.accounts || []).map(lbl).map(esc).join(', ')}</td>
+            <td style="padding:4px 8px;color:#666">${esc((x.set_at || '').slice(0, 10))}</td>
+            <td style="padding:4px 8px;color:#888">${basis}</td>
+            <td style="padding:4px 8px;text-align:right"><button class="btn btn-ghost" style="padding:3px 10px;font-size:0.74rem"
+              onclick="clearStopTime('${esc(x.strategy).replace(/'/g, '')}', this)">Remove</button></td></tr>`;
+        }).join('')
+      + '</tbody></table></div>';
+  }
+
+  async function clearStopTime(strategy, btn) {
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/strategy/stop_time', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                         body: JSON.stringify({ strategy, clear: true }) });
+      if (!r.ok) throw new Error((await r.json()).error || 'failed');
+    } catch (e) { btn.disabled = false; btn.textContent = 'Failed'; return; }
+    loadStopTimes();
+  }
+  loadStopTimes();
+
   async function setSpyAlignGate(on) {
     try { await _postLimit({spy_align_gate_enabled: !!on}); }
     catch (e) { console.error('setSpyAlignGate failed:', e); }

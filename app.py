@@ -15075,7 +15075,7 @@ def _hours_exempt_tickers(account: str):
     return {str(t).strip().upper() for t in raw if str(t).strip()}
 
 
-def _account_hours_ok(account: str, now_et=None, ticker: str = None) -> bool:
+def _account_hours_ok(account: str, now_et=None, ticker: str = None, strategy: str = None) -> bool:
     """True if `account` (a broker tag) is inside ANY of its configured trading
     windows (ET). No windows configured = always allowed. Callers must pass the
     TARGET account's tag.
@@ -15083,8 +15083,19 @@ def _account_hours_ok(account: str, now_et=None, ticker: str = None) -> bool:
     `ticker` opts one symbol out of the window entirely. Callers that are asking
     about a SPECIFIC entry should pass it; the coarse "is any book open" checks
     deliberately do not.
+
+    `strategy` lets an OVERRIDE stop time replace the book's windows for that one
+    strategy: it may enter from the book's opening time onward (the 10-12 gap
+    included), and the stop-time gate ends it at the stop.
     """
     import datetime as _dt
+    if strategy and _strategy_stop_mode(strategy, account) == "override":
+        try:
+            now_et = now_et or _dt.datetime.now(ZoneInfo("America/New_York"))
+            return now_et.strftime("%H:%M") >= (_strategy_start_for(strategy, account)
+                                                 or _book_open_hhmm(account))
+        except Exception:
+            return True
     if ticker and str(ticker).strip().upper() in _hours_exempt_tickers(account):
         return True
     windows = _account_hours_windows(account)
@@ -16713,6 +16724,20 @@ _GATE_RULES = {
                "found breakouts taken while SPY was flat lost (-0.069% a trade, t -3.75) and ones "
                "taken while SPY moved with them roughly broke even (+0.011%, t +4.08), in both halves.",
     },
+    "stop-time": {
+        "title": "Strategy stop time",
+        "what":  "Stops new entries on one strategy from a set time of day.",
+        "rule": [
+            "Per strategy and per book: no new entries at or after the stop time (ET). Exits always pass.",
+            "'Within book hours' sits on top of the book's trading window, so it can only shorten it.",
+            "'Override book hours' replaces the window for that strategy: it trades from its start time until the stop, gaps included.",
+            "No entries before the start time (09:35 unless changed) in either mode.",
+            "Set from the Ticker Breakdown's 'When should you have stopped trading?' chart. Never on the farms.",
+        ],
+        "why": "Some strategies make their money early and give it back later in the day. The "
+               "chart picks the half hour that maximised the strategy's P&L and checks that the "
+               "stop helped in both the older and newer half of its trades.",
+    },
     "reversal": {
         "title": "Reversal side",
         "what":  "Restricts, or switches off, reversal entries on this book.",
@@ -16802,6 +16827,7 @@ _GATE_ALIASES = {
     "spy alignment": "spy-align", "spy align": "spy-align",
     "daily loss": "daily-loss", "manual halt": "manual-halt",
     "day type": "day-type", "trading hours": "hours",
+    "stop time": "stop-time", "strategy stop time": "stop-time",
 }
 
 
@@ -16882,6 +16908,16 @@ def _gate_state(tag):
                         else "off",
                         "override" if _account_gate_overrides(tag).get("spy_align") is not None else "shared")
 
+    _stops = sorted((k, (f"{v['start']} to " if v.get("start") else "") + v.get("stop")
+                     + (" (overrides hours)" if v.get("mode") == "override" else ""))
+                    for k, v in _strategy_stop_times().items()
+                    if tag in (v.get("accounts") or []) and tag not in _FARM_TAGS and v.get("stop"))
+    out["stop-time"] = (bool(_stops),
+                        (f"{len(_stops)} strateg{'y' if len(_stops) == 1 else 'ies'}: "
+                         + ", ".join(f"{k} from {v}" for k, v in _stops[:6])
+                         + (f" +{len(_stops) - 6} more" if len(_stops) > 6 else "")) if _stops else "none set",
+                        "shared")
+
     pol = _REVERSAL_SIDE_BY_TAG.get(tag)
     out["reversal"] = (pol in ("long", "short", "off"),
                        "reversals off"           if pol == "off" else
@@ -16938,6 +16974,67 @@ def _gate_docs(tag):
                                        "un-gated control to price these blocks against."
                                        if k in nc else "")}
     return docs
+
+
+@app.route("/api/strategy/stop_time", methods=["GET", "POST"])
+def api_strategy_stop_time():
+    """GET ?strategy=X — its stop time (if any) and the books one can go on.
+    POST {strategy, start: "HH:MM", stop: "HH:MM", mode: within|override, accounts: [tags],
+          basis: {...}} — set it. No entries before start (default 09:35) or from stop.
+    "within" only shortens each book's windows; "override" replaces them for this
+    strategy with one window from the book's opening time to the stop.
+    POST {strategy, clear: true} — remove it. Farms are refused."""
+    src = (request.get_json(silent=True) if request.method == "POST" else request.args) or {}
+    slug = str(src.get("strategy") or "").strip().upper()
+    if not slug or "*" in slug or "_" not in slug:
+        return jsonify({"error": "Pick one strategy (not All strategies) first."}), 400
+    allowed = _stop_time_tags()
+    books = [{"tag": t, "label": (_META_BY_TAG.get(t) or {}).get("label", t),
+              "configured": t in ACCOUNTS_BY_TAG, "live": t == "alpaca6",
+              "windows": [f"{a}-{b}" for a, b in (_account_hours_windows(t) or [])],
+              "open": _book_open_hhmm(t)} for t in allowed]
+    m = dict(_strategy_stop_times())
+    if request.method == "GET":
+        return jsonify({"strategy": slug, "entry": m.get(slug), "books": books})
+    if src.get("clear"):
+        had = m.pop(slug, None)
+        if had is not None:
+            _save_strategy_stop_times(m)
+            log.info("Strategy stop time cleared: %s (was %s on %s)", slug, had.get("stop"),
+                     ",".join(had.get("accounts") or []))
+        return jsonify({"strategy": slug, "entry": None, "cleared": had is not None})
+    import re
+    stop = str(src.get("stop") or "").strip()
+    if not re.fullmatch(r"\d{2}:\d{2}", stop) or not ("09:30" < stop < "16:00"):
+        return jsonify({"error": "stop must be an ET time after 09:30 and before 16:00, as HH:MM"}), 400
+    accts = [str(t) for t in (src.get("accounts") or [])]
+    bad = [t for t in accts if t not in allowed]
+    if bad:
+        return jsonify({"error": f"not allowed on {', '.join(bad)} (farms and unknown books can't carry a stop time)"}), 400
+    if not accts:
+        return jsonify({"error": "Choose at least one book."}), 400
+    start = str(src.get("start") or "09:35").strip()
+    if not re.fullmatch(r"\d{2}:\d{2}", start) or not ("09:30" <= start < stop):
+        return jsonify({"error": "start must be an ET time from 09:30 and before the stop, as HH:MM"}), 400
+    mode = str(src.get("mode") or "within").lower()
+    if mode not in ("within", "override"):
+        return jsonify({"error": "mode must be 'within' or 'override'"}), 400
+    basis = src.get("basis") if isinstance(src.get("basis"), dict) else {}
+    entry = {"start": start, "stop": stop, "mode": mode, "accounts": [t for t in allowed if t in accts],
+             "set_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             "basis": {k: basis[k] for k in ("book", "days", "trades", "lift", "both_halves", "from", "to")
+                       if k in basis}}
+    m[slug] = entry
+    _save_strategy_stop_times(m)
+    log.info("Strategy window set: %s %s-%s ET (%s) on %s", slug, start, stop, mode, ",".join(entry["accounts"]))
+    return jsonify({"strategy": slug, "entry": entry})
+
+
+@app.route("/api/strategy/stop_times")
+def api_strategy_stop_times():
+    """Every strategy stop time, for the Signal Router page."""
+    return jsonify({"stops": [{"strategy": k, **v} for k, v in sorted(_strategy_stop_times().items())],
+                    "labels": {t: (_META_BY_TAG.get(t) or {}).get("label", t) for t in _stop_time_tags()}})
 
 
 @app.route("/api/gates/docs")
@@ -17391,7 +17488,7 @@ def _build_recap(account="4", frm="", to="", period=""):
     gates = [{"gate": lbl, "key": k, "on": _docs[k]["on"], "detail": _docs[k]["setting"]}
              for k, lbl in (("hours", "Trading hours"), ("day-type", "Day-type"),
                             ("reversal", "Reversal side"), ("open-location", "Opening location"),
-                            ("rvol", "RVOL"), ("spy-align", "SPY alignment"), ("strikes", "Strikes"),
+                            ("rvol", "RVOL"), ("spy-align", "SPY alignment"), ("stop-time", "Stop time"), ("strikes", "Strikes"),
                             ("profit-lock", "Profit lock"), ("daily-loss", "Daily loss"))]
 
     # Crew-only: the scorecard grades the crew's picks against acct4 results. On any
@@ -20997,7 +21094,8 @@ def _engine_pilot_tick(now_et, today):
     # shut, so the short-circuit has to stand down — otherwise the coarse check
     # silently overrules the per-ticker exemption the authoritative check honours.
     hours_ok = (any(_account_hours_ok(_a["tag"], now_et=now_et) or
-                    _hours_exempt_tickers(_a["tag"]) for _a in ALPACA_ACCOUNTS)
+                    _hours_exempt_tickers(_a["tag"]) or _book_has_hours_override(_a["tag"])
+                    for _a in ALPACA_ACCOUNTS)
                 if ALPACA_ACCOUNTS else True)
     strikes  = _compute_strike_counts(today) if STRIKES_ENABLED else {}
     now_utc  = datetime.now(timezone.utc)
@@ -21029,9 +21127,14 @@ def _engine_pilot_tick(now_et, today):
             # any rule broker), and they do not share a window. This used to ask
             # _account_hours_ok("alpaca2") once per tick, so setting a TV Refined
             # window would have silently muted every other book the engine feeds.
-            if not _account_hours_ok(broker_tag, now_et=now_et, ticker=tk):
+            if not _account_hours_ok(broker_tag, now_et=now_et, ticker=tk, strategy=strat):
                 _record_block(broker_tag, tk, strat, side, "hours",
                           "outside the account's trading window", source="engine", once_per_day=True)
+                continue
+            _st_block, _st_reason = _strategy_stop_block(strat, broker_tag, now_et=now_et)
+            if _st_block:
+                _record_block(broker_tag, tk, strat, side, "stop-time", _st_reason,
+                              source="engine", once_per_day=True)
                 continue
             # Profit lock — skip this account's entries if it gave back below its floor.
             if _profit_lock_halted_for(broker_tag):
@@ -22215,6 +22318,108 @@ def _spy_align_gate_block(strategy, side, account_tag, now_dt=None):
         return True, (f"SPY-alignment gate: {sd.lower()} breakout blocked — SPY's last hour "
                       f"{mv:+.2f}% (needs {mn:.2f}% {'up' if sd == 'LONG' else 'down'})"), mdir
     return False, "", mdir
+
+
+# ── Per-strategy stop time ────────────────────────────────────────────────────
+# "No new entries on this strategy from HH:MM ET", per book. Set from the Ticker
+# Breakdown's "When should you have stopped trading?" chart (Apply to Signal
+# Router), which suggests the half hour that maximised the strategy's P&L. It sits
+# ON TOP of the book's trading window: a 12:00 stop inside a 9:35-15:55 window
+# means 9:35-12:00 for that one strategy. Exits always pass. The farms can never
+# carry one: they are the ungated control the stop's blocks are priced against.
+STRATEGY_STOP_KEY = "STRATEGY_STOP_TIMES"
+_stop_times_cache, _stop_times_ts = {}, 0.0
+
+
+def _stop_time_tags():
+    """Books a stop time may be set on: every book except the farms, in UI order."""
+    tags = [m["tag"] for _n, m in sorted(ACCOUNT_META.items(), key=lambda kv: _ui_account_rank(kv[0]))]
+    return [t for t in tags if t not in _FARM_TAGS]
+
+
+def _strategy_stop_times():
+    """{strategy: {"stop": "HH:MM", "accounts": [tags], "set_at", "basis"}}. Cached 30s."""
+    global _stop_times_cache, _stop_times_ts
+    import time as _rt
+    now = _rt.time()
+    if now - _stop_times_ts > 30:
+        try:
+            _raw = _load_setting(STRATEGY_STOP_KEY)
+            _stop_times_cache = json.loads(_raw) if _raw else {}
+        except Exception:
+            _stop_times_cache = {}
+        _stop_times_ts = now
+    return _stop_times_cache
+
+
+def _save_strategy_stop_times(m):
+    global _stop_times_cache, _stop_times_ts
+    import time as _rt
+    _save_setting(STRATEGY_STOP_KEY, json.dumps(m, sort_keys=True))
+    _stop_times_cache, _stop_times_ts = m, _rt.time()
+
+
+def _strategy_stop_for(strategy, account_tag):
+    """The "HH:MM" stop for this strategy on this book, or None."""
+    e = _strategy_stop_times().get((strategy or "").strip().upper())
+    if not e or account_tag not in (e.get("accounts") or []) or account_tag in _FARM_TAGS:
+        return None
+    return e.get("stop") or None
+
+
+def _strategy_start_for(strategy, account_tag):
+    """The "HH:MM" start (no entries before it) for this strategy on this book, or
+    None. Older entries were saved without one."""
+    if not _strategy_stop_for(strategy, account_tag):
+        return None
+    e = _strategy_stop_times().get((strategy or "").strip().upper()) or {}
+    return e.get("start") or None
+
+
+def _strategy_stop_mode(strategy, account_tag):
+    """"override" when this strategy's stop time on this book REPLACES the book's
+    trading windows, "within" when it only shortens them, None when there is none."""
+    if not _strategy_stop_for(strategy, account_tag):
+        return None
+    e = _strategy_stop_times().get((strategy or "").strip().upper()) or {}
+    return "override" if e.get("mode") == "override" else "within"
+
+
+def _book_open_hhmm(account_tag):
+    """Where an override stop time's window starts: the book's earliest window
+    start, or the 09:30 open for an all-day book."""
+    starts = [s for s, _e in (_account_hours_windows(account_tag) or []) if s]
+    return min(starts) if starts else "09:30"
+
+
+def _book_has_hours_override(account_tag):
+    """True if any strategy overrides this book's windows. The engine's coarse
+    "is any book open" short-circuit must stand down for it, like an exemption."""
+    if account_tag in _FARM_TAGS:
+        return False
+    return any(account_tag in (v.get("accounts") or []) and v.get("mode") == "override"
+               for v in _strategy_stop_times().values())
+
+
+def _strategy_stop_block(strategy, account_tag, now_et=None):
+    """(blocked, reason). Blocks a new entry before the strategy's start time or at
+    or after its stop time on this book. Fails open on a malformed setting or an
+    unreadable clock."""
+    import datetime as _dt
+    stop = _strategy_stop_for(strategy, account_tag)
+    if not stop:
+        return False, ""
+    start = _strategy_start_for(strategy, account_tag)
+    try:
+        now_et = now_et or _dt.datetime.now(ZoneInfo("America/New_York"))
+        hhmm = now_et.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
+    except Exception:
+        return False, ""
+    if start and hhmm < start:
+        return True, f"strategy window: no entries before {start} ET"
+    if hhmm >= stop:
+        return True, f"strategy stop time: no new entries from {stop} ET"
+    return False, ""
 
 
 def _open_location_gate_block(strategy, ticker, date, side, account_tag):

@@ -121,9 +121,9 @@ def test_both_entry_gates_pass_the_ticker_through():
     assert "ticker=tk" in inspect.getsource(a._engine_pilot_tick) \
         if hasattr(a, "_engine_pilot_tick") else True
     wh = inspect.getsource(w)
-    assert "_account_hours_ok(_alpaca_broker_name(bt[0]), ticker=ticker)" in wh
+    assert "_account_hours_ok(_alpaca_broker_name(bt[0]), ticker=ticker," in wh
     app_src = inspect.getsource(a)
-    assert "_account_hours_ok(broker_tag, now_et=now_et, ticker=tk)" in app_src
+    assert "_account_hours_ok(broker_tag, now_et=now_et, ticker=tk," in app_src
 
 
 def test_the_coarse_tick_filter_cannot_strand_an_exempt_ticker():

@@ -118,11 +118,16 @@
           <div class="band-q" id="q1">How did this ticker do?</div>
           <div class="band-sub" id="sub1">Every closed round-trip on the symbol, across the selected books.</div>
         </div>
-        <button class="btn" id="stopBtn" onclick="toggleStopAt()" hidden
-                title="Redraw the P&amp;L chart as if no new entries were taken after this time (ET)">&#128336; Stop at —</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" id="stopBtn" onclick="toggleStopAt()" hidden
+                  title="Redraw the P&amp;L chart as if no new entries were taken after this time (ET)">&#128336; Stop at —</button>
+          <button class="btn" id="stopApplyBtn" onclick="openStopApply()" hidden style="border-color:#7a6a3a;color:#F2C76B"
+                  title="Stop new entries on this strategy from this time on the non-farm books">&#9881; Apply to Signal Router</button>
+        </div>
       </div>
       <div class="tiles" id="tiles"></div>
       <div id="stopSummary" style="font-size:0.78rem;color:#cfd3e0;margin-top:10px;line-height:1.5" hidden></div>
+      <div id="stopRouter" style="font-size:0.78rem;color:#cfd3e0;margin-top:8px;line-height:1.5" hidden></div>
       <div style="height:250px;position:relative;margin-top:14px"><canvas id="curve"></canvas></div>
     </div>
 
@@ -681,7 +686,7 @@
         .forEach(id => { const n = document.getElementById(id); if (n) n.innerHTML = ''; });
       if (_chart) { _chart.destroy(); _chart = null; }
       if (_stopChart) { _stopChart.destroy(); _stopChart = null; }
-      _stopAt = null; _stopSuggest = null; _syncStopUI();
+      _stopAt = null; _stopSuggest = null; _syncStopUI(); _syncStopRouter();
       return;
     }
 
@@ -702,6 +707,7 @@
     _renderStopCurve(d.trades || []);
     _renderCurve(d.curve || []);
     _syncStopUI();
+    _syncStopRouter();
     _renderGroup('byStrategy', d.by_strategy, true);
     _renderGroup('byBook', d.by_book);
     _renderGroup('bySide', d.by_side);
@@ -1174,7 +1180,217 @@
     _syncStopUI();
   }
 
+  // ── Apply a stop time to the Signal Router ────────────────────────────────
+  // Writes a per-strategy "no new entries from HH:MM ET" onto the non-farm books
+  // (/api/strategy/stop_time). The time is the one on the clock button: the
+  // overlay's if it is on, else the suggestion. A confirm step lists the books,
+  // since one of them is real money.
+  let _stopEntry = null, _stopBooks = [], _stopApplySeq = 0, _stopApplyOpen = false, _stopApplyMsg = '';
+  let _stopMode = 'within';     // 'within' = only shortens book hours; 'override' = replaces them
+  // The strategy's own window, editable in the confirm step: no entries before
+  // _winStart ("HH:MM", default 09:35) or from _winEnd (minutes, default the suggestion).
+  let _winStart = '09:35', _winEnd = null;
+
+  function _hhmm(min) { return _pad(Math.floor(min / 60)) + ':' + _pad(min % 60); }
+  function _toMin(hm) { const [h, m] = String(hm || '').split(':').map(Number); return h * 60 + m; }
+
+  // What a book's entry hours become for this strategy under the window start..stop.
+  function _effectiveHours(book, mode, start, stop) {
+    const end = _hhmm(stop), wins = book.windows || [];
+    if (mode === 'override' || !wins.length) return start + '–' + end;
+    const out = wins.map(w => w.split('-')).filter(([a, b]) => a < end && b > start)
+                    .map(([a, b]) => (a > start ? a : start) + '–' + (b < end ? b : end));
+    return out.length ? out.join(', ') : 'no entries (none of its windows overlap ' + start + '–' + end + ')';
+  }
+
+  function setStopMode(m) { _stopMode = m; _renderStopRouter(); }
+
+  function _applyTime() { return _stopAt != null ? _stopAt : _stopSuggest; }
+
+  // Older/newer-half lift of trading only start..stop (minutes), the same split as
+  // the stop chart: what the trades outside the window made, sign flipped.
+  function _halfLifts(trades, stop, start = 9 * 60 + 30) {
+    const rows = [];
+    for (const t of trades) {
+      const e = _etOf(t.entry_time);
+      if (e && e.min >= 9 * 60 + 30 && e.min < 16 * 60) rows.push({ date: e.date, min: e.min, pnl: Number(t.pnl) || 0 });
+    }
+    const dates = rows.map(r => r.date).sort();
+    const split = dates.length ? dates[Math.floor(dates.length / 2)] : null;
+    const lift = rs => -rs.reduce((s, r) => s + (r.min >= stop || r.min < start ? r.pnl : 0), 0);
+    return { all: lift(rows), n: rows.length,
+             older: lift(rows.filter(r => r.date < split)), newer: lift(rows.filter(r => r.date >= split)) };
+  }
+
+  async function _syncStopRouter() {
+    const strat = document.getElementById('stratSel').value;
+    const seq = ++_stopApplySeq;
+    _stopEntry = null; _stopApplyOpen = false; _stopApplyMsg = '';
+    _renderStopRouter();
+    if (!strat) return;
+    let d;
+    try { d = await (await fetch('/api/strategy/stop_time?strategy=' + encodeURIComponent(strat))).json(); }
+    catch (_) { return; }
+    if (seq !== _stopApplySeq || d.error) return;
+    _stopEntry = d.entry || null; _stopBooks = d.books || [];
+    _stopMode = (_stopEntry && _stopEntry.mode) || 'within';
+    _renderStopRouter();
+  }
+
+  function _renderStopRouter() {
+    const btn = document.getElementById('stopApplyBtn'), box = document.getElementById('stopRouter');
+    if (!btn || !box) return;
+    const strat = document.getElementById('stratSel').value, t = _applyTime();
+    btn.hidden = !strat || t == null || _stopApplyOpen;
+    if (t != null) btn.innerHTML = '&#9881; Apply ' + _hm(t) + ' stop to Signal Router';
+    const lbl = tag => (_stopBooks.find(b => b.tag === tag) || {}).label || tag;
+    let html = '';
+    if (strat && _stopEntry) {
+      html += `<div>&#9881; <strong>Signal Router:</strong> ${_esc(strat)} takes new entries only
+        <strong>${_esc(_stopEntry.start || 'from the book open')}–${_esc(_stopEntry.stop)} ET</strong>${_stopEntry.mode === 'override'
+          ? ' <span style="color:#F2C76B">(overrides book hours, gaps included)</span>' : ' <span style="color:#888">(within book hours)</span>'}
+        on ${_stopEntry.accounts.map(lbl).map(_esc).join(', ')}
+        <span style="color:#666">· set ${_esc((_stopEntry.set_at || '').slice(0, 10))}</span>
+        <button class="btn" style="padding:2px 8px;font-size:0.72rem;margin-left:6px" onclick="clearStopTime()">Remove</button></div>`;
+    }
+    if (strat && _stopApplyOpen && t != null) {
+      const pre = _stopEntry ? new Set(_stopEntry.accounts) : null;
+      // A redraw (switching the mode) keeps whatever was already ticked.
+      const shown = [...document.querySelectorAll('.stopBook')];
+      const ticked = shown.length ? new Set(shown.filter(x => x.checked).map(x => x.value)) : null;
+      const rows = _stopBooks.map(b => {
+        const on = b.configured && (ticked ? ticked.has(b.tag) : pre ? pre.has(b.tag) : true);
+        const tagNote = b.live ? ' <span style="color:#e08a8a;font-weight:600">REAL MONEY</span>'
+          : b.tag === 'alpaca7' ? ' <span style="color:#666">(its gates otherwise mirror the farms)</span>'
+          : !b.configured ? ' <span style="color:#666">(not configured)</span>' : '';
+        const now = (b.windows || []).length ? b.windows.join(', ').replace(/-/g, '–') : 'all day';
+        return `<label style="display:block;margin:2px 0;cursor:pointer"><input type="checkbox" class="stopBook" value="${_esc(b.tag)}"
+          ${on ? 'checked' : ''} ${b.configured ? '' : 'disabled'}> ${_esc(b.label)}${tagNote}
+          <span style="color:#666;margin-left:6px">${_esc(now)} &rarr;</span>
+          <span class="effHours" data-tag="${_esc(b.tag)}" style="color:#F2C76B"></span></label>`;
+      }).join('');
+      const bookLbl = (document.querySelector('.btn.acct.on') || {}).textContent || 'All books';
+      html += `<div style="margin-top:8px;padding:10px 12px;border:1px solid #7a6a3a;border-radius:8px;background:rgba(242,199,107,0.05)">
+        <div>Limit new <strong>${_esc(strat)}</strong> entries to this window on the books ticked below.
+          It never touches exits. The farms keep trading it all day, so the blocked entries can still be priced against them.</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <span>From</span>
+          <input class="f" type="time" id="winStartIn" min="09:30" max="15:55" step="300" value="${_winStart}" oninput="onStopWindow()" style="width:110px">
+          <span>to</span>
+          <input class="f" type="time" id="winEndIn" min="09:35" max="15:59" step="300" value="${_hhmm(_winEnd)}" oninput="onStopWindow()" style="width:110px">
+          <span style="color:#888">ET · no entries before the first time or from the second</span>
+          <span id="winErr" style="color:#e08a8a"></span>
+        </div>
+        <div id="winHalves" style="color:#9aa0b5;margin-top:6px" data-book="${_esc(bookLbl.trim())}"></div>
+        <div style="margin:8px 0 4px">
+          <label style="display:block;cursor:pointer"><input type="radio" name="stopMode" ${_stopMode === 'within' ? 'checked' : ''}
+            onchange="setStopMode('within')"> <strong>Within book hours</strong> <span style="color:#888">— only cuts each book's
+            current windows short; closed periods stay closed</span></label>
+          <label style="display:block;cursor:pointer"><input type="radio" name="stopMode" ${_stopMode === 'override' ? 'checked' : ''}
+            onchange="setStopMode('override')"> <strong>Override book hours</strong> <span style="color:#888">— this strategy trades
+            the whole window above, gaps included; the book's other strategies keep its hours</span></label>
+        </div>
+        ${_stopMode === 'override' ? `<div style="color:#F2C76B;font-size:0.74rem">Hours a book has kept closed (like 10:00–12:00 on
+          Refined) have no trades from that book behind them; the case for them comes from the farm's trades, if that's the book
+          picked above.</div>` : ''}
+        <div style="margin:8px 0;color:#888;font-size:0.72rem">Each book: current hours &rarr; this strategy's hours</div>
+        <div style="margin:0 0 8px">${rows}</div>
+        <div style="color:#666;font-size:0.72rem;margin-bottom:8px">Crew Paper and Crew Live should match, or the live-vs-paper
+          comparison ends up measuring this setting.</div>
+        <button class="btn on" onclick="confirmStopApply()">Confirm</button>
+        <button class="btn" onclick="cancelStopApply()">Cancel</button></div>`;
+    }
+    if (_stopApplyMsg) html += `<div style="margin-top:6px">${_stopApplyMsg}</div>`;
+    box.innerHTML = html;
+    box.hidden = !html;
+    if (strat && _stopApplyOpen && t != null) _refreshStopWindow();
+  }
+
+  // Valid window from the inputs, or an error string.
+  function _readStopWindow() {
+    const a = (document.getElementById('winStartIn') || {}).value || _winStart;
+    const b = (document.getElementById('winEndIn') || {}).value || (_winEnd != null ? _hhmm(_winEnd) : '');
+    if (!/^\d\d:\d\d$/.test(a) || !/^\d\d:\d\d$/.test(b)) return { err: 'Enter both times.' };
+    if (a < '09:30') return { err: 'Start can be no earlier than 9:30.' };
+    if (b >= '16:00') return { err: 'Stop must be before 16:00.' };
+    if (a >= b) return { err: 'Start must be before the stop.' };
+    return { start: a, stop: _toMin(b) };
+  }
+
+  function onStopWindow() {
+    const w = _readStopWindow();
+    if (!w.err) { _winStart = w.start; _winEnd = w.stop; }
+    _refreshStopWindow(w.err);
+  }
+
+  // Redraws only what the window drives (each book's hours and the halves line):
+  // a full redraw while typing into a time field would throw the cursor out of it.
+  function _refreshStopWindow(err) {
+    const errEl = document.getElementById('winErr');
+    if (errEl) errEl.textContent = err || '';
+    document.querySelectorAll('.effHours').forEach(el => {
+      const b = _stopBooks.find(x => x.tag === el.dataset.tag);
+      el.textContent = b ? _effectiveHours(b, _stopMode, _winStart, _winEnd) : '';
+    });
+    const hv = document.getElementById('winHalves');
+    if (!hv) return;
+    const h = _halfLifts((_data && _data.trades) || [], _winEnd, _toMin(_winStart));
+    const both = h.older > 0 && h.newer > 0;
+    hv.innerHTML = `Trading only ${_winStart}–${_hhmm(_winEnd)} on ${_esc(hv.dataset.book)}, last ${_days} days (${h.n} trades):
+      <span class="${h.all > 0 ? 'pos' : 'neg'}">${_money(h.all)}</span> vs trading every time · older half
+      <span class="${h.older > 0 ? 'pos' : 'neg'}">${_money(h.older)}</span> · newer half
+      <span class="${h.newer > 0 ? 'pos' : 'neg'}">${_money(h.newer)}</span>.
+      ${both ? '' : '<strong style="color:#e08a8a">It did not help in both halves, so it may be noise.</strong>'}`;
+  }
+
+  function openStopApply() {
+    _stopApplyOpen = true; _stopApplyMsg = '';
+    _winStart = (_stopEntry && _stopEntry.start) || '09:35';
+    _winEnd = _applyTime();
+    _renderStopRouter();
+  }
+  function cancelStopApply() { _stopApplyOpen = false; _renderStopRouter(); }
+
+  async function _postStopTime(body) {
+    let r, d;
+    try {
+      r = await fetch('/api/strategy/stop_time', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                   body: JSON.stringify(body) });
+      d = await r.json();
+    } catch (e) { d = { error: String(e) }; r = { ok: false }; }
+    if (!r.ok || d.error) {
+      _stopApplyMsg = `<span style="color:#e08a8a">${_esc(d.error || 'Failed')} Nothing was changed.</span>`;
+      return null;
+    }
+    return d;
+  }
+
+  async function confirmStopApply() {
+    const strat = document.getElementById('stratSel').value;
+    const accounts = [...document.querySelectorAll('.stopBook:checked')].map(x => x.value);
+    const w = _readStopWindow();
+    if (!strat) return;
+    if (w.err) { _refreshStopWindow(w.err); return; }
+    if (!accounts.length) { _refreshStopWindow('Tick at least one book.'); return; }
+    const h = _halfLifts((_data && _data.trades) || [], w.stop, _toMin(w.start));
+    const d = await _postStopTime({ strategy: strat, start: w.start, stop: _hhmm(w.stop), mode: _stopMode, accounts,
+      basis: { book: ((document.querySelector('.btn.acct.on') || {}).textContent || 'All books').trim(), days: _days,
+               trades: h.n, lift: Math.round(h.all * 100) / 100, both_halves: h.older > 0 && h.newer > 0,
+               from: (_data && _data.from_date) || null, to: (_data && _data.to_date) || null } });
+    if (d) { _stopEntry = d.entry; _stopApplyOpen = false; _stopApplyMsg = '<span style="color:#7FE098">&#10003; Applied. New entries are blocked from the next signal on.</span>'; }
+    _renderStopRouter();
+  }
+
+  async function clearStopTime() {
+    const strat = document.getElementById('stratSel').value;
+    if (!strat) return;
+    const d = await _postStopTime({ strategy: strat, clear: true });
+    if (d) { _stopEntry = null; _stopApplyMsg = '<span style="color:#7FE098">&#10003; Removed. ' + _esc(strat) + ' trades its books\' full hours again.</span>'; }
+    _renderStopRouter();
+  }
+
   function _syncStopUI() {
+    _renderStopRouter();
     const btn = document.getElementById('stopBtn'), out = document.getElementById('stopSummary');
     if (!btn || !out) return;
     btn.hidden = _stopSuggest == null && _stopAt == null;
