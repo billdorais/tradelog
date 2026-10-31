@@ -1821,6 +1821,9 @@
     catch (e) { el.innerHTML = '<span style="color:#e08a8a">Could not load stop times.</span>'; return; }
     const esc = x => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const stops = d.stops || [];
+    _STRAT_WINDOWS = Object.fromEntries(stops.map(x => [String(x.strategy).toUpperCase(), x]));
+    _STRAT_WINDOW_LABELS = d.labels || {};
+    if (typeof renderAll === 'function' && rules.length) renderAll();
     if (!stops.length) { el.innerHTML = 'None set. Every strategy trades its books\' full hours.'; return; }
     const lbl = t => (d.labels || {})[t] || t;
     el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem">'
@@ -1829,7 +1832,8 @@
       + '<th style="padding:4px 8px">Set</th><th style="padding:4px 8px">Based on</th><th></th></tr></thead><tbody>'
       + stops.map(x => {
           const b = x.basis || {};
-          const basis = b.trades ? `${esc(b.book)}, ${esc(b.days)}d, ${esc(b.trades)} trades${b.both_halves === false ? ' · <span style="color:#e08a8a">one half only</span>' : ''}` : '—';
+          const basis = (b.trades ? `${esc(b.book)}, ${esc(b.days)}d, ${esc(b.trades)} trades${b.both_halves === false ? ' · <span style="color:#e08a8a">one half only</span>' : ''}` : '—')
+            + (x.source === 'crew' ? ' · <span style="color:#c4b5fd">set by the crew wire</span>' : '');
           return `<tr style="border-top:1px solid #1f2230">
             <td style="padding:4px 8px;color:#cfd3e0">${esc(x.strategy)}</td>
             <td style="padding:4px 8px;color:#F2C76B;font-weight:600">${x.start ? esc(x.start) + '–' : 'until '}${esc(x.stop)}</td>
@@ -2542,6 +2546,40 @@
     return null;
   }
 
+  let _STRAT_WINDOWS = {};        // STRATEGY -> {start, stop, mode, accounts}, from /api/strategy/stop_times
+  let _STRAT_WINDOW_LABELS = {};  // tag -> label
+
+  // The strategy window that applies to this rule, as {entry, books}, or null.
+  // A rule with broker nodes only counts the books it routes to; a rule without
+  // one (its targets come from the Refined refresh and the farm fan-out) counts
+  // every book the window is on.
+  function _ruleStratWindow(rule) {
+    let nodes = rule.nodes;
+    if (typeof nodes === 'string') { try { nodes = JSON.parse(nodes); } catch (e) { return null; } }
+    nodes = nodes || [];
+    const sn = nodes.find(n => n.type === 'strategy');
+    const e = _STRAT_WINDOWS[String((sn && sn.value) || rule.name || '').trim().toUpperCase()];
+    if (!e) return null;
+    const tags = nodes.filter(n => n.type === 'broker').map(n => BROKER_TAG_OF(n.value)).filter(Boolean);
+    const books = tags.length ? (e.accounts || []).filter(t => tags.includes(t)) : (e.accounts || []);
+    return books.length ? { entry: e, books } : null;
+  }
+
+  function _stratWindowNote(rule) {
+    const w = _ruleStratWindow(rule);
+    if (!w) return '';
+    const e = w.entry, names = w.books.map(t => _STRAT_WINDOW_LABELS[t] || acctLabel(t));
+    const win = (e.start ? e.start + '–' : 'until ') + e.stop;
+    const mode = e.mode === 'override' ? 'overrides book hours' : 'within book hours';
+    const tip = `Strategy window ${win} ET (${mode}) on ${names.join(', ')}. `
+      + (e.mode === 'override' ? 'This strategy trades the whole window on those books, gaps included.'
+                               : 'Entries also have to fall inside this node and the book\'s own hours.')
+      + ' Set from the Ticker Breakdown; remove it in Strategy Stop Times below.';
+    return `<div style="font-size:0.6rem;color:#F2C76B;margin-top:2px" title="${escHtml(tip)}">
+              &#9201; ${escHtml(win)} · ${names.length === 1 ? escHtml(names[0]) : names.length + ' books'}${e.mode === 'override' ? ' · override' : ''}
+            </div>`;
+  }
+
   function renderNode(ruleId, node, idx) {
     let cls     = nodeClass(node);
     const label = nodeLabel(node);
@@ -2560,6 +2598,16 @@
                         ↪ book exempt · ${escHtml(acctLabel(_xt))}
                       </div>`;
       }
+    }
+
+    // Strategy window: on the hours node, or on the strategy node when there is none.
+    let windowNote = '';
+    if (node.type === 'trading_hours' || node.type === 'strategy') {
+      const _r = rules.find(r => r.id === ruleId);
+      let _ns = _r ? _r.nodes : [];
+      if (typeof _ns === 'string') { try { _ns = JSON.parse(_ns); } catch (e) { _ns = []; } }
+      const _hasHours = (_ns || []).some(n => n.type === 'trading_hours');
+      if (_r && (node.type === 'trading_hours' || !_hasHours)) windowNote = _stratWindowNote(_r);
     }
 
     let pctBadge = '';
@@ -2592,6 +2640,7 @@
         <div class="node-label">${label}</div>
         <div class="node-value">${escHtml(value)}</div>
         ${exemptNote}
+        ${windowNote}
         ${pctBadge}
         ${qtyBadge}
         <div class="node-delete" onclick="deleteNode(event, ${ruleId}, ${idx})">&#10005;</div>

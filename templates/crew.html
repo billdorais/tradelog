@@ -1293,6 +1293,8 @@
         snapshot:  ['refined',   '#F2C07A'],
         crew:      ['crew',      '#70a8f5'],
       };
+      const pw = d.pick_windows || {};
+      _wireWindowsShown = !pw.error;
       const rows = picks.map((p, i) => {
         const kairos = p.entry === 'kairos';
         const bookColor = kairos ? '#F2C07A' : '#c4b5fd';
@@ -1305,7 +1307,7 @@
           + `<td style="color:#ccc;padding:1px 12px 1px 0">${p.strategy}</td>`
           + `<td style="color:${sideColor};padding:1px 12px 1px 0">${p.side}</td>`
           + `<td style="color:${bookColor};padding:1px 12px 1px 0">[${bookLabel}]</td>`
-          + ogCell + `</tr>`;
+          + ogCell + `<td style="padding:1px 0">${_windowCell(p.strategy, (pw.windows || {})[p.strategy])}</td></tr>`;
       }).join('');
       const kc = picks.filter(p => p.entry === 'kairos').length;
       const tc = picks.length - kc;
@@ -1356,6 +1358,7 @@
         + metaHtml
         + warnHtml
         + `<div style="overflow-x:auto;margin:6px 0"><table style="border-collapse:collapse;font-size:0.75rem">${rows}</table></div>`
+        + _windowNote(pw)
         + cmpHtml
         + `<div style="margin-top:8px"><button onclick="confirmWire(this, '${source}')" style="background:rgba(127,224,152,0.12);border:1px solid #2a4a35;color:#7FE098;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">✓ Confirm &amp; wire ${picks.length}</button>`
         + ` <button onclick="cancelWire()" style="background:transparent;border:1px solid #333;color:#888;border-radius:6px;padding:6px 14px;font-size:0.78rem;cursor:pointer;font-family:inherit">Cancel</button></div>`;
@@ -1364,6 +1367,56 @@
     } finally {
       btn.disabled = false; btn.textContent = _txt;
     }
+  }
+
+  // ── Pick windows: the Tickers page's suggested stop, per pick, on its own farm ──
+  let _wireWindowsShown = false;
+  // esc() above leaves quotes alone; these values also land in attributes.
+  const _escA = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                                    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const _BOOK_LBL = { alpaca4: 'Crew Paper', alpaca6: 'Crew Live' };
+
+  function _windowCell(slug, w) {
+    if (!w) return '<span style="color:#555">—</span>';
+    const ex = w.existing, s = w.suggest || {};
+    if (w.locked) {
+      return `<span style="color:#9aa0b5" title="Set by you on the Tickers page — the crew never overwrites it">`
+        + `&#9201; ${_escA(ex.start || '')}–${_escA(ex.stop)} (yours, kept)</span>`;
+    }
+    if (!s.stop) {
+      const why = w.error || s.reason || 'no suggestion';
+      const lost = /not trading/.test(why);     // its farm lost from the first step on
+      return `<span style="color:${lost ? '#e08a8a' : '#666'}"${lost ? ` title="${_escA(w.farm)} lost money at every stop time over the last ${w.days} days — no window helps"` : ''}>${_escA(lost ? 'farm lost at every stop time' : why)}${ex && ex.by_crew ? ' · its crew window will be removed' : ''}</span>`;
+    }
+    const money = v => (v < 0 ? '-$' : '+$') + Math.abs(v).toFixed(2);
+    const halves = s.both_halves
+      ? '<span style="color:#7FE098">both halves</span>'
+      : '<span style="color:#e08a8a">one half only</span>';
+    const tip = `${w.farm}, last ${w.days} days, ${s.n} trades: stopping at ${s.stop} adds ${money(s.lift)} `
+      + `(older half ${money(s.older.lift)} over ${s.older.n}, newer half ${money(s.newer.lift)} over ${s.newer.n}; `
+      + `split ${s.split}). ${s.skipped} trades entered after the stop.`;
+    return `<label style="cursor:pointer;color:#F2C76B" title="${_escA(tip)}">`
+      + `<input type="checkbox" class="crewWin" data-slug="${_escA(slug)}" data-start="${_escA(w.start)}" data-stop="${_escA(s.stop)}"${w.default ? ' checked' : ''}> `
+      + `&#9201; ${_escA(w.start)}–${_escA(s.stop)} <span style="color:#888">${money(s.lift)} · ${s.n}t ·</span> ${halves}`
+      + (ex && ex.by_crew && (ex.stop !== s.stop || ex.start !== w.start) ? ` <span style="color:#666">(now ${_escA(ex.start)}–${_escA(ex.stop)})</span>` : '')
+      + `</label>`;
+  }
+
+  function _windowNote(pw) {
+    if (pw.error) return `<div style="font-size:0.7rem;color:#e08a8a">Suggested windows unavailable: ${_escA(pw.error)}. The wire will leave windows alone.</div>`;
+    const books = (pw.books || ['alpaca4']).map(t => _BOOK_LBL[t] || t).join(' and ');
+    return `<div style="font-size:0.7rem;color:#777;margin:2px 0 6px;line-height:1.5">&#9201; Window = the Tickers page's suggested stop time, worked out on each pick's own farm `
+      + `(TV Farm for [TV], Kairos Farm for [Kairos]) over the last ${pw.days} days. Ticked ones are set as strategy windows on `
+      + `<strong style="color:#ccc">${books}</strong> when you wire: no new entries before the start or from the stop, inside the book's own hours. `
+      + `Only stops that helped in both halves start ticked. A window you set yourself is never changed; crew windows on unticked or dropped picks are removed.</div>`;
+  }
+
+  function _chosenWindows() {
+    const out = {};
+    document.querySelectorAll('.crewWin:checked').forEach(el => {
+      out[el.dataset.slug] = { start: el.dataset.start, stop: el.dataset.stop };
+    });
+    return out;
   }
 
   function cancelWire() {
@@ -1467,8 +1520,8 @@
            + '&#9888; ' + conflicts.length + ' pick' + (conflicts.length === 1 ? '' : 's')
            + ' tagged against ' + (conflicts.length === 1 ? 'its' : 'their') + ' own head-to-head</div>'
            + '<div style="color:#8a7c52;font-size:0.66rem;line-height:1.5;margin-bottom:4px">'
-           + 'The other entry mechanism made money on the same name over the same window, '
-           + 'with at least 3 trades on both sides. These were wired as tagged &mdash; '
+           + 'On the farms (curated hours, last 45 days) the other entry mechanism made money on the '
+           + 'same name while the tagged one lost, with at least 3 trades on both. These were wired as tagged &mdash; '
            + 'change the tag in the report and re-wire if that is not what you intended.</div>'
            + rows + '</div>';
     }
@@ -1575,11 +1628,13 @@
     const out = document.getElementById('wireResult');
     if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Wiring…'; }
     btn.disabled = true; const _txt = btn.textContent; btn.textContent = 'Wiring…';
+    const body = source === 'report' ? {} : { source };
+    if (_wireWindowsShown) body.windows = _chosenWindows();   // read before the preview is replaced
     out.style.color = '#888'; out.textContent = 'Wiring crew picks to the router…';
     try {
       const r = await fetch('/api/crew/wire_to_router', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(source === 'report' ? {} : { source })
+        body: JSON.stringify(body)
       });
       const d = await r.json();
       if (!r.ok || d.error) {
@@ -1597,6 +1652,7 @@
           + (all.length ? `<br><span style="color:#666">kept: ${all.join(', ')}</span>` : '')
           + (del.length ? `<br><span style="color:#c98b8b">removed (dropped from this report): ${del.join(', ')}</span>` : '')
           + (defd.length ? `<br><span style="color:#F2C76B">kept for now (open position — will remove next wire): ${defd.join(', ')}</span>` : '')
+          + _windowsResult(d.windows)
           + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`
           + _wireWarnings(d);
       }
@@ -1605,6 +1661,17 @@
     } finally {
       btn.disabled = false; btn.textContent = _txt;
     }
+  }
+
+  function _windowsResult(w) {
+    if (!w) return '';
+    if (w.error) return `<br><span style="color:#e08a8a">&#9201; ${_escA(w.error)}</span>`;
+    const parts = [];
+    if ((w.set || []).length) parts.push(`set ${w.set.map(_escA).join(', ')}`);
+    if ((w.kept_yours || []).length) parts.push(`<span style="color:#9aa0b5">kept yours: ${w.kept_yours.map(_escA).join(', ')}</span>`);
+    if ((w.removed || []).length) parts.push(`<span style="color:#c98b8b">removed: ${w.removed.map(_escA).join(', ')}</span>`);
+    if ((w.refused || []).length) parts.push(`<span style="color:#e08a8a">refused: ${w.refused.map(_escA).join('; ')}</span>`);
+    return parts.length ? `<br>&#9201; Windows: ${parts.join(' · ')}` : '<br><span style="color:#666">&#9201; Windows: no change</span>';
   }
 
   // ── Past reports ──────────────────────────────────────────────────────────

@@ -183,3 +183,37 @@ def test_the_hours_block_reaches_the_prompt():
     src = open("routes/crew.py", encoding="utf-8").read()
     assert "hours_split_block = _fmt_hours_split()" in src
     assert "{hours_split_block}" in src
+
+
+# ── the real entry-source map (every test above stubs it) ────────────────────
+
+def test_entry_source_map_reads_the_crew_paper_rules(monkeypatch, tmp_path):
+    """It used to call an un-imported `_json`; the NameError was swallowed per row,
+    so the map was always empty and every name in the hours split was measured on
+    the Kairos Farm — TV-wired picks included."""
+    import json
+    import sqlite3
+    db = tmp_path / "r.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE routing_rules (name TEXT, enabled INT, nodes TEXT)")
+    for name, nodes in (
+        ("T", [{"type": "strategy", "value": "TTT_CAM_BREAKOUT_R3S3"},
+               {"type": "entry_source", "value": "tv"},
+               {"type": "broker", "value": "alpaca-paper-4"}]),
+        ("K", [{"type": "strategy", "value": "KKK_CAM_BREAKOUT_R3S3"},
+               {"type": "entry_source", "value": "kairos"},
+               {"type": "broker", "value": "alpaca-paper-4"}]),
+        ("other book", [{"type": "strategy", "value": "OOO_CAM_BREAKOUT_R3S3"},
+                        {"type": "entry_source", "value": "kairos"},
+                        {"type": "broker", "value": "alpaca-paper-7"}]),
+    ):
+        c.execute("INSERT INTO routing_rules VALUES (?,1,?)", (name, json.dumps(nodes)))
+    c.commit(); c.close()
+
+    def _conn():
+        k = sqlite3.connect(db); k.row_factory = sqlite3.Row
+        return k
+    monkeypatch.setattr(a, "get_db", _conn)
+    monkeypatch.setattr(a, "DATABASE_URL", None)
+    assert C._entry_source_by_strategy(a) == {"TTT_CAM_BREAKOUT_R3S3": "tv",
+                                              "KKK_CAM_BREAKOUT_R3S3": "kairos"}

@@ -3,8 +3,8 @@
 A pick's [TV]/[Kairos] tag decides which mechanism enters it, and the report argues
 each tag in prose. Prose can contradict the record — one card routed six breakouts
 through the Kairos engine in the same document that measured that engine losing $728
-over 30 days on breakouts. So the tag is checked against TV Refined (acct2) and
-Kairos Refined (acct3), never against the narrative.
+over 30 days on breakouts. So the tag is checked against TV Farm (acct1) and Kairos
+Farm (acct5) — the evidence the crew is told to tag on — never against the narrative.
 
 It warns rather than blocks: a truncated picks block is corruption, but a contrarian
 tag can be a deliberate call.
@@ -58,36 +58,36 @@ B = "GOOG_CAM_BREAKOUT_R4S4_V02_5MIN"
 
 
 def test_a_kairos_tag_is_flagged_when_the_tv_book_is_the_winner():
-    app = _FakeApp({"2": _book(**{A: (120.0, 8)}), "3": _book(**{A: (-90.0, 6)})})
+    app = _FakeApp({"1": _book(**{A: (120.0, 8)}), "5": _book(**{A: (-90.0, 6)})})
     r = crew._entry_tag_conflicts(app, [_pick(A, "kairos")])
     assert len(r["conflicts"]) == 1
     c = r["conflicts"][0]
     assert c["tagged"] == "kairos" and c["better"] == "tv"
     assert c["swing"] == 210.0
-    assert "KAIROS book lost $90.00 over 6t" in c["note"]
+    assert "KAIROS farm lost $90.00 over 6t" in c["note"]
 
 
 def test_a_tv_tag_is_flagged_symmetrically():
     """The check must not be one-directional — the engine wins on some names."""
-    app = _FakeApp({"2": _book(**{A: (-40.0, 5)}), "3": _book(**{A: (75.0, 9)})})
+    app = _FakeApp({"1": _book(**{A: (-40.0, 5)}), "5": _book(**{A: (75.0, 9)})})
     c = crew._entry_tag_conflicts(app, [_pick(A, "tv")])["conflicts"]
     assert len(c) == 1 and c[0]["tagged"] == "tv" and c[0]["better"] == "kairos"
 
 
 def test_a_tag_backed_by_its_own_book_is_not_flagged():
-    app = _FakeApp({"2": _book(**{A: (-40.0, 5)}), "3": _book(**{A: (75.0, 9)})})
+    app = _FakeApp({"1": _book(**{A: (-40.0, 5)}), "5": _book(**{A: (75.0, 9)})})
     assert crew._entry_tag_conflicts(app, [_pick(A, "kairos")])["conflicts"] == []
 
 
 def test_a_name_losing_on_BOTH_books_is_not_an_entry_conflict():
     """That is a bad strategy, not a bad tag. Flagging it would blame the mechanism
     for something switching mechanisms cannot fix."""
-    app = _FakeApp({"2": _book(**{A: (-40.0, 5)}), "3": _book(**{A: (-90.0, 6)})})
+    app = _FakeApp({"1": _book(**{A: (-40.0, 5)}), "5": _book(**{A: (-90.0, 6)})})
     assert crew._entry_tag_conflicts(app, [_pick(A, "kairos")])["conflicts"] == []
 
 
 def test_a_name_winning_on_both_books_is_not_flagged():
-    app = _FakeApp({"2": _book(**{A: (40.0, 5)}), "3": _book(**{A: (90.0, 6)})})
+    app = _FakeApp({"1": _book(**{A: (40.0, 5)}), "5": _book(**{A: (90.0, 6)})})
     assert crew._entry_tag_conflicts(app, [_pick(A, "kairos")])["conflicts"] == []
 
 
@@ -95,35 +95,35 @@ def test_a_name_winning_on_both_books_is_not_flagged():
 def test_a_thin_sample_on_either_side_is_not_evidence(tagged_trades, other_trades):
     """Two trades cannot overrule a tag. The threshold applies to BOTH books, so a
     deep record on one side cannot carry a thin one on the other."""
-    app = _FakeApp({"2": _book(**{A: (120.0, other_trades)}),
-                    "3": _book(**{A: (-90.0, tagged_trades)})})
+    app = _FakeApp({"1": _book(**{A: (120.0, other_trades)}),
+                    "5": _book(**{A: (-90.0, tagged_trades)})})
     assert crew._entry_tag_conflicts(app, [_pick(A, "kairos")])["conflicts"] == []
 
 
 def test_a_strategy_missing_from_a_book_is_skipped_not_assumed():
     """No fills is not the same as losing fills."""
-    app = _FakeApp({"2": _book(**{A: (120.0, 8)}), "3": _book()})
+    app = _FakeApp({"1": _book(**{A: (120.0, 8)}), "5": _book()})
     assert crew._entry_tag_conflicts(app, [_pick(A, "kairos")])["conflicts"] == []
 
 
 def test_an_unreadable_book_reports_itself_instead_of_passing_silently():
     """An Alpaca outage must not read as "no conflicts" — that is a clean bill of
     health nobody earned."""
-    app = _FakeApp({"2": {"fills_unavailable": True}, "3": _book(**{A: (-90.0, 6)})})
+    app = _FakeApp({"1": {"fills_unavailable": True}, "5": _book(**{A: (-90.0, 6)})})
     r = crew._entry_tag_conflicts(app, [_pick(A, "kairos")])
     assert r["conflicts"] == [] and r["unreadable"] == ["tv"]
 
 
 def test_conflicts_are_ordered_by_how_much_the_tag_is_costing():
     app = _FakeApp({
-        "2": _book(**{A: (10.0, 5),  B: (300.0, 12)}),
-        "3": _book(**{A: (-5.0, 5),  B: (-100.0, 10)})})
+        "1": _book(**{A: (10.0, 5),  B: (300.0, 12)}),
+        "5": _book(**{A: (-5.0, 5),  B: (-100.0, 10)})})
     c = crew._entry_tag_conflicts(app, [_pick(A, "kairos"), _pick(B, "kairos")])["conflicts"]
     assert [x["strategy"] for x in c] == [B, A]
 
 
 def test_an_untagged_pick_defaults_to_tv_rather_than_being_skipped():
-    app = _FakeApp({"2": _book(**{A: (-40.0, 5)}), "3": _book(**{A: (75.0, 9)})})
+    app = _FakeApp({"1": _book(**{A: (-40.0, 5)}), "5": _book(**{A: (75.0, 9)})})
     c = crew._entry_tag_conflicts(app, [{"strategy": A, "side": "both", "entry": None}])
     assert len(c["conflicts"]) == 1 and c["conflicts"][0]["tagged"] == "tv"
 
@@ -206,3 +206,18 @@ def test_a_clean_wire_renders_no_warning_block():
     src = _warn_fn()
     assert "let html = '';" in src
     assert "return html;" in src
+
+
+def test_it_judges_on_the_farms_in_curated_hours():
+    """The crew tags on the farms' takeable record, so the check must too — judged on
+    the Refined books it would flag every tag the crew got right."""
+    assert crew._ENTRY_BOOKS == {"tv": "1", "kairos": "5"}
+    farm = lambda all_day, takeable: {
+        "hours_reach": {"active": True},
+        "per_strategy": {A: {"total_pnl": all_day[0], "trades": all_day[1],
+                             "in_hours_pnl": takeable[0], "in_hours_trades": takeable[1]}}}
+    # All day the TV farm wins; inside the hours the Crew books trade, Kairos does.
+    app = _FakeApp({"1": farm((200.0, 20), (-30.0, 6)), "5": farm((-50.0, 20), (40.0, 6))})
+    assert crew._entry_tag_conflicts(app, [_pick(A, "kairos")])["conflicts"] == []
+    c = crew._entry_tag_conflicts(app, [_pick(A, "tv")])["conflicts"]
+    assert len(c) == 1 and c[0]["better"] == "kairos" and "curated hours" in c[0]["note"]

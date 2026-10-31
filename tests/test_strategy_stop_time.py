@@ -183,3 +183,10 @@ def test_bad_starts_are_refused(store):
     for bad in ("09:29", "12:00", "13:00", "9:35", "x"):
         assert post(bad).status_code == 400, bad
     assert post("09:30").status_code == 200
+
+
+def test_the_router_pipelines_show_the_window_on_the_hours_node():
+    rt = open("templates/routing.html", encoding="utf-8").read()
+    assert "function _ruleStratWindow(rule)" in rt and "${windowNote}" in rt
+    i = rt.index("async function loadStopTimes")
+    assert "_STRAT_WINDOWS = " in rt[i:i + 1200] and "renderAll()" in rt[i:i + 1200]

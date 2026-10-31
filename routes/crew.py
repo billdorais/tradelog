@@ -278,6 +278,100 @@ def _fmt_strategies(data: dict, header: str = "TV REFINED (account 2) — STRATE
     return "\n".join(lines)
 
 
+# ── Farm candidates: the primary ranking for the card ──────────────────────────
+# Every strategy runs on BOTH farms all day, so the farms are the deepest and least
+# selection-biased record there is. Forward tests (frozen top-10, four pick dates,
+# Aug-Oct 2026) ranked on a 45-day farm window beat both a 20-day window (what the
+# Refined composite score uses) and a 90-day one, on both farms. So the card ranks
+# on the farms, and each name is tagged with the mechanism whose farm did better on
+# it — the side-by-side below — rather than the book it happened to be wired on.
+
+CREW_FARM_MIN_TRADES = max(1, int(os.environ.get("CREW_FARM_MIN_TRADES", "5")))
+CREW_FARM_CANDIDATES = max(5, int(os.environ.get("CREW_FARM_CANDIDATES", "30")))
+
+
+def _farm_rec(data, slug):
+    """{pnl, trades, per_trade} for one strategy on one farm, in curated hours when
+    the farm reports them (what a Crew book can actually take), else all day."""
+    st = ((data or {}).get("per_strategy") or {}).get(slug) or {}
+    takeable = bool(((data or {}).get("hours_reach") or {}).get("active")) and "in_hours_trades" in st
+    pnl = st.get("in_hours_pnl" if takeable else "total_pnl", 0) or 0
+    n = int(st.get("in_hours_trades" if takeable else "trades", 0) or 0)
+    return {"pnl": round(float(pnl), 2), "trades": n,
+            "per_trade": round(float(pnl) / n, 2) if n else None}
+
+
+def _farm_side_by_side(tv_farm, kairos_farm, min_trades=None):
+    """One row per strategy with at least `min_trades` takeable trades on either farm:
+    both farms' records and the better mechanism (higher per-trade among the farms
+    that clear the floor). Sorted by the better farm's takeable P&L, best first."""
+    min_trades = CREW_FARM_MIN_TRADES if min_trades is None else min_trades
+    names = {k.upper(): k for d in (tv_farm, kairos_farm)
+             for k in ((d or {}).get("per_strategy") or {})}
+    rows = []
+    for up, _orig in names.items():
+        def _get(d):
+            ps = (d or {}).get("per_strategy") or {}
+            key = next((k for k in ps if k.upper() == up), None)
+            return _farm_rec(d, key) if key else {"pnl": 0.0, "trades": 0, "per_trade": None}
+        tv, ka = _get(tv_farm), _get(kairos_farm)
+        ok = {m: r for m, r in (("tv", tv), ("kairos", ka)) if r["trades"] >= min_trades}
+        if not ok:
+            continue
+        better = max(ok, key=lambda m: (ok[m]["per_trade"], ok[m]["trades"]))
+        rows.append({"strategy": up, "tv": tv, "kairos": ka, "better": better,
+                     "best": ok[better], "both_qualify": len(ok) == 2})
+    rows.sort(key=lambda r: (-r["best"]["pnl"], r["strategy"]))
+    return rows
+
+
+def _fmt_farm_candidates(rows, wired=(), limit=None, days=45):
+    """The FARM CANDIDATES block: positive names top-down, plus every name wired
+    to Crew Paper now (so a KEEP decision sees its farm record, good or bad)."""
+    limit = CREW_FARM_CANDIDATES if limit is None else limit
+    wired = {w.upper() for w in (wired or ())}
+    if not rows:
+        return ("=== FARM CANDIDATES — SIDE BY SIDE ===\nNo strategy has "
+                f"{CREW_FARM_MIN_TRADES}+ takeable trades on either farm in the last {days} days. "
+                "Say the farms are too thin to rank on and run a short card.")
+
+    def _r(x):
+        if not x["trades"]:
+            return "no trades"
+        return f"${x['pnl']:+.2f} over {x['trades']}t (${x['per_trade']:+.2f}/t)"
+
+    shown = [r for r in rows if r["best"]["pnl"] > 0][:limit]
+    have = {r["strategy"] for r in shown}
+    extra = [r for r in rows if r["strategy"] in wired and r["strategy"] not in have]
+    lines = [f"=== FARM CANDIDATES — SIDE BY SIDE (last {days}d, CURATED HOURS = what the "
+             f"Crew books can take; {CREW_FARM_MIN_TRADES}+ trades on a farm to count) ===",
+             "THIS IS THE PRIMARY RANKING FOR THE CARD. Each row is one strategy on BOTH farms: "
+             "TV Farm = TradingView entries, Kairos Farm = engine entries, same strategy, same "
+             "days. 'better' is the mechanism with the higher per-trade result among the farms "
+             "with enough trades — tag the pick with it. Ranked by that farm's P&L.", ""]
+    for i, r in enumerate(shown, 1):
+        tag = " [WIRED NOW]" if r["strategy"] in wired else ""
+        lines.append(f"#{i} {r['strategy']}{tag} | TV Farm {_r(r['tv'])} | Kairos Farm "
+                     f"{_r(r['kairos'])} | better: {r['better'].upper()}")
+    if extra:
+        positive = [r["strategy"] for r in rows if r["best"]["pnl"] > 0]
+        lines += ["", f"Wired to Crew Paper now but NOT in the top {len(shown)} above (a KEEP "
+                      "needs a reason beyond its live streak):"]
+        for r in extra:
+            where = (f"positive, rank #{positive.index(r['strategy']) + 1} of {len(positive)}"
+                     if r["strategy"] in positive else "NOT positive on its better farm")
+            lines.append(f"  {r['strategy']} ({where}) | TV Farm {_r(r['tv'])} | Kairos Farm "
+                         f"{_r(r['kairos'])} | better: {r['better'].upper()}")
+    missing = sorted(wired - {r["strategy"] for r in rows})
+    if missing:
+        lines.append(f"Wired now with under {CREW_FARM_MIN_TRADES} takeable trades on either farm: "
+                     + ", ".join(missing))
+    lines += ["", "Honesty note: in forward tests a top-10 picked this way beat the average farm "
+                  "strategy but still lost money in Aug-Oct 2026. Rank on this, but keep the card "
+                  "short and say plainly when nothing is clearly positive."]
+    return "\n".join(lines)
+
+
 def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "none", tv_snap_rank: dict = None, kairos_snap_rank: dict = None, windows: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
@@ -591,8 +685,8 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
                 return (f"=== {header} ===\nNo snapshot data yet — rank this book's picks by "
                         f"the farm/Refined records above.")
             lines = [f"=== {header} ===",
-                     f"Ranked by composite SCORE (the leaderboard order). Prefer {tag} picks in "
-                     f"THIS order, top-down, subject to the guardrail + sample floor:"]
+                     f"Ranked by composite SCORE (the leaderboard order, 20-day lookback). Use this "
+                     f"order for {tag} names ONLY to break ties between FARM CANDIDATES:"]
             for i, r in enumerate(rows):
                 pf = f"{r['profit_factor']:.2f}" if r.get("profit_factor") else "—"
                 sc = f"{r['score']:.0f}" if r.get("score") is not None else "—"
@@ -647,6 +741,9 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             return "\n".join(out)
 
         hours_split_block = _fmt_hours_split()
+        farm_candidates_block = _fmt_farm_candidates(
+            _farm_side_by_side(farm_strat_data, kairos_farm_strat_data),
+            wired=[r.get("strategy", "") for r in ((book_data or {}).get("picks") or [])])
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
         engine_block   = _fmt_engine(engine_data)
@@ -926,12 +1023,15 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
         advisor = Agent(
             role="Professional Systematic Trading Advisor",
-            goal="Analyse the TV Refined account performance and deliver specific, actionable recommendations.",
+            goal="Pick the Crew Paper roster from the farms' full-sample records and deliver specific, actionable recommendations.",
             backstory=(
                 "You are a seasoned systematic trading professional with 20 years of "
                 "experience managing algorithmic strategy portfolios on US equities.\n\n"
                 f"{KAIROS_SYSTEM_KNOWLEDGE}\n"
-                "Your PRIMARY focus is the TV Refined account (account 2), but you ALSO directly "
+                "Your PRIMARY evidence for picks is the two FARMS — TV Farm (acct1) and Kairos Farm "
+                "(acct5) run every strategy all day, so they are the deepest, least selection-biased "
+                "record, and the same strategy on both farms shows which ENTRY mechanism suits it. "
+                "You ALSO review the TV Refined account (account 2) and directly "
                 "analyse the Kairos Refined book (account 3) — its own per-strategy leaderboard, "
                 "not just the aggregate head-to-head — since those server-side entries are the "
                 "live experiment. When the Kairos Refined book has enough trades, call out which Kairos "
@@ -969,23 +1069,23 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
             # ceiling, so "Refined-led (>=5)" still produced 10 of 18 Kairos in a
             # report whose own section 4 measured the engine at -$728 over 30 days,
             # specifically on breakouts. A target the evidence cannot argue down is
-            # not a target. Here the guardrail and the head-to-head decide alone.
+            # not a target. Here the entry tag rule and the farm side-by-side decide alone.
             balance_block = (
                 "KAIROS BALANCE = NONE (evidence only). There is NO target count for either "
                 "mechanism. Tag each pick for the side whose own record is stronger, and let "
                 "the split fall where it falls — 0 Kairos and all Kairos are both acceptable "
                 "answers if that is what the data says. Do NOT reach for a mechanism to balance "
-                "the card. The ENGINE-vs-TV head-to-head block is the governing evidence: where "
-                "it shows the engine losing on a KIND of setup (e.g. breakouts), a [Kairos] tag "
-                "on that kind needs its OWN positive Kairos record to justify it, not farm rank.")
+                "the card. Per NAME, the FARM CANDIDATES side-by-side is the governing evidence: "
+                "tag each pick with its better farm. The ENGINE-vs-TV head-to-head block is "
+                "book-level context only — it cannot overrule a name's own two-farm record.")
         elif _kt == "max":
             balance_block = (
                 "KAIROS BALANCE = MAX: maximise [Kairos] picks. Take EVERY name from the top of the "
                 "KAIROS FARM (acct5) leaderboard + Kairos Refined (acct3) that clears the bar (net-positive, "
                 "≥5 farm trades, sane PF) as a first-class [Kairos] pick — the Kairos Farm is the audition "
                 "pool, so a strong farm name with thin/no acct3 trades STILL qualifies (mark '(farm-backed)'). "
-                "Only fill remaining slots with [TV] names the Kairos side can't cover. Ignore the 'farm-only "
-                "cap' for Kairos here — tapping the Kairos Farm edge is the whole point.")
+                "Only fill remaining slots with [TV] names the Kairos side can't cover. The (d) entry tag "
+                "rule still applies — never tag [Kairos] where TV Farm is the better farm on the name.")
         elif _kt == "5":
             balance_block = (
                 f"KAIROS BALANCE = REFINED-LED: at LEAST {max(2, CREW_ROSTER_SIZE // 3)} of {CREW_ROSTER_SIZE} "
@@ -1000,8 +1100,8 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "(acct5) leaderboard AND Kairos Refined (acct3): a strong Kairos Farm name is a FIRST-CLASS "
                 "[Kairos] pick in its own right, even with thin/no acct3 trades yet (mark '(farm-backed)'). "
                 "Do NOT fall short of that target just because the acct3 sample is thin — that is exactly what the "
-                "Kairos Farm full sample is for — EXCEPT where the KAIROS-TAG GUARDRAIL blocks it (a deep net-negative "
-                "Kairos Farm sample with no credible positive acct3 record → tag [TV] instead, even if that lands under target). "
+                "Kairos Farm full sample is for — EXCEPT where the ENTRY TAG RULE blocks it (TV Farm is the better farm "
+                "on that name, or Kairos Farm is net-negative on it → tag [TV] instead, even if that lands under target). "
                 "Prefer the band/kind (R3S3/R4S4, breakout/reversal) that tops the Kairos Farm leaderboard.")
 
         # ── Single task — all data embedded directly ──────────────────────────
@@ -1048,16 +1148,17 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 + (f"{book_block}\n\n" if book_block else "")
                 + f"{strategy_block}\n\n"
                 f"{engine_strat_block}\n\n"
-                + "FARM LEADERBOARDS BELOW are the FULL-SAMPLE audition pools the Refined books are "
-                "drawn from — use them to corroborate thin Refined samples, NOT to override Refined "
-                "performance. TV Farm (acct1) backs [TV] picks; Kairos Farm (acct5) backs [Kairos] picks.\n\n"
+                + "FARM LEADERBOARDS BELOW are the FULL-SAMPLE pools: every strategy runs on both farms "
+                "all day, so they are the PRIMARY evidence for this card — the Refined books are a curated "
+                "subset re-picked daily on a 20-day score. TV Farm (acct1) is the record of [TV] entries; "
+                "Kairos Farm (acct5) is the record of [Kairos] entries.\n\n"
                 + f"{farm_strat_block}\n\n"
                 f"{kairos_farm_strat_block}\n\n"
-                + "SNAPSHOT LEADERBOARD RANKINGS BELOW are the composite-SCORE order the user watches on "
-                "the Analysis page — the SAME ranking the Refined books trade. Draw your [TV] picks in the "
-                "TV Refined snapshot's rank order and your [Kairos] picks in the Kairos Refined snapshot's "
-                "rank order (top-down), THEN apply the guardrail, sample floor, incumbency and balance on "
-                "top. Do NOT invent a different order from raw farm P&L when a snapshot rank exists.\n\n"
+                f"{farm_candidates_block}\n\n"
+                + "SNAPSHOT LEADERBOARD RANKINGS BELOW are the Refined books' composite-SCORE order "
+                "(20-day lookback with a 10-day recency blend). Forward tests found a 20-day lookback "
+                "picked WORSE than the 45-day farm record, so use these ranks ONLY to break ties between "
+                "FARM CANDIDATES — never to promote a name over a stronger farm candidate.\n\n"
                 + f"{tv_snap_block}\n\n"
                 f"{kairos_snap_block}\n\n"
                 f"{card_block}\n\n"
@@ -1073,54 +1174,47 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "## 📋 Next Month — Crew Paper Account\n"
                 "| Decision | Recommendation |\n|---|---|\n"
                 f"| Top {CREW_ROSTER_SIZE} to run | {CREW_ROSTER_SIZE} strategy names in TWO TIERS (see TIERS below), "
-                "RANKED PRIMARILY by the SNAPSHOT LEADERBOARD RANKINGS "
-                "(the composite-SCORE order the user watches): take [TV] picks in the TV Refined snapshot's rank "
-                "order and [Kairos] picks in the Kairos Refined snapshot's rank order, top-down, then apply the "
-                "rules below. Tag each by its BEST side. "
+                "RANKED PRIMARILY by the FARM CANDIDATES block (each strategy's 45-day record in curated hours "
+                "on its better farm), top-down, then apply the rules below. Tag each by its BEST side. "
                 f"TIERS — every pick is CORE or AUDITION, and the tag is part of the pick. "
                 f"CORE: has at least {CREW_CORE_MIN_TRADES} LIVE round-trips on Crew Paper (see the CURRENT CREW "
                 f"PAPER BOOK block) AND positive P&L PER TRADE over them. This is evidence the composite score "
                 f"does NOT contain — the score is farm lookback; this is what the book actually did. "
+                f"A core pick must ALSO not be net-NEGATIVE on the farm of the entry you tag it with "
+                f"(when that farm has {CREW_FARM_MIN_TRADES}+ takeable trades in FARM CANDIDATES): a live "
+                f"streak its own farm contradicts is luck until proven otherwise — call it AUDITION. "
                 f"AUDITION: everything else — farm-backed, thin, or never traded on the book. Cap auditions at "
                 f"{CREW_AUDITION_SLOTS} of {CREW_ROSTER_SIZE}; the rest MUST be core. If fewer than "
                 f"{CREW_ROSTER_SIZE - CREW_AUDITION_SLOTS} names can clear the core bar, RUN A SHORTER CARD — say so "
                 f"in one line and list only what qualifies. A short honest card beats padding the roster with "
                 f"names that have never traded. Auditions are wired at {CREW_AUDITION_SIZE_PCT}% of core size, so "
                 f"calling something core when it is not is a real sizing decision, not a label. "
-                "SOURCING RULES: (a) names positive on BOTH TV Refined (acct2) and Kairos Refined (acct3) are first-class picks; "
-                "(b) a name positive on only ONE book is an ENTRY-SPECIFIC bet — the entry mechanism is part of the "
-                "strategy (the two books have shown OPPOSITE edges on the same names) — and MUST carry that book's entry tag. "
-                "(c) SAMPLE FLOOR — an entry-specific bet needs ≥5 trades, BUT that sample may be met on the matching "
-                "FARM leaderboard (TV Farm acct1 for [TV] picks, Kairos Farm acct5 for [Kairos] picks), since the farm is "
-                "the full-sample audition pool the Refined book is a curated subset of. (This floor is 5, aligned with the "
-                "Kairos Refined snapshot's min-trade gate, so a positive-PF farm record with 5+ trades can back a pick.) "
-                "So a name with a THIN Refined sample "
-                "but a deep, positive farm record on the SAME entry mechanism can still qualify — mark it '(farm-backed)' in "
-                "its Detail line. REFINED STAYS PRIMARY: never promote a name that is NEGATIVE on its Refined book on the "
-                "strength of the farm alone; use the farm only to clear the sample floor, corroborate a thin Refined edge, "
-                f"and break ties. A [TV] name with NO TV Refined trades is a farm-only audition — it counts against the "
-                f"{CREW_AUDITION_SLOTS}-audition cap, "
-                "flagged as unproven on the book. (Kairos farm-only names are NOT capped that way — they are governed by "
-                "the KAIROS BALANCE directive below, since sourcing Kairos picks from the Kairos Farm is deliberate.) "
-                "(d) KAIROS-TAG GUARDRAIL — a HARD rule that OVERRIDES the balance target below: do NOT tag a pick "
-                "[Kairos] when the Kairos side's most CREDIBLE sample is a loser. Concretely — if Kairos Farm (acct5, full "
-                "sample) is net-NEGATIVE with ≥5 trades (e.g. PF < 1), a positive Kairos Refined (acct3) reading overrides "
-                "it ONLY when acct3 itself has ≥5 trades; a 1–4 trade acct3 blip does NOT justify [Kairos] against a deep "
-                "negative farm sample. When the guardrail blocks [Kairos], tag [TV] if the TV side is positive, else drop "
-                "the name. TIE-BREAK: when a name could go either book, tag it for the side whose farm/refined record is the "
-                "STRONGER, more-credible one (bigger positive sample) — never flip to [Kairos] purely to hit the count. "
-                "Falling SHORT of the Kairos balance target with HONEST tags is REQUIRED over forcing a [Kairos] tag the "
-                "deeper Kairos data contradicts. "
-                f"PER-BOOK QUOTA / BALANCE: {balance_block} (This target yields to the (d) guardrail above.) "
+                "SOURCING RULES: (a) candidates come from the FARM CANDIDATES block, top-down. A pick must be POSITIVE "
+                f"on the farm of the entry you tag it with, with {CREW_FARM_MIN_TRADES}+ takeable trades there. "
+                "(b) The Refined books (acct2/acct3) are a curated subset re-picked daily on a 20-day score, so their "
+                "per-name records are short and selection-biased: use them to break ties and as a warning, never as the "
+                "main reason for a pick. Veto a farm candidate on its Refined record ONLY when that book has 10+ trades "
+                "on the name AND is negative per trade — and say so in its Detail line. "
+                f"(c) A name with no Crew Paper history is an AUDITION however strong its farm record, and counts "
+                f"against the {CREW_AUDITION_SLOTS}-audition cap. "
+                "(d) ENTRY TAG RULE — a HARD rule that OVERRIDES the balance target below: tag each pick with the "
+                "mechanism the FARM CANDIDATES block marks 'better' (higher takeable per-trade; if only one farm has "
+                f"{CREW_FARM_MIN_TRADES}+ trades on the name, that farm). Never tag a mechanism whose farm is net-NEGATIVE "
+                f"on the name with {CREW_FARM_MIN_TRADES}+ takeable trades; if both farms are negative, drop the name. "
+                "This applies to INCUMBENTS too: if a wired name's better farm is now the other mechanism, KEEP the slot "
+                "but switch its tag, and say so in the Changes table — the entry mechanism is part of the strategy (the "
+                "two farms have shown OPPOSITE edges on the same names). Never flip a tag purely to hit a count. "
+                "Falling SHORT of a balance target with HONEST tags is REQUIRED over forcing a tag the farms contradict. "
+                f"PER-BOOK QUOTA / BALANCE: {balance_block} (This target yields to the (d) entry tag rule above.) "
                 "CHURN GUARD: this is a mostly-stable book. A strategy currently wired to Crew Paper (see the CURRENT CREW "
                 "PAPER BOOK block) that is net-positive KEEPS its slot by default; only DROP an incumbent if it's a clear "
                 "bleeder, and only ADD a challenger over an incumbent when it's CLEARLY better (not a marginal score edge). "
                 "When the current book is healthy, keep the roster mostly intact rather than reshuffling on one month's noise. "
-                "Tag each pick's ENTRY as [TV] (earned on TV Refined) or [Kairos] (earned on Kairos Refined) — the tag is REAL: "
+                "Tag each pick's ENTRY as [TV] or [Kairos] per the (d) ENTRY TAG RULE — the tag is REAL: "
                 "the wire button sets that rule's entry source per pick. "
                 "CRITICAL — THE LEADING TAG IS WHAT GETS WIRED: the [TV]/[Kairos] tag immediately after the strategy name "
-                "MUST be your FINAL decision AFTER applying the (d) guardrail. If the guardrail flips a Kairos candidate to "
-                "TV, write the leading tag as [TV] — do NOT write '[Kairos]' and then argue '[TV]' in the reasoning. Never "
+                "MUST be your FINAL decision AFTER applying the (d) entry tag rule. If the rule flips a candidate's tag, "
+                "write the FINAL tag as the leading tag — do NOT write one tag and then argue the other in the reasoning. Never "
                 "let the leading tag disagree with your conclusion; the parser reads the leading tag (and any explicit "
                 "'TAG [X]' phrase), not your prose. "
                 "Tag each pick's SIDE long / short / both. A strategy may earn a slot on its single-side record — use "
@@ -1137,11 +1231,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "entry source, so it CANNOT be listed as both [TV] and [Kairos]. If a name is strong on BOTH books, "
                 "pick the SINGLE book with the stronger/more-credible record (bigger positive sample) and use that one "
                 "slot; do NOT spend two slots on the same slug.\n"
-                "  • Do your DROP/REPLACE and guardrail reasoning SILENTLY; this row shows only the WINNERS. "
+                "  • Do your DROP/REPLACE and tag-rule reasoning SILENTLY; this row shows only the WINNERS. "
                 "NEVER write a rejected strategy here, and NEVER write the words DROP / REPLACE / 'flip to' / a "
                 "second [tag] in a line. If a candidate loses to a replacement, only the REPLACEMENT appears — at "
                 "the loser's slot, renumbered so the list stays contiguous from 1.\n"
-                "  • The leading [TV]/[Kairos] tag IS the wired entry — it must already be the post-guardrail FINAL "
+                "  • The leading [TV]/[Kairos] tag IS the wired entry — it must already be the post-tag-rule FINAL "
                 "answer. Do not write one tag then argue another.\n"
                 f"  • SELF-CHECK before you emit this row: count your lines (at most {CREW_ROSTER_SIZE}), confirm the numbers each "
                 "appear once, confirm no slug repeats, confirm no line contains DROP/REPLACE or two tags. Fix it "
@@ -1170,7 +1264,7 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "```\n"
                 "where side is one of long|short|both and book is one of TV|Kairos — e.g. "
                 f"`NVDA_CAM_BREAKOUT_R3S3_V02_5MIN | both | TV | core`. RULES: AT MOST {CREW_ROSTER_SIZE} data lines; each is a FINAL "
-                "post-guardrail pick; one full strategy slug per line; NO numbering, NO reasoning/notes, NO DROP/REPLACE, "
+                "post-tag-rule pick; one full strategy slug per line; NO numbering, NO reasoning/notes, NO DROP/REPLACE, "
                 "NO duplicate slugs (a slug appears AT MOST ONCE — never the same name as both | TV and | Kairos; one "
                 f"slug = one Crew Paper rule = one entry source). A 4th column is the TIER (core|audition) and is REQUIRED. "
                 f"This block MUST match the Top-{CREW_ROSTER_SIZE} card row's final picks — if they ever disagree, "
@@ -2632,6 +2726,183 @@ def api_crew_compare():
                     "tv_run_at": tv.get("run_at"), "kairos_run_at": kr.get("run_at")})
 
 
+# ── Pick windows: the Tickers page's "when should you have stopped?" per pick ──
+# The Tickers page suggests a stop time per strategy from its cumulative P&L by
+# entry time. Once the crew has picked, the same calculation runs on each pick's
+# OWN farm (TV Farm for [TV], Kairos Farm for [Kairos], which trade all day) and
+# the wire can apply it as a strategy window on the Crew books. Only a stop that
+# helped in BOTH halves of the sample is ticked by default; a window the trader
+# set by hand is never overwritten.
+
+CREW_WINDOW_DAYS  = max(7, int(os.environ.get("CREW_WINDOW_DAYS", "30")))   # the Tickers page default
+CREW_WINDOW_START = "09:35"
+_WINDOW_FARMS = {"tv": "1", "kairos": "5"}
+
+
+def _suggest_stop(trades):
+    """Port of the Tickers page's stopCurve(). trades: [{entry_time, pnl}].
+
+    Tries a stop every 30 min from 09:30 to 16:00 ET and keeps the one with the
+    highest running P&L of trades entered before it. `stop` is None when trading
+    all day (or not at all) was best. `older`/`newer` split on the median entry
+    date, as the page does: what the stop would have added in each half."""
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    OPEN, CLOSE, STEP = 9 * 60 + 30, 16 * 60, 30
+    rows = []
+    for t in trades or []:
+        try:
+            d = datetime.fromisoformat(str(t.get("entry_time") or "").replace("Z", "+00:00")).astimezone(et)
+        except Exception:
+            continue
+        mn = d.hour * 60 + d.minute
+        if OPEN <= mn < CLOSE:
+            rows.append((d.date().isoformat(), mn, float(t.get("pnl") or 0)))
+    if not rows:
+        return {"stop": None, "n": 0, "reason": "no trades in the window"}
+
+    def at(rs, stop):
+        return sum(p for _d, m, p in rs if m < stop)
+
+    stops = list(range(OPEN, CLOSE + 1, STEP))
+    pnls = [at(rows, s) for s in stops]
+    best = 0
+    for i, v in enumerate(pnls):
+        if v > pnls[best] + 0.005:
+            best = i
+    n = len(rows)
+    # The page can land on an earlier step that only TIES the close (no trades after
+    # it); a window that adds nothing is not worth setting.
+    if best == len(stops) - 1 or pnls[best] - pnls[-1] <= 0.005:
+        return {"stop": None, "n": n, "reason": "trading all day was best"}
+    if best == 0:
+        return {"stop": None, "n": n, "reason": "not trading at all was best"}
+    stop = stops[best]
+    dates = sorted(d for d, _m, _p in rows)
+    split = dates[n // 2]
+    older = [r for r in rows if r[0] < split]
+    newer = [r for r in rows if r[0] >= split]
+    half = lambda rs: {"n": len(rs), "lift": round(at(rs, stop) - at(rs, CLOSE), 2)}
+    o, nw = half(older), half(newer)
+    return {"stop": f"{stop // 60:02d}:{stop % 60:02d}", "n": n,
+            "lift": round(pnls[best] - pnls[-1], 2),
+            "skipped": sum(1 for _d, m, _p in rows if m >= stop),
+            "split": split, "older": o, "newer": nw,
+            "both_halves": o["lift"] > 0 and nw["lift"] > 0}
+
+
+def _crew_window_books(app_obj):
+    """Books a crew window goes on: Crew Paper, plus Crew Live when the wire is
+    mirroring to it — the same condition the live mirror rules use."""
+    books = ["alpaca4"]
+    if ("alpaca6" in (getattr(app_obj, "ACCOUNTS_BY_TAG", {}) or {})
+            and float(getattr(app_obj, "LIVE_SIZE_DOLLARS", 0) or 0) > 0):
+        books.append("alpaca6")
+    return books
+
+
+def _pick_windows(app_obj, picks, days=CREW_WINDOW_DAYS):
+    """{slug: {...}} — each pick's suggested window on its own farm, plus any
+    window it already has. Reads each farm's fills once."""
+    to_d = datetime.now(timezone.utc).date()
+    frm, to = (to_d - timedelta(days=days)).isoformat(), to_d.isoformat()
+    by_farm, labels = {}, {}
+    for entry in {(p.get("entry") or "tv") for p in picks}:
+        num = _WINDOW_FARMS.get(entry, "1")
+        rec = (getattr(app_obj, "ACCOUNTS_BY_NUM", {}) or {}).get(num)
+        if not rec:
+            continue
+        labels[entry] = rec.get("label") or ("Kairos Farm" if entry == "kairos" else "TV Farm")
+        try:
+            rts = app_obj._pair_alpaca_fills_lifo(rec["fills_fn"](), from_date=frm, to_date=to) \
+                         .get("closed_clean", [])
+        except Exception as e:
+            app_obj.log.warning("crew pick windows: %s unreadable: %s", labels[entry], e)
+            continue
+        grouped = {}
+        for t in rts:
+            grouped.setdefault((t.get("strategy") or "").strip().upper(), []).append(t)
+        by_farm[entry] = grouped
+    try:
+        current = app_obj._strategy_stop_times() or {}
+    except Exception:
+        current = {}
+    out = {}
+    for p in picks:
+        slug, entry = p["strategy"], (p.get("entry") or "tv")
+        have = current.get(slug)
+        existing = None
+        if have:
+            existing = {k: have.get(k) for k in ("start", "stop", "mode", "accounts")}
+            existing["by_crew"] = have.get("source") == "crew"
+        if entry not in by_farm:
+            out[slug] = {"farm": labels.get(entry), "days": days, "suggest": None,
+                         "error": "farm fills unavailable", "existing": existing, "default": False}
+            continue
+        s = _suggest_stop(by_farm[entry].get(slug, []))
+        mine = bool(existing) and not existing["by_crew"]
+        out[slug] = {"farm": labels[entry], "days": days, "from": frm, "to": to,
+                     "start": CREW_WINDOW_START, "suggest": s, "existing": existing,
+                     # A hand-set window wins; otherwise tick only a stop that held up
+                     # in both halves of the sample.
+                     "locked": mine,
+                     "default": bool(not mine and s.get("stop") and s.get("both_halves"))}
+    return out
+
+
+def _safe_pick_windows(app_obj, picks):
+    try:
+        return {"windows": _pick_windows(app_obj, picks), "books": _crew_window_books(app_obj),
+                "days": CREW_WINDOW_DAYS}
+    except Exception as e:
+        return {"windows": {}, "error": str(e)}
+
+
+def _apply_pick_windows(app_obj, picks, chosen):
+    """Write the ticked windows as strategy windows on the Crew books.
+
+    chosen: {slug: {"start", "stop"}} for the ticked picks only. Leaves any window
+    the trader set by hand alone. Removes crew-set windows from picks that were
+    unticked or have left the roster, so the Crew books don't keep a stale cut-off."""
+    import re as _re
+    m = dict(app_obj._strategy_stop_times() or {})
+    books = _crew_window_books(app_obj)
+    picked = {p["strategy"]: p for p in picks}
+    wins = _pick_windows(app_obj, picks)
+    res = {"set": [], "kept_yours": [], "removed": [], "refused": []}
+    for slug, w in (chosen or {}).items():
+        slug = str(slug).strip().upper()
+        start = str((w or {}).get("start") or CREW_WINDOW_START)
+        stop = str((w or {}).get("stop") or "")
+        if slug not in picked:
+            res["refused"].append(f"{slug}: not on this roster"); continue
+        if not (_re.fullmatch(r"\d{2}:\d{2}", stop) and _re.fullmatch(r"\d{2}:\d{2}", start)
+                and "09:30" <= start < stop < "16:00"):
+            res["refused"].append(f"{slug}: bad window {start}-{stop}"); continue
+        have = m.get(slug)
+        if have and have.get("source") != "crew":
+            res["kept_yours"].append(slug); continue
+        s = ((wins.get(slug) or {}).get("suggest")) or {}
+        m[slug] = {"start": start, "stop": stop, "mode": "within", "accounts": books,
+                   "set_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   "source": "crew",
+                   "basis": {"book": (wins.get(slug) or {}).get("farm"), "days": CREW_WINDOW_DAYS,
+                             "trades": s.get("n"), "lift": s.get("lift"),
+                             "both_halves": s.get("both_halves"),
+                             "from": (wins.get(slug) or {}).get("from"),
+                             "to": (wins.get(slug) or {}).get("to")}}
+        res["set"].append(f"{slug} {start}-{stop}")
+    chosen_up = {str(k).strip().upper() for k in (chosen or {})}
+    for slug, have in list(m.items()):
+        if have.get("source") == "crew" and slug not in chosen_up:
+            m.pop(slug)
+            res["removed"].append(slug)
+    app_obj._save_strategy_stop_times(m)
+    if res["set"] or res["removed"]:
+        app_obj.log.info("Crew windows: set %s; removed %s", res["set"], res["removed"])
+    return res
+
+
 @crew_bp.route("/api/crew/wire_preview")
 def api_crew_wire_preview():
     """Dry-run: parse the latest report's 'Next Month — Crew Paper' picks and return
@@ -2651,6 +2922,7 @@ def api_crew_wire_preview():
             "size_dollars": None, "daytype": None,
             "tv_count": len(picks) - kc, "kairos_count": kc,
             "hybrid_meta": meta, "warnings": warnings,
+            "pick_windows": _safe_pick_windows(_ca._get_current_object(), picks),
         })
     if (request.args.get("source") or "").lower() == "snapshot":
         from flask import current_app as _ca
@@ -2685,6 +2957,7 @@ def api_crew_wire_preview():
             "size_dollars": None, "daytype": None,
             "tv_count": len(picks) - kc, "kairos_count": kc, "warnings": warnings,
             "comparison": comparison,
+            "pick_windows": _safe_pick_windows(_ca._get_current_object(), picks),
         })
     import app as _kairos
     conn = _kairos.get_db(); cur = conn.cursor()
@@ -2723,6 +2996,7 @@ def api_crew_wire_preview():
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
         "size_dollars": parsed["size_dollars"], "daytype": parsed["daytype"],
         "warnings": warnings,
+        "pick_windows": _safe_pick_windows(_kairos, picks),
     })
 
 
@@ -3040,6 +3314,13 @@ def api_crew_wire_to_router():
     conn.commit()
     conn.close()
 
+    windows_res = None
+    if isinstance(data.get("windows"), dict):
+        try:
+            windows_res = _apply_pick_windows(_kairos, picks, data["windows"])
+        except Exception as _we:
+            windows_res = {"error": f"windows not applied: {_we}"}
+
     # Checked against the books, not the report's prose — see _entry_tag_conflicts.
     try:
         from flask import current_app as _ca_chk
@@ -3089,6 +3370,7 @@ def api_crew_wire_to_router():
         "audition_size_pct": CREW_AUDITION_SIZE_PCT,
         "sides":   {pk["strategy"]: pk["side"] for pk in picks},
         "entries": {pk["strategy"]: pk.get("entry") for pk in picks},
+        "windows": windows_res,
     })
 
 
@@ -3099,16 +3381,18 @@ def api_crew_wire_to_router():
 # one card routed six breakouts through the Kairos engine in the same document that
 # concluded the engine was losing $728 over 30 days on breakouts.
 #
-# So this checks the tag against the BOOKS, not against the narrative — TV Refined
-# (acct2) is the TV mechanism's record, Kairos Refined (acct3) is the engine's, on
-# the same strategy over the same window. Prose cannot talk its way past a
-# head-to-head.
+# So this checks the tag against the FARMS, not against the narrative — TV Farm
+# (acct1) is the TV mechanism's record, Kairos Farm (acct5) is the engine's, on the
+# same strategy over the same 45 days, in curated hours. That is the evidence the
+# crew is told to tag on; checking against the Refined books instead would flag
+# every tag the crew got right. Prose cannot talk its way past a head-to-head.
 #
 # It WARNS rather than blocks. A truncated picks block is corruption; a contrarian
 # entry tag can be a deliberate call, and the operator is entitled to make it.
 
-_ENTRY_CONFLICT_MIN_TRADES = 3     # below this a book has no opinion worth citing
-_ENTRY_BOOKS = {"tv": "2", "kairos": "3"}
+_ENTRY_CONFLICT_MIN_TRADES = 3     # below this a farm has no opinion worth citing
+_ENTRY_BOOKS = {"tv": "1", "kairos": "5"}
+_ENTRY_CHECK_DAYS = 45             # the crew's farm window
 
 
 def _per_strategy_pnl(app_obj, account, from_date, to_date):
@@ -3123,21 +3407,25 @@ def _per_strategy_pnl(app_obj, account, from_date, to_date):
             d = c.get(f"/api/alpaca/analysis?{qs}").get_json() or {}
         if d.get("fills_unavailable"):
             return None
-        return {k.upper(): {"pnl": round(v.get("total_pnl", 0) or 0, 2),
-                            "trades": int(v.get("trades", 0) or 0)}
-                for k, v in (d.get("per_strategy") or {}).items()}
+        return {k.upper(): {"pnl": r["pnl"], "trades": r["trades"]}
+                for k in (d.get("per_strategy") or {})
+                for r in [_farm_rec(d, k)]}
     except Exception:
         return None
 
 
 def _entry_tag_conflicts(app_obj, picks, from_date="", to_date=""):
-    """Picks whose entry tag is contradicted by the two Refined books' head-to-head.
+    """Picks whose entry tag is contradicted by the two farms' head-to-head
+    (curated hours, the last 45 days unless a window is given).
 
     A conflict needs BOTH mechanisms to have traded the strategy enough to have an
     opinion, the tagged one to be losing, and the untagged one to be winning. That
     is deliberately narrow: it fires on a real reversal of evidence, not on a thin
     sample or on a name that simply loses everywhere.
     """
+    if not from_date:
+        from_date = (datetime.now(timezone.utc).date()
+                     - timedelta(days=_ENTRY_CHECK_DAYS)).isoformat()
     books = {k: _per_strategy_pnl(app_obj, acct, from_date, to_date)
              for k, acct in _ENTRY_BOOKS.items()}
     unreadable = sorted(k for k, v in books.items() if v is None)
@@ -3162,10 +3450,10 @@ def _entry_tag_conflicts(app_obj, picks, from_date="", to_date=""):
                 "tagged_pnl": mine["pnl"],   "tagged_trades": mine["trades"],
                 "other_pnl":  thrs["pnl"],   "other_trades":  thrs["trades"],
                 "swing": round(thrs["pnl"] - mine["pnl"], 2),
-                "note": (f"tagged [{tag.upper()}] but the {tag.upper()} book lost "
+                "note": (f"tagged [{tag.upper()}] but the {tag.upper()} farm lost "
                          f"${abs(mine['pnl']):.2f} over {mine['trades']}t while the "
-                         f"{other.upper()} book made ${thrs['pnl']:.2f} over "
-                         f"{thrs['trades']}t on the same name"),
+                         f"{other.upper()} farm made ${thrs['pnl']:.2f} over "
+                         f"{thrs['trades']}t on the same name (curated hours)"),
             })
     out.sort(key=lambda c: -c["swing"])
     return {"conflicts": out, "unreadable": unreadable, "checked": len(picks)}
@@ -3295,7 +3583,7 @@ def _entry_source_by_strategy(app_obj, brokers=("alpaca-paper-4", "alpaca-live-4
         cur.execute("SELECT nodes FROM routing_rules WHERE enabled=1")
         for row in cur.fetchall():
             raw = row[0] if app_obj.DATABASE_URL else row["nodes"]
-            try:    nodes = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
             except Exception: continue
             vals = [(n.get("value") or "").lower() for n in nodes if n.get("type") == "broker"]
             if not any(v in brokers for v in vals):
