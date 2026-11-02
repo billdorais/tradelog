@@ -2619,6 +2619,23 @@ def _claimed_pick_count(report):
     return None
 
 
+def _top_row_slugs(report):
+    """Distinct strategy slugs the card's "Top N to run" row actually names. The N in
+    the label is the TARGET; a deliberately short card ("4 auditions reached — core
+    bar cannot be met") keeps "Top 6" in its label but lists only 4 names."""
+    for raw in (report or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        label = cells[0].replace("*", "").strip().lower()
+        if label.startswith("top") and "run" in label:
+            return list(dict.fromkeys(m.group(0).upper() for m in _STRAT_SLUG_RE.finditer(cells[1])))
+    return []
+
+
 def _picks_block_truncated(report):
     """True when a ```picks fence was opened but never closed.
 
@@ -3369,6 +3386,11 @@ def api_crew_wire_to_router():
                 "truncated": True,
             }), 409
         _claimed = _claimed_pick_count(report)
+        # The label's N is a target. When the card's own row names no more
+        # strategies than the block holds, the card is short on purpose, not cut off.
+        _named = _top_row_slugs(report)
+        if _named and len(_named) <= len(picks):
+            _claimed = None
         if picks and _claimed and len(picks) < _claimed:
             conn.close()
             return jsonify({
