@@ -74,9 +74,9 @@ def test_core_is_defined_by_live_trades_not_by_rank():
     has to be earned on evidence the score does not contain."""
     src = _card_src()
     i = src.index("CORE:")
-    block = src[i:i + 400]
-    assert "LIVE round-trips" in block
-    assert "PER TRADE" in block
+    block = src[i:i + 900]
+    assert "FORWARD round-trips on its CURRENT entry" in block
+    assert "a profit over them" in block
     assert "composite score" in block and "does NOT contain" in block
 
 

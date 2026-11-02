@@ -542,20 +542,30 @@ def test_modal_timestamps_are_market_time_not_utc(monkeypatch):
     """Everything else this app shows a trader is ET — the gates, the windows and
     the day boundaries are all defined in market time."""
     import datetime as _d
+    from zoneinfo import ZoneInfo
     day = _d.datetime.now(_d.timezone.utc).strftime("%Y-%m-%d")
     got = _et_samples(None, [f"{day} 14:25:00"])
-    assert got == [f"{day} 10:25"], got     # 14:25 UTC = 10:25 EDT
+    # 10:25 in EDT, 09:25 in EST: the expectation follows the date, as the app does.
+    want = (_d.datetime.fromisoformat(f"{day}T14:25:00+00:00")
+            .astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M"))
+    assert got == [want], got
+    assert want != f"{day} 14:25"
 
 
 def test_a_utc_timestamp_can_roll_back_a_day_in_et(monkeypatch):
     """03:10 UTC is the PREVIOUS evening in ET. Showing the UTC date would file the
     block under a trading day it did not belong to."""
     import datetime as _d
+    from zoneinfo import ZoneInfo
     now = _d.datetime.now(_d.timezone.utc)
     day = now.strftime("%Y-%m-%d")
     prev = (now - _d.timedelta(days=1)).strftime("%Y-%m-%d")
     got = _et_samples(None, [f"{day} 03:10:00"])
-    assert got == [f"{prev} 23:10"], got
+    # 23:10 EDT or 22:10 EST — either way the PREVIOUS day.
+    want = (_d.datetime.fromisoformat(f"{day}T03:10:00+00:00")
+            .astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M"))
+    assert got == [want], got
+    assert want.startswith(prev)
 
 
 def test_conversion_happens_on_the_server_not_the_browser():

@@ -73,6 +73,8 @@ def book(tmp_path, monkeypatch):
     def _fake_analysis():
         captured["account"]   = request.args.get("account")
         captured["from_date"] = request.args.get("from_date")
+        captured.setdefault("calls", []).append((request.args.get("account"),
+                                                 request.args.get("from_date")))
         return jsonify({"per_strategy": FAKE_PER_STRAT})
 
     monkeypatch.setitem(a.app.view_functions, "api_alpaca_analysis", _fake_analysis)
@@ -87,9 +89,14 @@ def test_book_is_sourced_from_wired_rules(book):
     slugs = {r["strategy"] for r in bk["picks"]}
     assert slugs == {_slug("AAA"), _slug("BBB"), _slug("CCC")}
     assert bk["n_wired"] == 3
-    # Analysis was queried for acct4 from the EARLIEST wire date.
-    assert captured["account"] == "4"
-    assert captured["from_date"] == "2026-07-01"
+    # Analysis was queried for acct4, each strategy from its OWN wire date (a
+    # strategy's record must not include fills from before it was on the book).
+    book_calls = [c for c in captured["calls"] if c[0] == "4"]
+    assert {c[1] for c in book_calls} == {"2026-07-01", "2026-07-10", "2026-07-05"}
+    # The only other reads are each name's forward FARM record (TV Farm here: no
+    # entry_source node means TV), from the same dates.
+    assert {c[0] for c in captured["calls"]} <= {"4", "1"}
+    assert {c[1] for c in captured["calls"] if c[0] == "1"} <= {"2026-07-01", "2026-07-10", "2026-07-05"}
 
 
 def test_totals_and_worst_first_order(book):

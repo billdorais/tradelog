@@ -1307,6 +1307,7 @@
           + `<td style="color:#ccc;padding:1px 12px 1px 0">${p.strategy}</td>`
           + `<td style="color:${sideColor};padding:1px 12px 1px 0">${p.side}</td>`
           + `<td style="color:${bookColor};padding:1px 12px 1px 0">[${bookLabel}]</td>`
+          + _tierCell(p)
           + ogCell + `<td style="padding:1px 0">${_windowCell(p.strategy, (pw.windows || {})[p.strategy])}</td></tr>`;
       }).join('');
       const kc = picks.filter(p => p.entry === 'kairos').length;
@@ -1357,6 +1358,7 @@
         + `· ${sizeTxt} · exits cloned per strategy</div>`
         + metaHtml
         + warnHtml
+        + _rosterRulesNote(d.roster_rules, d.audition_slots)
         + `<div style="overflow-x:auto;margin:6px 0"><table style="border-collapse:collapse;font-size:0.75rem">${rows}</table></div>`
         + _windowNote(pw)
         + cmpHtml
@@ -1400,6 +1402,29 @@
       + `&#9201; ${_escA(w.start)}–${_escA(s.stop)} <span style="color:#888">${money(s.lift)} · ${s.n}t ·</span> ${halves}`
       + (ex && ex.by_crew && (ex.stop !== s.stop || ex.start !== w.start) ? ` <span style="color:#666">(now ${_escA(ex.start)}–${_escA(ex.stop)})</span>` : '')
       + `</label>`;
+  }
+
+  // Tier after the wire's roster rules, and whether the pick reaches Crew Live.
+  function _tierCell(p) {
+    if (!p.tier) return '';
+    const core = p.tier !== 'audition';
+    const live = p.live === undefined ? '' : (p.live ? ' · <span style="color:#F2C76B">live too</span>' : ' · paper only');
+    const via = p.core_via === 'farm' ? ' (farm forward)' : p.core_via === 'crew' ? ' (Crew Paper)' : '';
+    return `<td style="padding:1px 12px 1px 0;font-size:0.7rem;color:${core ? '#7FE098' : '#9aa0b5'}">${core ? 'core' + via : 'audition'}${live}</td>`;
+  }
+
+  function _rosterRulesNote(r, slots) {
+    if (!r) return '';
+    if (r.error) return `<div style="color:#e08a8a;font-size:0.72rem">Roster rules not applied: ${_escA(r.error)}</div>`;
+    const out = [];
+    (r.switched || []).forEach(x => out.push(`<b>${_escA(x.strategy)}</b> switches [${_escA(x.from.toUpperCase())}] → [${_escA(x.to.toUpperCase())}]: its live record restarts today`));
+    (r.promoted || []).forEach(x => out.push(`<b style="color:#7FE098">${_escA(x.strategy)}</b> earned core — ${_escA(x.why)}`));
+    (r.demoted || []).forEach(x => out.push(`<b>${_escA(x.strategy)}</b> wired as an audition, not core: ${_escA(x.why)}`));
+    if ((r.dropped_over_cap || []).length) out.push(`Dropped over the ${_escA(slots)}-audition cap (bottom of the card): <b>${r.dropped_over_cap.map(_escA).join(', ')}</b>`);
+    if (r.unreadable) out.push('Crew Paper fills unreadable — tiers left as the card wrote them');
+    if (!out.length) return '';
+    return `<div style="font-size:0.72rem;color:#c9b27a;margin:4px 0;line-height:1.6;border-left:2px solid #4a3d1c;padding-left:8px">`
+      + `<div style="color:#F2C76B;font-weight:600">Roster rules applied</div>` + out.map(x => `<div>${x}</div>`).join('') + `</div>`;
   }
 
   function _windowNote(pw) {
@@ -1653,6 +1678,7 @@
           + (del.length ? `<br><span style="color:#c98b8b">removed (dropped from this report): ${del.join(', ')}</span>` : '')
           + (defd.length ? `<br><span style="color:#F2C76B">kept for now (open position — will remove next wire): ${defd.join(', ')}</span>` : '')
           + _windowsResult(d.windows)
+          + _rosterRulesNote(d.roster_rules, d.audition_slots)
           + ` · <a href="/routing" style="color:#7FE098">open Signal Router →</a>`
           + _wireWarnings(d);
       }

@@ -705,13 +705,15 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             kairos_snap_rank,
             "KAIROS REFINED SNAPSHOT — LEADERBOARD RANK (the Analysis-page snapshot; acct3 trades this)",
             "[Kairos]")
+        _farm_rows = _farm_side_by_side(farm_strat_data, kairos_farm_strat_data)
+
         def _fmt_hours_split() -> str:
             """The hours gate priced against the ungated farms.
 
             The farms trade all day, so their out-of-window fills answer "should this
             name be exempt from the window?" with evidence instead of preference.
             """
-            try:    hs = _hours_split_data(45)
+            try:    hs = _hours_split_data(45, prefer={r["strategy"]: r["better"] for r in _farm_rows})
             except Exception as e:
                 return f"=== HOURS GATE — IN vs OUT OF WINDOW ===\n(unavailable: {e})"
             if hs.get("error"):
@@ -742,7 +744,7 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
 
         hours_split_block = _fmt_hours_split()
         farm_candidates_block = _fmt_farm_candidates(
-            _farm_side_by_side(farm_strat_data, kairos_farm_strat_data),
+            _farm_rows,
             wired=[r.get("strategy", "") for r in ((book_data or {}).get("picks") or [])])
         journal_block  = _fmt_journal(journal_data)
         stops_block    = _fmt_stops_comparison(rules_data, journal_data)
@@ -898,12 +900,24 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             ]
             for r in bk.get("picks", []):
                 off = "" if r.get("enabled", True) else " [DISABLED]"
+                ent = f" [{(r.get('entry') or 'tv').upper()}]"
+                pr = r.get("prior_entry")
+                pr_txt = (f" | BEFORE the entry switch (other mechanism, does NOT count toward core): "
+                          f"{pr['trades']} trades ${pr['pnl']:.2f}") if pr else ""
+                ff = r.get("farm_forward") or {}
+                if ff.get("trades"):
+                    pr_txt += (f" | its {'Kairos' if r.get('entry') == 'kairos' else 'TV'} Farm FORWARD since "
+                               f"then (curated hours): {ff['trades']} trades ${ff['pnl']:.2f}")
                 if r.get("trades"):
-                    lines.append(f"  {r['strategy']}{off}: {r['trades']} trades | "
-                                 f"${r['pnl']:.2f} | {r['win_rate']:.0f}% win | since {r.get('since')}")
+                    lines.append(f"  {r['strategy']}{ent}{off}: {r['trades']} trades | "
+                                 f"${r['pnl']:.2f} | {r['win_rate']:.0f}% win | since {r.get('since')}{pr_txt}")
                 else:
-                    lines.append(f"  {r['strategy']}{off}: no trades yet | since {r.get('since')}")
+                    lines.append(f"  {r['strategy']}{ent}{off}: no trades yet | since {r.get('since')}{pr_txt}")
             lines.append("")
+            lines.append("Each record counts only trades on the strategy's CURRENT entry tag: switching a "
+                         "pick's tag restarts it, so a switched pick is an AUDITION until it earns "
+                         f"{CREW_CORE_MIN_TRADES} trades on the new entry (the wire enforces this, and drops "
+                         f"auditions beyond the {CREW_AUDITION_SLOTS}-slot cap in card order).")
             lines.append("This is the ACTUAL live book on Crew Paper — worst first. Keep the earners, "
                          "cut the persistent bleeders. A strategy here but NOT in this month's Top picks "
                          "will be removed from Crew Paper on the next wire, so say so if you'd keep it.")
@@ -1177,8 +1191,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 "RANKED PRIMARILY by the FARM CANDIDATES block (each strategy's 45-day record in curated hours "
                 "on its better farm), top-down, then apply the rules below. Tag each by its BEST side. "
                 f"TIERS — every pick is CORE or AUDITION, and the tag is part of the pick. "
-                f"CORE: has at least {CREW_CORE_MIN_TRADES} LIVE round-trips on Crew Paper (see the CURRENT CREW "
-                f"PAPER BOOK block) AND positive P&L PER TRADE over them. This is evidence the composite score "
+                f"CORE: has at least {CREW_CORE_MIN_TRADES} FORWARD round-trips on its CURRENT entry — on Crew Paper, "
+                f"OR on its same-entry farm since it was wired (the 'FORWARD since then' figure in the CURRENT CREW "
+                f"PAPER BOOK block) — AND a profit over them, with no {CREW_CORE_MIN_TRADES}+ trade forward record "
+                f"losing. The wire applies exactly this rule and will promote or demote to match it. This is evidence the composite score "
                 f"does NOT contain — the score is farm lookback; this is what the book actually did. "
                 f"A core pick must ALSO not be net-NEGATIVE on the farm of the entry you tag it with "
                 f"(when that farm has {CREW_FARM_MIN_TRADES}+ takeable trades in FARM CANDIDATES): a live "
@@ -1187,8 +1203,11 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 f"{CREW_AUDITION_SLOTS} of {CREW_ROSTER_SIZE}; the rest MUST be core. If fewer than "
                 f"{CREW_ROSTER_SIZE - CREW_AUDITION_SLOTS} names can clear the core bar, RUN A SHORTER CARD — say so "
                 f"in one line and list only what qualifies. A short honest card beats padding the roster with "
-                f"names that have never traded. Auditions are wired at {CREW_AUDITION_SIZE_PCT}% of core size, so "
-                f"calling something core when it is not is a real sizing decision, not a label. "
+                f"names that have never traded. Auditions are wired at {CREW_AUDITION_SIZE_PCT}% of core size and "
+                f"trade on Crew Paper ONLY — Crew Live (real money) mirrors CORE picks alone — so calling something "
+                f"core when it is not is a real sizing and real-money decision, not a label. The wire enforces the "
+                f"core bar and the audition cap: it demotes a core pick that has not earned it and drops auditions "
+                f"beyond the cap from the BOTTOM of your list, so order auditions best first. "
                 "SOURCING RULES: (a) candidates come from the FARM CANDIDATES block, top-down. A pick must be POSITIVE "
                 f"on the farm of the entry you tag it with, with {CREW_FARM_MIN_TRADES}+ takeable trades there. "
                 "(b) The Refined books (acct2/acct3) are a curated subset re-picked daily on a 20-day score, so their "
@@ -1203,7 +1222,9 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 f"on the name with {CREW_FARM_MIN_TRADES}+ takeable trades; if both farms are negative, drop the name. "
                 "This applies to INCUMBENTS too: if a wired name's better farm is now the other mechanism, KEEP the slot "
                 "but switch its tag, and say so in the Changes table — the entry mechanism is part of the strategy (the "
-                "two farms have shown OPPOSITE edges on the same names). Never flip a tag purely to hit a count. "
+                "two farms have shown OPPOSITE edges on the same names), so a switched pick's live record restarts and "
+                "it becomes an AUDITION. Only switch when the better farm is CLEARLY better, not a cent or two per trade. "
+                "Never flip a tag purely to hit a count. "
                 "Falling SHORT of a balance target with HONEST tags is REQUIRED over forcing a tag the farms contradict. "
                 f"PER-BOOK QUOTA / BALANCE: {balance_block} (This target yields to the (d) entry tag rule above.) "
                 "CHURN GUARD: this is a mostly-stable book. A strategy currently wired to Crew Paper (see the CURRENT CREW "
@@ -1500,6 +1521,252 @@ def api_crew_scorecard():
     return jsonify(sc)
 
 
+# ── Entry-since: a pick's live record restarts when its entry tag switches ──────
+# The entry mechanism is part of the strategy, and no per-trade record of it
+# survives (every order carries the same client_order_id prefix). So a pick whose
+# tag switches from [TV] to [Kairos] would otherwise carry a live record earned on
+# the OTHER mechanism into its core status. The wire records, per strategy, which
+# entry it is on and since when; the book, the core bar and the tier check all
+# count only trades since then.
+#
+# Switches made before this record existed are recovered once from report history:
+# the date of the newest report that changed the strategy's tag.
+
+CREW_ENTRY_SINCE_KEY = "CREW_ENTRY_SINCE"
+
+
+def _crew_rules_acct4(app_obj):
+    """{STRATEGY: {"entry": tv|kairos, "wired": "YYYY-MM-DD"}} from the Crew Paper rules."""
+    out = {}
+    try:
+        conn = app_obj.get_db(); cur = conn.cursor()
+        cur.execute("SELECT nodes, created_at FROM routing_rules")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception:
+        return out
+    for r in rows:
+        raw = r[0] if app_obj.DATABASE_URL else r["nodes"]
+        created = (r[1] if app_obj.DATABASE_URL else r["created_at"]) or ""
+        try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception: continue
+        if not any(n.get("type") == "broker"
+                   and (n.get("value") or "").lower() in ("alpaca-paper-4", "alpaca-live-4")
+                   for n in nodes):
+            continue
+        entry = next((("kairos" if (n.get("value") or "") == "kairos" else "tv")
+                      for n in nodes if n.get("type") == "entry_source"), "tv")
+        for n in nodes:
+            if n.get("type") == "strategy" and n.get("value"):
+                slug = n["value"].strip().upper()
+                c = str(created)[:10]
+                prev = out.get(slug)
+                if not prev or (c and c < prev["wired"]):
+                    out[slug] = {"entry": entry, "wired": c}
+    return out
+
+
+def _report_tag_switches(app_obj, limit=12):
+    """{STRATEGY: "YYYY-MM-DD"} — for strategies whose tag differs between reports,
+    the date of the newest report that changed it. Used only to recover switches
+    wired before the entry-since record existed."""
+    try:
+        conn = app_obj.get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT created_at, report FROM crew_reports ORDER BY created_at DESC LIMIT {int(limit)}")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    cards = []
+    for r in rows:
+        created = (r[0] if app_obj.DATABASE_URL else r["created_at"]) or ""
+        report = (r[1] if app_obj.DATABASE_URL else r["report"]) or ""
+        try:
+            picks = _parse_next_month_card(report)["picks"]
+        except Exception:
+            continue
+        cards.append((str(created)[:10], {p["strategy"]: (p.get("entry") or "tv") for p in picks}))
+    out = {}
+    for i, (date_i, tags) in enumerate(cards):           # newest first
+        for slug, tag in tags.items():
+            if slug in out:
+                continue
+            older = next((c[1][slug] for c in cards[i + 1:] if slug in c[1]), None)
+            # Newest first, so the first change found is where the CURRENT run of
+            # this tag began (K, K, T -> the second K's date).
+            if older is not None and older != tag:
+                out[slug] = date_i
+    return out
+
+
+def _entry_since_map(app_obj, rules=None):
+    """{STRATEGY: {"entry", "since"}} for every Crew Paper strategy: the date its
+    CURRENT entry tag took effect (never earlier than its wire date)."""
+    rules = _crew_rules_acct4(app_obj) if rules is None else rules
+    try:
+        saved = json.loads(app_obj._load_setting(CREW_ENTRY_SINCE_KEY) or "{}") or {}
+    except Exception:
+        saved = {}
+    switches = None
+    out = {}
+    for slug, r in rules.items():
+        rec = saved.get(slug)
+        if rec and rec.get("entry") == r["entry"] and rec.get("since"):
+            since = rec["since"]
+        else:
+            if switches is None:
+                switches = _report_tag_switches(app_obj)
+            since = switches.get(slug) or r["wired"]
+        out[slug] = {"entry": r["entry"], "since": max(since or "", r["wired"] or "")}
+    return out
+
+
+def _trades_since(app_obj, account, since_by_slug, slugs=None, takeable=False):
+    """{STRATEGY: {"trades", "pnl", "win_rate"}} counting each strategy only from
+    its own since date (None = everything in the fills window). One analysis call
+    per distinct date. Returns None if the book cannot be read.
+
+    takeable=True counts only trades inside the curated hours (for a farm, which
+    trades all day: what a Crew book could actually have taken)."""
+    groups = {}
+    for slug in (slugs if slugs is not None else since_by_slug):
+        groups.setdefault(since_by_slug.get(slug) or "", set()).add(slug)
+    out = {}
+    flask_app = app_obj if hasattr(app_obj, "test_client") else getattr(app_obj, "app", app_obj)
+    try:
+        with flask_app.test_client() as c:
+            for since, members in groups.items():
+                qs = f"account={account}" + (f"&from_date={since}" if since else "")
+                d = c.get(f"/api/alpaca/analysis?{qs}").get_json() or {}
+                if d.get("fills_unavailable"):
+                    return None
+                ps = {k.upper(): k for k in (d.get("per_strategy") or {})}
+                for slug in members:
+                    key = ps.get(slug)
+                    if takeable and key:
+                        r = _farm_rec(d, key)
+                        out[slug] = {"trades": r["trades"], "pnl": r["pnl"], "win_rate": None}
+                        continue
+                    st = (d.get("per_strategy") or {}).get(key) or {}
+                    out[slug] = {"trades": int(st.get("trades") or 0),
+                                 "pnl": round(float(st.get("total_pnl") or 0), 2),
+                                 "win_rate": st.get("win_rate")}
+    except Exception:
+        return None
+    return out
+
+
+_FORWARD_FARM = {"tv": "1", "kairos": "5"}
+
+
+def _core_verdict(book, farm, min_trades=None):
+    """(via, why). CORE needs at least one FORWARD record with min_trades+ trades and
+    a profit, and no forward record with min_trades+ trades that is losing. The two
+    records, both counted from the pick's entry date on its CURRENT entry:
+      crew — Crew Paper itself;
+      farm — the same-entry farm (Kairos Farm for [Kairos], TV Farm for [TV]) in
+             curated hours. It is forward too (only trades after the pick), and it is
+             not throttled by Crew Paper's own gates, so a pick can prove itself in
+             weeks rather than months.
+    via is "crew" | "farm" | None (audition)."""
+    min_trades = CREW_CORE_MIN_TRADES if min_trades is None else min_trades
+    recs = {"crew": book or {"trades": 0, "pnl": 0.0}, "farm": farm or {"trades": 0, "pnl": 0.0}}
+    deep = {k: r for k, r in recs.items() if r["trades"] >= min_trades}
+    label = {"crew": "Crew Paper", "farm": "its farm"}
+    losing = [k for k, r in deep.items() if r["pnl"] <= 0]
+    if losing:
+        k = losing[0]
+        return None, (f"{label[k]} lost ${abs(recs[k]['pnl']):.2f} over {recs[k]['trades']} forward "
+                      f"trades; core needs every {min_trades}+ trade forward record in profit")
+    if not deep:
+        return None, (f"{recs['crew']['trades']} Crew Paper and {recs['farm']['trades']} farm forward "
+                      f"trades on its current entry; core needs {min_trades}+ on one, in profit")
+    return ("crew" if "crew" in deep else "farm"), ""
+
+
+def _finalize_report_picks(app_obj, picks, today=None):
+    """Apply the roster rules the card states but the LLM can argue past:
+
+    - a pick whose entry tag differs from its current Crew Paper rule is SWITCHED:
+      its live record restarts today;
+    - the tier is set from the FORWARD evidence on the pick's current entry (see
+      _core_verdict), in both directions: a core pick that has not earned it is
+      wired as an audition, and an audition that has earned it — on Crew Paper or
+      on its farm since the pick — is promoted;
+    - auditions beyond CREW_AUDITION_SLOTS are dropped, keeping the card's order.
+
+    Returns (picks, notes, since_map). Report wires only — snapshot/hybrid picks
+    carry no tiers."""
+    today = today or datetime.now(timezone.utc).date().isoformat()
+    rules = _crew_rules_acct4(app_obj)
+    since_map = _entry_since_map(app_obj, rules)
+    notes = {"switched": [], "demoted": [], "promoted": [], "dropped_over_cap": [], "unreadable": False}
+    out, since_by = [], {}
+    for p0 in picks:
+        p = dict(p0)
+        slug, entry = p["strategy"], (p.get("entry") or "tv")
+        r = rules.get(slug)
+        if r and r["entry"] != entry:
+            notes["switched"].append({"strategy": slug, "from": r["entry"], "to": entry})
+            since_by[slug] = today
+        elif slug in since_map:
+            since_by[slug] = since_map[slug]["since"]
+        else:
+            since_by[slug] = today          # new to the book: nothing earned yet
+        out.append(p)
+    rec = _trades_since(app_obj, "4", since_by, [p["strategy"] for p in out])
+    farm = {}
+    for entry, acct in _FORWARD_FARM.items():
+        mine = [p["strategy"] for p in out if (p.get("entry") or "tv") == entry]
+        if mine:
+            got = _trades_since(app_obj, acct, since_by, mine, takeable=True)
+            farm.update(got or {})            # an unreadable farm just cannot vouch
+    if rec is None:
+        notes["unreadable"] = True          # cannot judge core; leave tiers as written
+    else:
+        for p in out:
+            slug = p["strategy"]
+            book, fm = rec.get(slug), farm.get(slug)
+            via, why = _core_verdict(book, fm)
+            was_core = (p.get("tier") or "core") == "core"
+            base = {"strategy": slug, "since": since_by[slug],
+                    "crew": book or {"trades": 0, "pnl": 0.0}, "farm": fm or {"trades": 0, "pnl": 0.0}}
+            if via:
+                p["tier"], p["core_via"] = "core", via
+                if not was_core:
+                    r = base[via]
+                    notes["promoted"].append({**base, "via": via, "why": (
+                        f"{'Crew Paper' if via == 'crew' else ('Kairos Farm' if (p.get('entry') or 'tv') == 'kairos' else 'TV Farm') + ' forward'}"
+                        f": {r['trades']} trades, ${r['pnl']:+.2f} since {since_by[slug]}")})
+            else:
+                p["tier"] = "audition"
+                p.pop("core_via", None)
+                if was_core:
+                    notes["demoted"].append({**base, "why": why})
+    kept, n_aud = [], 0
+    for p in out:
+        if (p.get("tier") or "core") == "audition":
+            if n_aud >= CREW_AUDITION_SLOTS:
+                notes["dropped_over_cap"].append(p["strategy"])
+                continue
+            n_aud += 1
+        kept.append(p)
+    return kept, notes, {k: v for k, v in since_by.items() if k in {p["strategy"] for p in kept}}
+
+
+def _save_entry_since(app_obj, picks, since_by):
+    """Persist {STRATEGY: {entry, since}} for the wired picks (kept for others)."""
+    try:
+        saved = json.loads(app_obj._load_setting(CREW_ENTRY_SINCE_KEY) or "{}") or {}
+    except Exception:
+        saved = {}
+    for p in picks:
+        slug = p["strategy"]
+        if since_by.get(slug):
+            saved[slug] = {"entry": p.get("entry") or "tv", "since": since_by[slug]}
+    app_obj._save_setting(CREW_ENTRY_SINCE_KEY, json.dumps(saved, sort_keys=True))
+
+
 def _crew_book_scorecard():
     """How the strategies CURRENTLY wired to Crew Paper (acct4) are actually doing,
     each measured since it was wired. Sourced from the LIVE routing rules — the
@@ -1540,26 +1807,41 @@ def _crew_book_scorecard():
                 enabled_of[s] = enabled_of.get(s, False) or bool(enabled)
     if not wired:
         return {}
-    since = min([c for c in wired.values() if c], default="") or None
-    per_strat = {}
-    try:
-        with _kairos.app.test_client() as _c:
-            qs = "account=4" + (f"&from_date={since}" if since else "")
-            d = _c.get(f"/api/alpaca/analysis?{qs}").get_json() or {}
-            per_strat = {k.upper(): v for k, v in (d.get("per_strategy") or {}).items()}
-    except Exception:
-        per_strat = {}
+    # Each strategy counts from when its CURRENT entry tag took effect; a switch
+    # restarts the record (see _entry_since_map). The earlier, other-entry record is
+    # kept alongside so the reader can still see it.
+    es = _entry_since_map(_kairos)
+    since_of = {s: max(wired[s] or "", (es.get(s) or {}).get("since") or "") or None for s in wired}
+    since = min([c for c in since_of.values() if c], default="") or None
+    cur_rec = _trades_since(_kairos, "4", since_of) or {}
+    prior_slugs = [s for s in wired if since_of[s] and wired[s] and since_of[s] > wired[s]]
+    prior = {}
+    if prior_slugs:
+        _all = _trades_since(_kairos, "4", {s: wired[s] for s in prior_slugs}) or {}
+        for s in prior_slugs:
+            a, c = _all.get(s) or {}, cur_rec.get(s) or {}
+            n = (a.get("trades") or 0) - (c.get("trades") or 0)
+            if n > 0:
+                prior[s] = {"trades": n, "pnl": round((a.get("pnl") or 0) - (c.get("pnl") or 0), 2),
+                            "until": since_of[s]}
+    fwd = {}
+    for entry, acct in _FORWARD_FARM.items():
+        mine = [s for s in wired if ((es.get(s) or {}).get("entry") or "tv") == entry]
+        if mine:
+            fwd.update(_trades_since(_kairos, acct, since_of, mine, takeable=True) or {})
     out, traded, positive, total = [], 0, 0, 0.0
     for s in wired:
-        st = per_strat.get(s)
+        st = cur_rec.get(s)
+        row = {"strategy": s, "since": since_of[s], "enabled": enabled_of.get(s, True),
+               "entry": (es.get(s) or {}).get("entry"), "farm_forward": fwd.get(s)}
+        if s in prior:
+            row["prior_entry"] = prior[s]
         if st and (st.get("trades") or 0) > 0:
-            pnl = round(st.get("total_pnl", 0) or 0, 2)
-            out.append({"strategy": s, "since": wired[s], "enabled": enabled_of.get(s, True),
-                        "trades": st.get("trades", 0), "pnl": pnl, "win_rate": st.get("win_rate", 0)})
+            pnl = st["pnl"]
+            out.append({**row, "trades": st["trades"], "pnl": pnl, "win_rate": st.get("win_rate") or 0})
             traded += 1; positive += 1 if pnl > 0 else 0; total += pnl
         else:
-            out.append({"strategy": s, "since": wired[s], "enabled": enabled_of.get(s, True),
-                        "trades": 0, "pnl": None, "win_rate": None})
+            out.append({**row, "trades": 0, "pnl": None, "win_rate": None})
     out.sort(key=lambda r: (r["pnl"] is None, r["pnl"] if r["pnl"] is not None else 0))  # worst first, untraded last
     return {"n_wired": len(wired), "n_traded": traded, "n_positive": positive,
             "total_pnl": round(total, 2), "since": since, "picks": out,
@@ -2991,7 +3273,16 @@ def api_crew_wire_preview():
         warnings.append(f"Parsed {len(picks)} picks, more than the {CREW_ROSTER_SIZE}-slot "
                         f"roster — the block may have duplicate slugs or a malformed line. "
                         f"Review carefully before wiring.")
+    # The same roster rules the wire enforces, so the preview shows what will wire.
+    try:
+        picks, roster_rules, _ = _finalize_report_picks(_kairos, picks)
+    except Exception as _fe:
+        roster_rules = {"error": str(_fe)}
+    live_books = _crew_window_books(_kairos)
+    for _p in picks:
+        _p["live"] = "alpaca6" in live_books and (_p.get("tier") or "core") != "audition"
     return jsonify({
+        "roster_rules": roster_rules, "audition_slots": CREW_AUDITION_SLOTS,
         "picks": picks, "count": len(picks), "has_block": has_block,
         "entry_source": parsed["entry_source"], "sizing": parsed["sizing"],
         "size_dollars": parsed["size_dollars"], "daytype": parsed["daytype"],
@@ -3029,6 +3320,7 @@ def api_crew_wire_to_router():
                         "docs/adding_a_paper_account.md). No rules created."}), 400
 
     source = (data.get("source") or "report").lower()
+    roster_rules, entry_since = None, None
     conn = _kairos.get_db()
     cur  = conn.cursor()
 
@@ -3094,6 +3386,10 @@ def api_crew_wire_to_router():
                             "'Next Month — Crew Paper' card. Make sure the latest report "
                             "leads with the decision card and names full strategy slugs "
                             "(e.g. AAPL_CAM_BREAKOUT_R4S4_V02_5MIN)."}), 400
+        # Enforce what the card states but the LLM can argue past: the core bar on
+        # the CURRENT entry, and the audition cap (see _finalize_report_picks).
+        picks, roster_rules, entry_since = _finalize_report_picks(_kairos, picks)
+        parsed["picks"] = picks
 
     # 2) Inventory existing rules: source pipelines (to clone each pick's tuned
     #    exit_params / hours / instrument) and existing Crew rules (to update in
@@ -3173,8 +3469,13 @@ def api_crew_wire_to_router():
         entry = entry if entry in ("tv", "kairos") else parsed["entry_source"]
         src = source_nodes.get(slug)
         if not src:
-            return _kairos._crew_default_nodes(slug, entry_source=entry,
-                                               qty=q, side_gate=gate)
+            # The default template targets Crew Paper; a live mirror built from it
+            # used to keep that broker, making a second PAPER rule named "Crew Live".
+            out = _kairos._crew_default_nodes(slug, entry_source=entry, qty=q, side_gate=gate)
+            for n in out:
+                if n.get("type") == "broker":
+                    n["value"] = broker_value
+            return out
         out, have_broker, have_entry = [], False, False
         for n in _copy.deepcopy(src[1]):
             t = n.get("type")
@@ -3231,6 +3532,12 @@ def api_crew_wire_to_router():
     # Writing these rules does NOT arm anything: every live entry still has to clear
     # _live_entry_allowed at order time. A mirror rule on a disarmed account is inert
     # by design — the roster stays in sync and ready, and arming is one env var.
+    #
+    # CORE picks only. An audition is unproven by definition, and at live size the
+    # one-share floor overshoots its half-size target; it earns real money by
+    # clearing the core bar on Crew Paper first. An audition's old live rule is
+    # pruned below like any other dropped name.
+    live_picks = [pk for pk in picks if (pk.get("tier") or "core") != "audition"]
     live_created, live_updated, live_deleted = [], [], []
     _live_tag  = "alpaca6"
     _mirror_on = _live_tag in getattr(_kairos, "ACCOUNTS_BY_TAG", {})
@@ -3242,7 +3549,7 @@ def api_crew_wire_to_router():
                 return max(1, round(_live_size * _tier_mult(pick) / prices[tk]))
             return None          # no price ⇒ no live rule; never guess a live size
 
-        for pick in picks:
+        for pick in live_picks:
             slug = pick["strategy"]
             lq   = _live_qty(slug, pick)
             if lq is None:
@@ -3266,7 +3573,7 @@ def api_crew_wire_to_router():
         # below there is no open-position deferral yet: a live rule that no longer
         # matches a pick should stop taking NEW entries immediately. Deleting the
         # rule does not touch an open position — its broker-side exits still stand.
-        _new = {pk["strategy"] for pk in picks}
+        _new = {pk["strategy"] for pk in live_picks}
         _by_rid = {}
         for _s, _rid in existing_live.items():
             _by_rid.setdefault(_rid, set()).add(_s)
@@ -3313,6 +3620,12 @@ def api_crew_wire_to_router():
 
     conn.commit()
     conn.close()
+
+    if entry_since:
+        try:
+            _save_entry_since(_kairos, picks, entry_since)
+        except Exception as _es:
+            _kairos.log.warning("crew wire: entry-since not saved: %s", _es)
 
     windows_res = None
     if isinstance(data.get("windows"), dict):
@@ -3371,6 +3684,7 @@ def api_crew_wire_to_router():
         "sides":   {pk["strategy"]: pk["side"] for pk in picks},
         "entries": {pk["strategy"]: pk.get("entry") for pk in picks},
         "windows": windows_res,
+        "roster_rules": roster_rules, "audition_slots": CREW_AUDITION_SLOTS,
     })
 
 
@@ -3833,8 +4147,8 @@ def _tier_conflicts(app_obj, picks, account="4"):
     out = []
     if not unreadable:
         for p_ in picks:
-            if (p_.get("tier") or "core") != "core":
-                continue
+            if (p_.get("tier") or "core") != "core" or p_.get("core_via"):
+                continue                  # core_via: the wire already checked it forward
             slug = (p_.get("strategy") or "").upper()
             n = counts.get(slug, 0)
             if n < CREW_CORE_MIN_TRADES:
@@ -4313,7 +4627,7 @@ def api_crew_hours_split():
     return (jsonify(out), 400) if out.get("error") else jsonify(out)
 
 
-def _hours_split_data(days=45):
+def _hours_split_data(days=45, prefer=None):
     """What each strategy earned INSIDE the curated windows versus OUTSIDE them.
 
     The farms are ungated, so their out-of-window fills are the natural control
@@ -4334,6 +4648,10 @@ def _hours_split_data(days=45):
                          "already in-window, so there is nothing to compare"}
 
     entry_map = _entry_source_by_strategy(_kairos)
+    # The crew passes each name's BETTER farm, so a pick is judged on the farm of the
+    # entry it is about to be tagged with, not the one it happens to be wired on.
+    if prefer:
+        entry_map = {**entry_map, **{k.upper(): v for k, v in prefer.items()}}
 
     import datetime as _dt
     frm = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)).strftime("%Y-%m-%d")
