@@ -165,12 +165,13 @@ def test_an_unreadable_book_leaves_tiers_as_written(fin):
     assert picks[0]["tier"] == "core" and notes["unreadable"] is True
 
 
-# ── the wire: live mirror is core-only; entry-since is saved ──────────────────
+# ── the wire: live mirrors every pick at full size; entry-since is saved ──────
 
-def test_crew_live_mirrors_core_picks_only(db, monkeypatch):
+def test_crew_live_mirrors_every_pick_at_full_size(db, monkeypatch):
     path, store = db
     _rule(path, "NVDA", "kairos", "2026-06-29 09:00:00")
-    _rule(path, "MU", "kairos", "2026-10-31 09:00:00", broker="alpaca-live-6")   # old live audition
+    _rule(path, "MU", "kairos", "2026-10-31 09:00:00", broker="alpaca-live-6")   # existing live rule
+    _rule(path, "AMD", "kairos", "2026-10-31 09:00:00", broker="alpaca-live-6")  # dropped from the card
     _report(path, "2026-11-01T01:00:00Z", [("NVDA", "both", "Kairos", "core"),
                                            ("MU", "both", "Kairos", "audition")])
     monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca4", {"tag": "alpaca4", "broker": None})
@@ -186,10 +187,14 @@ def test_crew_live_mirrors_core_picks_only(db, monkeypatch):
     c = sqlite3.connect(path)
     live = [json.loads(r[0]) for r in c.execute("SELECT nodes FROM routing_rules").fetchall()]
     c.close()
-    live_slugs = {n["value"] for ns in live if any(x.get("value") == "alpaca-live-6" for x in ns)
-                  for n in ns if n.get("type") == "strategy"}
-    assert live_slugs == {_s("NVDA")}, "only the core pick goes live; MU's old live rule is pruned"
-    assert _s("MU") in d["live_mirror"]["deleted"]
+    live_rules = [ns for ns in live if any(x.get("value") == "alpaca-live-6" for x in ns)]
+    live_slugs = {n["value"] for ns in live_rules for n in ns if n.get("type") == "strategy"}
+    assert live_slugs == {_s("NVDA"), _s("MU")}, "an audition goes live too"
+    assert d["live_mirror"]["deleted"] == [_s("AMD")], "only the dropped name is pruned"
+    # Full live size for both tiers: $1000 / $100 = 10 shares, no audition halving.
+    qtys = {next(n["value"] for n in ns if n.get("type") == "strategy"):
+            next(n["amount"] for n in ns if n.get("type") == "quantity") for ns in live_rules}
+    assert qtys == {_s("NVDA"): 10, _s("MU"): 10}
     saved = json.loads(store[C.CREW_ENTRY_SINCE_KEY])
     assert saved[_s("NVDA")]["entry"] == "kairos" and _s("MU") in saved
 
@@ -204,7 +209,7 @@ def test_the_preview_shows_tiers_after_the_rules_and_who_goes_live(db, monkeypat
     with a.app.test_client() as cl:
         d = cl.get("/api/crew/wire_preview").get_json()
     p = d["picks"][0]
-    assert p["tier"] == "audition" and p["live"] is False, "never traded on the book: audition, paper only"
+    assert p["tier"] == "audition" and p["live"] is True, "an audition still mirrors to live"
     assert d["roster_rules"]["demoted"][0]["strategy"] == _s("NVDA")
 
 

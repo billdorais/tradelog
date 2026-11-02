@@ -110,11 +110,13 @@ def test_auditions_are_wired_smaller_than_core():
     assert 'get("tier") == "audition"' in src[i:i + 400]
 
 
-def test_the_live_mirror_also_respects_the_tier():
-    """Crew Live is real money; an audition must not size like a core pick there."""
+def test_the_live_mirror_trades_every_pick_at_full_size():
+    """2026-11-02, user's call: no core step on live -- every card pick mirrors to
+    Crew Live at full LIVE_SIZE_DOLLARS. The tier cut stays on Crew Paper only."""
     src = inspect.getsource(crew.api_crew_wire_to_router)
     i = src.index("def _live_qty")
-    assert "_tier_mult(pick)" in src[i:i + 300]
+    assert "_tier_mult" not in src[i:i + 300]
+    assert "live_picks = list(picks)" in src
 
 
 # ── 2. the mechanism quota ──────────────────────────────────────────────────────

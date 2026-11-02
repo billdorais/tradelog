@@ -1203,9 +1203,10 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
                 f"{CREW_AUDITION_SLOTS} of {CREW_ROSTER_SIZE}; the rest MUST be core. If fewer than "
                 f"{CREW_ROSTER_SIZE - CREW_AUDITION_SLOTS} names can clear the core bar, RUN A SHORTER CARD — say so "
                 f"in one line and list only what qualifies. A short honest card beats padding the roster with "
-                f"names that have never traded. Auditions are wired at {CREW_AUDITION_SIZE_PCT}% of core size and "
-                f"trade on Crew Paper ONLY — Crew Live (real money) mirrors CORE picks alone — so calling something "
-                f"core when it is not is a real sizing and real-money decision, not a label. The wire enforces the "
+                f"names that have never traded. Auditions are wired at {CREW_AUDITION_SIZE_PCT}% of core size on "
+                f"Crew Paper, and Crew Live (real money) mirrors EVERY pick on the card at full live size — so every "
+                f"name you list is a real-money decision, and calling something core when it is not is a real "
+                f"sizing decision, not a label. The wire enforces the "
                 f"core bar and the audition cap: it demotes a core pick that has not earned it and drops auditions "
                 f"beyond the cap from the BOTTOM of your list, so order auditions best first. "
                 "SOURCING RULES: (a) candidates come from the FARM CANDIDATES block, top-down. A pick must be POSITIVE "
@@ -3297,7 +3298,7 @@ def api_crew_wire_preview():
         roster_rules = {"error": str(_fe)}
     live_books = _crew_window_books(_kairos)
     for _p in picks:
-        _p["live"] = "alpaca6" in live_books and (_p.get("tier") or "core") != "audition"
+        _p["live"] = "alpaca6" in live_books   # every pick mirrors live, either tier
     return jsonify({
         "roster_rules": roster_rules, "audition_slots": CREW_AUDITION_SLOTS,
         "picks": picks, "count": len(picks), "has_block": has_block,
@@ -3555,11 +3556,11 @@ def api_crew_wire_to_router():
     # _live_entry_allowed at order time. A mirror rule on a disarmed account is inert
     # by design — the roster stays in sync and ready, and arming is one env var.
     #
-    # CORE picks only. An audition is unproven by definition, and at live size the
-    # one-share floor overshoots its half-size target; it earns real money by
-    # clearing the core bar on Crew Paper first. An audition's old live rule is
-    # pruned below like any other dropped name.
-    live_picks = [pk for pk in picks if (pk.get("tier") or "core") != "audition"]
+    # EVERY pick, either tier, at full live size (2026-11-02, user's call). This was
+    # core-only, but with every pick a fresh audition after a retag that left Crew
+    # Live with no rules at all. The tier still halves Crew Paper's size; live
+    # ignores it. A dropped name's live rule is pruned below.
+    live_picks = list(picks)
     live_created, live_updated, live_deleted = [], [], []
     _live_tag  = "alpaca6"
     _mirror_on = _live_tag in getattr(_kairos, "ACCOUNTS_BY_TAG", {})
@@ -3568,7 +3569,7 @@ def api_crew_wire_to_router():
         def _live_qty(slug, pick=None):
             tk = slug.split("_", 1)[0].upper()
             if prices.get(tk):
-                return max(1, round(_live_size * _tier_mult(pick) / prices[tk]))
+                return max(1, round(_live_size / prices[tk]))   # full size, no tier cut
             return None          # no price ⇒ no live rule; never guess a live size
 
         for pick in live_picks:
