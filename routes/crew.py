@@ -372,6 +372,30 @@ def _fmt_farm_candidates(rows, wired=(), limit=None, days=45):
     return "\n".join(lines)
 
 
+def _sizing_text():
+    """What the books actually trade, from the live settings — the prompt used to
+    carry a hardcoded ladder ($5k top band) long after the bands moved, so the crew
+    quoted positions a third of the size of what the wire placed."""
+    try:
+        import app as _kairos
+        bands = list(_kairos._REFINED_SIZE_BANDS)
+        live = float(getattr(_kairos, "LIVE_SIZE_DOLLARS", 0) or 0)
+    except Exception:
+        return "(sizing unavailable)"
+    if len(bands) == 1:
+        ref = f"Refined books trade a flat ${bands[0][1]:,.0f} per position."
+    else:
+        ref = ("Refined books size by score band: "
+               + ", ".join(f"score >= {m} -> ${d:,.0f}" if m else f"else ${d:,.0f}" for m, d in bands) + ".")
+    top = bands[0][1]
+    crew = (f"Crew Paper: CORE picks trade the top band (${top:,.0f}); AUDITIONS trade "
+            f"{CREW_AUDITION_SIZE_PCT}% of that (${top * CREW_AUDITION_SIZE_PCT / 100:,.0f}).")
+    lv = (f"Crew Live (REAL MONEY): EVERY pick on the card, core or audition, at a full ${live:,.0f} "
+          f"per position (a 1-share minimum can push a high-priced name above that)."
+          if live > 0 else "Crew Live: not mirroring.")
+    return "\n".join([ref, crew, lv])
+
+
 def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list = None, prev_reports: list = None, period: str = "", rules_data: list = None, engine_data: dict = None, engine_strat_data: dict = None, card_data: dict = None, scorecard_data: dict = None, book_data: dict = None, farm_strat_data: dict = None, kairos_farm_strat_data: dict = None, kairos_target: str = "none", tv_snap_rank: dict = None, kairos_snap_rank: dict = None, windows: dict = None) -> None:
     """Two-agent Kairos trading crew: Data Analyst + Professional Systematic Trader."""
     _orig = sys.stdout
@@ -841,18 +865,20 @@ def _run_kairos_crew(q: queue.Queue, strat_data: dict = None, journal_data: list
             # Say why an empty scorecard is empty. Without this the reader cannot tell
             # "the picks failed" from "there has not been time for a trade yet", and
             # those call for opposite responses.
+            _ses = sc.get("sessions_forward")
             if not sc.get("n_traded") and not sc.get("n_proxy"):
-                if _fwd is not None and _fwd <= 1:
+                if (_ses is not None and _ses <= 1) or (_ses is None and _fwd is not None and _fwd <= 1):
                     lines.append(
-                        f"NOTHING IS GRADEABLE YET: the previous card was filed {_fwd} day(s) "
-                        f"ago, so there has been no forward window for a trade to happen in — "
+                        f"NOTHING IS GRADEABLE YET: the previous card was filed {_fwd} calendar day(s) "
+                        f"ago, which is {_ses if _ses is not None else '?'} MARKET SESSION(S) (weekends and "
+                        f"holidays have no trading), so there has been no forward window for a trade to happen in — "
                         f"on the book OR on the farms. This is a TIMING fact, not a result. Do "
                         f"NOT describe the selection method as untested-and-therefore-fine, and "
                         f"do not speculate about what the farms would have said: say the window "
                         f"is too short and move on.")
                 else:
                     lines.append(
-                        f"NOTHING GRADED over {_fwd if _fwd is not None else '?'} days: no book "
+                        f"NOTHING GRADED over {_ses if _ses is not None else '?'} market sessions: no book "
                         f"trades AND no farm trades on any pick, curated hours. With a real "
                         f"window elapsed that is itself a finding — the roster may be gated out "
                         f"of the market rather than merely unlucky. Say so.")
@@ -1031,9 +1057,10 @@ grid-searches trail% and trigger% combinations per strategy type to find optimal
 parameters. Results are saved to the weekly journal as "sweep snapshots."
 
 SIZING:
-Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $500
-(pre-live target sizing for ~$25k equity)
+__SIZING__
 """
+
+        KAIROS_SYSTEM_KNOWLEDGE = KAIROS_SYSTEM_KNOWLEDGE.replace("__SIZING__", _sizing_text())
 
         advisor = Agent(
             role="Professional Systematic Trading Advisor",
@@ -1412,6 +1439,28 @@ Refined score bands: ≥80 → $5k/trade, ≥65 → $3k, ≥50 → $1.5k, else $
 
 # ── Pick scorecard — grade the last report's Top-N against reality ─────────────
 
+def _sessions_since(since, today=None):
+    """Market sessions strictly after `since` (YYYY-MM-DD) up to and including today
+    (ET): weekdays that are not NYSE holidays. A card filed on Friday evening has had
+    ZERO forward sessions by Sunday — counting calendar days told the crew a real
+    window had passed and it concluded the book was "gated out of the market"."""
+    import app as _kairos
+    from datetime import date as _d, timedelta as _td
+    from zoneinfo import ZoneInfo
+    try:
+        start = _d.fromisoformat(str(since)[:10])
+    except Exception:
+        return None
+    if today is None:
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+    n, d = 0, start + _td(days=1)
+    while d <= today:
+        if _kairos._market_closed_reason(d.isoformat()) is None:
+            n += 1
+        d += _td(days=1)
+    return n
+
+
 def _pick_scorecard(prev_report=None):
     """Grade the LAST crew report's Top-N picks against what they actually did on
     Crew Paper (acct4) since the report was written. Picks are chosen on lookback
@@ -1501,7 +1550,7 @@ def _pick_scorecard(prev_report=None):
     except Exception:
         _days_fwd = None
     return {"report_week": prev_report.get("week"), "since": since,
-            "days_forward": _days_fwd,
+            "days_forward": _days_fwd, "sessions_forward": _sessions_since(since),
             "n_picks": len(picks), "n_traded": traded, "n_positive": positive,
             "total_pnl": round(total, 2), "picks": rows,
             # Kept SEPARATE from the book totals on purpose: mixing a proxy into the

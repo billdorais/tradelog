@@ -291,3 +291,30 @@ def test_the_book_block_shows_the_farm_forward_record():
     src = inspect.getsource(C._run_kairos_crew)
     assert "Farm FORWARD since" in src and "farm_forward" in src
     assert "OR on its same-entry farm since it was wired" in src
+
+
+# ── the scorecard counts market sessions, not calendar days ───────────────────
+
+def test_a_weekend_is_zero_sessions():
+    import datetime as d
+    assert C._sessions_since("2026-10-31", d.date(2026, 11, 1)) == 0      # Sat -> Sun
+    assert C._sessions_since("2026-10-30", d.date(2026, 11, 2)) == 1      # Fri -> Mon
+    assert C._sessions_since("2026-11-25", d.date(2026, 11, 30)) == 2     # Thanksgiving skipped
+
+
+def test_the_scorecard_block_reads_sessions():
+    import inspect
+    src = inspect.getsource(C._run_kairos_crew)
+    assert 'sc.get("sessions_forward")' in src
+    assert "MARKET SESSION(S)" in src and "market sessions: no book" in src
+    assert '"sessions_forward": _sessions_since(since)' in inspect.getsource(C._pick_scorecard)
+
+
+def test_sizing_comes_from_the_live_settings(monkeypatch):
+    monkeypatch.setattr(a, "_REFINED_SIZE_BANDS", [(0, 15000)])
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000, raising=False)
+    txt = C._sizing_text()
+    assert "flat $15,000" in txt and "($7,500)" in txt and "full $1,000 per position" in txt
+    assert "EVERY pick on the card" in txt, "matches the wire: every pick mirrors live"
+    src = __import__("inspect").getsource(C._run_kairos_crew)
+    assert "$5k/trade" not in src and '"__SIZING__", _sizing_text()' in src
