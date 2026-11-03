@@ -901,7 +901,7 @@ def farms_page():
 
 @farms_bp.route("/api/farms/leaders")
 def api_farm_leaders():
-    """?n=10|20 &days=30|60|90 &period=week|month &min_trades=5 &cap=2
+    """?n=5|10|20 (per farm) &days=30|60|90 &period=week|month &min_trades=5 &cap=2
 
     Both farms ranked, bucketed by period, plus the combined Select roster and its
     diff against what account 7 runs now."""

@@ -897,3 +897,23 @@ def test_biggest_matched_gaps_are_listed_worst_first():
 def test_vs_panel_lists_biggest_gaps_and_left_out_strategies():
     html = open("templates/farms.html", encoding="utf-8").read()
     assert "function _worstMatched" in html and "d.inferred_source" in html and "Left out of both lines" in html
+
+
+def test_the_page_offers_top_5_10_and_20():
+    html = open("templates/farms.html", encoding="utf-8").read()
+    for n in (5, 10, 20):
+        assert f'data-n="{n}" onclick="setOpt(\'n\',{n})"' in html
+    assert "Top 5 is up to 10 strategies" in html, "the label says N is per farm"
+
+
+def test_apply_ranks_each_farm_on_the_chosen_top_n(router, monkeypatch):
+    import app as a
+    db, roster, saved = router
+    seen = {}
+    monkeypatch.setattr(farms, "_build", lambda p: (seen.update(p), ({}, roster, {}, {}))[1])
+    r = a.app.test_client().post("/api/farms/apply_select",
+                                 json={"n": 5, "size_dollars": 15000,
+                                       "expect": [x["strategy"] for x in roster]})
+    assert r.status_code == 200, r.get_json()
+    assert seen["n"] == 5
+    assert json.loads(saved["SELECT_LAST_APPLY"])["n"] == 5
