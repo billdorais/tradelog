@@ -1337,8 +1337,15 @@
     if (_cv !== null && _tv !== null && _kv !== null) {
       const dup = Math.round((_tv + _kv - _cv) * 100) / 100;
       if (Math.abs(dup) >= 0.01) {
-        combSub = `TV + Kairos = ${_money(_tv + _kv)}; ${_money(dup)} of that is the second copy of strategies `
-          + `on both lists, which Select runs once (from the farm with the higher PF)`;
+        // dup is what the dropped copies did, and it can be a LOSS — then Combined is
+        // above TV + Kairos, and "X of that is the second copy" read as wrong math.
+        const nBoth = fwd ? null : ((_data.roster || []).filter(r => r.also_in).length || null);
+        const who = nBoth ? `${nBoth} ${nBoth === 1 ? 'strategy is' : 'strategies are'} on both lists`
+                          : 'some strategies are on both lists';
+        const when = _accWeekKey !== null ? ' this week' : '';
+        combSub = `TV + Kairos = ${_money(Math.round((_tv + _kv) * 100) / 100)}. ${who}; Select runs each once, `
+          + `from the farm with the higher PF. The other farm's copies ${dup > 0 ? 'made' : 'lost'} `
+          + `$${Math.abs(dup).toFixed(2)}${when}, so Combined is $${Math.abs(dup).toFixed(2)} ${dup > 0 ? 'lower' : 'higher'}`;
       }
     }
     document.getElementById('accTiles').innerHTML =
