@@ -1285,6 +1285,26 @@
   const _fmtDay = d => { const [y, m, dd] = d.split('-').map(Number);
     return new Date(y, m - 1, dd).toLocaleString('en-US', { month: 'short', day: 'numeric' }); };
 
+  // Hindsight mode only: each farm's top list split into the strategies Select runs
+  // FROM that farm and the ones it runs from the other farm, with what each group
+  // made over dates[i0..i1]. null when the per-strategy lines are missing.
+  function _selectSplit(acc, i0, i1) {
+    const lines = acc.strategies || [], roster = (_data && _data.roster) || [];
+    if (!lines.length || !roster.length) return null;
+    const runsFrom = {};
+    for (const r of roster) runsFrom[r.strategy] = r.farm;
+    const out = { tv: { run: 0, runN: 0, drop: 0, dropN: 0 }, kairos: { run: 0, runN: 0, drop: 0, dropN: 0 } };
+    for (const s of lines) {
+      const o = out[s.farm];
+      if (!o || !s.values || s.values.length <= i1) return null;
+      const v = s.values[i1] - (i0 > 0 ? s.values[i0 - 1] : 0);
+      if (runsFrom[s.strategy] === s.farm) { o.run += v; o.runN++; }
+      else                                 { o.drop += v; o.dropN++; }
+    }
+    for (const o of Object.values(out)) { o.run = Math.round(o.run * 100) / 100; o.drop = Math.round(o.drop * 100) / 100; }
+    return out;
+  }
+
   function _renderAccumulation() {
     const acc = _data.accumulation || {};
     const per = _data.period === 'month' ? 'month' : 'week';
@@ -1295,9 +1315,10 @@
     if (_accWeekKey !== null && !weeks.includes(_accWeekKey)) _accWeekKey = null;
     const wi = weeks.indexOf(_accWeekKey);
     let dates = acc.dates || [], series = acc[_accMode] || {};
+    let i0 = 0, i1 = dates.length - 1;
     if (_accWeekKey !== null) {
       const idx = dates.map((d, i) => _wkStart(d) === _accWeekKey ? i : -1).filter(i => i >= 0);
-      const i0 = idx[0], i1 = idx[idx.length - 1];
+      i0 = idx[0]; i1 = idx[idx.length - 1];
       const cut = arr => {
         const a = arr || [], base = i0 > 0 && a[i0 - 1] !== null ? a[i0 - 1] : 0;
         return a.slice(i0, i1 + 1).map(v => v === null ? null : Math.round((v - base) * 100) / 100);
@@ -1334,7 +1355,22 @@
     // the tile, or the three numbers look like they don't add up.
     const _cv = _last(series.combined || []), _tv = _last(series.tv || []), _kv = _last(series.kairos || []);
     let combSub = 'one rule per strategy, as Apply wires it';
-    if (_cv !== null && _tv !== null && _kv !== null) {
+    const farmSub = { tv: 'enters on TV alerts', kairos: 'enters on the engine' };
+    const split = fwd ? null : _selectSplit(acc, i0, i1);
+    if (split && _cv !== null) {
+      // Build Combined out of its two halves so the three tiles visibly add up: a
+      // farm's tile can be red only because of copies Select runs on the other farm.
+      const nm = { tv: 'TV', kairos: 'Kairos' };
+      combSub = `= the ${split.tv.runN} TV picks Select runs (${_money(split.tv.run)}) `
+        + `+ the ${split.kairos.runN} Kairos picks it runs (${_money(split.kairos.run)}). One rule per strategy, as Apply wires it`;
+      for (const f of ['tv', 'kairos']) {
+        const s = split[f], other = f === 'tv' ? 'kairos' : 'tv';
+        if (!s.dropN) continue;
+        farmSub[f] += ` · Select runs ${s.runN} of these ${s.runN + s.dropN} (${_money(s.run)}); `
+          + `the other ${s.dropN} it runs from ${nm[other]} Farm instead, so this farm's copies `
+          + `(${_money(s.drop)}) are not in Combined`;
+      }
+    } else if (_cv !== null && _tv !== null && _kv !== null) {
       const dup = Math.round((_tv + _kv - _cv) * 100) / 100;
       if (Math.abs(dup) >= 0.01) {
         // dup is what the dropped copies did, and it can be a LOSS — then Combined is
@@ -1350,8 +1386,8 @@
     }
     document.getElementById('accTiles').innerHTML =
         tile('Combined', _cv, combSub)
-      + tile('TV Farm ' + lbl, _last(series.tv || []), 'enters on TV alerts')
-      + tile('Kairos Farm ' + lbl, _last(series.kairos || []), 'enters on the engine');
+      + tile('TV Farm ' + lbl, _last(series.tv || []), farmSub.tv)
+      + tile('Kairos Farm ' + lbl, _last(series.kairos || []), farmSub.kairos);
 
     if (_charts.acc) _charts.acc.destroy();
     const few = dates.length <= 10;   // a week is ≤5 points — show them
