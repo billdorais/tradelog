@@ -42,13 +42,16 @@ MAX_VARIANTS = 30
 SLOW_FILL_S = 5.0            # broker waits 5 s for the entry; slower fills take the immediate-trail path
 POLL_S = 1.0                 # the broker's trigger thread polls unrealized P&L every second
 DEFAULT_PLACE_DELAY_S = 1.0  # entry fill → protective order, when not observed
-WINDOW_AFTER_S = 20 * 60     # ticks fetched per trade: fill → 20 min (max hold is 10–15)
+WINDOW_AFTER_S = 16 * 60     # ticks fetched per trade: fill → 16 min (max hold is 10–15)
+MAX_WINDOW_S = 30 * 60       # a merged tick window never spans more than this (a ticker traded
+                             # all day would otherwise pull the whole session into memory)
+TICK_CHUNK_S = 5 * 60        # ticks are requested 5 min at a time and packed into arrays as they arrive
+HEARTBEAT_STALE_S = 15 * 60  # a 'running' run with no progress for this long died (e.g. a restart)
 REF_MAX_GAP = 0.01           # a derived signal price more than 1% from the fill is ignored
 MATCH_DT_S = 15.0            # match check: replayed exit within 15 s …
 MATCH_DPX_PCT = 0.03         # … and within 0.03% of the real exit price
 TRUST_MIN_MATCH = 0.70       # the replay is trusted when ≥70% of stop exits match
 TRUST_MAX_GAP = 0.25         # … and as-configured P&L is within 25% of actual per group
-STALE_RUN_S = 3 * 3600       # a 'running' row older than this is treated as dead
 
 # SIP sale conditions that don't update the last sale price (odd lot, average price,
 # out of sequence, form T, prior reference, official open/close, derivatively priced …).
@@ -312,7 +315,7 @@ def merge_windows(trades):
         for tr in sorted(by_sym[sym], key=lambda x: x["fill_t"]):
             s = tr["fill_t"] - 5
             e = max(tr["fill_t"] + WINDOW_AFTER_S, tr["exit"]["t"] + 90)
-            if cur and s <= cur[2]:
+            if cur and s <= cur[2] and e - cur[1] <= MAX_WINDOW_S:
                 cur[2] = max(cur[2], e)
                 cur[3].append(tr)
             else:
@@ -468,18 +471,30 @@ def _iso_epochs(stamps):
     return arr.astype("int64") / 1e9
 
 
-def _ticks(client, symbol, start, end):
+def _ticks(client, symbol, start, end, beat=None):
+    """Last-sale-eligible trade ticks in [start, end], fetched TICK_CHUNK_S at a time so
+    only one chunk's raw dicts are in memory at once."""
     from alpaca.data.requests import StockTradesRequest
     a = _app()
-    req = StockTradesRequest(symbol_or_symbols=symbol, start=datetime.fromtimestamp(start, timezone.utc),
-                             end=datetime.fromtimestamp(end, timezone.utc), feed=a._alpaca_data_feed())
-    raw = client.get_stock_trades(req)
-    rows = raw.get(symbol, []) if isinstance(raw, dict) else []
-    rows = [r for r in rows if not (set(r.get("c") or []) & NON_LAST_SALE)]
-    if not rows:
+    ts, ps = [], []
+    s = start
+    while s < end:
+        e = min(end, s + TICK_CHUNK_S)
+        req = StockTradesRequest(symbol_or_symbols=symbol, start=datetime.fromtimestamp(s, timezone.utc),
+                                 end=datetime.fromtimestamp(e, timezone.utc), feed=a._alpaca_data_feed())
+        raw = _retry(lambda: client.get_stock_trades(req))
+        rows = raw.get(symbol, []) if isinstance(raw, dict) else []
+        rows = [r for r in rows if not (set(r.get("c") or []) & NON_LAST_SALE)]
+        if rows:
+            ts.append(_iso_epochs([r["t"] for r in rows]))
+            ps.append(np.array([float(r["p"]) for r in rows]))
+        del raw, rows
+        s = e
+        if beat:
+            beat()
+    if not ts:
         return np.array([]), np.array([])
-    t = _iso_epochs([r["t"] for r in rows])
-    p = np.array([float(r["p"]) for r in rows])
+    t, p = np.concatenate(ts), np.concatenate(ps)
     order = np.argsort(t, kind="stable")
     return t[order], p[order]
 
@@ -521,11 +536,20 @@ def _ensure_table():
         conn.commit()
     finally:
         conn.close()
+    conn = a.get_db()
+    try:                                     # heartbeat column, added after the first release
+        conn.execute("ALTER TABLE exit_replay_runs ADD COLUMN updated_at TEXT")
+        conn.commit()
+    except Exception:
+        pass                                 # already there
+    finally:
+        conn.close()
 
 
 def _save(run_id, **fields):
     a = _app()
     ph = a.placeholder()
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
     conn = a.get_db()
     try:
         sets = ", ".join(f"{k}={ph}" for k in fields)
@@ -535,15 +559,25 @@ def _save(run_id, **fields):
         conn.close()
 
 
-def _running_elsewhere():
+def _reap_dead_runs():
+    """Mark 'running' runs with no heartbeat for HEARTBEAT_STALE_S as failed (the worker
+    that ran them restarted). Returns the ids still genuinely running."""
     a = _app()
     conn = a.get_db()
     try:
-        rows = conn.execute("SELECT id, created_at FROM exit_replay_runs WHERE status='running'").fetchall()
+        rows = conn.execute("SELECT id, created_at, updated_at FROM exit_replay_runs "
+                            "WHERE status='running'").fetchall()
     finally:
         conn.close()
-    now = time.time()
-    return [r[0] for r in rows if now - _ts(r[1]) < STALE_RUN_S]
+    now, alive = time.time(), []
+    for rid, created, updated in rows:
+        last = _ts(updated) or _ts(created) or 0
+        if now - last < HEARTBEAT_STALE_S:
+            alive.append(rid)
+        else:
+            _save(rid, status="failed", progress="stopped without finishing (no progress for "
+                                                 f"{HEARTBEAT_STALE_S // 60} min; the server likely restarted)")
+    return alive
 
 
 def run_replay(run_id, account, from_date, to_date, variants):
@@ -559,7 +593,13 @@ def run_replay(run_id, account, from_date, to_date, variants):
         client = _data_client()
         windows = merge_windows(trades)          # [(symbol, start, end, [trades])]
         win_of = {id(tr): w for w in windows for tr in w[3]}
-        tick_cache, done = {}, [0]
+        tick_cache, done, last_beat = {}, [0], [0.0]
+
+        def beat(force=False):
+            if force or time.time() - last_beat[0] > 30:
+                last_beat[0] = time.time()
+                _progress[run_id] = f"replayed {done[0]} of {len(trades)} trades"
+                _save(run_id, progress=_progress[run_id])
 
         def ticks_for(tr):
             sym, s, e, _members = win_of[id(tr)]
@@ -568,12 +608,10 @@ def run_replay(run_id, account, from_date, to_date, variants):
                 if _market_open():
                     raise RuntimeError("market opened — replay stopped")
                 tick_cache.clear()                # one window in memory at a time
-                tick_cache[key] = _retry(lambda: _ticks(client, sym, s, e))
+                tick_cache[key] = _ticks(client, sym, s, e, beat=beat)
             t, p = tick_cache[key]
             done[0] += 1
-            if done[0] % 50 == 0:
-                _progress[run_id] = f"replayed {done[0]} of {len(trades)} trades"
-                _save(run_id, progress=_progress[run_id])
+            beat()
             if len(t) == 0:
                 return None
             i0 = np.searchsorted(t, tr["fill_t"] - 5)
@@ -645,7 +683,7 @@ def api_run():
                                  "runs while the market is closed (before 09:00 or after 16:30 ET, "
                                  "and weekends)."}), 423
     _ensure_table()
-    if _running_elsewhere() or not _job_lock.acquire(blocking=False):
+    if _reap_dead_runs() or not _job_lock.acquire(blocking=False):
         return jsonify({"error": "a replay is already running"}), 409
     run_id = uuid.uuid4().hex[:12]
     params = {"account": account, "from": d0.isoformat(), "to": d1.isoformat(), "variants": variants}
@@ -658,6 +696,7 @@ def api_run():
         conn.commit()
     finally:
         conn.close()
+    _save(run_id, progress="starting")           # first heartbeat
     threading.Thread(target=run_replay, args=(run_id, account, d0.isoformat(), d1.isoformat(), variants),
                      daemon=True, name=f"exit-replay-{run_id}").start()
     return jsonify({"run_id": run_id, "status": "running"})
@@ -666,6 +705,7 @@ def api_run():
 @exit_replay_bp.route("/api/exit_replay/runs", methods=["GET"])
 def api_runs():
     _ensure_table()
+    _reap_dead_runs()
     a = _app()
     conn = a.get_db()
     try:

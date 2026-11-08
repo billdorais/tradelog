@@ -164,6 +164,10 @@ def test_merge_windows_groups_overlaps_per_symbol():
     d = {"symbol": "AAPL", "fill_t": T0, "exit": {"t": T0 + 10}}
     w = er.merge_windows([a, b, c, d])
     assert [(x[0], len(x[3])) for x in w] == [("AAPL", 1), ("NVDA", 2), ("NVDA", 1)]
+    # A ticker traded every 5 minutes doesn't merge into one all-day window.
+    day = [{"symbol": "TSLA", "fill_t": T0 + k * 300, "exit": {"t": T0 + k * 300 + 60}} for k in range(60)]
+    spans = [x[2] - x[1] for x in er.merge_windows(day)]
+    assert len(spans) > 1 and max(spans) <= er.MAX_WINDOW_S
 
 
 # ── endpoints ──────────────────────────────────────────────────────────────────
@@ -216,6 +220,36 @@ def test_run_endpoint_validates_and_starts(client):
     assert detail["status"] == "done" and "rows" not in detail["result"]
     assert c.get(f"/api/exit_replay/runs/{rid}?rows=1").get_json()["result"]["rows"] == [1]
     assert c.get("/api/exit_replay/runs/nope").status_code == 404
+
+
+def test_dead_run_is_reaped_and_no_longer_blocks(client, monkeypatch):
+    c, started = client
+    er._ensure_table()
+    conn = er._app().get_db()
+    old = "2026-11-08T10:00:00+00:00"
+    conn.execute("INSERT INTO exit_replay_runs (id, created_at, params, status, progress, result, updated_at) "
+                 "VALUES ('dead1', ?, '{}', 'running', 'replayed 1450 of 2040 trades', NULL, ?)", (old, old))
+    conn.commit(); conn.close()
+    assert c.post("/api/exit_replay/run", json=_body()).status_code == 200
+    runs = {r["id"]: r for r in c.get("/api/exit_replay/runs").get_json()["runs"]}
+    assert runs["dead1"]["status"] == "failed" and "restarted" in runs["dead1"]["progress"]
+
+
+def test_ticks_are_fetched_in_chunks(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def get_stock_trades(self, req):
+            calls.append((req.start, req.end))
+            return {"NVDA": [{"t": req.start.strftime("%Y-%m-%dT%H:%M:%S.000000001Z"), "p": 100.0, "c": ["@"]},
+                             {"t": req.start.strftime("%Y-%m-%dT%H:%M:%S.5Z"), "p": 100.1, "c": ["I"]}]}
+    import app as a
+    monkeypatch.setattr(a, "_alpaca_data_feed", lambda: "sip", raising=False)
+    beats = []
+    t, p = er._ticks(FakeClient(), "NVDA", T0, T0 + 12 * 60, beat=lambda: beats.append(1))
+    assert len(calls) == 3 and len(beats) == 3           # 5 + 5 + 2 minutes
+    assert list(p) == [100.0, 100.0, 100.0]              # the odd-lot ('I') ticks are dropped
+    assert t[0] == pytest.approx(T0, abs=1e-6)
 
 
 def test_run_refused_while_market_open(client, monkeypatch):
