@@ -424,6 +424,18 @@
           <label title="Comma-separated trigger values to test, e.g. 0, 0.1, 0.2">Triggers to test</label>
           <input type="text" id="sweepTriggers" value="0, 0.1" style="width:110px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit">
         </div>
+        <div class="param-group">
+          <label title="Spread + slippage charged on every simulated exit, as % of price. 0 = perfect fills (the old behaviour).">Exit cost</label>
+          <div class="input-wrap"><input type="number" id="sweepExitCost" value="0" step="0.01" min="0" max="1"><span class="unit">%</span></div>
+        </div>
+        <div class="param-group">
+          <label title="Whether a trade can stop out inside the minute it entered. 1-min bars start after the entry, so by default a tight trail can't fire in its first seconds.">Entry minute</label>
+          <select id="sweepEntryMinute" style="background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit">
+            <option value="skip">Ignore (old)</option>
+            <option value="close">Stop if it closed through</option>
+            <option value="extreme">Stop if it touched</option>
+          </select>
+        </div>
         <div class="param-group" style="justify-content:flex-end">
           <label>&nbsp;</label>
           <label class="toggle-wrap" title="Find the best trail independently per strategy type">
@@ -3296,6 +3308,8 @@
     const skipExits   = document.getElementById('skipTvExits').checked;
     const maxHold     = parseInt(document.getElementById('maxHold').value) || 0;
     const stopDollars = parseFloat(document.getElementById('stopLossDollars').value) || 0;
+    const exitCost    = parseFloat(document.getElementById('sweepExitCost')?.value) || 0;
+    const entryMinute = document.getElementById('sweepEntryMinute')?.value || 'skip';
     btn.disabled = true; btn.textContent = '⏳ Sweeping…';
     document.getElementById('sweepResults').style.display = 'none';
     try {
@@ -3304,7 +3318,8 @@
         body: JSON.stringify({ from_date: fromDate, to_date: toDate, account,
           trail_min: trailMin, trail_max: trailMax, trail_step: trailStep,
           triggers, per_strategy: perStrategy, skip_tv_exits: skipExits,
-          max_hold_mins: maxHold, stop_loss_dollars: stopDollars }),
+          max_hold_mins: maxHold, stop_loss_dollars: stopDollars,
+          exit_cost_pct: exitCost, entry_minute: entryMinute }),
       });
       if (!res.ok) { alert(`Sweep error ${res.status}: ${await res.text()}`); return; }
       const data = await res.json();
@@ -3328,7 +3343,8 @@
                               : `<span style="color:#e74c3c">-$${Math.abs(v).toFixed(2)}</span>`;
 
     if (data.mode === 'global') {
-      title.textContent = `Sweep results — SR baseline $${data.sr_total >= 0 ? '+' : ''}${data.sr_total.toFixed(2)} · ${data.results[0]?.trades || 0} trades`;
+      title.textContent = `Sweep results — SR baseline $${data.sr_total >= 0 ? '+' : ''}${data.sr_total.toFixed(2)} · ${data.results[0]?.trades || 0} trades`
+        + (data.actual_total != null ? ` · actual $${data.actual_total >= 0 ? '+' : ''}${data.actual_total.toFixed(2)}` : '');
       const rows = data.results.map((r, i) => `
         <tr class="${i === 0 ? 'sweep-row-best' : ''}">
           <td>${i+1}</td>
@@ -3353,6 +3369,7 @@
     } else {
       const best = data.best_overrides;
       title.innerHTML = `Per-strategy sweep &nbsp;·&nbsp; SR baseline ${fmt(data.sr_total)} &nbsp;·&nbsp; `
+        + (data.actual_total != null ? `Actual ${fmt(data.actual_total)} &nbsp;·&nbsp; ` : '')
         + `Combined best ${fmt(data.combined_pnl)} &nbsp;·&nbsp; Delta ${fmt(data.delta)} `
         + `&nbsp;<button class="sweep-apply-btn" style="margin-left:8px" onclick='applyAllSweepOptima(${JSON.stringify(best)})'>Apply all optima to chips</button>`;
       const sections = data.strategies.map(s => {
@@ -3363,7 +3380,7 @@
           </tr>`).join('');
         return `
           <div class="sweep-strat-section">
-            <div class="sweep-strat-title">${s.strategy} &nbsp;(${s.trades} trades · SR ${fmt(s.sr_pnl)} · best ${fmt(s.best_pnl)} · delta ${fmt(s.delta)})</div>
+            <div class="sweep-strat-title">${s.strategy} &nbsp;(${s.trades} trades · SR ${fmt(s.sr_pnl)}${s.actual_pnl != null ? ` · actual ${fmt(s.actual_pnl)}` : ''} · best ${fmt(s.best_pnl)} · delta ${fmt(s.delta)})</div>
             <div class="tbl-wrap" style="max-width:480px">
               <table>
                 <thead><tr><th>Trail</th><th>Trigger</th><th>P&L</th><th></th></tr></thead>

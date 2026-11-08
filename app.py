@@ -8361,6 +8361,17 @@ def simulate_sweep():
     max_hold     = int(body.get("max_hold_mins", 0))
     skip_exits   = bool(body.get("skip_tv_exits", True))
     per_strategy = bool(body.get("per_strategy", False))
+    # Realism knobs (defaults reproduce the old sweep exactly):
+    #   exit_cost_pct – spread + slippage charged on every simulated exit, as % of price
+    #   entry_minute  – "skip" | "close" | "extreme": whether a trade can stop out inside
+    #                   the minute it entered (see _simulate_exit's entry_bar_mode)
+    try:
+        exit_cost = min(1.0, max(0.0, float(body.get("exit_cost_pct") or 0)))
+    except (TypeError, ValueError):
+        exit_cost = 0.0
+    entry_minute = str(body.get("entry_minute") or "skip").lower()
+    if entry_minute not in ("skip", "close", "extreme"):
+        return jsonify({"error": "entry_minute must be skip, close or extreme"}), 400
     if not from_date or not to_date:
         return jsonify({"error": "from_date and to_date are required"}), 400
     broker, _broker_tag, _acct_label, _fills_fn = _alpaca_account_ctx(account)
@@ -8431,9 +8442,18 @@ def simulate_sweep():
             try:    day_bars[(tk, dt)] = f.result()
             except: day_bars[(tk, dt)] = []
 
-    def _pnl(exit_price, entry_px, qty, side):
+    def _pnl(sim, entry_px, qty, side):
+        """P&L of a simulated exit, charging exit_cost on exits the simulator made up
+        (an 'actual' exit is the real fill, which already paid its costs)."""
+        if not sim:
+            return 0.0
+        exit_price = sim["exit_price"]
+        if exit_cost and sim.get("reason") != "actual":
+            exit_price = exit_price * (1 - exit_cost / 100) if side == "LONG" else exit_price * (1 + exit_cost / 100)
         return round((exit_price - entry_px) * qty, 2) if side == "LONG" \
                else round((entry_px - exit_price) * qty, 2)
+
+    _one_min = _dt.timedelta(minutes=1)
 
     # Pre-process: parse datetimes, slice bars, compute SR baseline once
     prepared = []
@@ -8457,6 +8477,9 @@ def simulate_sweep():
             exit_dt = None
         bars       = day_bars.get((ticker, entry_time[:10]), [])
         trade_bars = [b for b in bars if b.timestamp >= entry_dt]
+        entry_bar  = None
+        if entry_minute != "skip":
+            entry_bar = next((b for b in bars if b.timestamp < entry_dt < b.timestamp + _one_min), None)
         cap_dt     = None if skip_exits else exit_dt
         cap_price  = None if skip_exits else float(t.get("exit_price") or 0)
         rule       = _rule_for(strategy)
@@ -8465,17 +8488,20 @@ def simulate_sweep():
         r_mh       = rule.get("max_hold_mins") or 0
         sr_sim     = _simulate_exit(trade_bars, entry_px, side, r_trail, r_trigger, 0.0,
                                     r_mh, entry_dt, cap_dt=cap_dt, cap_price=cap_price,
-                                    stop_loss_dollars=0.0, qty=qty)
+                                    stop_loss_dollars=0.0, qty=qty,
+                                    entry_bar=entry_bar, entry_bar_mode=entry_minute)
         prepared.append({
             "ticker":     ticker,
             "side":       side,
             "entry_px":   entry_px,
             "qty":        qty,
             "trade_bars": trade_bars,
+            "entry_bar":  entry_bar,
             "entry_dt":   entry_dt,
             "cap_dt":     cap_dt,
             "cap_price":  cap_price,
-            "sr_pnl":     _pnl(sr_sim["exit_price"], entry_px, qty, side) if sr_sim else 0.0,
+            "sr_pnl":     _pnl(sr_sim, entry_px, qty, side),
+            "actual_pnl": float(t.get("pnl") or 0),
             "type_level": _type_level(strategy),
         })
 
@@ -8483,13 +8509,16 @@ def simulate_sweep():
         return jsonify({"error": "No trades could be prepared for sweep"}), 404
 
     sr_total = round(sum(p["sr_pnl"] for p in prepared), 2)
+    actual_total = round(sum(p["actual_pnl"] for p in prepared), 2)
+    realism = {"exit_cost_pct": exit_cost, "entry_minute": entry_minute, "actual_total": actual_total}
 
     def _sim_pnl(td, trail, trigger):
         sim = _simulate_exit(td["trade_bars"], td["entry_px"], td["side"],
                              trail, trigger, 0.0, max_hold, td["entry_dt"],
                              cap_dt=td["cap_dt"], cap_price=td["cap_price"],
-                             stop_loss_dollars=stop_dollars, qty=td["qty"])
-        return _pnl(sim["exit_price"], td["entry_px"], td["qty"], td["side"]) if sim else 0.0
+                             stop_loss_dollars=stop_dollars, qty=td["qty"],
+                             entry_bar=td["entry_bar"], entry_bar_mode=entry_minute)
+        return _pnl(sim, td["entry_px"], td["qty"], td["side"])
 
     if not per_strategy:
         sweep_results = []
@@ -8508,7 +8537,7 @@ def simulate_sweep():
                     "improved": int(imp), "worse": int(worse), "trades": len(prepared),
                 })
         sweep_results.sort(key=lambda r: r["total_pnl"], reverse=True)
-        return jsonify({"mode": "global", "sr_total": sr_total, "results": sweep_results})
+        return jsonify({"mode": "global", "sr_total": sr_total, "results": sweep_results, **realism})
 
     else:
         groups = defaultdict(list)
@@ -8533,6 +8562,8 @@ def simulate_sweep():
                 "best_trail": best_trail, "best_trigger": best_trigger,
                 "best_pnl":  round(best_pnl, 2),
                 "sr_pnl":    round(sr_strat, 2),
+                "actual_pnl": round(sum(td["actual_pnl"] for td in tds), 2),
+                "grid":      grid,
                 "delta":     round(best_pnl - sr_strat, 2),
                 "top5": sorted(grid, key=lambda x: x["total_pnl"], reverse=True)[:5],
             })
@@ -8545,6 +8576,7 @@ def simulate_sweep():
             "delta": round(combined_pnl - sr_total, 2),
             "strategies": strategy_results,
             "best_overrides": best_overrides,
+            **realism,
         })
 
 
@@ -22809,14 +22841,47 @@ def _compute_peak(trade_bars, entry_price: float, side: str, cap_dt=None):
     return peak
 
 
+def _entry_minute_exit(bar, mode, entry_price, is_long, trail_pct, trigger_pct,
+                       stop_loss_pct, dollar_sl_px, trail_tiers=None):
+    """(reason, price) if the entry minute's adverse move reaches the stop or the trail
+    measured from entry, else None. See _simulate_exit's entry_bar_mode."""
+    levels = []
+    eff = _get_tiered_trail(0.0, trail_tiers, trail_pct) if trail_tiers else trail_pct
+    if eff and eff > 0 and not trigger_pct:
+        levels.append(("trail", entry_price * (1 - eff / 100) if is_long else entry_price * (1 + eff / 100)))
+    if stop_loss_pct and stop_loss_pct > 0:
+        levels.append(("stop_loss", entry_price * (1 - stop_loss_pct / 100) if is_long
+                       else entry_price * (1 + stop_loss_pct / 100)))
+    if dollar_sl_px is not None:
+        levels.append(("stop_loss", dollar_sl_px))
+    if not levels:
+        return None
+    # The level nearest the entry fires first.
+    reason, level = max(levels, key=lambda x: x[1]) if is_long else min(levels, key=lambda x: x[1])
+    probe = float(bar.close) if mode == "close" else (float(bar.low) if is_long else float(bar.high))
+    hit = probe <= level if is_long else probe >= level
+    return (reason, level) if hit else None
+
+
 def _simulate_exit(bars, entry_price: float, side: str,
                    trail_pct: float, trigger_pct: float,
                    stop_loss_pct: float, max_hold_mins: int,
                    entry_dt, cap_dt=None, cap_price=None,
                    stop_loss_dollars: float = 0.0, qty: float = 1.0,
                    trail_tiers: list = None, take_profit_pct: float = 0.0,
-                   take_profit_dollars: float = 0.0):
+                   take_profit_dollars: float = 0.0,
+                   entry_bar=None, entry_bar_mode: str = "skip"):
     """Walk 1-min bars and return the simulated exit.
+
+    entry_bar / entry_bar_mode: the 1-min bar the entry filled inside. Callers pass
+    bars that start AFTER the entry, so by default ("skip") a trade can't exit in its
+    entry minute — yet a 0.1% trail from entry usually fires within seconds. The path
+    before the fill is unknown, so the trail is measured from the entry price (no
+    credit for the bar's favourable extreme) and only an adverse move ends it:
+      "close"   – the bar CLOSED through the stop/trail level (it certainly traded there
+                  after the fill); exit at the level.
+      "extreme" – the bar's adverse extreme reached the level (may count a move from
+                  before the fill, so it leans pessimistic); exit at the level.
 
     cap_dt / cap_price: if supplied, bars past cap_dt are ignored. If no stop
     fires before cap_dt the function returns the cap_price with reason 'actual'.
@@ -22853,6 +22918,17 @@ def _simulate_exit(bars, entry_price: float, side: str,
             _dollar_tp_px = entry_price - dollar_tp_per_share
     else:
         _dollar_tp_px = None
+
+    if entry_bar is not None and entry_bar_mode in ("close", "extreme"):
+        _hit = _entry_minute_exit(entry_bar, entry_bar_mode, entry_price, is_long, trail_pct,
+                                  trigger_pct, stop_loss_pct, _dollar_sl_px, trail_tiers)
+        if _hit is not None:
+            _eb_ts = entry_bar.timestamp
+            if not isinstance(_eb_ts, _dt.datetime):
+                _eb_ts = _dt.datetime.fromisoformat(str(_eb_ts).replace("Z", "+00:00"))
+            _ex_ts = _eb_ts + _dt.timedelta(minutes=1)
+            return {"exit_price": round(_hit[1], 4), "exit_time": str(_ex_ts), "reason": _hit[0],
+                    "exit_mins": round(max(0.0, (_ex_ts - entry_dt).total_seconds() / 60), 1)}
 
     for bar in bars:
         bar_ts = bar.timestamp
