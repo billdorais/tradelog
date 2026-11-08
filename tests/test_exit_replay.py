@@ -1,0 +1,230 @@
+"""Exit replay: tick engine, live-policy model, order pairing, scoring, endpoints."""
+import sqlite3
+from datetime import datetime
+
+import numpy as np
+import pytest
+
+import routes.exit_replay as er
+
+ET = er._ET
+T0 = datetime(2026, 10, 6, 10, 5, 0, tzinfo=ET).timestamp()     # a Tuesday, 10:05 ET
+
+
+def ticks(*pairs):
+    t = np.array([T0 + s for s, _ in pairs], dtype=float)
+    p = np.array([px for _, px in pairs], dtype=float)
+    return t, p
+
+
+# ── replay_orders ──────────────────────────────────────────────────────────────
+
+def test_trailing_stop_long_tracks_high_water_mark():
+    t, p = ticks((0, 100.0), (1, 100.2), (2, 100.3), (3, 100.21), (4, 100.19), (5, 100.5))
+    hit = er.replay_orders(t, p, True, [{"kind": "trail", "placed": T0 + 0.5, "ended": None, "trail_pct": 0.1}])
+    # HWM 100.3 → trigger at ≤ 100.1997; 100.21 doesn't, 100.19 does.
+    assert hit == (T0 + 4, 100.19, "trail")
+
+
+def test_trailing_stop_short_and_hwm_starts_at_placement_price():
+    t, p = ticks((0, 50.0), (1, 49.9), (2, 49.96), (3, 49.8))
+    # Placed at t=1.5: low-water mark starts at the last price, 49.9 → trigger ≥ 49.9499.
+    hit = er.replay_orders(t, p, False, [{"kind": "trail", "placed": T0 + 1.5, "ended": None, "trail_pct": 0.1}])
+    assert hit == (T0 + 2, 49.96, "trail")
+
+
+def test_stop_order_window_and_earliest_wins():
+    t, p = ticks((0, 100.0), (1, 99.8), (2, 99.5))
+    orders = [{"kind": "stop", "placed": T0, "ended": T0 + 0.5, "stop_price": 99.85},   # canceled before 99.8
+              {"kind": "stop", "placed": T0, "ended": None, "stop_price": 99.6}]
+    assert er.replay_orders(t, p, True, orders) == (T0 + 2, 99.5, "stop")
+    assert er.replay_orders(t, p, True, orders, end_t=T0 + 1.5) is None
+
+
+# ── replay_policy / policy_for ─────────────────────────────────────────────────
+
+def trade(**kw):
+    tr = {"is_long": True, "fill_t": T0, "fill_px": 100.0, "qty": 10, "ref": 99.95, "slow_fill": False,
+          "place_delay": 0.5, "deadline": T0 + 600, "deadline_kind": "max_hold"}
+    tr.update(kw)
+    return tr
+
+
+def test_policy_for_mirrors_broker_paths():
+    pol = er.policy_for(trade(), 0.1, 0.1)
+    assert pol["mode"] == "trigger"
+    assert pol["stop_px"] == pytest.approx(99.95 * 0.999)              # stop = trail distance from the signal price
+    assert pol["trigger_px"] == pytest.approx(100.0 + 99.95 * 0.001)   # unrealized ≥ ref × trigger%
+    assert er.policy_for(trade(), 0.3, 0.1, stop_pct=0.5)["stop_px"] == pytest.approx(99.95 * 0.995)
+    assert er.policy_for(trade(slow_fill=True), 0.1, 0.1)["mode"] == "immediate"   # >5 s fill path
+    assert er.policy_for(trade(ref=None), 0.1, 0.1)["mode"] == "immediate"
+    assert er.policy_for(trade(), 0.1, 0)["mode"] == "immediate"
+
+
+def test_trigger_mode_stop_before_trigger():
+    t, p = ticks((0, 100.0), (1, 99.95), (2, 99.84))
+    ex = er.replay_policy(t, p, True, T0, er.policy_for(trade(), 0.1, 0.1))
+    assert ex[2] == "stop" and ex[0] == T0 + 2
+
+
+def test_trigger_mode_switches_to_trail_at_a_poll():
+    # Up past the trigger (100.09995) by the 1.5 s poll, then a 0.1% pullback from the new high.
+    t, p = ticks((0, 100.0), (1, 100.12), (2, 100.3), (3, 100.25), (4, 100.19))
+    ex = er.replay_policy(t, p, True, T0, er.policy_for(trade(), 0.1, 0.1))
+    assert ex == (T0 + 4, 100.19, "trail")
+
+
+def test_time_exit_at_deadline():
+    t, p = ticks((0, 100.0), (300, 100.02), (700, 100.04))
+    ex = er.replay_policy(t, p, True, T0, er.policy_for(trade(deadline=T0 + 600), 0.5, 0))
+    assert ex == (T0 + 600, 100.02, "max_hold")
+
+
+# ── build_trades ───────────────────────────────────────────────────────────────
+
+def order(**kw):
+    o = {"id": kw.get("id", "x"), "coid": "", "symbol": "NVDA", "side": "buy", "type": "market", "qty": 10.0,
+         "filled_qty": 0.0, "filled_avg_price": None, "stop_price": None, "trail_percent": None,
+         "status": "filled", "created": None, "submitted": None, "filled": None, "canceled": None, "replaced": None}
+    o.update(kw)
+    return o
+
+
+S = "NVDA_CAM_BREAKOUT_R4S4_V02_5MIN"
+RULES = {S: {"trail": 0.1, "trigger": 0.1, "stop": None, "max_hold": 10.0}}
+
+
+def test_build_trades_trigger_path_hard_stop_exit():
+    orders = [
+        order(id="e1", coid=f"kairos-{S}-{int(T0)}", filled_qty=10, filled_avg_price=100.0,
+              created=T0 - 1, submitted=T0 - 1, filled=T0),
+        order(id="h1", side="sell", type="stop", stop_price=99.85, created=T0 + 0.4,
+              filled_qty=10, filled_avg_price=99.84, filled=T0 + 20),
+    ]
+    trs, skipped = er.build_trades(orders, RULES, "2026-10-06", "2026-10-06")
+    assert not skipped and len(trs) == 1
+    tr = trs[0]
+    assert tr["exit"]["kind"] == "stop" and tr["exit"]["px"] == 99.84
+    assert tr["ref"] == pytest.approx(99.85 / 0.999)          # signal price recovered from the hard stop
+    assert tr["place_delay"] == pytest.approx(0.4) and not tr["slow_fill"]
+    assert tr["deadline_kind"] == "max_hold" and tr["deadline"] == T0 + 600
+
+
+def test_build_trades_immediate_trail_and_other_exit_cap():
+    orders = [
+        order(id="e1", coid=f"kairos-{S}-{int(T0)}", filled_qty=10, filled_avg_price=100.0,
+              created=T0 - 8, submitted=T0 - 8, filled=T0),                         # slow fill
+        order(id="t1", coid=f"kairos-trail-{S}-{int(T0)}", side="sell", type="trailing_stop",
+              trail_percent=0.1, created=T0 + 0.2, canceled=T0 + 120),
+        order(id="m1", side="sell", type="market", filled_qty=10, filled_avg_price=100.3, created=T0 + 120,
+              filled=T0 + 120),                                                      # a TV exit at 2 min
+    ]
+    tr = er.build_trades(orders, RULES, "2026-10-06", "2026-10-06")[0][0]
+    assert tr["slow_fill"] and tr["exit"]["kind"] == "other"
+    assert tr["deadline_kind"] == "cap" and tr["deadline"] == T0 + 120
+    assert tr["trail_order"] == {"placed": T0 + 0.2, "ended": T0 + 120, "trail_pct": 0.1}
+
+
+# ── evaluate ───────────────────────────────────────────────────────────────────
+
+def test_evaluate_match_check_slippage_and_variants():
+    t, p = ticks((0, 100.0), (1, 99.95), (2, 99.84), (3, 99.9), (600, 100.2))
+    tr = trade(symbol="NVDA", strategy=S, band="BREAKOUT R4S4", day="2026-10-06",
+               rule={"trail": 0.1, "trigger": 0.1, "stop": None, "max_hold": 10.0},
+               trail_order=None,
+               hard_order={"placed": T0 + 0.4, "ended": None, "stop_price": 99.85},
+               exit={"t": T0 + 2, "px": 99.83, "kind": "stop"})
+    res = er.evaluate([tr], lambda _tr: (t, p, 0.005), [{"trail": 0.1, "trigger": 0.1}, {"trail": 0.5, "trigger": 0.1}])
+    m = res["match"]
+    assert m["stop_exits_checked"] == 1 and m["matched_share"] == 1.0
+    # replay fill 99.84 − 0.005 = 99.835 vs real 99.83 → 0.005% extra slippage measured
+    assert m["slippage_pct"] == pytest.approx((99.835 - 99.83) / 99.83 * 100, abs=1e-4)
+    assert res["by_band"]["BREAKOUT R4S4"]["actual"] == pytest.approx(-1.7)
+    tight, wide = res["variants"]
+    assert tight["total"] < 0                         # 0.1% stop from the signal price hits at 99.84
+    assert wide["total"] > tight["total"]             # a 0.5% stop rides to the 10-min close at 100.2
+    assert res["trusted"]
+
+
+def test_evaluate_flags_untrusted_when_replay_misses():
+    t, p = ticks((0, 100.0), (1, 100.01), (2, 100.02))
+    tr = trade(symbol="NVDA", strategy=S, band="BREAKOUT R4S4", day="2026-10-06",
+               rule={"trail": 0.1, "trigger": 0.1, "stop": None, "max_hold": 10.0}, trail_order=None,
+               hard_order={"placed": T0 + 0.4, "ended": None, "stop_price": 99.85},
+               exit={"t": T0 + 2, "px": 99.83, "kind": "stop"})
+    res = er.evaluate([tr], lambda _tr: (t, p, 0.0), [{"trail": 0.1}])
+    assert not res["trusted"] and res["match"]["stop_exits_checked"] == 0
+    assert any("replayed" in r for r in res["reasons"])
+
+
+def test_merge_windows_groups_overlaps_per_symbol():
+    a = {"symbol": "NVDA", "fill_t": T0, "exit": {"t": T0 + 30}}
+    b = {"symbol": "NVDA", "fill_t": T0 + 60, "exit": {"t": T0 + 90}}
+    c = {"symbol": "NVDA", "fill_t": T0 + 7200, "exit": {"t": T0 + 7210}}
+    d = {"symbol": "AAPL", "fill_t": T0, "exit": {"t": T0 + 10}}
+    w = er.merge_windows([a, b, c, d])
+    assert [(x[0], len(x[3])) for x in w] == [("AAPL", 1), ("NVDA", 2), ("NVDA", 1)]
+
+
+# ── endpoints ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    import app as a
+    db = tmp_path / "replay.db"
+
+    def _db():
+        return sqlite3.connect(db)
+    monkeypatch.setattr(a, "get_db", _db)
+    monkeypatch.setattr(a, "placeholder", lambda: "?")
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {"5": {"broker": object()}})
+    monkeypatch.setattr(er, "_market_open", lambda now=None: False)
+    started = []
+
+    def _fake_run(run_id, *args):
+        started.append((run_id, args))
+        er._save(run_id, status="done", progress="done", result='{"trades": 0, "rows": [1], "trusted": false}')
+        er._job_lock.release()
+    monkeypatch.setattr(er, "run_replay", _fake_run)
+    return a.app.test_client(), started
+
+
+def _body(**kw):
+    b = {"account": "5", "from": "2026-10-01", "to": "2026-10-31", "variants": [{"trail": 0.1, "trigger": 0.1}]}
+    b.update(kw)
+    return b
+
+
+def test_run_endpoint_validates_and_starts(client):
+    c, started = client
+    assert c.post("/api/exit_replay/run", json=_body(to="2026-12-31")).status_code == 400
+    assert c.post("/api/exit_replay/run", json=_body(variants=[])).status_code == 400
+    assert c.post("/api/exit_replay/run", json=_body(variants=[{"trail": 9}])).status_code == 400
+    assert c.post("/api/exit_replay/run", json=_body(account="99")).status_code == 400
+    r = c.post("/api/exit_replay/run", json=_body())
+    assert r.status_code == 200
+    rid = r.get_json()["run_id"]
+    import time as _t
+    for _ in range(50):
+        if started:
+            break
+        _t.sleep(0.02)
+    assert started and started[0][1][:3] == ("5", "2026-10-01", "2026-10-31")
+    runs = c.get("/api/exit_replay/runs").get_json()["runs"]
+    assert runs[0]["id"] == rid and runs[0]["status"] == "done"
+    detail = c.get(f"/api/exit_replay/runs/{rid}").get_json()
+    assert detail["status"] == "done" and "rows" not in detail["result"]
+    assert c.get(f"/api/exit_replay/runs/{rid}?rows=1").get_json()["result"]["rows"] == [1]
+    assert c.get("/api/exit_replay/runs/nope").status_code == 404
+
+
+def test_run_refused_while_market_open(client, monkeypatch):
+    c, _ = client
+    monkeypatch.setattr(er, "_market_open", lambda now=None: True)
+    assert c.post("/api/exit_replay/run", json=_body()).status_code == 423
+
+
+def test_market_open_window():
+    assert er._market_open(datetime(2026, 11, 9, 10, 0, tzinfo=ET))          # Monday 10:00
+    assert not er._market_open(datetime(2026, 11, 9, 17, 0, tzinfo=ET))
+    assert not er._market_open(datetime(2026, 11, 8, 11, 0, tzinfo=ET))      # Sunday

@@ -3737,6 +3737,10 @@ from routes.journal_daily import journal_daily_bp, start_scheduler as _start_jou
 app.register_blueprint(journal_daily_bp)
 _start_journal_daily()
 
+# Exit replay: real orders re-run on tick data, plus trail/stop what-ifs (off-hours job).
+from routes.exit_replay import exit_replay_bp
+app.register_blueprint(exit_replay_bp)
+
 
 @app.route("/api/trades")
 def api_trades():

@@ -596,6 +596,24 @@
     </div>
   </div>
 
+  <!-- Tick replay — real orders re-run on SIP ticks, match-checked, then trail/stop what-ifs -->
+  <div class="config-panel" style="margin-top:18px" id="exitReplayPanel">
+    <div class="section-title" style="margin-bottom:10px">Tick Replay
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— replays each real trade's exit tick by tick with the broker's actual stop logic, checks it against what really happened, then tries other trail settings</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label title="Comma-separated trail % values to test">Trails</label>
+        <input type="text" id="erTrails" value="0.1, 0.15, 0.2, 0.3, 0.4, 0.54" style="width:170px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit"></div>
+      <div class="param-group"><label title="Comma-separated trigger % values. 0 = trail from the fill.">Triggers</label>
+        <input type="text" id="erTriggers" value="0, 0.1" style="width:90px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit"></div>
+      <div class="param-group"><label title="Hard stop % before the trigger. Blank = same as the trail (the broker's fallback).">Stop</label>
+        <div class="input-wrap"><input type="number" id="erStop" value="" step="0.05" min="0" max="5" placeholder="= trail"><span class="unit">%</span></div></div>
+      <button class="run-btn" id="erRunBtn" onclick="runExitReplay()" style="padding:8px 18px">&#9654; Run replay</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Uses the account and dates above (max 31 days). Runs in the background, only while the market is closed.</span>
+    </div>
+    <div id="erStatus" style="font-size:0.78rem;color:#999;margin-top:10px"></div>
+    <div id="erResult" style="margin-top:12px"></div>
+  </div>
+
   <!-- Sim vs Actual reconciliation — attribute the model/actual gap to entry vs exit -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Sim vs Actual
@@ -1322,6 +1340,78 @@
   }
 
   // Sim vs Actual: attribute the modeled/actual gap to entry vs exit.
+  // ── Tick replay ─────────────────────────────────────────────────────────────
+  const _erEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const _erMoney = v => v == null ? '—' : `<span style="color:${v >= 0 ? '#7FE098' : '#e74c3c'}">${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(2)}</span>`;
+  const _erNums = s => String(s || '').split(',').map(x => parseFloat(x.trim())).filter(n => !isNaN(n));
+  let _erTimer = null;
+
+  async function runExitReplay() {
+    const from = document.getElementById('fromDate').value, to = document.getElementById('toDate').value;
+    const account = document.getElementById('account').value;
+    if (!from || !to) { alert('Set a date range first.'); return; }
+    const stopRaw = document.getElementById('erStop').value;
+    const stop = stopRaw === '' ? null : parseFloat(stopRaw);
+    const variants = [];
+    for (const trail of _erNums(document.getElementById('erTrails').value))
+      for (const trigger of _erNums(document.getElementById('erTriggers').value))
+        variants.push({ trail, trigger, stop });
+    const btn = document.getElementById('erRunBtn');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/exit_replay/run', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ account, from, to, variants }) });
+      const d = await res.json();
+      if (!res.ok) { document.getElementById('erStatus').textContent = d.error || `Error ${res.status}`; return; }
+      pollExitReplay(d.run_id);
+    } catch (e) {
+      document.getElementById('erStatus').textContent = 'Could not start the replay: ' + e.message;
+    } finally { btn.disabled = false; }
+  }
+
+  async function pollExitReplay(id) {
+    clearTimeout(_erTimer);
+    const st = document.getElementById('erStatus');
+    try {
+      const d = await (await fetch(`/api/exit_replay/runs/${encodeURIComponent(id)}`)).json();
+      const p = d.params || {};
+      st.textContent = `Run ${d.id} · account ${p.account} · ${p.from} → ${p.to} · ${d.status}${d.progress && d.status === 'running' ? ' — ' + d.progress : ''}`;
+      if (d.status === 'running') { _erTimer = setTimeout(() => pollExitReplay(id), 5000); return; }
+      if (d.status === 'failed') { st.textContent += ` — ${d.progress || ''}`; return; }
+      renderExitReplay(d.result);
+    } catch (e) { st.textContent = 'Could not read the replay: ' + e.message; }
+  }
+
+  function renderExitReplay(r) {
+    const el = document.getElementById('erResult');
+    if (!r) { el.innerHTML = ''; return; }
+    const m = r.match || {};
+    const banner = r.trusted
+      ? `<div style="border:1px solid #2f6b45;background:rgba(127,224,152,0.08);color:#7FE098;border-radius:6px;padding:8px 12px;font-size:0.8rem">Match check passed — the replay reproduces your real exits closely enough to compare trail settings.</div>`
+      : `<div style="border:1px solid #7a3b3b;background:rgba(231,76,60,0.08);color:#f0a0a0;border-radius:6px;padding:8px 12px;font-size:0.8rem">Match check failed — don't act on the comparison below.<br>${(r.reasons || []).map(_erEsc).join('<br>')}</div>`;
+    const bands = Object.keys(r.by_band || {});
+    const head = `<tr><th>Setting</th>${bands.map(b => `<th>${_erEsc(b)}</th>`).join('')}<th>Total</th></tr>`;
+    const actualRow = `<tr style="font-weight:600"><td>Actual</td>${bands.map(b => `<td>${_erMoney(r.by_band[b].actual)}</td>`).join('')}<td>${_erMoney(bands.reduce((s, b) => s + r.by_band[b].actual, 0))}</td></tr>`;
+    const cfgRow = `<tr><td>Replay of your settings</td>${bands.map(b => `<td>${_erMoney(r.by_band[b].as_configured)}</td>`).join('')}<td>${_erMoney(bands.reduce((s, b) => s + r.by_band[b].as_configured, 0))}</td></tr>`;
+    const vs = [...(r.variants || [])].sort((a, b) => b.total - a.total);
+    const vRows = vs.map(v => `<tr><td>trail ${v.trail}% · trigger ${v.trigger}%${v.stop != null ? ` · stop ${v.stop}%` : ''}</td>${bands.map(b => `<td>${_erMoney(v.by_band[b])}</td>`).join('')}<td>${_erMoney(v.total)}</td></tr>`).join('');
+    const trades = Object.values(r.by_band || {}).reduce((s, b) => s + b.trades, 0);
+    el.innerHTML = `${banner}
+      <div style="font-size:0.75rem;color:#999;margin:10px 0">${trades} trades replayed${r.no_ticks ? ` · ${r.no_ticks} without tick data` : ''} ·
+        stop exits matched: ${m.stop_exits_checked ? Math.round(m.matched_share * 100) + '% of ' + m.stop_exits_checked : 'none checked'} ·
+        median timing gap ${m.median_dt_s ?? '—'} s · median spread ${m.median_half_spread_pct != null ? (m.median_half_spread_pct * 2).toFixed(3) + '%' : '—'} ·
+        extra slippage measured ${m.slippage_pct != null ? m.slippage_pct.toFixed(4) + '%' : '—'} per exit</div>
+      <div class="tbl-wrap"><table><thead>${head}</thead><tbody>${actualRow}${cfgRow}${vRows}</tbody></table></div>`;
+  }
+
+  (async function loadLatestExitReplay() {
+    try {
+      const d = await (await fetch('/api/exit_replay/runs')).json();
+      const last = (d.runs || [])[0];
+      if (last) pollExitReplay(last.id);
+    } catch (e) { /* the panel stays empty */ }
+  })();
+
   async function runReconcile() {
     const out = document.getElementById('reconcileResult');
     const money = v => (v < 0 ? '-$' : '$') + Math.abs(Number(v || 0)).toFixed(2);
