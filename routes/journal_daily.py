@@ -63,6 +63,7 @@ DIMENSION_NAMES = {"trend": "SPY trend vs chop", "vix": "VIX at prior close", "g
 FLIP_DAYS = 20             # recent window, in trading days, for spotting a strategy that flipped
 FLIP_MIN_TRADES = 8        # each side of the split needs this many trades to call a flip
 FLIP_MIN_T = 1.5           # and the change in mean % per trade needs at least this t-stat
+PAIR_LEAD_DAYS = 14        # fills paired from this many days before a snapshot range
                            # (Welch), so a drift from -0.02% to +0.03% isn't called a flip
 
 NOTE_TAGS = ("news", "fed", "earnings", "macro data", "geopolitics", "data glitch",
@@ -519,11 +520,19 @@ def snapshot_range(from_date, to_date):
     trading = sorted(d for d in feats.get("SPY", {}) if from_date <= d <= to_date)
 
     # 2. Strategy rows per account (fills → LIFO round trips → merged split exits).
-    full = (_date.today() - d0).days > 85
+    # Leaderboard exclusions are off: the journal records what each account actually
+    # traded, including tickers/strategies/bands barred from the Refined leaderboards.
+    # LIFO pairing depends on where the fill window starts: starting it on from_date
+    # can match a day's exits to the wrong entries (the nightly 7-day re-snapshot
+    # showed HOOD 3 trades / -$3.47 where the full history has 5 / -$19.98). Pair
+    # from PAIR_LEAD_DAYS earlier and keep only rows inside the range.
+    pair_from = d0 - timedelta(days=PAIR_LEAD_DAYS)
+    full = (_date.today() - pair_from).days > 85
     strat_rows = {}
     for num in sorted(a.ACCOUNTS_BY_NUM):
         try:
-            rts, err = farms._farm_round_trips(num, from_date, to_date, full=full)
+            rts, err = farms._farm_round_trips(num, pair_from.isoformat(), to_date, full=full,
+                                               exclusions=False)
             if err:
                 errors.append(f"account {num}: {err}")
                 continue

@@ -190,8 +190,39 @@ def journal(tmp_path, monkeypatch):
               "pnl": -1.0, "qty": 1, "entry_price": 200.0},
              {"strategy": S, "side": "LONG", "entry_time": "2026-11-06T15:00:00Z", "exit_time": "2026-11-06T15:06:00Z",
               "pnl": -1.0, "qty": 1, "entry_price": 200.0}]          # a split exit: one trade
-    monkeypatch.setattr(farms, "_farm_round_trips", lambda num, f, t, full=False: (trips, None))
+    calls = []
+
+    def _rts(num, f, t, full=False, exclusions=True):
+        calls.append((f, exclusions))
+        return trips, None
+    monkeypatch.setattr(farms, "_farm_round_trips", _rts)
+    a._journal_rts_calls = calls
     return a, db
+
+
+def test_snapshot_ignores_exclusions_and_pairs_with_lead_in(journal):
+    a, _ = journal
+    res = jd.snapshot_range("2026-11-05", "2026-11-06")
+    assert a._journal_rts_calls == [("2026-10-22", False)]     # 14 days of lead-in, no exclusions
+    assert res["strategy_rows"] == 2                           # rows still limited to the range
+
+
+def test_farm_round_trips_exclusions_switch(monkeypatch):
+    import app as a
+    import routes.farms as farms
+    names = ["ASTS_CAM_BREAKOUT_R4S4_V02_5MIN", "HOOD_CAM_REVERSAL_R3S3_V02_5MIN",
+             "AAPL_CAM_BREAKOUT_R3S3_V02_5MIN", "NVDA_CAM_BREAKOUT_R3S3_V02_5MIN"]
+    closed = [{"strategy": n.lower(), "pnl": 1.0} for n in names]
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {"9": {"fills_fn": lambda: [{"id": 1}]}})
+    monkeypatch.setattr(a, "_pair_alpaca_fills_lifo",
+                        lambda fills, from_date=None, to_date=None: {"closed_clean": [dict(c) for c in closed]})
+    monkeypatch.setattr(a, "_load_excluded_tickers", lambda: {"ASTS"})
+    monkeypatch.setattr(a, "_load_excluded_bands", lambda: {"REVERSAL R3S3"})
+    monkeypatch.setattr(a, "_load_excluded_strategies", lambda: {names[2]})
+    kept, err = farms._farm_round_trips("9", "", "")
+    assert err is None and [c["strategy"] for c in kept] == [names[3]]
+    everything, err = farms._farm_round_trips("9", "", "", exclusions=False)
+    assert err is None and [c["strategy"] for c in everything] == names
 
 
 def test_snapshot_writes_days_and_strategy_rows_and_keeps_notes(journal):

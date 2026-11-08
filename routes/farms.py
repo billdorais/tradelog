@@ -416,11 +416,12 @@ def _full_fills(rec, num):
         return fills
 
 
-def _farm_round_trips(num, from_date, to_date, full=False):
+def _farm_round_trips(num, from_date, to_date, full=False, exclusions=True):
     """Full closed round-trips on one farm (prices, qty, times), strategy names
     upper-cased, honouring the same strategy/ticker/band exclusions as the Refined
-    leaderboards. Returns (round_trips, error) — a failed fetch must not render as
-    an empty farm."""
+    leaderboards unless exclusions=False (the daily journal records everything an
+    account actually traded). Returns (round_trips, error) — a failed fetch must
+    not render as an empty farm."""
     a = _app()
     rec = a.ACCOUNTS_BY_NUM.get(num)
     if not rec:
@@ -432,9 +433,9 @@ def _farm_round_trips(num, from_date, to_date, full=False):
     if not fills:
         return [], ("fills unavailable" if not full and a._fills_error(num) else None)
     paired = a._pair_alpaca_fills_lifo(fills, from_date=from_date, to_date=to_date)
-    ex_s = a._load_excluded_strategies()
-    ex_t = a._load_excluded_tickers()
-    ex_b = a._load_excluded_bands()
+    ex_s = a._load_excluded_strategies() if exclusions else set()
+    ex_t = a._load_excluded_tickers() if exclusions else set()
+    ex_b = a._load_excluded_bands() if exclusions else set()
     out = []
     for c in paired.get("closed_clean") or []:
         s = (c.get("strategy") or "").strip().upper()
