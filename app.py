@@ -3731,6 +3731,11 @@ from routes.refresh_policy import refresh_policy_bp
 app.register_blueprint(refresh_policy_bp)
 from routes.trade_context import trade_context_bp
 app.register_blueprint(trade_context_bp)
+# Daily journal: market context + per-strategy results per trading day, snapshotted
+# after every close by its own background thread (skipped under pytest).
+from routes.journal_daily import journal_daily_bp, start_scheduler as _start_journal_daily
+app.register_blueprint(journal_daily_bp)
+_start_journal_daily()
 
 
 @app.route("/api/trades")

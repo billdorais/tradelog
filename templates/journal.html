@@ -150,6 +150,68 @@
     /* The logo and menu sit on the content edges, like the dashboard: the bar
        stays full width, its padding matches the 960px content column. */
     header { padding-left: max(24px, calc((100% - 960px) / 2 + 24px)); padding-right: max(24px, calc((100% - 960px) / 2 + 24px)); }
+
+    /* ── Daily + Regimes views (static/journal_daily.js) ───────────────── */
+    [hidden] { display: none !important; }
+    .view-tabs { display: flex; gap: 4px; margin-bottom: 22px; border-bottom: 1px solid #1e2130; }
+    .view-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: #888;
+                padding: 8px 14px; font-size: 0.9rem; font-family: inherit; cursor: pointer; margin-bottom: -1px; }
+    .view-tab:hover { color: #ccc; }
+    .view-tab.active { color: #7FE098; border-bottom-color: #7FE098; font-weight: 600; }
+    .view-tab:focus-visible, .jd-btn:focus-visible, .jd-tag:focus-visible { outline: 2px solid #F2C07A; outline-offset: 2px; }
+    .jd-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; font-size: 0.8rem; color: #888; }
+    .jd-toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+    .jd-input, .jd-select { background: #13161f; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px;
+                            padding: 6px 10px; font-size: 0.82rem; font-family: inherit; }
+    .jd-btn { background: #13161f; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 6px 12px;
+              font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .jd-btn:hover { border-color: #88BF8B; color: #7FE098; }
+    .jd-btn:disabled { opacity: 0.45; cursor: default; }
+    .jd-status { font-size: 0.75rem; color: #666; }
+    .jd-help { font-size: 0.78rem; color: #666; margin: -6px 0 16px; line-height: 1.5; max-width: 72ch; }
+    .jd-day { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; margin-bottom: 12px; overflow: hidden; }
+    .jd-day-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 12px 16px 8px; }
+    .jd-date { font-weight: 700; color: #fff; font-size: 0.95rem; min-width: 7.5rem; }
+    .jd-chips { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+    .chip { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; border: 1px solid #2a2d3e; color: #aaa; white-space: nowrap; }
+    .chip.up { color: #7FE098; border-color: rgba(127,224,152,0.35); }
+    .chip.down { color: #ef8a80; border-color: rgba(239,138,128,0.35); }
+    .chip.warn { color: #F2C07A; border-color: rgba(242,192,122,0.35); }
+    .chip.event { color: #c4b5fd; border-color: rgba(196,181,253,0.35); }
+    .jd-mkt { display: flex; gap: 14px; flex-wrap: wrap; padding: 0 16px 10px; font-size: 0.76rem; color: #888; font-variant-numeric: tabular-nums; }
+    .jd-mkt b { color: #ccc; font-weight: 600; }
+    .pos { color: #7FE098; } .neg { color: #ef8a80; }
+    .jd-accts { display: flex; gap: 6px 16px; flex-wrap: wrap; padding: 8px 16px; border-top: 1px solid #1e2130;
+                font-size: 0.76rem; font-variant-numeric: tabular-nums; }
+    .jd-acct { display: inline-flex; gap: 6px; align-items: center; color: #888; }
+    .jd-acct .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .jd-notes { padding: 8px 16px 12px; border-top: 1px solid #1e2130; display: grid; gap: 8px; }
+    .jd-tags { display: flex; gap: 5px; flex-wrap: wrap; }
+    .jd-tag { background: transparent; border: 1px solid #2a2d3e; color: #777; border-radius: 12px; padding: 3px 10px;
+              font-size: 0.72rem; font-family: inherit; cursor: pointer; }
+    .jd-tag[aria-pressed="true"] { color: #F2C07A; border-color: #F2C07A; background: rgba(242,192,122,0.08); }
+    .jd-note-row { display: flex; gap: 8px; }
+    .jd-note-row input { flex: 1; min-width: 0; }
+    .jd-saved { font-size: 0.72rem; color: #7FE098; opacity: 0; transition: opacity 0.2s; align-self: center; }
+    .jd-card { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+    .jd-card h3 { font-size: 0.92rem; color: #fff; margin-bottom: 4px; }
+    .jd-card .jd-sub { font-size: 0.75rem; color: #666; margin-bottom: 10px; line-height: 1.45; }
+    .jd-scroll { overflow-x: auto; }
+    .jd-scroll.tall { max-height: 34rem; overflow-y: auto; }
+    .jd-scroll.tall th { position: sticky; top: 0; background: #13161f; }
+    .jd-table { border-collapse: collapse; width: 100%; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+    .jd-table th { text-align: right; color: #666; font-weight: 600; padding: 5px 8px; border-bottom: 1px solid #2a2d3e; white-space: nowrap; }
+    .jd-table td { text-align: right; padding: 5px 8px; border-bottom: 1px solid #1a1d29; white-space: nowrap; }
+    .jd-table th:first-child, .jd-table td:first-child { text-align: left; }
+    .jd-table tr.jd-click { cursor: pointer; }
+    .jd-table tr.jd-click:hover td { background: #171a25; }
+    .jd-table tr.thin td { color: #555; }
+    .jd-flag { font-size: 0.68rem; padding: 1px 7px; border-radius: 8px; margin-left: 6px; }
+    .jd-flag.faded { color: #ef8a80; border: 1px solid rgba(239,138,128,0.4); }
+    .jd-flag.recovered { color: #7FE098; border: 1px solid rgba(127,224,152,0.4); }
+    .jd-bar { display: inline-block; height: 8px; border-radius: 2px; vertical-align: middle; }
+    .jd-empty { text-align: center; padding: 40px 16px; color: #555; font-size: 0.85rem; line-height: 1.6; }
+    .jd-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 16px; }
   </style>
 </head>
 <body>
@@ -183,6 +245,15 @@
 </header>
 
 <div class="page">
+  <!-- Weekly = the AI essays below. Daily and Regimes come from routes/journal_daily.py
+       and static/journal_daily.js. -->
+  <nav class="view-tabs" role="tablist" aria-label="Journal views">
+    <button class="view-tab active" role="tab" data-view="weekly" aria-selected="true">Weekly</button>
+    <button class="view-tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
+    <button class="view-tab" role="tab" data-view="regimes" aria-selected="false">Regimes</button>
+  </nav>
+
+  <div id="viewWeekly">
   <div class="page-title">Weekly Trading Journal</div>
   <div class="page-sub">AI-generated weekly entries combining your trade stats with market context</div>
 
@@ -211,8 +282,13 @@
   </div>
 
   <div id="entries"></div>
+  </div><!-- /viewWeekly -->
+
+  <div id="viewDaily" hidden></div>
+  <div id="viewRegimes" hidden></div>
 </div>
 
+<script src="/static/journal_daily.js" defer></script>
 <script>
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
