@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -60,6 +60,8 @@ NON_LAST_SALE = frozenset({"B", "C", "G", "H", "I", "L", "M", "N", "P", "Q", "R"
 
 ENTRY_RE = re.compile(r"^kairos-(?!trail-|hard-)(.+)-(\d{10})$")
 TRAIL_RE = re.compile(r"^kairos-trail-(.+)-(\d{10})$")
+STRATEGY_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,80}$")
+MAX_STRATEGIES = 50
 
 
 # ── pure helpers: the replay engine ────────────────────────────────────────────
@@ -226,6 +228,11 @@ def build_trades(orders, rules, from_date, to_date, max_hold_default=10):
     used, trades, skipped = set(), [], defaultdict(int)
     entries = [o for o in orders if ENTRY_RE.match(o["coid"]) and o["filled_qty"] > 0 and o["filled"]]
     entries.sort(key=lambda o: o["filled"])
+    next_entry, last = {}, {}
+    for e in reversed(entries):
+        k = (e["symbol"], ENTRY_RE.match(e["coid"]).group(1).upper())
+        next_entry[e["id"]] = last.get(k)
+        last[k] = e["filled"]
     for e in entries:
         day = datetime.fromtimestamp(e["filled"], _ET).date().isoformat()
         if not (from_date <= day <= to_date):
@@ -236,12 +243,17 @@ def build_trades(orders, rules, from_date, to_date, max_hold_default=10):
         opp = "sell" if is_long else "buy"
         qty = e["filled_qty"]
         f0 = e["filled"]
-        horizon = f0 + 4 * 3600
+        rule = rules.get(strategy) or {}
+        max_hold = float(rule.get("max_hold") or max_hold_default)
+        # This trade's protective orders are placed before max hold runs out and before the
+        # same strategy's next entry on this symbol; later ones belong to a later trade.
+        nxt = next_entry.get(e["id"])
+        horizon = min(f0 + max(max_hold, 15.0) * 60 + 120, nxt if nxt else float("inf"))
         trail = hard = exit_o = None
         for o in by_sym[e["symbol"]]:
             if o["id"] in used or o["side"] != opp or o["created"] is None:
                 continue
-            if o["created"] < f0 - 5 or o["created"] > horizon:
+            if o["created"] < f0 - 5 or o["created"] >= horizon:
                 continue
             tm = TRAIL_RE.match(o["coid"])
             if trail is None and tm and tm.group(1).upper() == strategy and o["type"] == "trailing_stop":
@@ -253,22 +265,31 @@ def build_trades(orders, rules, from_date, to_date, max_hold_default=10):
         if prot:
             exit_o = min(prot, key=lambda o: o["filled"])
         else:
-            others = [o for o in by_sym[e["symbol"]]
-                      if o["id"] not in used and o["side"] == opp and o["filled"] and o["filled"] > f0
-                      and o["filled_qty"] > 0 and abs(o["filled_qty"] - qty) < 1e-6
-                      and o["type"] in ("market", "limit") and not ENTRY_RE.match(o["coid"])]
+            # First opposite fill after the entry, same ET day, any order type (a stop the
+            # broker placed by another path still closes the trade). Never another trade's
+            # entry or another strategy's trail. Without the same-day bound an unrecognized
+            # exit made this grab a later trade's exit, days away.
+            day_end = datetime.combine(datetime.fromtimestamp(f0, _ET).date(), dtime(23, 59, 59),
+                                       tzinfo=_ET).timestamp()
+            others = []
+            for o in by_sym[e["symbol"]]:
+                if (o["id"] in used or o["side"] != opp or not o["filled"] or not (f0 < o["filled"] <= day_end)
+                        or o["filled_qty"] <= 0 or abs(o["filled_qty"] - qty) > 1e-6 or ENTRY_RE.match(o["coid"])):
+                    continue
+                tm = TRAIL_RE.match(o["coid"])
+                if tm and tm.group(1).upper() != strategy:
+                    continue
+                others.append(o)
             exit_o = min(others, key=lambda o: o["filled"]) if others else None
         if exit_o is None or not exit_o.get("filled_avg_price"):
-            skipped["no exit found"] += 1
+            skipped["no same-day exit found"] += 1
             continue
         for o in (trail, hard, exit_o):
             if o is not None:
                 used.add(o["id"])
-        rule = rules.get(strategy) or {}
         r_trail = rule.get("trail") or (trail or {}).get("trail_percent") or 0.1
         r_trigger = rule.get("trigger") or 0.0
         r_stop = rule.get("stop")
-        max_hold = float(rule.get("max_hold") or max_hold_default)
         # Signal price, from the hard stop the broker placed at (stop or trail)% from it.
         ref = None
         if hard is not None and hard.get("stop_price"):
@@ -363,21 +384,24 @@ def evaluate(trades, ticks_for, variants):
         return trade_pnl(tr, _fill(ex[1], tr["is_long"], tr["half_spread"], s))
 
     by_band = defaultdict(lambda: {"trades": 0, "actual": 0.0, "as_configured": 0.0})
+    by_strat = defaultdict(lambda: {"trades": 0, "actual": 0.0, "as_configured": 0.0})
     vres = [{"trail": v["trail"], "trigger": v.get("trigger", 0.0), "stop": v.get("stop"),
-             "by_band": defaultdict(float), "total": 0.0} for v in variants]
+             "by_band": defaultdict(float), "by_strategy": defaultdict(float), "total": 0.0} for v in variants]
     out_rows = []
     for tr, t, p, row in rows:
-        b = by_band[tr["band"]]
-        b["trades"] += 1
-        b["actual"] += row["actual_pnl"]
+        b, s = by_band[tr["band"]], by_strat[tr["strategy"]]
         r = tr["rule"]
         cfg_trail = (tr["trail_order"] or {}).get("trail_pct") or r["trail"]
         pnl_cfg = run(tr, t, p, policy_for(tr, cfg_trail, r["trigger"], r["stop"]))
-        b["as_configured"] += pnl_cfg
+        for x in (b, s):
+            x["trades"] += 1
+            x["actual"] += row["actual_pnl"]
+            x["as_configured"] += pnl_cfg
         row["as_configured_pnl"] = round(pnl_cfg, 4)
         for v, vr in zip(variants, vres):
             pv = run(tr, t, p, policy_for(tr, v["trail"], v.get("trigger", 0.0), v.get("stop")))
             vr["by_band"][tr["band"]] += pv
+            vr["by_strategy"][tr["strategy"]] += pv
             vr["total"] += pv
         out_rows.append(row)
 
@@ -404,8 +428,13 @@ def evaluate(trades, ticks_for, variants):
         "trusted": not reasons, "reasons": reasons,
         "by_band": {k: {"trades": v["trades"], "actual": rnd(v["actual"]), "as_configured": rnd(v["as_configured"])}
                     for k, v in sorted(by_band.items())},
+        "by_strategy": {k: {"trades": v["trades"], "actual": rnd(v["actual"]), "as_configured": rnd(v["as_configured"])}
+                        for k, v in sorted(by_strat.items())},
+        # pairing sanity: trades whose paired exit came over 30 min after the entry
+        "long_holds": sum(1 for tr, *_ in rows if tr["exit"]["t"] - tr["fill_t"] > 1800),
         "variants": [{"trail": v["trail"], "trigger": v["trigger"], "stop": v["stop"], "total": rnd(v["total"]),
-                      "by_band": {k: rnd(x) for k, x in sorted(v["by_band"].items())}} for v in vres],
+                      "by_band": {k: rnd(x) for k, x in sorted(v["by_band"].items())},
+                      "by_strategy": {k: rnd(x) for k, x in sorted(v["by_strategy"].items())}} for v in vres],
         "rows": out_rows,
     }
 
@@ -580,7 +609,7 @@ def _reap_dead_runs():
     return alive
 
 
-def run_replay(run_id, account, from_date, to_date, variants):
+def run_replay(run_id, account, from_date, to_date, variants, strategies=None):
     """Background body: fetch, replay, score, save. Stops if the market opens."""
     a = _app()
     try:
@@ -589,7 +618,11 @@ def run_replay(run_id, account, from_date, to_date, variants):
             raise RuntimeError(f"account {account} not configured")
         _progress[run_id] = "reading orders"
         _save(run_id, progress=_progress[run_id])
+        # Pair over every order (so one strategy can't take another's exit), then keep the asked-for ones.
         trades, skipped = build_trades(_orders(rec["broker"], from_date, to_date), _rules(), from_date, to_date)
+        if strategies:
+            keep = set(strategies)
+            trades = [tr for tr in trades if tr["strategy"] in keep]
         client = _data_client()
         windows = merge_windows(trades)          # [(symbol, start, end, [trades])]
         win_of = {id(tr): w for w in windows for tr in w[3]}
@@ -623,7 +656,8 @@ def run_replay(run_id, account, from_date, to_date, variants):
         res = evaluate(ordered, ticks_for, variants)
         res["skipped"] = skipped
         res["no_ticks"] = len(trades) - res["trades"]
-        res["params"] = {"account": str(account), "from": from_date, "to": to_date}
+        res["params"] = {"account": str(account), "from": from_date, "to": to_date,
+                         "strategies": sorted(strategies) if strategies else None}
         _save(run_id, status="done", progress="done", result=json.dumps(res))
     except Exception as e:
         log.warning("exit replay %s failed: %s", run_id, e, exc_info=True)
@@ -675,6 +709,11 @@ def api_run():
         variants = _parse_variants(body.get("variants"))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    raw = body.get("strategies") or []
+    if not isinstance(raw, list) or len(raw) > MAX_STRATEGIES or not all(
+            isinstance(x, str) and STRATEGY_NAME_RE.match(x.strip()) for x in raw):
+        return jsonify({"error": f"strategies must be a list of up to {MAX_STRATEGIES} strategy names"}), 400
+    strategies = sorted({x.strip().upper() for x in raw}) or None
     a = _app()
     if account not in a.ACCOUNTS_BY_NUM:
         return jsonify({"error": f"unknown account {account}"}), 400
@@ -686,7 +725,8 @@ def api_run():
     if _reap_dead_runs() or not _job_lock.acquire(blocking=False):
         return jsonify({"error": "a replay is already running"}), 409
     run_id = uuid.uuid4().hex[:12]
-    params = {"account": account, "from": d0.isoformat(), "to": d1.isoformat(), "variants": variants}
+    params = {"account": account, "from": d0.isoformat(), "to": d1.isoformat(), "variants": variants,
+              "strategies": strategies}
     conn = a.get_db()
     try:
         ph = a.placeholder()
@@ -697,7 +737,7 @@ def api_run():
     finally:
         conn.close()
     _save(run_id, progress="starting")           # first heartbeat
-    threading.Thread(target=run_replay, args=(run_id, account, d0.isoformat(), d1.isoformat(), variants),
+    threading.Thread(target=run_replay, args=(run_id, account, d0.isoformat(), d1.isoformat(), variants, strategies),
                      daemon=True, name=f"exit-replay-{run_id}").start()
     return jsonify({"run_id": run_id, "status": "running"})
 

@@ -262,3 +262,80 @@ def test_market_open_window():
     assert er._market_open(datetime(2026, 11, 9, 10, 0, tzinfo=ET))          # Monday 10:00
     assert not er._market_open(datetime(2026, 11, 9, 17, 0, tzinfo=ET))
     assert not er._market_open(datetime(2026, 11, 8, 11, 0, tzinfo=ET))      # Sunday
+
+
+# ── pairing fixes (2026-11-09) ─────────────────────────────────────────────────
+
+def test_unrecognized_stop_exit_is_used_not_a_later_days_market_sell():
+    # The real exit is a stop the pairing doesn't recognize as this trade's hard stop
+    # (placed late). It must not skip it and grab a market sell two days later.
+    day2 = T0 + 2 * 86400
+    orders = [
+        order(id="e1", coid=f"kairos-{S}-{int(T0)}", filled_qty=10, filled_avg_price=100.0,
+              created=T0 - 1, submitted=T0 - 1, filled=T0),
+        order(id="s1", side="sell", type="stop", stop_price=99.9, created=T0 + 40,
+              filled_qty=10, filled_avg_price=99.88, filled=T0 + 60),
+        order(id="m2", side="sell", type="market", filled_qty=10, filled_avg_price=108.0,
+              created=day2, filled=day2),
+    ]
+    trs, skipped = er.build_trades(orders, RULES, "2026-10-06", "2026-10-08")
+    assert len(trs) == 1 and trs[0]["exit"]["px"] == 99.88 and trs[0]["exit"]["t"] == T0 + 60
+
+
+def test_no_exit_on_a_later_day():
+    orders = [
+        order(id="e1", coid=f"kairos-{S}-{int(T0)}", filled_qty=10, filled_avg_price=100.0,
+              created=T0 - 1, submitted=T0 - 1, filled=T0),
+        order(id="m2", side="sell", type="market", filled_qty=10, filled_avg_price=108.0,
+              created=T0 + 86400, filled=T0 + 86400),
+    ]
+    trs, skipped = er.build_trades(orders, RULES, "2026-10-06", "2026-10-08")
+    assert trs == [] and skipped == {"no same-day exit found": 1}
+
+
+def test_a_later_trades_trail_is_not_taken():
+    # Trade 1 exits by its hard stop and never gets a trail; trade 2 (same strategy, 20 min
+    # later) gets a trail that fills. Trade 1 must not claim trade 2's trail.
+    t2 = T0 + 1200
+    orders = [
+        order(id="e1", coid=f"kairos-{S}-{int(T0)}", filled_qty=10, filled_avg_price=100.0,
+              created=T0 - 1, submitted=T0 - 1, filled=T0),
+        order(id="h1", side="sell", type="stop", stop_price=99.85, created=T0 + 0.4,
+              filled_qty=10, filled_avg_price=99.84, filled=T0 + 20),
+        order(id="e2", coid=f"kairos-{S}-{int(t2)}", filled_qty=10, filled_avg_price=101.0,
+              created=t2 - 1, submitted=t2 - 1, filled=t2),
+        order(id="h2", side="sell", type="stop", stop_price=100.85, created=t2 + 0.4, canceled=t2 + 30),
+        order(id="t2", coid=f"kairos-trail-{S}-{int(t2) + 30}", side="sell", type="trailing_stop",
+              trail_percent=0.1, created=t2 + 30, filled_qty=10, filled_avg_price=101.2, filled=t2 + 90),
+    ]
+    trs, _ = er.build_trades(orders, RULES, "2026-10-06", "2026-10-06")
+    assert [(tr["exit"]["kind"], tr["exit"]["px"]) for tr in trs] == [("stop", 99.84), ("trail", 101.2)]
+    assert trs[0]["trail_order"] is None and trs[1]["trail_order"]["placed"] == t2 + 30
+
+
+def test_evaluate_reports_per_strategy_results():
+    t, p = ticks((0, 100.0), (1, 99.95), (2, 99.84), (3, 99.9), (600, 100.2))
+    mk = lambda strat: trade(symbol="NVDA", strategy=strat, band="BREAKOUT R4S4", day="2026-10-06",
+                             rule={"trail": 0.1, "trigger": 0.1, "stop": None, "max_hold": 10.0}, trail_order=None,
+                             hard_order={"placed": T0 + 0.4, "ended": None, "stop_price": 99.85},
+                             exit={"t": T0 + 2, "px": 99.83, "kind": "stop"})
+    res = er.evaluate([mk(S), mk("AAPL_X")], lambda _tr: (t, p, 0.0), [{"trail": 0.1, "trigger": 0.1}])
+    assert set(res["by_strategy"]) == {S, "AAPL_X"} and res["by_strategy"][S]["trades"] == 1
+    v = res["variants"][0]
+    assert v["by_strategy"][S] == pytest.approx(v["total"] / 2, abs=0.01)
+    assert res["long_holds"] == 0
+
+
+def test_run_endpoint_takes_a_strategy_list(client):
+    c, started = client
+    assert c.post("/api/exit_replay/run", json=_body(strategies="MU")).status_code == 400
+    assert c.post("/api/exit_replay/run", json=_body(strategies=["bad name;"])).status_code == 400
+    assert c.post("/api/exit_replay/run", json=_body(strategies=["x"] * 51)).status_code == 400
+    r = c.post("/api/exit_replay/run", json=_body(strategies=[" mu_cam_breakout_r3s3_v02_5min", "NVDA_X"]))
+    assert r.status_code == 200
+    import time as _t
+    for _ in range(50):
+        if started:
+            break
+        _t.sleep(0.02)
+    assert started[0][1][4] == ["MU_CAM_BREAKOUT_R3S3_V02_5MIN", "NVDA_X"]

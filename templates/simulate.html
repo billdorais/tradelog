@@ -607,6 +607,8 @@
         <input type="text" id="erTriggers" value="0, 0.1" style="width:90px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit"></div>
       <div class="param-group"><label title="Hard stop % before the trigger. Blank = same as the trail (the broker's fallback).">Stop</label>
         <div class="input-wrap"><input type="number" id="erStop" value="" step="0.05" min="0" max="5" placeholder="= trail"><span class="unit">%</span></div></div>
+      <div class="param-group"><label title="Optional. Comma-separated strategy names to replay; blank = every strategy on the account.">Strategies</label>
+        <input type="text" id="erStrategies" value="" placeholder="all" style="width:260px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit"></div>
       <button class="run-btn" id="erRunBtn" onclick="runExitReplay()" style="padding:8px 18px">&#9654; Run replay</button>
       <span style="font-size:0.72rem;color:#666;align-self:center">Uses the account and dates above (max 31 days). Runs in the background, only while the market is closed.</span>
     </div>
@@ -1360,7 +1362,8 @@
     btn.disabled = true;
     try {
       const res = await fetch('/api/exit_replay/run', { method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ account, from, to, variants }) });
+        body: JSON.stringify({ account, from, to, variants,
+          strategies: document.getElementById('erStrategies').value.split(',').map(x => x.trim()).filter(Boolean) }) });
       const d = await res.json();
       if (!res.ok) { document.getElementById('erStatus').textContent = d.error || `Error ${res.status}`; return; }
       pollExitReplay(d.run_id);
@@ -1396,12 +1399,21 @@
     const vs = [...(r.variants || [])].sort((a, b) => b.total - a.total);
     const vRows = vs.map(v => `<tr><td>trail ${v.trail}% · trigger ${v.trigger}%${v.stop != null ? ` · stop ${v.stop}%` : ''}</td>${bands.map(b => `<td>${_erMoney(v.by_band[b])}</td>`).join('')}<td>${_erMoney(v.total)}</td></tr>`).join('');
     const trades = Object.values(r.by_band || {}).reduce((s, b) => s + b.trades, 0);
+    const label = v => `trail ${v.trail}% · trigger ${v.trigger}%${v.stop != null ? ` · stop ${v.stop}%` : ''}`;
+    const strats = Object.keys(r.by_strategy || {});
+    const sTable = strats.length && strats.length <= 40 ? `
+      <div class="section-title" style="margin:14px 0 6px;font-size:0.85rem">By strategy</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Strategy</th><th>Trades</th><th>Actual</th><th>Replay of your settings</th><th>Best setting tried</th><th>Its P&amp;L</th></tr></thead><tbody>
+      ${strats.map(k => { const s = r.by_strategy[k];
+        const best = (r.variants || []).filter(v => v.by_strategy && k in v.by_strategy).sort((a, b) => b.by_strategy[k] - a.by_strategy[k])[0];
+        return `<tr><td>${_erEsc(k)}</td><td>${s.trades}</td><td>${_erMoney(s.actual)}</td><td>${_erMoney(s.as_configured)}</td><td>${best ? label(best) : '—'}</td><td>${best ? _erMoney(best.by_strategy[k]) : '—'}</td></tr>`; }).join('')}
+      </tbody></table></div>` : '';
     el.innerHTML = `${banner}
       <div style="font-size:0.75rem;color:#999;margin:10px 0">${trades} trades replayed${r.no_ticks ? ` · ${r.no_ticks} without tick data` : ''} ·
         stop exits matched: ${m.stop_exits_checked ? Math.round(m.matched_share * 100) + '% of ' + m.stop_exits_checked : 'none checked'} ·
         median timing gap ${m.median_dt_s ?? '—'} s · median spread ${m.median_half_spread_pct != null ? (m.median_half_spread_pct * 2).toFixed(3) + '%' : '—'} ·
         extra slippage measured ${m.slippage_pct != null ? m.slippage_pct.toFixed(4) + '%' : '—'} per exit</div>
-      <div class="tbl-wrap"><table><thead>${head}</thead><tbody>${actualRow}${cfgRow}${vRows}</tbody></table></div>`;
+      <div class="tbl-wrap"><table><thead>${head}</thead><tbody>${actualRow}${cfgRow}${vRows}</tbody></table></div>${sTable}`;
   }
 
   (async function loadLatestExitReplay() {
