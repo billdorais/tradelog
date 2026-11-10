@@ -81,13 +81,13 @@
 
   function labelChip(dim, v) {
     const tone = v === 'trend-up' || v === 'gap-up' ? 'up' : v === 'trend-down' || v === 'gap-down' ? 'down'
-      : v === 'vix-high' || v === 'wide-range' ? 'warn' : '';
+      : v === 'vix-high' || v === 'wide-range' || v === 'pm-volatile' ? 'warn' : '';
     return `<span class="chip ${tone}" title="${esc(META?.dimensions?.[dim] || dim)}">${esc(v)}</span>`;
   }
 
   function dayCard(d) {
     const L = d.labels || {};
-    const chips = ['trend', 'gap', 'range', 'vix'].filter((k) => L[k]).map((k) => labelChip(k, L[k]))
+    const chips = ['premarket', 'trend', 'gap', 'range', 'vix'].filter((k) => L[k]).map((k) => labelChip(k, L[k]))
       .concat((d.events || []).map((e) => `<span class="chip event">${esc(e.label)}</span>`)).join('');
     const m = d.market || {};
     const mk = (sym, f) => f ? `<span>${sym} <b class="${cls(f.ret_pct)}">${pct(f.ret_pct)}</b></span>` : '';
@@ -96,6 +96,9 @@
     const mkt = [
       mk('SPY', spy), mk('QQQ', m.QQQ), mk('IWM', m.IWM),
       spy ? `<span>SPY gap <b>${pct(spy.gap_pct)}</b> · range <b>${pct(spy.range_pct).replace('+', '')}</b></span>` : '',
+      (spy && spy.pm_range_pct != null) || (m.QQQ && m.QQQ.pm_range_pct != null)
+        ? `<span>Pre-market range ${['SPY', 'QQQ'].filter((s) => m[s] && m[s].pm_range_pct != null)
+            .map((s) => `${s} <b>${m[s].pm_range_pct.toFixed(2)}%</b>${m[s].pm_range_x != null ? ` (${m[s].pm_range_x.toFixed(1)}× usual)` : ''}`).join(' · ')}</span>` : '',
       m.VIX ? `<span>VIX <b>${m.VIX.close.toFixed(2)}</b> (prior ${m.VIX.prev_close.toFixed(2)})</span>` : '',
       Object.keys(dt).length ? `<span>Day types: Outside <b>${dt.Outside || 0}</b> · Neutral <b>${dt.Neutral || 0}</b> · Inside <b>${dt.Inside || 0}</b></span>` : '',
     ].filter(Boolean).join('');

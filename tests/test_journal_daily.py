@@ -182,6 +182,7 @@ def journal(tmp_path, monkeypatch):
         "^VIX": [("2026-11-04", 16, 17, 15, 16.5), ("2026-11-05", 16.5, 17, 15, 15.2), ("2026-11-06", 15.2, 16, 14, 14.8)],
     }
     monkeypatch.setattr(jd, "_daily_bars", lambda sym, s, e: _bars(bars.get(sym, bars["SPY"])))
+    monkeypatch.setattr(jd, "_intraday_bars", lambda sym, s, e: _pm_bars(sym))
     monkeypatch.setattr(jd, "_earnings_by_ticker", lambda tks: {"NVDA": {"2026-11-06"}})
     monkeypatch.setattr(a, "_get_day_classification", lambda tk, d: {"day_type": "Outside", "ratio": 0.5}, raising=False)
     trips = [{"strategy": S, "side": "LONG", "entry_time": "2026-11-05T15:00:00Z", "exit_time": "2026-11-05T15:05:00Z",
@@ -245,6 +246,8 @@ def test_snapshot_writes_days_and_strategy_rows_and_keeps_notes(journal):
     assert {"kind": "earnings", "label": "NVDA earnings"} in days["2026-11-06"]["events"]
     assert days["2026-11-06"]["accounts"]["5"] == {"trades": 1, "wins": 0, "pnl": -2.0}
     assert days["2026-11-05"]["daytype_counts"] == {"Outside": 1}
+    assert days["2026-11-06"]["market"]["SPY"]["pm_range_pct"] == pytest.approx(1.0 / 101.8 * 100, abs=1e-3)
+    assert "premarket" not in days["2026-11-06"]["labels"]          # no 20-day baseline in the fixture
 
     c = sqlite3.connect(db)
     assert c.execute("SELECT COUNT(*) FROM journal_strategy_days").fetchone()[0] == 2
@@ -278,9 +281,56 @@ def test_scheduler_does_not_start_under_pytest(monkeypatch):
     assert jd._scheduler_started is False
 
 
-def test_market_closed_window():
+def test_scheduler_runs_after_the_close_not_in_the_morning():
     from datetime import datetime
     et = jd._ET
-    assert jd._market_closed(datetime(2026, 11, 7, 12, 0, tzinfo=et))       # Saturday
-    assert jd._market_closed(datetime(2026, 11, 6, 16, 30, tzinfo=et))      # after the EOD close
-    assert not jd._market_closed(datetime(2026, 11, 6, 11, 0, tzinfo=et))   # mid-session
+    assert jd._after_close(datetime(2026, 11, 9, 16, 20, tzinfo=et))
+    assert jd._after_close(datetime(2026, 11, 7, 18, 0, tzinfo=et))          # Saturday evening
+    assert not jd._after_close(datetime(2026, 11, 9, 6, 42, tzinfo=et))      # before the open (the old bug)
+    assert not jd._after_close(datetime(2026, 11, 9, 0, 5, tzinfo=et))       # just after midnight
+    assert not jd._after_close(datetime(2026, 11, 9, 11, 0, tzinfo=et))      # mid-session
+
+
+# ── pre-market ────────────────────────────────────────────────────────────────
+
+def _pm_bars(sym, day="2026-11-06", lo=100.0, hi=101.0):
+    """5-min bars around one pre-market, given in ET and returned as naive UTC like Alpaca's."""
+    from datetime import datetime as _dt, timezone as _tz
+    y, m, d = map(int, day.split("-"))
+
+    def mk(hh, mm, l, h, c):
+        t = _dt(y, m, d, hh, mm, tzinfo=jd._ET).astimezone(_tz.utc).replace(tzinfo=None)
+        return {"time": t, "open": c, "high": h, "low": l, "close": c, "volume": 100}
+    return [mk(3, 55, 90.0, 110.0, 100.5),      # overnight, ignored
+            mk(4, 0, lo, min(hi, 100.5), 100.2),
+            mk(7, 0, 100.3, hi, 100.4),
+            mk(9, 25, lo, min(hi, 100.9), 100.6),   # last pre-market bar
+            mk(9, 30, 95.0, 106.0, 105.0)]      # regular session, ignored
+
+
+def test_premarket_features_window_and_measures():
+    f = jd.premarket_features(_pm_bars("SPY"), {"2026-11-06": 100.0})["2026-11-06"]
+    assert (f["pm_low"], f["pm_high"], f["pm_last"]) == (100.0, 101.0, 100.6)
+    assert f["pm_range_pct"] == pytest.approx(1.0)
+    assert f["pm_move_pct"] == pytest.approx(0.6)
+    assert f["pm_volume"] == 300 and f["pm_range_x"] is None
+
+
+def test_premarket_range_x_against_prior_median_and_label():
+    import datetime as _d
+    bars, pc = [], {}
+    day0 = _d.date(2026, 9, 1)
+    for i in range(12):                                  # 0.5% pre-market ranges
+        d = (day0 + _d.timedelta(days=i)).isoformat()
+        bars += _pm_bars("SPY", d, lo=100.0, hi=100.5)
+        pc[d] = 100.0
+    bars += _pm_bars("SPY", "2026-09-20", lo=99.5, hi=101.0)   # 1.5%: 3× usual
+    pc["2026-09-20"] = 100.0
+    f = jd.premarket_features(bars, pc)
+    assert f["2026-09-12"]["pm_range_x"] == pytest.approx(1.0)
+    assert f["2026-09-20"]["pm_range_x"] == pytest.approx(3.0)
+    assert jd.premarket_label([0.9, 3.0]) == "pm-volatile"           # QQQ volatile, SPY calm
+    assert jd.premarket_label([None, 1.0]) == "pm-normal"
+    assert jd.premarket_label([0.5, 0.6]) == "pm-quiet"
+    assert jd.premarket_label([None, None]) is None
+    assert jd.day_labels(None, None, [1.6, 0.8]) == {"premarket": "pm-volatile"}

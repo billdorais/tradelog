@@ -50,15 +50,23 @@ VIX_HIGH = 20.0            # prior-close VIX at or above → vix-high; else vix-
 WIDE_RANGE_X = 1.30        # SPY range vs its median of the prior 20 sessions
 NARROW_RANGE_X = 0.70
 RANGE_LOOKBACK = 20
+# Pre-market (04:00–09:30 ET) range of SPY and QQQ vs each one's median pre-market range
+# over the prior RANGE_LOOKBACK sessions. The label takes the larger of the two, so a
+# tech-led pre-market (QQQ) counts even when SPY is calmer.
+PREMARKET_SYMBOLS = ("SPY", "QQQ", "IWM")
+PM_LABEL_SYMBOLS = ("SPY", "QQQ")
+PM_VOLATILE_X = 1.50
+PM_QUIET_X = 0.70
 
 DIMENSIONS = {
     "trend": ("trend-up", "trend-down", "mixed", "chop"),
     "vix": ("vix-low", "vix-mid", "vix-high"),
     "gap": ("gap-up", "gap-down", "no-gap"),
     "range": ("wide-range", "normal-range", "narrow-range"),
+    "premarket": ("pm-volatile", "pm-normal", "pm-quiet"),
 }
 DIMENSION_NAMES = {"trend": "SPY trend vs chop", "vix": "VIX at prior close", "gap": "SPY opening gap",
-                   "range": "SPY day range", "daytype": "Ticker day type", "event": "Calendar"}
+                   "range": "SPY day range", "premarket": "Pre-market range (SPY/QQQ)", "daytype": "Ticker day type", "event": "Calendar"}
 
 FLIP_DAYS = 20             # recent window, in trading days, for spotting a strategy that flipped
 FLIP_MIN_TRADES = 8        # each side of the split needs this many trades to call a flip
@@ -113,10 +121,56 @@ def bar_features(bars):
     return out
 
 
-def day_labels(spy, vix_prev_close):
-    """SPY's features for a day and VIX's prior close → {dimension: label}.
-    A dimension whose input is missing is left out rather than guessed."""
+def premarket_features(bars, prev_close):
+    """Intraday bars [{time, open, high, low, close, volume}] (time in UTC; naive means
+    UTC) and {date: prior regular-session close} → {date: pre-market features}.
+
+    The pre-market is 04:00–09:30 ET. pm_range_pct and pm_move_pct are against the
+    prior close; pm_range_x compares the range with the median of the RANGE_LOOKBACK
+    sessions before it (None until there are at least half that many)."""
+    from datetime import time as _t
+    days = defaultdict(list)
+    for b in bars:
+        t = b["time"]
+        t = (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(_ET)
+        if _t(4, 0) <= t.time() < _t(9, 30):
+            days[t.date().isoformat()].append((t, b))
+    out, ranges = {}, []
+    for d in sorted(days):
+        pc = prev_close.get(d)
+        if not pc:
+            continue
+        rows = sorted(days[d], key=lambda x: x[0])
+        hi = max(float(b["high"]) for _, b in rows)
+        lo = min(float(b["low"]) for _, b in rows)
+        last = float(rows[-1][1]["close"])
+        rng = (hi - lo) / pc * 100
+        base = _median(ranges[-RANGE_LOOKBACK:]) if len(ranges) >= RANGE_LOOKBACK // 2 else None
+        out[d] = {"pm_high": round(hi, 4), "pm_low": round(lo, 4), "pm_last": round(last, 4),
+                  "pm_range_pct": round(rng, 3), "pm_move_pct": round((last / pc - 1) * 100, 3),
+                  "pm_volume": int(sum(float(b.get("volume") or 0) for _, b in rows)),
+                  "pm_range_x": round(rng / base, 3) if base else None}
+        ranges.append(rng)
+    return out
+
+
+def premarket_label(pm_xs):
+    """The day's pre-market label from the pm_range_x values of PM_LABEL_SYMBOLS
+    (None entries ignored); None when there's no baseline yet."""
+    xs = [x for x in pm_xs if x is not None]
+    if not xs:
+        return None
+    x = max(xs)
+    return "pm-volatile" if x >= PM_VOLATILE_X else "pm-quiet" if x <= PM_QUIET_X else "pm-normal"
+
+
+def day_labels(spy, vix_prev_close, pm_xs=()):
+    """SPY's features for a day, VIX's prior close and the pre-market range ratios →
+    {dimension: label}. A dimension whose input is missing is left out rather than guessed."""
     lab = {}
+    pm = premarket_label(pm_xs)
+    if pm:
+        lab["premarket"] = pm
     if spy:
         br = spy.get("body_ratio") or 0.0
         if br >= TREND_BODY_MIN:
@@ -431,6 +485,12 @@ def _daily_bars(symbol, start, end):
              "low": b["low"], "close": b["close"]} for b in bars]
 
 
+def _intraday_bars(symbol, start, end):
+    """5-minute bars including the pre-market (Alpaca; times are naive UTC)."""
+    from strategies.data import fetch_bars_alpaca
+    return fetch_bars_alpaca(symbol, start, end, interval="5m")
+
+
 def _load_events(a, from_date=None, to_date=None):
     _ensure_tables(a)
     conn = a.get_db()
@@ -519,6 +579,19 @@ def snapshot_range(from_date, to_date):
             feats[sym.replace("^", "")] = {}
     trading = sorted(d for d in feats.get("SPY", {}) if from_date <= d <= to_date)
 
+    # 1b. Pre-market (04:00–09:30 ET) from 5-minute bars, same history for its baseline.
+    for sym in PREMARKET_SYMBOLS:
+        daily = feats.get(sym) or {}
+        try:
+            pm = premarket_features(_intraday_bars(sym, start, end),
+                                    {d: f["prev_close"] for d, f in daily.items()})
+        except Exception as e:
+            errors.append(f"{sym} pre-market bars: {e}")
+            continue
+        for d, f in pm.items():
+            if d in daily:
+                daily[d].update(f)
+
     # 2. Strategy rows per account (fills → LIFO round trips → merged split exits).
     # Leaderboard exclusions are off: the journal records what each account actually
     # traded, including tickers/strategies/bands barred from the Refined leaderboards.
@@ -568,7 +641,8 @@ def snapshot_range(from_date, to_date):
         for d in trading:
             market = {sym: f[d] for sym, f in feats.items() if d in f}
             vix_prev = (feats.get("VIX", {}).get(d) or {}).get("prev_close")
-            labels = day_labels(feats["SPY"].get(d), vix_prev)
+            labels = day_labels(feats["SPY"].get(d), vix_prev,
+                                [(feats.get(s, {}).get(d) or {}).get("pm_range_x") for s in PM_LABEL_SYMBOLS])
             events = calendar_events(d, manual, earnings)
             cur.execute(
                 f"INSERT INTO journal_days (date, market, labels, daytypes, events, snapshot_at) "
@@ -613,23 +687,23 @@ def run_snapshot(from_date, to_date):
         _snap_lock.release()
 
 
-def _market_closed(now):
-    """Weekends, and weekdays before 09:00 or from 16:20 ET (after the EOD close)."""
-    if now.weekday() >= 5:
-        return True
-    return (now.hour, now.minute) < (9, 0) or (now.hour, now.minute) >= (16, 20)
+def _after_close(now):
+    """From 16:20 ET (after the EOD close) to midnight, any day."""
+    return (now.hour, now.minute) >= (16, 20)
 
 
 def _scheduler_loop():
-    """Once per ET day, while the market is closed, re-snapshot the last 7 days. That
-    picks up today after the close and fills any days a redeploy or outage missed."""
+    """Once per ET day, after the close, re-snapshot the last 7 days. That records today
+    the same evening and fills any days a redeploy or outage missed. (It used to run at
+    the first closed moment of the day, which is just after midnight, so a day only
+    appeared the next morning, and a morning restart ran it before the open.)"""
     time.sleep(90 + random.uniform(0, 120))       # let the app warm up; stagger workers
     done_for = None
     while True:
         try:
             now = datetime.now(_ET)
             today = now.date().isoformat()
-            if done_for != today and _market_closed(now):
+            if done_for != today and _after_close(now):
                 frm = (now.date() - timedelta(days=7)).isoformat()
                 if run_snapshot(frm, today):
                     done_for = today
@@ -732,7 +806,8 @@ def api_journal_days():
                     "note_tags": list(NOTE_TAGS), "dimensions": DIMENSION_NAMES,
                     "rules": {"trend_body_min": TREND_BODY_MIN, "chop_body_max": CHOP_BODY_MAX,
                               "gap_min_pct": GAP_MIN_PCT, "vix_low": VIX_LOW, "vix_high": VIX_HIGH,
-                              "wide_range_x": WIDE_RANGE_X, "narrow_range_x": NARROW_RANGE_X},
+                              "wide_range_x": WIDE_RANGE_X, "narrow_range_x": NARROW_RANGE_X,
+                              "pm_volatile_x": PM_VOLATILE_X, "pm_quiet_x": PM_QUIET_X},
                     "snapshot": dict(_status)})
 
 
