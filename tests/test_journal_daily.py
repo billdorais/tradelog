@@ -334,3 +334,28 @@ def test_premarket_range_x_against_prior_median_and_label():
     assert jd.premarket_label([0.5, 0.6]) == "pm-quiet"
     assert jd.premarket_label([None, None]) is None
     assert jd.day_labels(None, None, [1.6, 0.8]) == {"premarket": "pm-volatile"}
+
+
+def test_nan_daily_bar_is_dropped_and_rebuilt_from_the_session(journal, monkeypatch):
+    # Yahoo's bar for the current day is NaN until it settles; the journal must not
+    # store NaN (invalid JSON) and should use the 5-minute regular session instead.
+    a, _ = journal
+    nan = float("nan")
+    rows = [("2026-11-04", 100, 101, 99, 100), ("2026-11-05", 100.2, 102, 100, 101.8), ("2026-11-06", nan, nan, nan, nan)]
+    monkeypatch.setattr(jd, "_daily_bars", lambda sym, s, e: _bars(rows))
+    res = jd.snapshot_range("2026-11-05", "2026-11-06")
+    assert res["days"] == 2 and not res["errors"]
+    r = a.app.test_client().get("/api/journal/days?from=2026-11-01&to=2026-11-07")
+    assert b"NaN" not in r.data
+    spy = {x["date"]: x for x in r.get_json()["days"]}["2026-11-06"]["market"]["SPY"]
+    # session bars from _pm_bars: the one 09:30 bar, open/close 105, 95–106
+    assert (spy["open"], spy["high"], spy["low"], spy["close"]) == (105.0, 106.0, 95.0, 105.0)
+    assert spy["gap_pct"] == pytest.approx((105 / 101.8 - 1) * 100, abs=1e-3)
+
+
+def test_finite_bar_and_session_bars():
+    assert not jd._finite_bar({"open": float("nan"), "high": 1, "low": 1, "close": 1})
+    assert not jd._finite_bar({"open": 1, "high": 1, "low": 1})
+    assert jd._finite_bar({"open": 1, "high": 2, "low": 1, "close": 1.5})
+    sb = jd.session_bars(_pm_bars("SPY", "2026-09-10"))
+    assert sb == {"2026-09-10": {"date": "2026-09-10", "open": 105.0, "close": 105.0, "high": 106.0, "low": 95.0}}

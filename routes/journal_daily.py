@@ -94,13 +94,40 @@ def _median(xs):
     return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
 
 
+def _finite_bar(b):
+    """A usable daily bar: all of OHLC present, finite and positive. Yahoo returns a
+    NaN row for the current day until it settles, and NaN isn't valid JSON."""
+    try:
+        return all(math.isfinite(float(b[k])) and float(b[k]) > 0 for k in ("open", "high", "low", "close"))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def session_bars(intraday):
+    """5-minute bars (time UTC; naive means UTC) → {date: regular-session (09:30–16:00 ET)
+    daily bar}, used where the daily feed has no usable bar for a day."""
+    from datetime import time as _t
+    days = defaultdict(list)
+    for b in intraday:
+        t = b["time"]
+        t = (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(_ET)
+        if _t(9, 30) <= t.time() < _t(16, 0) and _finite_bar(b):
+            days[t.date().isoformat()].append((t, b))
+    out = {}
+    for d, rows in days.items():
+        rows.sort(key=lambda x: x[0])
+        out[d] = {"date": d, "open": float(rows[0][1]["open"]), "close": float(rows[-1][1]["close"]),
+                  "high": max(float(b["high"]) for _, b in rows), "low": min(float(b["low"]) for _, b in rows)}
+    return out
+
+
 def bar_features(bars):
     """Daily bars [{date, open, high, low, close}] (any order) → {date: features}.
 
     Features need the prior session, so the first bar gets none. range_x compares the
     day's range with the median of the RANGE_LOOKBACK sessions before it (None until
     there are at least half that many)."""
-    bars = sorted((b for b in bars if b.get("close")), key=lambda b: b["date"])
+    bars = sorted((b for b in bars if _finite_bar(b)), key=lambda b: b["date"])
     out, ranges = {}, []
     for prev, b in zip(bars, bars[1:]):
         pc = float(prev["close"])
@@ -570,24 +597,33 @@ def snapshot_range(from_date, to_date):
     # 1. Market bars, with enough history before the range for range_x.
     start = (d0 - timedelta(days=45)).isoformat()
     end = (d1 + timedelta(days=1)).isoformat()
+    # 5-minute bars (with the pre-market) for the ETFs: the pre-market features, and the
+    # regular session as a stand-in daily bar where the daily feed has none (today's
+    # Yahoo bar is NaN until it settles, and the snapshot now runs the same evening).
+    intraday = {}
+    for sym in PREMARKET_SYMBOLS:
+        try:
+            intraday[sym] = _intraday_bars(sym, start, end)
+        except Exception as e:
+            errors.append(f"{sym} 5-minute bars: {e}")
     feats = {}
     for sym in MARKET_SYMBOLS:
+        key = sym.replace("^", "")
         try:
-            feats[sym.replace("^", "")] = bar_features(_daily_bars(sym, start, end))
+            daily = [b for b in _daily_bars(sym, start, end) if _finite_bar(b)]
         except Exception as e:
             errors.append(f"{sym} bars: {e}")
-            feats[sym.replace("^", "")] = {}
+            daily = []
+        if key in intraday:
+            have = {b["date"] for b in daily}
+            daily += [b for d, b in session_bars(intraday[key]).items() if d not in have]
+        feats[key] = bar_features(daily)
     trading = sorted(d for d in feats.get("SPY", {}) if from_date <= d <= to_date)
 
-    # 1b. Pre-market (04:00–09:30 ET) from 5-minute bars, same history for its baseline.
-    for sym in PREMARKET_SYMBOLS:
+    # 1b. Pre-market (04:00–09:30 ET), same history for its baseline.
+    for sym, bars in intraday.items():
         daily = feats.get(sym) or {}
-        try:
-            pm = premarket_features(_intraday_bars(sym, start, end),
-                                    {d: f["prev_close"] for d, f in daily.items()})
-        except Exception as e:
-            errors.append(f"{sym} pre-market bars: {e}")
-            continue
+        pm = premarket_features(bars, {d: f["prev_close"] for d, f in daily.items()})
         for d, f in pm.items():
             if d in daily:
                 daily[d].update(f)
