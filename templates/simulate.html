@@ -616,6 +616,19 @@
     <div id="erResult" style="margin-top:12px"></div>
   </div>
 
+  <div class="config-panel" style="margin-top:18px" id="entryReplayPanel">
+    <div class="section-title" style="margin-bottom:10px">Entry Replay
+      <span style="font-size:0.72rem;color:#666;font-weight:400">— the same Camarilla setups entered different ways (bar close, the engine's pierce, pierce + abort, hold, retest, double top/bottom…) on ticks, all exited with the live exit settings, so only the entry differs</span></div>
+    <div class="config-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div class="param-group"><label title="Comma-separated strategy names (CAM breakouts and reversals), up to 60">Strategies</label>
+        <input type="text" id="enStrategies" value="" placeholder="NVDA_CAM_BREAKOUT_R3S3_V02_5MIN, …" style="width:420px;background:#0f1117;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;padding:7px 10px;font-size:0.85rem;font-family:inherit"></div>
+      <button class="run-btn" id="enRunBtn" onclick="runEntryReplay()" style="padding:8px 18px">&#9654; Run entry replay</button>
+      <span style="font-size:0.72rem;color:#666;align-self:center">Uses the dates above (max 31 days). Background job, market closed only; one replay (entry or exit) at a time.</span>
+    </div>
+    <div id="enStatus" style="font-size:0.78rem;color:#999;margin-top:10px"></div>
+    <div id="enResult" style="margin-top:12px"></div>
+  </div>
+
   <!-- Sim vs Actual reconciliation — attribute the model/actual gap to entry vs exit -->
   <div class="config-panel" style="margin-top:18px">
     <div class="section-title" style="margin-bottom:10px">Sim vs Actual
@@ -1421,6 +1434,65 @@
       const d = await (await fetch('/api/exit_replay/runs')).json();
       const last = (d.runs || [])[0];
       if (last) pollExitReplay(last.id);
+    } catch (e) { /* the panel stays empty */ }
+  })();
+
+  let _enTimer = null;
+  const _enPct = v => v == null ? '—' : `<span style="color:${v >= 0 ? '#7FE098' : '#e74c3c'}">${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}%</span>`;
+
+  async function runEntryReplay() {
+    const from = document.getElementById('fromDate').value, to = document.getElementById('toDate').value;
+    const strategies = document.getElementById('enStrategies').value.split(',').map(x => x.trim()).filter(Boolean);
+    if (!from || !to || !strategies.length) { alert('Set a date range and at least one strategy.'); return; }
+    const btn = document.getElementById('enRunBtn');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/entry_replay/run', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ from, to, strategies }) });
+      const d = await res.json();
+      if (!res.ok) { document.getElementById('enStatus').textContent = d.error || `Error ${res.status}`; return; }
+      pollEntryReplay(d.run_id);
+    } catch (e) {
+      document.getElementById('enStatus').textContent = 'Could not start the replay: ' + e.message;
+    } finally { btn.disabled = false; }
+  }
+
+  async function pollEntryReplay(id) {
+    clearTimeout(_enTimer);
+    const st = document.getElementById('enStatus');
+    try {
+      const d = await (await fetch(`/api/entry_replay/runs/${encodeURIComponent(id)}`)).json();
+      const p = d.params || {};
+      st.textContent = `Run ${d.id} · ${p.from} → ${p.to} · ${(p.strategies || []).length} strategies · ${d.status}${d.progress && d.status === 'running' ? ' — ' + d.progress : ''}`;
+      if (d.status === 'running') { _enTimer = setTimeout(() => pollEntryReplay(id), 5000); return; }
+      if (d.status === 'failed') { st.textContent += ` — ${d.progress || ''}`; return; }
+      renderEntryReplay(d.result);
+    } catch (e) { st.textContent = 'Could not read the replay: ' + e.message; }
+  }
+
+  function renderEntryReplay(r) {
+    const el = document.getElementById('enResult');
+    const s = (r && r.summary) || {};
+    const names = Object.keys(s).filter(k => !k.startsWith('_'));
+    if (!names.length) { el.innerHTML = '<div style="font-size:0.8rem;color:#999">No entries.</div>'; return; }
+    const row = (k, x) => `<tr><td>${_erEsc(k)}</td><td>${x.all.trades}</td><td>${x.all.win_pct ?? '—'}%</td><td>${_enPct(x.all.mean_pct)}</td><td>${x.all.day_t ?? '—'}</td><td>${_enPct(x.before_10.mean_pct)} <span style="color:#666">(${x.before_10.trades})</span></td><td>${_enPct(x.from_10.mean_pct)} <span style="color:#666">(${x.from_10.trades})</span></td></tr>`;
+    const order = ['close', 'pierce', 'pierce_abort', 'pierce_hold30', 'pierce_hold60', 'pierce_pct05', 'pierce_pct10', 'two_closes', 'close_retest', 'reject', 'touch', 'reject_retest', 'double', 'double_close'];
+    const ks = order.filter(k => s[k]);
+    const pvc = s._pierce_vs_close || {};
+    const pc = s.pierce || {};
+    const diag = pc.closed_back ? `<div style="font-size:0.78rem;color:#bbb;margin:10px 0">
+        Pierce entries whose 5-min bar closed back inside the level: ${pc.closed_back.trades} trades, ${_enPct(pc.closed_back.mean_pct)} per trade · held past the level: ${pc.held.trades}, ${_enPct(pc.held.mean_pct)}.
+        On the same signal bar as a close entry: pierce ${_enPct((pvc.pierce_shared || {}).mean_pct)} vs close ${_enPct((pvc.close_shared || {}).mean_pct)}; pierce-only ${_enPct((pvc.pierce_only || {}).mean_pct)} (${(pvc.pierce_only || {}).trades || 0}).</div>` : '';
+    el.innerHTML = `<div style="font-size:0.75rem;color:#999;margin-bottom:8px">${r.entries} entries · % of entry price per trade, after the quoted spread · day t = mean daily P&L ÷ its standard error</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Entry rule</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Day t</th><th>Before 10:00</th><th>From 10:00</th></tr></thead>
+      <tbody>${ks.map(k => row(k, s[k])).join('')}</tbody></table></div>${diag}`;
+  }
+
+  (async function loadLatestEntryReplay() {
+    try {
+      const d = await (await fetch('/api/entry_replay/runs')).json();
+      const last = (d.runs || [])[0];
+      if (last) pollEntryReplay(last.id);
     } catch (e) { /* the panel stays empty */ }
   })();
 
