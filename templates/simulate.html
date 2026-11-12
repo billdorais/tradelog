@@ -1410,7 +1410,10 @@
     const actualRow = `<tr style="font-weight:600"><td>Actual</td>${bands.map(b => `<td>${_erMoney(r.by_band[b].actual)}</td>`).join('')}<td>${_erMoney(bands.reduce((s, b) => s + r.by_band[b].actual, 0))}</td></tr>`;
     const cfgRow = `<tr><td>Replay of your settings</td>${bands.map(b => `<td>${_erMoney(r.by_band[b].as_configured)}</td>`).join('')}<td>${_erMoney(bands.reduce((s, b) => s + r.by_band[b].as_configured, 0))}</td></tr>`;
     const vs = [...(r.variants || [])].sort((a, b) => b.total - a.total);
-    const vRows = vs.map(v => `<tr><td>trail ${v.trail}% · trigger ${v.trigger}%${v.stop != null ? ` · stop ${v.stop}%` : ''}</td>${bands.map(b => `<td>${_erMoney(v.by_band[b])}</td>`).join('')}<td>${_erMoney(v.total)}</td></tr>`).join('');
+    const vLabel = v => [v.trail != null ? `trail ${v.trail}%` : 'own trail', v.trigger != null ? `trigger ${v.trigger}%` : null,
+      v.stop != null ? `stop ${v.stop}%` : null,
+      v.max_hold != null ? (v.max_hold === 0 ? 'no max hold' : `hold ${v.max_hold} min`) : null].filter(Boolean).join(' · ');
+    const vRows = vs.map(v => `<tr><td>${vLabel(v)}</td>${bands.map(b => `<td>${_erMoney(v.by_band[b])}</td>`).join('')}<td>${_erMoney(v.total)}</td></tr>`).join('');
     const trades = Object.values(r.by_band || {}).reduce((s, b) => s + b.trades, 0);
     const label = v => `trail ${v.trail}% · trigger ${v.trigger}%${v.stop != null ? ` · stop ${v.stop}%` : ''}`;
     const strats = Object.keys(r.by_strategy || {});

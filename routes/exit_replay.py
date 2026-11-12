@@ -43,6 +43,8 @@ SLOW_FILL_S = 5.0            # broker waits 5 s for the entry; slower fills take
 POLL_S = 1.0                 # the broker's trigger thread polls unrealized P&L every second
 DEFAULT_PLACE_DELAY_S = 1.0  # entry fill → protective order, when not observed
 WINDOW_AFTER_S = 16 * 60     # ticks fetched per trade: fill → 16 min (max hold is 10–15)
+EOD_FLAT = (15, 55)          # ET: positions still open are flattened here (a variant with no max hold)
+LONG_WINDOW_S = 7 * 3600     # when a variant holds past the rule's max hold, one window per symbol-day
 MAX_WINDOW_S = 30 * 60       # a merged tick window never spans more than this (a ticker traded
                              # all day would otherwise pull the whole session into memory)
 TICK_CHUNK_S = 5 * 60        # ticks are requested 5 min at a time and packed into arrays as they arrive
@@ -164,17 +166,38 @@ def replay_policy(t, p, is_long, fill_t, pol):
     return hit or _timed()
 
 
-def policy_for(tr, trail_pct, trigger_pct, stop_pct=None):
+def eod_flat_t(fill_t):
+    """Epoch seconds of the EOD flatten (EOD_FLAT ET) on the trade's day."""
+    d = datetime.fromtimestamp(fill_t, _ET)
+    return d.replace(hour=EOD_FLAT[0], minute=EOD_FLAT[1], second=0, microsecond=0).timestamp()
+
+
+def variant_deadline(tr, max_hold=None):
+    """When a variant's position is closed if no stop or trail fires first.
+    max_hold None = the rule's own; 0 = no max hold (held to the EOD flatten); N = N minutes.
+    A 'cap' deadline (a real exit the replay can't model: a TV exit signal, a flatten,
+    the strikes gate) is kept whatever the variant's hold."""
+    if max_hold is None or tr["deadline_kind"] != "max_hold":
+        return tr["deadline"], tr["deadline_kind"]
+    eod = max(eod_flat_t(tr["fill_t"]), tr["fill_t"] + 60)
+    if max_hold == 0:
+        return eod, "eod"
+    return min(tr["fill_t"] + max_hold * 60, eod), "max_hold"
+
+
+def policy_for(tr, trail_pct, trigger_pct, stop_pct=None, max_hold=None):
     """The live policy for trade `tr` with these settings (mirrors alpaca_broker:
     a trigger needs the entry filled within 5 s and a signal price; the hard stop
-    sits at stop_pct — or the trail distance when there's no stop_loss — from it)."""
+    sits at stop_pct — or the trail distance when there's no stop_loss — from it).
+    max_hold: see variant_deadline."""
     is_long = tr["is_long"]
     ref = tr["ref"]
     immediate = (not trigger_pct) or tr["slow_fill"] or not ref
     sl = (stop_pct or trail_pct) / 100.0
+    deadline, dkind = variant_deadline(tr, max_hold)
     pol = {"mode": "immediate" if immediate else "trigger", "trail_pct": trail_pct,
-           "place_delay": tr["place_delay"], "deadline": tr["deadline"],
-           "deadline_kind": tr["deadline_kind"], "trigger_px": None, "stop_px": None}
+           "place_delay": tr["place_delay"], "deadline": deadline,
+           "deadline_kind": dkind, "trigger_px": None, "stop_px": None}
     if not immediate:
         pol["stop_px"] = ref * (1 - sl) if is_long else ref * (1 + sl)
         g = ref * trigger_pct / 100.0
@@ -324,9 +347,10 @@ def build_trades(orders, rules, from_date, to_date, max_hold_default=10):
     return trades, dict(skipped)
 
 
-def merge_windows(trades):
+def merge_windows(trades, max_span=MAX_WINDOW_S):
     """Group each symbol's trades into overlapping tick windows so overlapping trades
-    share one fetch. Returns [(symbol, start, end, [trades])] ordered by symbol, time."""
+    share one fetch. A trade's window runs to tr['window_end'] when set (variants that
+    hold longer). Returns [(symbol, start, end, [trades])] ordered by symbol, time."""
     by_sym = defaultdict(list)
     for tr in trades:
         by_sym[tr["symbol"]].append(tr)
@@ -335,8 +359,8 @@ def merge_windows(trades):
         cur = None
         for tr in sorted(by_sym[sym], key=lambda x: x["fill_t"]):
             s = tr["fill_t"] - 5
-            e = max(tr["fill_t"] + WINDOW_AFTER_S, tr["exit"]["t"] + 90)
-            if cur and s <= cur[2] and e - cur[1] <= MAX_WINDOW_S:
+            e = max(tr["fill_t"] + WINDOW_AFTER_S, tr["exit"]["t"] + 90, tr.get("window_end") or 0)
+            if cur and s <= cur[2] and e - cur[1] <= max_span:
                 cur[2] = max(cur[2], e)
                 cur[3].append(tr)
             else:
@@ -385,7 +409,8 @@ def evaluate(trades, ticks_for, variants):
 
     by_band = defaultdict(lambda: {"trades": 0, "actual": 0.0, "as_configured": 0.0})
     by_strat = defaultdict(lambda: {"trades": 0, "actual": 0.0, "as_configured": 0.0})
-    vres = [{"trail": v["trail"], "trigger": v.get("trigger", 0.0), "stop": v.get("stop"),
+    vres = [{"trail": v.get("trail"), "trigger": v.get("trigger"), "stop": v.get("stop"),
+             "max_hold": v.get("max_hold"), "trades": 0, "wins": 0,
              "by_band": defaultdict(float), "by_strategy": defaultdict(float), "total": 0.0} for v in variants]
     out_rows = []
     for tr, t, p, row in rows:
@@ -399,7 +424,12 @@ def evaluate(trades, ticks_for, variants):
             x["as_configured"] += pnl_cfg
         row["as_configured_pnl"] = round(pnl_cfg, 4)
         for v, vr in zip(variants, vres):
-            pv = run(tr, t, p, policy_for(tr, v["trail"], v.get("trigger", 0.0), v.get("stop")))
+            # trail / trigger left out (None) = this trade's own configured value
+            v_trail = v.get("trail") if v.get("trail") is not None else cfg_trail
+            v_trig = v.get("trigger") if v.get("trigger") is not None else r["trigger"]
+            pv = run(tr, t, p, policy_for(tr, v_trail, v_trig, v.get("stop"), v.get("max_hold")))
+            vr["trades"] += 1
+            vr["wins"] += pv > 0
             vr["by_band"][tr["band"]] += pv
             vr["by_strategy"][tr["strategy"]] += pv
             vr["total"] += pv
@@ -432,7 +462,8 @@ def evaluate(trades, ticks_for, variants):
                         for k, v in sorted(by_strat.items())},
         # pairing sanity: trades whose paired exit came over 30 min after the entry
         "long_holds": sum(1 for tr, *_ in rows if tr["exit"]["t"] - tr["fill_t"] > 1800),
-        "variants": [{"trail": v["trail"], "trigger": v["trigger"], "stop": v["stop"], "total": rnd(v["total"]),
+        "variants": [{"trail": v["trail"], "trigger": v["trigger"], "stop": v["stop"], "max_hold": v["max_hold"],
+                      "trades": v["trades"], "wins": v["wins"], "total": rnd(v["total"]),
                       "by_band": {k: rnd(x) for k, x in sorted(v["by_band"].items())},
                       "by_strategy": {k: rnd(x) for k, x in sorted(v["by_strategy"].items())}} for v in vres],
         "rows": out_rows,
@@ -624,7 +655,13 @@ def run_replay(run_id, account, from_date, to_date, variants, strategies=None):
             keep = set(strategies)
             trades = [tr for tr in trades if tr["strategy"] in keep]
         client = _data_client()
-        windows = merge_windows(trades)          # [(symbol, start, end, [trades])]
+        # Variants that hold past the rule's max hold need ticks up to their own deadline.
+        holds = [v.get("max_hold") for v in variants if v.get("max_hold") is not None]
+        for tr in trades:
+            ends = [variant_deadline(tr, h)[0] for h in holds]
+            tr["window_end"] = max([tr["deadline"], tr["exit"]["t"]] + ends) + 90
+        long_mode = any(tr["window_end"] - tr["fill_t"] > WINDOW_AFTER_S + 120 for tr in trades)
+        windows = merge_windows(trades, LONG_WINDOW_S if long_mode else MAX_WINDOW_S)
         win_of = {id(tr): w for w in windows for tr in w[3]}
         tick_cache, done, last_beat = {}, [0], [0.0]
 
@@ -648,7 +685,7 @@ def run_replay(run_id, account, from_date, to_date, variants, strategies=None):
             if len(t) == 0:
                 return None
             i0 = np.searchsorted(t, tr["fill_t"] - 5)
-            i1 = np.searchsorted(t, max(tr["deadline"], tr["exit"]["t"]) + 90)
+            i1 = np.searchsorted(t, tr.get("window_end") or (max(tr["deadline"], tr["exit"]["t"]) + 90))
             return t[i0:i1], p[i0:i1], _half_spread(client, sym, tr["fill_t"])
 
         # Walk trades window by window so each window's ticks are fetched once.
@@ -677,16 +714,24 @@ def _retry(fn, attempts=3):
 
 def _parse_variants(raw):
     out = []
+    num = lambda x: float(x) if x not in (None, "") else None
     for v in raw or []:
         try:
-            trail = float(v["trail"])
-            trigger = float(v.get("trigger") or 0)
-            stop = float(v["stop"]) if v.get("stop") not in (None, "") else None
-        except (KeyError, TypeError, ValueError):
-            raise ValueError("each variant needs a numeric trail (and optional trigger, stop)")
-        if not (0 < trail <= 5) or not (0 <= trigger <= 5) or (stop is not None and not (0 < stop <= 5)):
+            trail, trigger, stop = num(v.get("trail")), num(v.get("trigger")), num(v.get("stop"))
+            mh = v.get("max_hold")
+            max_hold = int(mh) if mh not in (None, "") else None
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("variant fields trail, trigger, stop and max_hold must be numbers")
+        if trail is None and max_hold is None:
+            raise ValueError("each variant needs a trail or a max_hold (trail left out = each trade's own)")
+        if (trail is not None and not (0 < trail <= 5)) or (trigger is not None and not (0 <= trigger <= 5)) \
+                or (stop is not None and not (0 < stop <= 5)):
             raise ValueError("trail, trigger and stop are % of price, between 0 and 5")
-        out.append({"trail": trail, "trigger": trigger, "stop": stop})
+        if max_hold is not None and not (0 <= max_hold <= 390):
+            raise ValueError("max_hold is minutes, 0 (no max hold: held to the EOD flatten) to 390")
+        if trail is not None and trigger is None:
+            trigger = 0.0
+        out.append({"trail": trail, "trigger": trigger, "stop": stop, "max_hold": max_hold})
     if not out:
         raise ValueError("give at least one variant")
     if len(out) > MAX_VARIANTS:

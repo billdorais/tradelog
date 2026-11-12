@@ -339,3 +339,52 @@ def test_run_endpoint_takes_a_strategy_list(client):
             break
         _t.sleep(0.02)
     assert started[0][1][4] == ["MU_CAM_BREAKOUT_R3S3_V02_5MIN", "NVDA_X"]
+
+
+# ── max-hold variants (2026-11-12) ─────────────────────────────────────────────
+
+def test_variant_deadline_rule_minutes_none_and_cap():
+    tr = trade(deadline=T0 + 600, deadline_kind="max_hold")
+    assert er.variant_deadline(tr, None) == (T0 + 600, "max_hold")              # the rule's own
+    assert er.variant_deadline(tr, 30) == (T0 + 1800, "max_hold")
+    eod = datetime(2026, 10, 6, 15, 55, tzinfo=ET).timestamp()
+    assert er.variant_deadline(tr, 0) == (eod, "eod")                           # no max hold
+    assert er.variant_deadline(tr, 390)[0] == eod                               # never past the flatten
+    capped = trade(deadline=T0 + 120, deadline_kind="cap")                      # a real exit we can't model
+    assert er.variant_deadline(capped, 0) == (T0 + 120, "cap")
+
+
+def test_a_longer_hold_lets_a_wide_trail_ride_the_trend():
+    # Up 0.1% per minute for an hour; a 0.54% trail never fires. The 10-min hold sells at
+    # +1%, the 60-min hold near +6%, no hold rides to the 15:55 flatten.
+    secs = np.arange(0, 3 * 3600, 5)
+    px = 100.0 * (1 + 0.001 * np.minimum(secs, 3600) / 60)
+    t, p = T0 + secs.astype(float), px
+    tr = trade(symbol="NVDA", strategy=S, band="BREAKOUT R3S3", day="2026-10-06", ref=100.0,
+               rule={"trail": 0.54, "trigger": 0.1, "stop": None, "max_hold": 10.0},
+               trail_order=None, hard_order={"placed": T0 + 0.4, "ended": None, "stop_price": 99.46},
+               exit={"t": T0 + 600, "px": 101.0, "kind": "other"}, deadline=T0 + 600, deadline_kind="max_hold")
+    variants = [{"trail": None, "trigger": None, "max_hold": 10}, {"trail": None, "trigger": None, "max_hold": 60},
+                {"trail": None, "trigger": None, "max_hold": 0}]
+    res = er.evaluate([tr], lambda _tr: (t, p, 0.0), variants)
+    ten, sixty, none = (v["total"] for v in res["variants"])
+    assert ten == pytest.approx(10 * (101.0 - 100.0), abs=0.2)
+    assert sixty == pytest.approx(10 * (106.0 - 100.0), abs=0.2)
+    assert none >= sixty - 0.01
+    assert [v["max_hold"] for v in res["variants"]] == [10, 60, 0] and res["variants"][0]["trades"] == 1
+
+
+def test_parse_variants_max_hold():
+    assert er._parse_variants([{"max_hold": 0}]) == [{"trail": None, "trigger": None, "stop": None, "max_hold": 0}]
+    assert er._parse_variants([{"trail": 0.3}])[0] == {"trail": 0.3, "trigger": 0.0, "stop": None, "max_hold": None}
+    for bad in ([{}], [{"max_hold": 500}], [{"max_hold": "x"}], [{"trail": 9}]):
+        with pytest.raises(ValueError):
+            er._parse_variants(bad)
+
+
+def test_merge_windows_follow_window_end_and_span():
+    a = {"symbol": "NVDA", "fill_t": T0, "exit": {"t": T0 + 30}, "window_end": T0 + 5 * 3600}
+    b = {"symbol": "NVDA", "fill_t": T0 + 3600, "exit": {"t": T0 + 3700}, "window_end": T0 + 5 * 3600}
+    one = er.merge_windows([a, b], er.LONG_WINDOW_S)
+    assert len(one) == 1 and one[0][2] == T0 + 5 * 3600
+    assert len(er.merge_windows([a, b])) == 2                 # default 30-min cap keeps them apart
