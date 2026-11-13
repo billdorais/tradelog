@@ -205,6 +205,19 @@ def policy_for(tr, trail_pct, trigger_pct, stop_pct=None, max_hold=None):
     return pol
 
 
+def variant_policy(tr, v, cfg_trail):
+    """A variant's policy for one trade. Every setting the variant leaves out (None)
+    is the trade's OWN configured value, so a hold-only variant changes the hold and
+    nothing else. The stop used to fall through to policy_for's no-stop default (the
+    trail distance), which moved a rule's 0.3% hard stop to 0.54% on a variant that
+    only meant to change the hold."""
+    r = tr["rule"]
+    trail = v.get("trail") if v.get("trail") is not None else cfg_trail
+    trig = v.get("trigger") if v.get("trigger") is not None else r["trigger"]
+    stop = v.get("stop") if v.get("stop") is not None else r["stop"]
+    return policy_for(tr, trail, trig, stop, v.get("max_hold"))
+
+
 def trade_pnl(tr, exit_px):
     d = exit_px - tr["fill_px"] if tr["is_long"] else tr["fill_px"] - exit_px
     return d * tr["qty"]
@@ -376,7 +389,10 @@ def evaluate(trades, ticks_for, variants):
     rows, resid = [], []
     for tr in trades:
         tk = ticks_for(tr)
-        if tk is None:
+        # No ticks in this trade's own slice (a halt, or a window whose prints all
+        # belong to a neighbouring trade): skip it like a missing window. replay_policy
+        # returns None on an empty slice, and run() below would fail the whole run.
+        if tk is None or len(tk[0]) == 0:
             continue
         t, p, hs = tk
         tr["half_spread"] = hs
@@ -424,10 +440,7 @@ def evaluate(trades, ticks_for, variants):
             x["as_configured"] += pnl_cfg
         row["as_configured_pnl"] = round(pnl_cfg, 4)
         for v, vr in zip(variants, vres):
-            # trail / trigger left out (None) = this trade's own configured value
-            v_trail = v.get("trail") if v.get("trail") is not None else cfg_trail
-            v_trig = v.get("trigger") if v.get("trigger") is not None else r["trigger"]
-            pv = run(tr, t, p, policy_for(tr, v_trail, v_trig, v.get("stop"), v.get("max_hold")))
+            pv = run(tr, t, p, variant_policy(tr, v, cfg_trail))
             vr["trades"] += 1
             vr["wins"] += pv > 0
             vr["by_band"][tr["band"]] += pv

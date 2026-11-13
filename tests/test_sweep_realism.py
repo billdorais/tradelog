@@ -93,3 +93,22 @@ def test_sweep_entry_minute_and_exit_cost(sweep_client):
 
 def test_sweep_rejects_bad_entry_minute(sweep_client):
     assert _post(sweep_client, entry_minute="sometimes").status_code == 400
+
+
+def test_entry_minute_exit_yields_to_an_earlier_actual_exit():
+    """With skip_tv_exits off the baseline anchors on the real exit (cap_dt). The
+    entry-minute exit returned a trail exit at the end of the bar even when the trade
+    had already exited inside that minute, and exit_cost was charged on it."""
+    later = [bar(1, 99.6, 99.7, 99.5, 99.6)]
+    eb = bar(0, 100.0, 100.0, 99.5, 99.6)                  # closed through the 0.1% trail
+    entry = T0 + timedelta(seconds=20)
+    early = a._simulate_exit(later, 100.0, "LONG", 0.1, 0.0, 0.0, 0, entry,
+                             cap_dt=T0 + timedelta(seconds=40), cap_price=99.88,
+                             entry_bar=eb, entry_bar_mode="close")
+    assert early["reason"] == "actual" and early["exit_price"] == pytest.approx(99.88)
+    assert early["exit_time"] == str(T0 + timedelta(seconds=40))
+    # A real exit AFTER the entry minute leaves the entry-minute exit in place.
+    late = a._simulate_exit(later, 100.0, "LONG", 0.1, 0.0, 0.0, 0, entry,
+                            cap_dt=T0 + timedelta(seconds=90), cap_price=99.6,
+                            entry_bar=eb, entry_bar_mode="close")
+    assert late["reason"] == "trail" and late["exit_time"] == str(T0 + timedelta(minutes=1))

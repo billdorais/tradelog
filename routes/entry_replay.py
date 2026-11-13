@@ -133,6 +133,19 @@ def _first_tick(t, p, at, cond=None):
     return i + k if k >= 0 else -1
 
 
+FILL_MAX_LAT_S = 60.0        # a market order with no print this long after it was sent is no fill
+
+
+def _fill_tick(t, p, at):
+    """Index of the tick a market order sent at `at` fills on, or -1 when the next
+    print is more than FILL_MAX_LAT_S later. Tick windows start 60 s before a bar and
+    run well past it, so a later print means this bar was never in a window (a gap
+    bar more than 0.5·ATR past the level): unbounded, the entry filled on the first
+    tick of a LATER window — possibly hours on, at an unrelated price."""
+    i = _first_tick(t, p, at)
+    return i if i >= 0 and t[i] - at <= FILL_MAX_LAT_S else -1
+
+
 def _mk(t_entry, px, ref, bar_i, how, **flags):
     return {"t": float(t_entry), "px": float(px), "ref": float(ref), "bar": int(bar_i), "how": how, **flags}
 
@@ -155,13 +168,13 @@ def find_breakout(b, t, p, L, variant, start_t, real_level=None):
             if variant == "close":
                 if close_t < start_t:
                     continue
-                j = _first_tick(t, p, close_t + CLOSE_LAT_S)
+                j = _fill_tick(t, p, close_t + CLOSE_LAT_S)
                 if j >= 0:
                     return _mk(t[j], p[j], b.c[i], i, "market", closed_back=False)
                 continue
             if variant == "two_closes":
                 if i + 1 < n and b.c[i + 1] > L and b.bt[i + 1] + BAR_S >= start_t:
-                    j = _first_tick(t, p, b.bt[i + 1] + BAR_S + CLOSE_LAT_S)
+                    j = _fill_tick(t, p, b.bt[i + 1] + BAR_S + CLOSE_LAT_S)
                     if j >= 0:
                         return _mk(t[j], p[j], b.c[i + 1], i + 1, "market", closed_back=False)
                 continue
@@ -196,6 +209,9 @@ def find_breakout(b, t, p, L, variant, start_t, real_level=None):
             if not np.all(p[mi] >= trig):
                 continue          # fell back before the hold elapsed; the next bar may re-arm
             t_fire = need
+        # Unbounded on purpose: the poll above saw a print inside this bar, so its
+        # window was fetched and the next print is the fill (the close-type rules
+        # need _fill_tick because their bar may have been outside every window).
         j = _first_tick(t, p, t_fire + POLL_FILL_S)
         if j < 0:
             continue
@@ -227,7 +243,7 @@ def find_reversal(b, t, p, L, variant, start_t):
             if not (b.l[i] <= L < b.c[i] and (L - b.l[i]) >= atr * ATR_MULT and _ema_rev_ok(b, i)):
                 continue
             if variant == "reject":
-                j = _first_tick(t, p, close_t + CLOSE_LAT_S)
+                j = _fill_tick(t, p, close_t + CLOSE_LAT_S)
                 if j >= 0:
                     return _mk(t[j], p[j], b.c[i], i, "market")
                 continue
@@ -277,7 +293,7 @@ def find_reversal(b, t, p, L, variant, start_t):
                     if b.c[k] < b.l[bb] - tol:
                         break
                     if b.c[k] > neck and b.bt[k] + BAR_S >= start_t:
-                        j = _first_tick(t, p, b.bt[k] + BAR_S + CLOSE_LAT_S)
+                        j = _fill_tick(t, p, b.bt[k] + BAR_S + CLOSE_LAT_S)
                         if j >= 0:
                             return _mk(t[j], p[j], b.c[k], k, "market")
                         break

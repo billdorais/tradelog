@@ -22933,6 +22933,12 @@ def _simulate_exit(bars, entry_price: float, side: str,
             if not isinstance(_eb_ts, _dt.datetime):
                 _eb_ts = _dt.datetime.fromisoformat(str(_eb_ts).replace("Z", "+00:00"))
             _ex_ts = _eb_ts + _dt.timedelta(minutes=1)
+            # The real exit came first (inside the entry minute): the cap wins, as it
+            # does for every later bar below — otherwise the baseline that is meant to
+            # anchor on the actual exit returns a simulated one and gets charged exit_cost.
+            if cap_dt is not None and cap_dt <= _ex_ts:
+                return {"exit_price": round(cap_price, 4), "exit_time": str(cap_dt), "reason": "actual",
+                        "exit_mins": round(max(0.0, (cap_dt - entry_dt).total_seconds() / 60), 1)}
             return {"exit_price": round(_hit[1], 4), "exit_time": str(_ex_ts), "reason": _hit[0],
                     "exit_mins": round(max(0.0, (_ex_ts - entry_dt).total_seconds() / 60), 1)}
 

@@ -171,3 +171,15 @@ def test_run_endpoint_validates_and_starts(client):
     assert d["status"] == "done" and "rows" not in d["result"]
     assert c.get(f"/api/entry_replay/runs/{rid}?rows=1").get_json()["result"]["rows"] == [1]
     assert c.get("/api/entry_replay/runs").get_json()["runs"][0]["id"] == rid
+
+
+def test_a_close_with_no_print_until_a_later_window_is_not_a_fill():
+    """Bar 1 closes above L but its ticks were never fetched (a gap bar outside every
+    window). The next print is two hours on, in another window: that is not where a
+    market order at the close would fill, so there is no entry on this bar."""
+    b = bars([(99.5, 99.9, 99.4, 99.8), (99.8, 100.6, 99.8, 100.5), (100.5, 100.9, 100.4, 100.8)])
+    t, p = ticks([(0, 99.6), (7200, 103.0)])
+    assert en.find_breakout(b, t, p, L, "close", b.bt[0]) is None
+    # A print within the fill bound is the fill.
+    t, p = ticks([(0, 99.6), (605, 100.52), (7200, 103.0)])
+    assert en.find_breakout(b, t, p, L, "close", b.bt[0])["t"] == D0 + 605

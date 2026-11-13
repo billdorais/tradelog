@@ -388,3 +388,32 @@ def test_merge_windows_follow_window_end_and_span():
     one = er.merge_windows([a, b], er.LONG_WINDOW_S)
     assert len(one) == 1 and one[0][2] == T0 + 5 * 3600
     assert len(er.merge_windows([a, b])) == 2                 # default 30-min cap keeps them apart
+
+
+# ── variants leave the rule's other settings alone ────────────────────────────
+
+def test_a_hold_only_variant_keeps_the_rules_stop():
+    """{max_hold: 60} meant 'change the hold'. The stop fell through to policy_for's
+    no-stop default (the trail distance), so the hold comparison also moved the hard
+    stop from the rule's 0.3% to the 0.54% trail."""
+    tr = trade(rule={"trail": 0.54, "trigger": 0.1, "stop": 0.3, "max_hold": 10.0})
+    pol = er.variant_policy(tr, {"max_hold": 60}, 0.54)
+    assert pol["stop_px"] == pytest.approx(99.95 * (1 - 0.003))      # the rule's stop, not the trail
+    assert pol["trail_pct"] == 0.54 and pol["deadline"] == T0 + 3600
+    # An explicit stop on the variant still wins.
+    assert er.variant_policy(tr, {"stop": 0.5}, 0.54)["stop_px"] == pytest.approx(99.95 * 0.995)
+    # A rule with no stop keeps policy_for's trail-distance default.
+    none = trade(rule={"trail": 0.54, "trigger": 0.1, "stop": None, "max_hold": 10.0})
+    assert er.variant_policy(none, {"max_hold": 60}, 0.54)["stop_px"] == pytest.approx(99.95 * (1 - 0.0054))
+
+
+def test_evaluate_skips_a_trade_whose_slice_has_no_ticks():
+    """One halted symbol used to raise TypeError ('NoneType' not subscriptable) and
+    fail the whole run after minutes of tick fetching."""
+    tr = trade(symbol="NVDA", strategy=S, band="BREAKOUT R4S4", day="2026-10-06",
+               rule={"trail": 0.1, "trigger": 0.1, "stop": None, "max_hold": 10.0}, trail_order=None,
+               hard_order={"placed": T0 + 0.4, "ended": None, "stop_price": 99.85},
+               exit={"t": T0 + 2, "px": 99.83, "kind": "stop"})
+    empty = (np.array([], dtype=float), np.array([], dtype=float), 0.0)
+    res = er.evaluate([tr], lambda _tr: empty, [{"trail": 0.1}])
+    assert res["trades"] == 0 and res["variants"][0]["trades"] == 0

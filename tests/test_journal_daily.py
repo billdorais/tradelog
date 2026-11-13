@@ -359,3 +359,20 @@ def test_finite_bar_and_session_bars():
     assert jd._finite_bar({"open": 1, "high": 2, "low": 1, "close": 1.5})
     sb = jd.session_bars(_pm_bars("SPY", "2026-09-10"))
     assert sb == {"2026-09-10": {"date": "2026-09-10", "open": 105.0, "close": 105.0, "high": 106.0, "low": 95.0}}
+
+
+def test_vix_label_uses_the_last_close_before_the_day(journal, monkeypatch):
+    """On the evening snapshot today's VIX row is still NaN (no intraday stand-in), so
+    reading today's own prev_close left the label out until the next night. The close
+    it needs — yesterday's — was known all along."""
+    a, _ = journal
+    nan = float("nan")
+    bars = {"SPY": [("2026-11-04", 100, 101, 99, 100), ("2026-11-05", 100.2, 102, 100, 101.8), ("2026-11-06", 101.8, 102, 101, 101.5)],
+            "^VIX": [("2026-11-04", 16, 17, 15, 16.5), ("2026-11-05", 16.5, 17, 15, 24.0), ("2026-11-06", nan, nan, nan, nan)]}
+    monkeypatch.setattr(jd, "_daily_bars", lambda sym, s, e: _bars(bars.get(sym, bars["SPY"])))
+    res = jd.snapshot_range("2026-11-05", "2026-11-06")
+    assert not res["errors"]
+    days = {x["date"]: x for x in a.app.test_client().get("/api/journal/days?from=2026-11-01&to=2026-11-07").get_json()["days"]}
+    assert days["2026-11-05"]["labels"]["vix"] == "vix-mid"        # prior close 16.5
+    assert days["2026-11-06"]["labels"]["vix"] == "vix-high"       # prior close 24.0, though today's row is NaN
+    assert jd.last_close_before({}, "2026-11-06") is None

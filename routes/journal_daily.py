@@ -191,6 +191,19 @@ def premarket_label(pm_xs):
     return "pm-volatile" if x >= PM_VOLATILE_X else "pm-quiet" if x <= PM_QUIET_X else "pm-normal"
 
 
+def last_close_before(feat, d):
+    """The last daily close strictly before day d, or None. For a label that must be
+    known before the open: VIX has no intraday stand-in, so on the evening snapshot
+    its row for today is still NaN and dropped — reading today's own prev_close
+    then left the label out until the next night, though the close it needs was known.
+    A day with its own row keeps prev_close (the first fetched bar has no row of its
+    own, so its close is only reachable that way); otherwise the latest prior row's close."""
+    if d in feat:
+        return feat[d].get("prev_close")
+    prior = [dd for dd in feat if dd < d]
+    return feat[max(prior)]["close"] if prior else None
+
+
 def day_labels(spy, vix_prev_close, pm_xs=()):
     """SPY's features for a day, VIX's prior close and the pre-market range ratios →
     {dimension: label}. A dimension whose input is missing is left out rather than guessed."""
@@ -676,7 +689,7 @@ def snapshot_range(from_date, to_date):
         cur = conn.cursor()
         for d in trading:
             market = {sym: f[d] for sym, f in feats.items() if d in f}
-            vix_prev = (feats.get("VIX", {}).get(d) or {}).get("prev_close")
+            vix_prev = last_close_before(feats.get("VIX", {}), d)
             labels = day_labels(feats["SPY"].get(d), vix_prev,
                                 [(feats.get(s, {}).get(d) or {}).get("pm_range_x") for s in PM_LABEL_SYMBOLS])
             events = calendar_events(d, manual, earnings)
