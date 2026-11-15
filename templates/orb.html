@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ORB Backtest — Kairos Automata</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    [hidden] { display: none !important; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; padding: 0 0 60px; }
+    header { background: #13161f; border-bottom: 1px solid #1e2130; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    header { padding-left: max(16px, calc((100% - 1240px) / 2 + 16px)); padding-right: max(16px, calc((100% - 1240px) / 2 + 16px)); }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    .content { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+    .btn { background: transparent; border: 1px solid #2a2d3e; color: #ccc; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; }
+    .btn:hover { border-color: #4a5568; }
+    .btn.go { border-color: #3a7a4e; color: #7FE098; }
+    .btn.danger { border-color: #8a4a4a; color: #e08a8a; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    select.f, input.f { background: #1a1d2e; border: 1px solid #2a2d3e; color: #e0e0e0; border-radius: 6px; padding: 6px 8px; font-size: 0.8rem; font-family: inherit; }
+    input.f[type=number] { width: 84px; }
+    input.f[type=time] { width: 108px; }
+    .lbl { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em; color: #666; display: block; margin-bottom: 3px; }
+    .panel { background: #13161f; border: 1px solid #1e2130; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+    .band-q { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #f0a35e; margin-bottom: 2px; }
+    .band-sub { font-size: 0.72rem; color: #777; margin-bottom: 12px; line-height: 1.45; }
+    .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; }
+    .fld { display: flex; flex-direction: column; }
+    .chk { font-size: 0.78rem; color: #ccc; display: flex; gap: 6px; align-items: center; padding-bottom: 6px; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .tile { background: #171a24; border: 1px solid #232735; border-radius: 8px; padding: 10px 12px; }
+    .tile .k { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+    .tile .v { font-size: 1.2rem; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .tile .s { font-size: 0.66rem; color: #666; margin-top: 2px; }
+    .chartbox { position: relative; height: 260px; margin-bottom: 6px; }
+    .tbl { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.74rem; }
+    th { text-align: right; padding: 5px 8px; color: #666; font-weight: 500; font-size: 0.62rem; text-transform: uppercase; white-space: nowrap; }
+    th:first-child, td:first-child, th.l, td.l { text-align: left; }
+    td { text-align: right; padding: 5px 8px; border-top: 1px solid #1e2130; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    tr.cur td { background: rgba(127,224,152,0.06); }
+    .pos { color: #7FE098; } .neg { color: #e08a8a; } .dim { color: #555; }
+    .empty { color: #666; font-size: 0.85rem; padding: 20px 0; text-align: center; }
+    .warn { background: rgba(224,138,138,0.08); border: 1px solid #5a3535; color: #e08a8a; font-size: 0.76rem; border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; }
+    .note { font-size: 0.72rem; color: #888; line-height: 1.55; }
+    .note li { margin-left: 18px; }
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; }
+    .runs a { color: #9ab; cursor: pointer; text-decoration: none; }
+    .runs a:hover { text-decoration: underline; }
+    .status { font-size: 0.78rem; color: #9aa0b5; margin-left: 6px; }
+    h3 { font-size: 0.8rem; font-weight: 600; color: #cfd3e0; margin: 4px 0 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" style="display:inline-flex"><img src="/static/kariosLogo_128.png" alt="Home" style="height:36px;width:36px;image-rendering:pixelated;cursor:pointer"></a>
+      <h1>Kairos Automata — ORB Backtest</h1>
+    </div>
+    <div style="position:relative;display:inline-block">
+      <button onclick="toggleNavMenu()" style="background:transparent;border:1px solid #2a2d3e;color:#aaa;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:1.1rem;line-height:1">&#9776;</button>
+      <div id="navMenu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:6px;min-width:190px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <a href="/" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127968; Dashboard</a>
+        <a href="/routing" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128257; Signal Router</a>
+        <a href="/simulate" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127916; Replay</a>
+        <a href="/orb" style="display:block;padding:10px 16px;color:#7FE098;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#128230; ORB Backtest</a>
+        <a href="/farms" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127793; Farm Leaders</a>
+        <a href="/tickers" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem;border-bottom:1px solid #2a2d3e">&#127991; Ticker Breakdown</a>
+        <a href="/diagnostics" style="display:block;padding:10px 16px;color:#ccc;text-decoration:none;font-size:0.9rem">&#128736; Diagnostics</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="panel">
+      <div class="band-q">Nasdaq opening-range breakout · replay only</div>
+      <div class="band-sub">
+        Range = high/low of 09:00–09:30 ET. A 5-minute candle that <strong>closes</strong> outside it by 10:30 triggers
+        the day's one trade, if the 15-minute SMA(50) vs SMA(200) agrees; entry at the next bar's open, stop at the far
+        side of the range, target 3R, flat by 15:55. Nothing on this page places orders.
+      </div>
+
+      <div class="row">
+        <div class="fld"><span class="lbl">Data</span>
+          <select class="f" id="source" onchange="syncSource()">
+            <option value="csv">Uploaded futures bars (CSV)</option>
+            <option value="yahoo">Yahoo NQ / MNQ — last ~58 days</option>
+            <option value="alpaca">Alpaca QQQ — stand-in, years</option>
+          </select></div>
+        <div class="fld src-csv"><span class="lbl">Dataset</span>
+          <select class="f" id="dataset" onchange="syncDatasetDates()"></select></div>
+        <div class="fld src-fut"><span class="lbl">Contract</span>
+          <select class="f" id="contract"><option value="NQ">NQ ($20/pt)</option><option value="MNQ">MNQ ($2/pt)</option></select></div>
+        <div class="fld src-alp"><span class="lbl">Symbol</span><input class="f" id="symbol" value="QQQ" style="width:80px"></div>
+        <div class="fld src-alp"><span class="lbl">Bars</span>
+          <select class="f" id="resolution"><option value="5m">5-minute</option><option value="1m">1-minute (≤400 days)</option></select></div>
+        <div class="fld"><span class="lbl">From</span><input class="f" type="date" id="from"></div>
+        <div class="fld"><span class="lbl">To</span><input class="f" type="date" id="to"></div>
+      </div>
+
+      <div class="row src-csv" id="uploadRow" style="padding:10px 12px;border:1px dashed #2a2d3e;border-radius:8px">
+        <div class="fld"><span class="lbl">Upload bars (.csv, .csv.gz, .zip)</span><input type="file" id="file" class="f" accept=".csv,.gz,.zip,.txt"></div>
+        <div class="fld"><span class="lbl">Name</span><input class="f" id="dsName" placeholder="NQ 1m 2021-2026" style="width:170px"></div>
+        <div class="fld"><span class="lbl">Symbol</span><select class="f" id="dsSym"><option>NQ</option><option>MNQ</option></select></div>
+        <div class="fld"><span class="lbl">Timestamps are in</span>
+          <select class="f" id="dsTz"><option value="America/New_York">Eastern (ET)</option><option value="America/Chicago">Central (CT)</option><option value="UTC">UTC</option></select></div>
+        <button class="btn" onclick="upload()">Upload</button>
+        <button class="btn danger" onclick="deleteDataset(this)">Delete selected</button>
+        <span class="status" id="uploadStatus"></span>
+        <div class="note" style="flex-basis:100%">One row per bar: a datetime (bar <em>start</em>) and open/high/low/close. 1-minute bars are best; 5-minute works.
+          Timestamps with an offset (e.g. <code>2024-03-11T09:30:00-04:00</code>) or epoch numbers are read as-is; plain ones use the zone above.</div>
+      </div>
+
+      <div class="row">
+        <div class="fld"><span class="lbl">Range start</span><input class="f" type="time" id="or_start"></div>
+        <div class="fld"><span class="lbl">Range end</span><input class="f" type="time" id="or_end"></div>
+        <div class="fld"><span class="lbl">Last entry (candle close)</span><input class="f" type="time" id="last_entry"></div>
+        <div class="fld"><span class="lbl">Forced exit</span><input class="f" type="time" id="forced_exit"></div>
+        <div class="fld"><span class="lbl">Breakout candle (min)</span><input class="f" type="number" id="breakout_tf"></div>
+        <div class="fld"><span class="lbl">Trend chart (min)</span><input class="f" type="number" id="trend_tf"></div>
+        <div class="fld"><span class="lbl">Fast SMA</span><input class="f" type="number" id="fast_sma"></div>
+        <div class="fld"><span class="lbl">Slow SMA</span><input class="f" type="number" id="slow_sma"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><span class="lbl">Target (R)</span><input class="f" type="number" step="0.25" id="target_r"></div>
+        <div class="fld"><span class="lbl">Stop</span><select class="f" id="stop"><option value="opposite">Opposite side of range</option><option value="midpoint">Range midpoint</option></select></div>
+        <div class="fld"><span class="lbl">Max trades / day</span><input class="f" type="number" id="max_trades_per_day"></div>
+        <div class="fld"><span class="lbl">Stop &amp; target in one bar</span><select class="f" id="same_bar"><option value="stop_first">Stop first (conservative)</option><option value="target_first">Target first</option></select></div>
+        <div class="fld"><span class="lbl">Contracts / shares</span><input class="f" type="number" id="contracts"></div>
+        <div class="fld"><span class="lbl">Slippage (ticks/fill)</span><input class="f" type="number" step="0.5" id="slippage_ticks"></div>
+        <div class="fld"><span class="lbl">Commission $/side</span><input class="f" type="number" step="0.01" id="commission" placeholder="default"></div>
+        <label class="chk"><input type="checkbox" id="trend_filter"> Trend filter</label>
+        <label class="chk" title="Off: if the filter rejects the first breakout, the day is skipped. On: keep watching for a later breakout that agrees."><input type="checkbox" id="retry_after_filter"> Retry after a filtered breakout</label>
+        <label class="chk"><input type="checkbox" id="validate" checked> Validation</label>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <button class="btn go" id="runBtn" onclick="run()">Run backtest</button>
+        <button class="btn" onclick="resetParams()">Reset to defaults</button>
+        <span class="status" id="runStatus"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Recent runs</h3>
+      <div class="tbl runs" id="runs"><div class="empty">No runs yet.</div></div>
+    </div>
+
+    <div id="results"></div>
+  </div>
+
+<script>
+  function toggleNavMenu() {
+    const m = document.getElementById('navMenu');
+    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('click', e => {
+    if (!e.target.closest('header')) document.getElementById('navMenu').style.display = 'none';
+  });
+
+  const $ = id => document.getElementById(id);
+  const _esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const _r = (v, d = 2) => v === null || v === undefined ? '—' : (v > 0 ? '+' : '') + Number(v).toFixed(d) + 'R';
+  const _n = (v, d = 2) => v === null || v === undefined ? '—' : Number(v).toFixed(d);
+  const _usd = v => v === null || v === undefined ? '—' : (v < 0 ? '−' : '+') + '$' + Math.abs(v).toLocaleString('en-US', {maximumFractionDigits: 0});
+  const _cls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  const PARAM_IDS = ['or_start','or_end','last_entry','forced_exit','breakout_tf','trend_tf','fast_sma','slow_sma','target_r',
+                     'stop','max_trades_per_day','same_bar','contracts','slippage_ticks','commission','trend_filter','retry_after_filter'];
+  let META = null, DATASETS = [], _poll = null, _charts = {};
+
+  function _iso(d) { return d.toISOString().slice(0, 10); }
+  function _daysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return _iso(d); }
+
+  function resetParams() {
+    const d = META.defaults;
+    for (const k of PARAM_IDS) {
+      const el = $(k);
+      if (el.type === 'checkbox') el.checked = !!d[k];
+      else el.value = d[k] ?? '';
+    }
+    if ($('source').value === 'alpaca') $('contracts').value = 100;
+  }
+
+  function syncSource() {
+    const s = $('source').value;
+    document.querySelectorAll('.src-csv').forEach(e => e.hidden = s !== 'csv');
+    document.querySelectorAll('.src-fut').forEach(e => e.hidden = s === 'alpaca');
+    document.querySelectorAll('.src-alp').forEach(e => e.hidden = s !== 'alpaca');
+    $('to').value = _iso(new Date());
+    if (s === 'yahoo') $('from').value = _daysAgo(META.yahoo_max_days);
+    else if (s === 'alpaca') { $('from').value = _daysAgo(730); if (+$('contracts').value === 1) $('contracts').value = 100; }
+    else { if (+$('contracts').value === 100) $('contracts').value = 1; syncDatasetDates(); }
+  }
+
+  function syncDatasetDates() {
+    const ds = DATASETS.find(d => d.id === $('dataset').value);
+    if (ds && $('source').value === 'csv') { $('from').value = ds.first.slice(0, 10); $('to').value = ds.last.slice(0, 10); }
+  }
+
+  async function loadDatasets() {
+    const d = await (await fetch('/api/orb/datasets')).json();
+    DATASETS = d.datasets || [];
+    $('dataset').innerHTML = DATASETS.length
+      ? DATASETS.map(x => `<option value="${_esc(x.id)}">${_esc(x.name)} · ${_esc(x.symbol)} · ${x.base_min}m · ${_esc(x.first.slice(0,10))} → ${_esc(x.last.slice(0,10))}</option>`).join('')
+      : '<option value="">— upload one below —</option>';
+    syncDatasetDates();
+  }
+
+  async function upload() {
+    const f = $('file').files[0];
+    if (!f) { $('uploadStatus').textContent = 'Choose a file first.'; return; }
+    const fd = new FormData();
+    fd.append('file', f); fd.append('name', $('dsName').value || f.name);
+    fd.append('symbol', $('dsSym').value); fd.append('tz', $('dsTz').value);
+    $('uploadStatus').textContent = 'Uploading and checking…';
+    const r = await fetch('/api/orb/datasets', { method: 'POST', body: fd });
+    const d = await r.json().catch(() => ({ error: 'upload failed' }));
+    if (!r.ok) { $('uploadStatus').textContent = d.error || 'upload failed'; return; }
+    $('uploadStatus').textContent = `Stored ${d.rows.toLocaleString()} ${d.base_min}-minute bars over ${d.days} days.`;
+    await loadDatasets();
+    $('dataset').value = d.id; syncDatasetDates();
+  }
+
+  async function deleteDataset(btn) {
+    const id = $('dataset').value;
+    if (!id) return;
+    if (btn.dataset.armed !== '1') { btn.dataset.armed = '1'; btn.textContent = 'Click again to delete'; setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Delete selected'; }, 4000); return; }
+    await fetch('/api/orb/datasets/' + encodeURIComponent(id), { method: 'DELETE' });
+    btn.dataset.armed = ''; btn.textContent = 'Delete selected';
+    await loadDatasets();
+  }
+
+  function _params() {
+    const p = {};
+    for (const k of PARAM_IDS) {
+      const el = $(k);
+      p[k] = el.type === 'checkbox' ? el.checked : (el.value === '' ? null : el.value);
+    }
+    return p;
+  }
+
+  async function run() {
+    const body = { source: $('source').value, from: $('from').value, to: $('to').value, params: _params(),
+                   contract: $('contract').value, dataset_id: $('dataset').value, symbol: $('symbol').value,
+                   resolution: $('resolution').value, validate: $('validate').checked };
+    $('runBtn').disabled = true; $('runStatus').textContent = 'Starting…';
+    const r = await fetch('/api/orb/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({ error: 'request failed' }));
+    if (!r.ok) { $('runBtn').disabled = false; $('runStatus').textContent = d.error || 'failed'; return; }
+    watch(d.run_id);
+  }
+
+  function watch(id) {
+    clearInterval(_poll);
+    const tick = async () => {
+      const d = await (await fetch('/api/orb/runs/' + encodeURIComponent(id))).json();
+      $('runStatus').textContent = d.status === 'running' ? 'Running: ' + (d.progress || '') : d.status === 'failed' ? 'Failed: ' + (d.progress || '') : '';
+      if (d.status !== 'running') {
+        clearInterval(_poll); _poll = null; $('runBtn').disabled = false; loadRuns();
+        if (d.status === 'done') render(d);
+      }
+    };
+    _poll = setInterval(tick, 2000); tick();
+  }
+
+  async function loadRuns() {
+    const d = await (await fetch('/api/orb/runs')).json();
+    const rows = d.runs || [];
+    $('runs').innerHTML = rows.length ? `<table><thead><tr><th>When (UTC)</th><th class="l">Data</th><th class="l">Window</th><th>Target</th><th>Filter</th><th class="l">Status</th></tr></thead><tbody>${
+      rows.map(r => { const p = r.params || {}, q = p.params || {};
+        const src = p.source === 'csv' ? 'CSV ' + (p.contract || '') : p.source === 'yahoo' ? 'Yahoo ' + (p.symbol || '') : 'Alpaca ' + (p.symbol || '');
+        return `<tr><td><a onclick="openRun('${_esc(r.id)}')">${_esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</a></td>
+          <td class="l">${_esc(src)}</td><td class="l">${_esc(p.from)} → ${_esc(p.to)}</td><td>${_esc(q.target_r)}R</td>
+          <td>${q.trend_filter ? 'on' : 'off'}</td><td class="l">${_esc(r.status)}${r.status === 'failed' ? ': ' + _esc(r.progress) : ''}</td></tr>`; }).join('')
+    }</tbody></table>` : '<div class="empty">No runs yet.</div>';
+    const live = rows.find(r => r.status === 'running');
+    if (live && !_poll) watch(live.id);
+  }
+
+  async function openRun(id) {
+    const d = await (await fetch('/api/orb/runs/' + encodeURIComponent(id))).json();
+    if (d.status === 'done') render(d); else if (d.status === 'running') watch(id);
+  }
+
+  const tile = (k, v, cls, s = '') => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s}</div></div>`;
+  const SUMCOLS = [['trades','Trades',v => v ?? 0], ['win_rate','Win %',v => _n(v,1)], ['avg_win_r','Avg win',v => _r(v)],
+                   ['avg_loss_r','Avg loss',v => _r(v)], ['expectancy_r','Expectancy',v => _r(v,3)], ['total_r','Total',v => _r(v,1)],
+                   ['max_dd_r','Max DD',v => v == null ? '—' : Number(v).toFixed(1) + 'R'], ['profit_factor','PF',v => _n(v)], ['t_stat','t-stat',v => _n(v)]];
+  const sumHead = SUMCOLS.map(c => `<th>${c[1]}</th>`).join('');
+  const sumCells = s => SUMCOLS.map(([k,, f]) => `<td class="${['expectancy_r','total_r'].includes(k) ? _cls(s[k]) : ''}">${s.trades ? f(s[k]) : (k === 'trades' ? 0 : '—')}</td>`).join('');
+
+  function render(run) {
+    const R = run.result, s = R.summary || {}, P = R.params, D = R.data || {};
+    const skipped = Object.entries(R.skipped || {}).filter(([, v]) => v);
+    const SKIP = { no_range_data: 'no bars in the range window (holiday / missing data)', flat_range: 'flat range',
+                   no_breakout: 'no candle closed outside the range by ' + P.last_entry, trend_warmup: 'trend SMAs not ready',
+                   trend_filter: 'first breakout against the trend (skipped)', trend_equal: 'SMAs equal (skipped)',
+                   no_entry_bar: 'no bar to enter on', entry_beyond_stop: 'entry already past the stop' };
+    let h = '';
+    h += `<div class="panel"><div class="band-q">Run ${_esc(run.id)} · ${_esc(R.contract)}</div>
+      <div class="note">${_esc(D.label)} · ${(D.bars || 0).toLocaleString()} ${D.base_min}-minute bars ·
+        trading days ${_esc(D.trading_from)} → ${_esc(D.trading_to)} (${D.weekdays_in_window} weekdays) ·
+        target ${P.target_r}R · trend filter ${P.trend_filter ? 'on' : 'off'} · ${P.slippage_ticks} tick slippage per market fill ·
+        commission $${R.params.commission ?? R.contract_spec.commission}/side × ${P.contracts}
+        ${(D.notes || []).length ? '<ul style="margin-top:6px">' + D.notes.map(n => `<li>${_esc(n)}</li>`).join('') + '</ul>' : ''}</div></div>`;
+    if (!s.trades) { $('results').innerHTML = h + '<div class="panel"><div class="empty">No trades in this window.</div></div>'; return; }
+    if (s.trades < 100) h += `<div class="warn">Only ${s.trades} trades. Results this small can swing a lot by chance — treat them as a first look, not a verdict.</div>`;
+
+    h += `<div class="panel"><div class="band-q">Performance (R is net of costs: realized $ ÷ initial risk $)</div><div class="tiles">
+      ${tile('Trades', s.trades, '', `${skipped.reduce((a, [, v]) => a + v, 0)} weekdays not traded`)}
+      ${tile('Win rate', _n(s.win_rate, 1) + '%')}
+      ${tile('Avg win', _r(s.avg_win_r), 'pos')}
+      ${tile('Avg loss', _r(s.avg_loss_r), 'neg')}
+      ${tile('Expectancy', _r(s.expectancy_r, 3), _cls(s.expectancy_r), 'average R per trade')}
+      ${tile('Total', _r(s.total_r, 1), _cls(s.total_r))}
+      ${tile('Max drawdown', Number(s.max_dd_r).toFixed(1) + 'R', 'neg', `longest losing run ${s.longest_losing}`)}
+      ${tile('Profit factor', _n(s.profit_factor))}
+      ${tile('t-stat', _n(s.t_stat), '', 'mean R ÷ its standard error; ~2+ is the usual bar')}
+      ${tile('Net $', _usd(s.net_pnl), _cls(s.net_pnl), `${P.contracts} × ${_esc(R.contract)}; $ and R can disagree because risk per trade varies`)}
+    </div><div class="chartbox"><canvas id="eqChart"></canvas></div>
+    <div class="note">Cumulative R after each trade.</div></div>`;
+
+    h += `<div class="grid2"><div class="panel"><h3>Long vs short</h3><div class="tbl"><table><thead><tr><th class="l">Side</th>${sumHead}</tr></thead><tbody>
+      ${['long','short'].map(k => `<tr><td class="l">${k}</td>${sumCells(R.by_side[k] || {})}</tr>`).join('')}</tbody></table></div>
+      <h3 style="margin-top:14px">How trades ended</h3><div class="tbl"><table><thead><tr><th class="l">Exit</th><th>Trades</th><th>Total R</th></tr></thead><tbody>
+      ${Object.entries(R.by_reason || {}).map(([k, v]) => `<tr><td class="l">${_esc(k)}</td><td>${v.trades}</td><td class="${_cls(v.total_r)}">${_r(v.total_r, 1)}</td></tr>`).join('')}</tbody></table></div></div>
+      <div class="panel"><h3>Weekdays not traded</h3><div class="tbl"><table><thead><tr><th class="l">Why</th><th>Days</th></tr></thead><tbody>
+      ${skipped.length ? skipped.map(([k, v]) => `<tr><td class="l">${_esc(SKIP[k] || k)}</td><td>${v}</td></tr>`).join('') : '<tr><td class="l dim" colspan="2">none</td></tr>'}</tbody></table></div></div></div>`;
+
+    h += `<div class="panel"><div class="band-q">Trend filter on vs off, by target</div><div class="band-sub">Same data, same costs. Only the filter and the target change.</div>
+      <div class="tbl"><table><thead><tr><th class="l">Filter</th><th>Target</th>${sumHead}</tr></thead><tbody>
+      ${(R.compare || []).map(c => `<tr class="${c.trend_filter === P.trend_filter && c.target_r === P.target_r ? 'cur' : ''}"><td class="l">${c.trend_filter ? 'on' : 'off'}</td><td>${c.target_r}R</td>${sumCells(c)}</tr>`).join('')}</tbody></table></div></div>`;
+
+    if (R.in_out_sample || R.monte_carlo || R.sensitivity) h += renderValidation(R);
+
+    h += `<div class="panel"><h3>By month</h3><div class="tbl"><table><thead><tr><th class="l">Month</th>${sumHead}</tr></thead><tbody>
+      ${(R.by_month || []).map(m => `<tr><td class="l">${_esc(m.month)}</td>${sumCells(m)}</tr>`).join('')}</tbody></table></div></div>`;
+
+    h += `<div class="panel"><h3>Trade log</h3><div class="tbl"><table><thead><tr><th class="l">Date</th><th class="l">Side</th><th>Range low</th><th>Range high</th>
+      <th>Signal</th><th>Entry time</th><th>Entry</th><th>Stop</th><th>Target</th><th>Exit time</th><th>Exit</th><th>R</th><th>$</th><th class="l">Exit reason</th></tr></thead><tbody>
+      ${R.trades.slice().reverse().map(t => `<tr><td class="l">${_esc(t.date)}</td><td class="l">${t.side}</td><td>${t.or_low}</td><td>${t.or_high}</td>
+        <td>${_esc(t.signal_time)}</td><td>${_esc(t.entry_time)}</td><td>${t.entry}</td><td>${t.stop}</td><td>${t.target}</td><td>${_esc(t.exit_time)}</td><td>${t.exit}</td>
+        <td class="${_cls(t.r)}">${_r(t.r)}</td><td class="${_cls(t.pnl)}">${_usd(t.pnl)}</td><td class="l">${_esc(t.reason)}</td></tr>`).join('')}</tbody></table></div></div>`;
+
+    $('results').innerHTML = h;
+    drawCharts(R);
+  }
+
+  function renderValidation(R) {
+    let h = '<div class="panel"><div class="band-q">Is the edge real?</div><div class="band-sub">Tests aimed at luck and overfitting, not at the best-looking number.</div>';
+    const io = R.in_out_sample;
+    if (io && !io.error) {
+      const sel = io.selection, best = sel.best_in_sample_target;
+      h += `<h3>In-sample vs out-of-sample (split ${_esc(io.split_date)})</h3><div class="tbl"><table><thead><tr><th class="l">Half</th><th class="l">Dates</th>${sumHead}</tr></thead><tbody>
+        <tr><td class="l">In-sample</td><td class="l">${_esc(io.in_sample.from)} → ${_esc(io.in_sample.to)}</td>${sumCells(io.in_sample)}</tr>
+        <tr><td class="l">Out-of-sample</td><td class="l">${_esc(io.out_of_sample.from)} → ${_esc(io.out_of_sample.to)}</td>${sumCells(io.out_of_sample)}</tr></tbody></table></div>
+        <div class="note" style="margin:8px 0 4px">Selection test: each target scored on the in-sample half; the best one (${best}R) is then judged on data it never saw.</div>
+        <div class="tbl"><table><thead><tr><th class="l">Target</th><th>IS trades</th><th>IS expectancy</th><th>IS total</th><th>OOS trades</th><th>OOS expectancy</th><th>OOS total</th></tr></thead><tbody>
+        ${sel.grid.map(g => `<tr class="${g.target_r === best ? 'cur' : ''}"><td class="l">${g.target_r}R${g.target_r === best ? ' ← picked' : ''}</td>
+          <td>${g.in_sample.trades || 0}</td><td class="${_cls(g.in_sample.expectancy_r)}">${_r(g.in_sample.expectancy_r, 3)}</td><td class="${_cls(g.in_sample.total_r)}">${_r(g.in_sample.total_r, 1)}</td>
+          <td>${g.out_of_sample.trades || 0}</td><td class="${_cls(g.out_of_sample.expectancy_r)}">${_r(g.out_of_sample.expectancy_r, 3)}</td><td class="${_cls(g.out_of_sample.total_r)}">${_r(g.out_of_sample.total_r, 1)}</td></tr>`).join('')}
+        </tbody></table></div>`;
+    } else if (io && io.error) h += `<div class="note">In/out-of-sample: ${_esc(io.error)}.</div>`;
+
+    const mc = R.monte_carlo;
+    if (mc) {
+      h += `<h3 style="margin-top:16px">Monte Carlo (${mc.iterations.toLocaleString()} runs over ${mc.trades} trades)</h3><div class="tiles">
+        ${tile('Actual max DD', mc.actual_max_dd_r + 'R', 'neg')}
+        ${tile('Max DD, median', mc.max_dd_r.p50 + 'R', '', 'same trades, random order')}
+        ${tile('Max DD, 95th pct', mc.max_dd_r.p95 + 'R', 'neg', 'plan for at least this')}
+        ${tile('Max DD, worst', mc.max_dd_r.worst + 'R', 'neg')}
+        ${tile('Losing run, 95th pct', mc.longest_losing.p95, '', 'trades in a row')}
+        ${tile('Expectancy 95% range', _r(mc.expectancy_ci95[0], 3) + ' to ' + _r(mc.expectancy_ci95[1], 3), '', 'bootstrap')}
+        ${tile('Chance total ≤ 0', (mc.p_total_le_0 * 100).toFixed(1) + '%', mc.p_total_le_0 > 0.1 ? 'neg' : 'pos', 'bootstrap: trades drawn with replacement')}
+      </div><div class="chartbox" style="height:180px"><canvas id="ddChart"></canvas></div><div class="note">How often each max drawdown (R) came up across the reshuffles.</div>`;
+    }
+
+    const sv = R.sensitivity;
+    if (sv && sv.length) {
+      const names = { target_r: 'Target (R)', or_end: 'Range end', last_entry: 'Last entry', sma_pair: 'SMA fast/slow', trend_tf: 'Trend chart (min)',
+                      stop: 'Stop', same_bar: 'Same-bar rule', slippage_ticks: 'Slippage (ticks)' };
+      h += `<h3 style="margin-top:16px">Parameter sensitivity (one at a time; highlighted = your setting)</h3>
+        <div class="note" style="margin-bottom:6px">Trust a plateau, not a peak: if nearby values fall apart, the chosen one is probably fitted to noise.</div>
+        <div class="tbl"><table><thead><tr><th class="l">Parameter</th><th class="l">Value</th>${sumHead}</tr></thead><tbody>
+        ${sv.map(x => `<tr class="${x.current ? 'cur' : ''}"><td class="l">${_esc(names[x.param] || x.param)}</td><td class="l">${_esc(x.value)}</td>${sumCells(x)}</tr>`).join('')}</tbody></table></div>`;
+    }
+    return h + '</div>';
+  }
+
+  function drawCharts(R) {
+    for (const c of Object.values(_charts)) c.destroy();
+    _charts = {};
+    const eq = R.equity || [];
+    _charts.eq = new Chart($('eqChart'), {
+      type: 'line',
+      data: { labels: eq.map(p => p.date), datasets: [{ data: eq.map(p => p.r), borderColor: '#7FE098', borderWidth: 2, pointRadius: 0, tension: 0 }] },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { title: i => 'Trade ' + (i[0].dataIndex + 1) + ' · ' + i[0].label, label: c => ' ' + _r(c.raw) + ' cumulative' } } },
+        scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0 } },
+                  y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' }, ticks: { color: '#666', font: { size: 10 }, callback: v => v + 'R' } } } },
+    });
+    const mc = R.monte_carlo;
+    if (mc && $('ddChart')) {
+      const e = mc.dd_histogram.edges, labels = mc.dd_histogram.counts.map((_, i) => `${e[i].toFixed(1)}–${e[i + 1].toFixed(1)}R`);
+      _charts.dd = new Chart($('ddChart'), {
+        type: 'bar',
+        data: { labels, datasets: [{ data: mc.dd_histogram.counts, backgroundColor: 'rgba(224,138,138,0.55)', borderRadius: 3 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+          scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 9 }, maxRotation: 0, autoSkip: true } },
+                    y: { grid: { color: '#1e2130' }, ticks: { color: '#666', font: { size: 10 } } } } },
+      });
+    }
+  }
+
+  (async () => {
+    META = await (await fetch('/api/orb/meta')).json();
+    resetParams();
+    await loadDatasets();
+    if (!DATASETS.length) $('source').value = 'yahoo';
+    syncSource();
+    await loadRuns();
+    const q = new URLSearchParams(location.search).get('run');
+    if (q) openRun(q);
+  })();
+</script>
+</body>
+</html>

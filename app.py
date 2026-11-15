@@ -3742,6 +3742,9 @@ from routes.exit_replay import exit_replay_bp
 app.register_blueprint(exit_replay_bp)
 from routes.entry_replay import entry_replay_bp
 app.register_blueprint(entry_replay_bp)
+# ORB replay: Nasdaq opening-range breakout backtest. Replay only, no order routing.
+from routes.orb_replay import orb_replay_bp
+app.register_blueprint(orb_replay_bp)
 
 
 @app.route("/api/trades")
