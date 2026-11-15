@@ -38,9 +38,12 @@ orb_replay_bp = Blueprint("orb_replay", __name__)
 
 MAX_UPLOAD_BYTES = 150 * 1024 * 1024
 MAX_DATASETS = 20
-ALPACA_MAX_DAYS = {"5m": 365 * 10, "1m": 400}
+ALPACA_MAX_DAYS = {"5m": 365 * 10, "1m": 365 * 6}   # 1-minute: ~1M bars for 5 years, fetched by month
 STALE_S = 20 * 60
 _lock = threading.Lock()
+# The last Alpaca download, kept so a second run on the same range (another target R, the
+# filter off) doesn't refetch years of minute bars. One entry: a few years of QQQ is ~50 MB.
+_alpaca_cache = {"key": None, "df": None}
 
 
 def _app():
@@ -184,8 +187,17 @@ def _execute(run_id: str, cfg: dict):
             data_label = f"Yahoo {cfg['symbol']} 5-minute bars (continuous front month)"
             notes.append("Yahoo keeps only about 60 days of 5-minute bars, so this is a small sample.")
         else:
-            df = orb.load_alpaca(cfg["symbol"], fetch0, d1, cfg["resolution"])
-            data_label = f"Alpaca {cfg['symbol']} {cfg['resolution']} bars, pre-market included"
+            key = (cfg["symbol"], cfg["resolution"], fetch0.isoformat(), d1.isoformat())
+            if _alpaca_cache["key"] == key:
+                df = _alpaca_cache["df"]
+                notes.append("Bars reused from the previous run on the same range.")
+            else:
+                _alpaca_cache.update(key=None, df=None)          # free the old download first
+                df = orb.load_alpaca(cfg["symbol"], fetch0, d1, cfg["resolution"],
+                                     progress=lambda msg: _save_run(run_id, progress=msg))
+                _alpaca_cache.update(key=key, df=df)
+            feed = orb._alpaca_feed().value.upper()
+            data_label = f"Alpaca {cfg['symbol']} {cfg['resolution']} bars ({feed} feed), pre-market included"
             notes.append(f"{cfg['symbol']} stands in for NQ. R-multiples carry over; dollars are per share "
                          f"and the 09:00–09:30 range is built from thin pre-market trading.")
         m = orb.Market.from_frame(df)

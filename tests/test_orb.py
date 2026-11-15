@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import gzip
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -245,3 +245,43 @@ def test_page_and_meta_and_validation():
     assert r.status_code == 400
     r = c.post("/api/orb/run", json={"source": "csv", "from": "2026-03-01", "to": "2026-03-03", "contract": "NQ"})
     assert r.status_code == 400 and "dataset" in r.get_json()["error"]
+
+
+# ── Alpaca 1-minute loader (2026-11-15) ───────────────────────────────────────
+
+def test_load_alpaca_fetches_1m_a_month_at_a_time(monkeypatch):
+    import alpaca.data.historical as hist
+    from datetime import date as _d
+    calls = []
+
+    class FakeClient:
+        def __init__(self, api_key=None, secret_key=None, raw_data=False):
+            assert raw_data is True                      # dicts, not one Bar object per minute
+        def get_stock_bars(self, req):
+            calls.append((req.start, req.end, str(req.timeframe), str(req.feed)))
+            t0 = req.start.replace(hour=14, minute=0)   # 09:00 ET in winter, 10:00 in summer
+            return {"QQQ": [{"t": (t0 + timedelta(minutes=k)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             "o": 100 + k, "h": 101 + k, "l": 99 + k, "c": 100.5 + k, "v": 1000}
+                            for k in range(3)]}
+    monkeypatch.setattr(hist, "StockHistoricalDataClient", FakeClient)
+    monkeypatch.setenv("ALPACA_DATA_FEED", "sip")
+    msgs = []
+    df = orb.load_alpaca("qqq", _d(2024, 1, 1), _d(2024, 3, 31), "1m", progress=msgs.append)
+    assert len(calls) == 3 and all("1Min" in c[2] or "Minute" in c[2] for c in calls)
+    assert all("sip" in c[3].lower() for c in calls)
+    assert calls[0][0].date() == _d(2024, 1, 1) and calls[-1][1].date() == _d(2024, 4, 1)
+    assert len(df) == 9 and list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert df.index.is_monotonic_increasing and str(df.index.tz) == "UTC"
+    assert msgs[-1].endswith("month 3 of 3")
+    with pytest.raises(ValueError):
+        orb.load_alpaca("QQQ", _d(2024, 1, 1), _d(2024, 1, 2), "15m")
+
+
+def test_alpaca_1m_runs_allow_several_years(client_or_none=None):
+    from routes import orb_replay as r
+    ok = r._validate_run({"source": "alpaca", "symbol": "QQQ", "resolution": "1m",
+                          "from": "2021-01-01", "to": "2026-01-01"})
+    assert ok["resolution"] == "1m" and ok["contract"] == "QQQ"
+    with pytest.raises(ValueError):
+        r._validate_run({"source": "alpaca", "symbol": "QQQ", "resolution": "1m",
+                         "from": "2015-01-01", "to": "2026-01-01"})

@@ -32,7 +32,7 @@ import io
 import math
 import random
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -645,9 +645,58 @@ def load_yahoo(symbol: str, start: date, end: date) -> pd.DataFrame:
     return df[["open", "high", "low", "close"] + (["volume"] if "volume" in df.columns else [])]
 
 
-def load_alpaca(symbol: str, start: date, end: date, interval: str = "5m") -> pd.DataFrame:
-    """Stock bars from Alpaca, pre- and post-market included (the 09:00–09:30 range
-    needs pre-market). For QQQ as a stand-in for NQ when no futures history is on hand."""
-    from strategies.data import fetch_bars_alpaca
-    bars = fetch_bars_alpaca(symbol, start.isoformat(), (end + timedelta(days=1)).isoformat(), interval)
-    return frame_from_bars(bars)
+ALPACA_CHUNK_DAYS = 31     # one request per month: a month of 1-minute QQQ is ~20k bars
+
+
+def _alpaca_feed():
+    """The app's market-data feed (SIP with the Algo Trader Plus subscription). Mirrors
+    strategies.data.fetch_bars_alpaca: ALPACA_DATA_FEED, IEX if unset."""
+    import os
+    from alpaca.data.enums import DataFeed
+    return DataFeed.SIP if (os.environ.get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower() == "sip" else DataFeed.IEX
+
+
+def load_alpaca(symbol: str, start: date, end: date, interval: str = "5m", progress=None) -> pd.DataFrame:
+    """Stock bars from Alpaca, pre- and post-market included (the 09:00–09:30 range needs
+    pre-market). For QQQ as a stand-in for NQ when no futures history is on hand.
+
+    interval '1m' or '5m'. Years of 1-minute bars are ~1M rows, so they are fetched a month
+    at a time as raw dicts and packed into arrays per month; building one Bar object per
+    minute for the whole range would not fit in the server's memory. progress(msg) is
+    called after each month."""
+    import os
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    if interval not in ("1m", "5m"):
+        raise ValueError("interval must be 1m or 5m")
+    tf = TimeFrame(1, TimeFrameUnit.Minute) if interval == "1m" else TimeFrame(5, TimeFrameUnit.Minute)
+    client = StockHistoricalDataClient(api_key=os.environ.get("ALPACA_KEY") or None,
+                                       secret_key=os.environ.get("ALPACA_SECRET") or None, raw_data=True)
+    feed, sym = _alpaca_feed(), symbol.upper()
+    parts, d, n = [], start, 0
+    months = max(1, math.ceil(((end - start).days + 1) / ALPACA_CHUNK_DAYS))
+    while d <= end:
+        e = min(end, d + timedelta(days=ALPACA_CHUNK_DAYS - 1))
+        req = StockBarsRequest(symbol_or_symbols=sym, timeframe=tf, feed=feed, adjustment="all",
+                               start=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+                               end=datetime(e.year, e.month, e.day, tzinfo=timezone.utc) + timedelta(days=1))
+        raw = client.get_stock_bars(req)
+        rows = raw.get(sym, []) if isinstance(raw, dict) else []
+        if rows:
+            parts.append(pd.DataFrame({
+                "open": np.fromiter((r["o"] for r in rows), float, len(rows)),
+                "high": np.fromiter((r["h"] for r in rows), float, len(rows)),
+                "low": np.fromiter((r["l"] for r in rows), float, len(rows)),
+                "close": np.fromiter((r["c"] for r in rows), float, len(rows)),
+                "volume": np.fromiter((r.get("v") or 0 for r in rows), float, len(rows)),
+            }, index=pd.DatetimeIndex(pd.to_datetime([r["t"] for r in rows], utc=True))))
+        n += 1
+        del raw, rows
+        if progress:
+            progress(f"loading {sym} {interval} bars: month {n} of {months}")
+        d = e + timedelta(days=1)
+    if not parts:
+        raise ValueError(f"Alpaca returned no {interval} bars for {sym} ({start} → {end})")
+    df = pd.concat(parts)
+    return df[~df.index.duplicated(keep="last")].sort_index()

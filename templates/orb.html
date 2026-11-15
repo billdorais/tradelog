@@ -87,7 +87,7 @@
           <select class="f" id="source" onchange="syncSource()">
             <option value="csv">Uploaded futures bars (CSV)</option>
             <option value="yahoo">Yahoo NQ / MNQ — last ~58 days</option>
-            <option value="alpaca">Alpaca QQQ — stand-in, years</option>
+            <option value="alpaca">Alpaca QQQ (SIP) — stand-in, years</option>
           </select></div>
         <div class="fld src-csv"><span class="lbl">Dataset</span>
           <select class="f" id="dataset" onchange="syncDatasetDates()"></select></div>
@@ -95,7 +95,7 @@
           <select class="f" id="contract"><option value="NQ">NQ ($20/pt)</option><option value="MNQ">MNQ ($2/pt)</option></select></div>
         <div class="fld src-alp"><span class="lbl">Symbol</span><input class="f" id="symbol" value="QQQ" style="width:80px"></div>
         <div class="fld src-alp"><span class="lbl">Bars</span>
-          <select class="f" id="resolution"><option value="5m">5-minute</option><option value="1m">1-minute (≤400 days)</option></select></div>
+          <select class="f" id="resolution" onchange="syncSource()"><option value="1m">1-minute (up to 6 years)</option><option value="5m">5-minute (up to 10 years)</option></select></div>
         <div class="fld"><span class="lbl">From</span><input class="f" type="date" id="from"></div>
         <div class="fld"><span class="lbl">To</span><input class="f" type="date" id="to"></div>
       </div>
@@ -189,7 +189,7 @@
     document.querySelectorAll('.src-alp').forEach(e => e.hidden = s !== 'alpaca');
     $('to').value = _iso(new Date());
     if (s === 'yahoo') $('from').value = _daysAgo(META.yahoo_max_days);
-    else if (s === 'alpaca') { $('from').value = _daysAgo(730); if (+$('contracts').value === 1) $('contracts').value = 100; }
+    else if (s === 'alpaca') { $('from').value = _daysAgo(5 * 365); if (+$('contracts').value === 1) $('contracts').value = 100; }
     else { if (+$('contracts').value === 100) $('contracts').value = 1; syncDatasetDates(); }
   }
 
@@ -417,7 +417,8 @@
     META = await (await fetch('/api/orb/meta')).json();
     resetParams();
     await loadDatasets();
-    if (!DATASETS.length) $('source').value = 'yahoo';
+    // Default: years of 1-minute QQQ from Alpaca; uploaded futures data wins when there is some.
+    $('source').value = DATASETS.length ? 'csv' : 'alpaca';
     syncSource();
     await loadRuns();
     const q = new URLSearchParams(location.search).get('run');
