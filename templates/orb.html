@@ -51,6 +51,19 @@
     .runs a:hover { text-decoration: underline; }
     .status { font-size: 0.78rem; color: #9aa0b5; margin-left: 6px; }
     h3 { font-size: 0.8rem; font-weight: 600; color: #cfd3e0; margin: 4px 0 8px; }
+    .seg { display: inline-flex; flex-wrap: wrap; border: 1px solid #2a2d3e; border-radius: 6px; overflow: hidden; }
+    .seg button { background: transparent; border: 0; border-right: 1px solid #2a2d3e; color: #999; padding: 6px 10px; font-family: inherit; font-size: 0.78rem; cursor: pointer; }
+    .seg button:last-child { border-right: 0; }
+    .seg button.on { background: #22263a; color: #e8eaf0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 1px solid #2a2d3e; color: #999; border-radius: 999px; padding: 5px 12px 5px 10px; font-family: inherit; font-size: 0.8rem; cursor: pointer; }
+    .chip:hover { border-color: #4a5568; }
+    .chip .dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid #3a3f52; }
+    .chip[aria-pressed="true"] { border-color: #4a5568; color: #e8eaf0; background: #1a1d2e; }
+    .chip[aria-pressed="true"] .dot { border-color: transparent; }
+    .chip .v { color: #777; font-size: 0.7rem; }
+    .sw { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 7px; }
+    tr.tot td { border-top: 1px solid #3a3f52; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -74,6 +87,30 @@
   </header>
 
   <div class="content">
+    <div class="panel" id="pfPanel">
+      <div class="band-q">Compare tickers</div>
+      <div class="band-sub">
+        Pick tickers and a date range to see how the ORB did on each, and on all of them together. Uses each ticker's
+        longest finished backtest below; nothing is re-run. To add a ticker, run a backtest for it.
+      </div>
+      <div class="row">
+        <div class="fld"><span class="lbl">Range</span>
+          <div class="seg" id="pfPresets">
+            <button data-p="lastmonth">Last month</button><button data-p="thismonth">This month</button><button data-p="3m">3 months</button><button data-p="ytd">YTD</button><button data-p="1y">1 year</button><button data-p="all">All</button>
+          </div></div>
+        <div class="fld"><span class="lbl">From</span><input class="f" type="date" id="pfFrom"></div>
+        <div class="fld"><span class="lbl">To</span><input class="f" type="date" id="pfTo"></div>
+        <div class="fld"><span class="lbl">Trend filter</span>
+          <select class="f" id="pfFilter"><option value="0">Off</option><option value="1">On</option></select></div>
+        <div class="fld"><span class="lbl">Show</span>
+          <select class="f" id="pfUnits"><option value="r">R (risk units)</option><option value="usd">$ (run's share size)</option></select></div>
+        <span class="status" id="pfStatus"></span>
+      </div>
+      <span class="lbl">Tickers (up to 7)</span>
+      <div class="chips" id="pfChips"><div class="empty">Loading…</div></div>
+      <div id="pfOut"></div>
+    </div>
+
     <div class="panel">
       <div class="band-q">Nasdaq opening-range breakout · replay only</div>
       <div class="band-sub">
@@ -258,7 +295,7 @@
       $('runStatus').textContent = d.status === 'running' ? 'Running: ' + (d.progress || '') : d.status === 'failed' ? 'Failed: ' + (d.progress || '') : '';
       if (d.status !== 'running') {
         clearInterval(_poll); _poll = null; $('runBtn').disabled = false; loadRuns();
-        if (d.status === 'done') render(d);
+        if (d.status === 'done') { render(d); pfRefresh(); }
       }
     };
     _poll = setInterval(tick, 2000); tick();
@@ -413,6 +450,178 @@
     }
   }
 
+  // ── Compare tickers ──────────────────────────────────────────────────────
+  // Colors follow the ticker, not its rank: each pick takes the first free color and keeps it
+  // until it's unpicked. Okabe–Ito hues (colorblind-safe), the dark blue lifted for this background.
+  const PF_COLORS = ['#56B4E9', '#E69F00', '#CC79A7', '#F0E442', '#009E73', '#D55E00', '#8DA6FF'];
+  const PF_ALL = '#e8eaf0';
+  const PF = { options: [], sel: [], color: {}, preset: 'lastmonth', max: 7, data: null, missing: [], chart: null, t: null, seq: 0 };
+  const pfKey = o => o.label + (o.variant ? ' · ' + o.variant : '');
+  const _ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const pfFlt = () => $('pfFilter').value === '1';
+  const pfAvail = () => PF.options.filter(o => o.trend_filter === pfFlt());
+  const pfRuns = () => { const av = pfAvail(); return PF.sel.map(k => av.find(o => pfKey(o) === k)).filter(Boolean); };
+  const pfUsd = () => $('pfUnits').value === 'usd';
+  const pfFmt = (v, d = 1) => pfUsd() ? _usd(v) : _r(v, d);
+
+  function pfColor(k) {
+    if (!(k in PF.color)) { const used = new Set(Object.values(PF.color)); PF.color[k] = PF_COLORS.find(c => !used.has(c)) || PF_COLORS[0]; }
+    return PF.color[k];
+  }
+
+  function pfRange(p) {
+    const t = new Date(), y = t.getFullYear(), m = t.getMonth(), dd = t.getDate();
+    if (p === 'lastmonth') return [_ymd(new Date(y, m - 1, 1)), _ymd(new Date(y, m, 0))];
+    if (p === 'thismonth') return [_ymd(new Date(y, m, 1)), _ymd(t)];
+    if (p === '3m') return [_ymd(new Date(y, m - 3, dd)), _ymd(t)];
+    if (p === 'ytd') return [_ymd(new Date(y, 0, 1)), _ymd(t)];
+    if (p === '1y') return [_ymd(new Date(y - 1, m, dd)), _ymd(t)];
+    const runs = pfRuns();                                   // all: the span of the picked runs
+    if (!runs.length) return [_ymd(new Date(y - 5, m, dd)), _ymd(t)];
+    return [runs.map(o => o.from).sort()[0], runs.map(o => o.to).sort().slice(-1)[0]];
+  }
+
+  function pfSetPreset(p, saved) {
+    PF.preset = p;
+    document.querySelectorAll('#pfPresets button').forEach(b => { b.classList.toggle('on', b.dataset.p === p); b.setAttribute('aria-pressed', b.dataset.p === p); });
+    if (p === 'custom') { if (saved && saved.from && saved.to) { $('pfFrom').value = saved.from; $('pfTo').value = saved.to; } }
+    else { const [a, b] = pfRange(p); $('pfFrom').value = a; $('pfTo').value = b; }
+  }
+
+  function pfSave() {
+    try { localStorage.setItem('orbCompare', JSON.stringify({ sel: PF.sel, filter: $('pfFilter').value, units: $('pfUnits').value,
+                                                             preset: PF.preset, from: $('pfFrom').value, to: $('pfTo').value })); } catch (e) {}
+  }
+
+  function pfChips() {
+    const av = pfAvail();
+    $('pfChips').innerHTML = av.length ? av.map(o => {
+      const k = pfKey(o), on = PF.sel.includes(k);
+      return `<button class="chip" aria-pressed="${on}" data-k="${_esc(k)}" title="Run ${_esc(o.run_id)} · backtest ${_esc(o.from)} → ${_esc(o.to)}">` +
+        `<span class="dot" style="background:${on ? pfColor(k) : 'transparent'}"></span>${_esc(o.label)}${o.variant ? ` <span class="v">${_esc(o.variant)}</span>` : ''}</button>`;
+    }).join('') : `<div class="empty" style="padding:6px 0">No finished backtests with the trend filter ${pfFlt() ? 'on' : 'off'} yet. Run one below.</div>`;
+  }
+
+  function pfLoadSoon() { clearTimeout(PF.t); PF.t = setTimeout(pfLoad, 150); }
+
+  async function pfLoad() {
+    pfSave();
+    const av = pfAvail(), runs = pfRuns(), seq = ++PF.seq;
+    PF.missing = PF.sel.filter(k => !av.some(o => pfKey(o) === k));
+    if (!runs.length) { pfDestroy(); PF.data = null; $('pfOut').innerHTML = '<div class="empty">Pick one or more tickers above.</div>'; return; }
+    $('pfStatus').textContent = 'Loading…';
+    const qs = new URLSearchParams({ runs: runs.map(o => o.run_id).join(','), from: $('pfFrom').value, to: $('pfTo').value });
+    let r, d;
+    try { r = await fetch('/api/orb/portfolio?' + qs); d = await r.json(); } catch (e) { r = { ok: false }; d = { error: 'request failed' }; }
+    if (seq !== PF.seq) return;                              // a newer request is on its way
+    $('pfStatus').textContent = '';
+    if (!r.ok) { pfDestroy(); PF.data = null; $('pfOut').innerHTML = `<div class="warn">${_esc(d.error || 'request failed')}</div>`; return; }
+    PF.data = d; pfRender();
+  }
+
+  function pfRender() {
+    const d = PF.data;
+    if (!d) return;
+    const usd = pfUsd(), C = d.combined, cs = C.summary, multi = d.series.length > 1;
+    const notes = [];
+    if (PF.missing.length) notes.push(`No backtest with the trend filter ${pfFlt() ? 'on' : 'off'} for ${PF.missing.map(_esc).join(', ')}.`);
+    const short = d.series.filter(s => !s.covers);
+    if (short.length) notes.push('The backtest data doesn’t cover the whole range for ' +
+      short.map(s => `${_esc(pfKey(s))} (${_esc(s.trading_from)} → ${_esc(s.trading_to)})`).join(', ') + '; days outside it count as no trade.');
+    let h = notes.length ? `<div class="warn">${notes.join('<br>')}</div>` : '';
+    if (!cs.trades) { pfDestroy(); $('pfOut').innerHTML = h + '<div class="empty">No trades in this range.</div>'; return; }
+    const other = usd ? _r(cs.total_r, 1) : _usd(cs.net_pnl) + ' at the runs’ share size';
+    h += `<div class="tiles">
+      ${tile(multi ? 'All selected' : 'Total', usd ? _usd(cs.net_pnl) : _r(cs.total_r, 1), _cls(usd ? cs.net_pnl : cs.total_r), other)}
+      ${tile('Trades', cs.trades, '', _n(cs.win_rate, 1) + '% winners')}
+      ${tile('Avg per trade', _r(cs.expectancy_r, 3), _cls(cs.expectancy_r))}
+      ${tile('Green days', `${C.green_days} / ${C.days}`, '', 'of the days with a trade')}
+      ${tile('Best / worst day', `${_r(C.best_day_r, 1)} / ${_r(C.worst_day_r, 1)}`)}
+      ${tile('Max drawdown', Number(cs.max_dd_r).toFixed(1) + 'R', cs.max_dd_r > 0 ? 'neg' : '', 'trade by trade, in date order')}
+    </div>
+    <div class="chartbox" style="height:300px"><canvas id="pfChart" role="img" aria-label="Cumulative ORB result by ticker"></canvas></div>
+    <div class="note" style="margin-bottom:12px">Running total on each day a picked ticker traded, in ${usd ? 'dollars at each run’s share size (a $900 stock outweighs a $40 one)' : 'R: each trade’s result ÷ its own risk, so every ticker counts the same'}.${multi ? ' <strong>All selected</strong> adds them up.' : ''} Click a legend name to hide its line.</div>`;
+    const rows = d.series.slice().sort((a, b) => (b.summary.total_r || 0) - (a.summary.total_r || 0));
+    const cells = (s, days, green) => `<td>${s.trades || 0}</td><td>${s.trades ? _n(s.win_rate, 1) : '—'}</td><td class="${_cls(s.expectancy_r)}">${s.trades ? _r(s.expectancy_r, 3) : '—'}</td>
+      <td class="${_cls(s.total_r)}">${s.trades ? _r(s.total_r, 1) : '—'}</td><td class="${_cls(s.net_pnl)}">${s.trades ? _usd(s.net_pnl) : '—'}</td>
+      <td>${s.trades ? Number(s.max_dd_r).toFixed(1) + 'R' : '—'}</td><td>${days ? green + ' / ' + days : '—'}</td>`;
+    h += `<div class="tbl"><table><thead><tr><th class="l">Ticker</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Net $</th><th>Max DD</th><th>Green days</th><th class="l">Backtest</th></tr></thead><tbody>
+      ${rows.map(s => `<tr><td class="l"><span class="sw" style="background:${pfColor(pfKey(s))}"></span>${_esc(pfKey(s))}</td>${cells(s.summary, s.days, s.green_days)}
+        <td class="l"><a class="dim" style="color:#9ab;cursor:pointer" onclick="openRun('${_esc(s.run_id)}')">${_esc(s.trading_from)} → ${_esc(s.trading_to)}</a></td></tr>`).join('')}
+      ${multi ? `<tr class="tot"><td class="l"><span class="sw" style="background:${PF_ALL}"></span>All selected</td>${cells(cs, C.days, C.green_days)}<td></td></tr>` : ''}
+    </tbody></table></div>`;
+    $('pfOut').innerHTML = h;
+    pfDraw();
+  }
+
+  function pfDestroy() { if (PF.chart) { PF.chart.destroy(); PF.chart = null; } }
+
+  const pfCrosshair = { id: 'pfCrosshair', afterDatasetsDraw(c) {
+    const a = c.tooltip && c.tooltip.getActiveElements();
+    if (!a || !a.length) return;
+    const x = a[0].element.x, g = c.ctx;
+    g.save(); g.strokeStyle = '#3a3f52'; g.lineWidth = 1; g.beginPath(); g.moveTo(x, c.chartArea.top); g.lineTo(x, c.chartArea.bottom); g.stroke(); g.restore();
+  } };
+
+  function pfDraw() {
+    pfDestroy();
+    const d = PF.data, usd = pfUsd(), key = usd ? 'cum_usd' : 'cum_r';
+    const line = (label, data, color, w) => ({ label, data: [0, ...data], borderColor: color, backgroundColor: color, borderWidth: w,
+                                                pointRadius: 0, pointHoverRadius: 4, pointHoverBorderColor: '#13161f', pointHoverBorderWidth: 2, tension: 0 });
+    const ds = d.series.map(s => line(pfKey(s), s[key], pfColor(pfKey(s)), 2));
+    if (d.series.length > 1) ds.push(line('All selected', d.combined[key], PF_ALL, 3));
+    PF.chart = new Chart($('pfChart'), {
+      type: 'line', plugins: [pfCrosshair],
+      data: { labels: ['Start', ...d.dates], datasets: ds },
+      options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: true, position: 'top', align: 'start', labels: { color: '#aaa', boxWidth: 14, boxHeight: 3, font: { size: 11 } } },
+          tooltip: { itemSort: (a, b) => b.raw - a.raw, callbacks: {
+            title: i => i[0].label === 'Start' ? 'Start (' + d.from + ')' : i[0].label,
+            label: c => { const day = c.raw - (c.dataIndex ? c.dataset.data[c.dataIndex - 1] : 0);
+                          return ` ${c.dataset.label}: ${pfFmt(c.raw, 2)}${Math.abs(day) > 1e-9 ? '  (day ' + pfFmt(day, 2) + ')' : ''}`; } } } },
+        scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0 } },
+                  y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+                       ticks: { color: '#666', font: { size: 10 }, callback: v => usd ? (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString() : v + 'R' } } } },
+    });
+  }
+
+  async function pfOptions() {
+    const d = await (await fetch('/api/orb/portfolio/options')).json();
+    PF.options = d.options || []; PF.max = d.max || 7;
+  }
+
+  async function pfRefresh() {                               // after a run finishes: it may add a ticker
+    await pfOptions(); pfChips(); pfLoadSoon();
+  }
+
+  async function pfInit() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('orbCompare') || '{}') || {}; } catch (e) {}
+    await pfOptions();
+    if (saved.filter === '0' || saved.filter === '1') $('pfFilter').value = saved.filter;
+    if (saved.units === 'r' || saved.units === 'usd') $('pfUnits').value = saved.units;
+    const keys = new Set(PF.options.map(pfKey));
+    PF.sel = (Array.isArray(saved.sel) ? saved.sel : ['QQQ', 'GOOG', 'SPY']).filter(k => keys.has(k)).slice(0, PF.max);
+    PF.sel.forEach(pfColor);
+    pfSetPreset(saved.preset || 'lastmonth', saved);
+    pfChips(); pfLoad();
+
+    $('pfPresets').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; pfSetPreset(b.dataset.p); pfLoadSoon(); });
+    ['pfFrom', 'pfTo'].forEach(id => $(id).addEventListener('change', () => { pfSetPreset('custom'); pfLoadSoon(); }));
+    $('pfFilter').addEventListener('change', () => { pfChips(); if (PF.preset === 'all') pfSetPreset('all'); pfLoadSoon(); });
+    $('pfUnits').addEventListener('change', () => { pfSave(); pfRender(); });
+    $('pfChips').addEventListener('click', e => {
+      const b = e.target.closest('.chip'); if (!b) return;
+      const k = b.dataset.k, i = PF.sel.indexOf(k);
+      if (i >= 0) { PF.sel.splice(i, 1); delete PF.color[k]; }
+      else if (PF.sel.length >= PF.max) { $('pfStatus').textContent = `Up to ${PF.max} at a time; unpick one first.`; return; }
+      else { PF.sel.push(k); pfColor(k); }
+      $('pfStatus').textContent = '';
+      pfChips(); if (PF.preset === 'all') pfSetPreset('all'); pfLoadSoon();
+    });
+  }
+
   (async () => {
     META = await (await fetch('/api/orb/meta')).json();
     resetParams();
@@ -421,6 +630,7 @@
     $('source').value = DATASETS.length ? 'csv' : 'alpaca';
     syncSource();
     await loadRuns();
+    pfInit();
     const q = new URLSearchParams(location.search).get('run');
     if (q) openRun(q);
   })();

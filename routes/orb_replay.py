@@ -359,3 +359,192 @@ def api_run_detail(run_id):
         return jsonify({"error": "no such run"}), 404
     return jsonify({"id": r[0], "created_at": r[1], "params": json.loads(r[2] or "{}"), "status": r[3],
                     "progress": r[4], "result": json.loads(r[5]) if r[5] else None})
+
+
+# ── compare tickers: finished runs side by side over a date range ────────────
+#
+# Reads the trades already stored with each run; nothing is re-simulated. For each
+# ticker (and filter setting, and any non-default settings) the run used is the one
+# whose data reaches furthest, so a short re-run doesn't hide a 5-year one.
+
+MAX_PORTFOLIO = 7
+_TRADES_CACHE_MAX = 40
+_trades_cache: dict = {}          # run_id -> trades + coverage; a finished run never changes
+_VARIANT_SKIP = {"trend_filter", "contracts", "commission"}
+_VARIANT_NAMES = {"target_r": "{}R target", "or_start": "range from {}", "or_end": "range to {}",
+                  "last_entry": "last entry {}", "forced_exit": "exit {}", "stop": "{} stop",
+                  "same_bar": "{}", "slippage_ticks": "{} tick slip"}
+
+
+def _run_label(cfg: dict) -> str:
+    if cfg.get("source") == "alpaca":
+        return (cfg.get("symbol") or "QQQ").upper()
+    con = cfg.get("contract") or "NQ"
+    return f"{con} ({'CSV' if cfg.get('source') == 'csv' else 'Yahoo'})"
+
+
+def _variant(params: dict) -> str:
+    """The settings that differ from the defaults, other than the filter and size; '' for a default run."""
+    base = orb.normalize_params({})
+    try:
+        p = orb.normalize_params(params)
+    except ValueError:
+        p = params
+    out = []
+    for k in sorted(p):
+        if k in _VARIANT_SKIP or k not in base or p[k] == base[k]:
+            continue
+        out.append(_VARIANT_NAMES.get(k, k.replace("_", " ") + " {}").format(p[k]))
+    return ", ".join(out)
+
+
+def _neg(iso):
+    """Sort key that ranks an EARLIER start date higher (the longer run wins a tie on end date)."""
+    try:
+        return -date.fromisoformat(iso).toordinal()
+    except (TypeError, ValueError):
+        return 0
+
+
+def portfolio_options(rows) -> list:
+    """rows: (id, created_at, params JSON) of finished runs → one option per ticker / filter / variant."""
+    best = {}
+    for rid, created, raw in rows:
+        try:
+            cfg = json.loads(raw or "{}")
+        except ValueError:
+            continue
+        p = cfg.get("params") or {}
+        opt = {"run_id": rid, "label": _run_label(cfg), "variant": _variant(p),
+               "trend_filter": bool(p.get("trend_filter")), "from": cfg.get("from"), "to": cfg.get("to"),
+               "created_at": created, "shares": p.get("contracts"), "source": cfg.get("source")}
+        key = (opt["label"], opt["trend_filter"], opt["variant"])
+        cur = best.get(key)
+        rank = lambda o: (o["to"] or "", _neg(o["from"]), o["created_at"] or "")
+        if cur is None or rank(opt) > rank(cur):
+            best[key] = opt
+    return sorted(best.values(), key=lambda o: (o["label"], o["trend_filter"], o["variant"]))
+
+
+def _run_trades(run_id: str):
+    hit = _trades_cache.get(run_id)
+    if hit is not None:
+        return hit
+    ph = _ph()
+    conn = _db()
+    try:
+        r = conn.execute(f"SELECT params, status, result FROM orb_runs WHERE id={ph}", (run_id,)).fetchone()
+    finally:
+        conn.close()
+    if not r or r[1] != "done" or not r[2]:
+        return None
+    cfg, res = json.loads(r[0] or "{}"), json.loads(r[2])
+    p, data = cfg.get("params") or {}, res.get("data") or {}
+    entry = {"label": _run_label(cfg), "variant": _variant(p), "trend_filter": bool(p.get("trend_filter")),
+             "shares": p.get("contracts"),
+             "trading_from": data.get("trading_from") or cfg.get("from"),
+             "trading_to": data.get("trading_to") or cfg.get("to"),
+             "trades": [{"date": t["date"], "time": t.get("entry_time") or "", "r": float(t["r"]),
+                         "r_gross": float(t.get("r_gross", t["r"])), "pnl": float(t.get("pnl") or 0.0),
+                         "side": t.get("side")} for t in (res.get("trades") or [])]}
+    if len(_trades_cache) >= _TRADES_CACHE_MAX:
+        _trades_cache.pop(next(iter(_trades_cache)))
+    _trades_cache[run_id] = entry
+    return entry
+
+
+def portfolio(series: list, d0: str, d1: str) -> dict:
+    """series: [{"run_id", "label", "trades", ...}] → per-series and combined results over d0..d1 (ISO
+    dates), with cumulative R and $ on every date any of them traded. Combined = each trade at 1R of its
+    own risk, so a $900 stock and a $40 one count the same in R (not in $)."""
+    out, all_trades, dates = [], [], set()
+    # Coverage is judged on weekdays: a range ending on a Sunday is covered by data through Friday.
+    w0, w1 = date.fromisoformat(d0), date.fromisoformat(d1)
+    while w0.weekday() >= 5 and w0 < w1:
+        w0 += timedelta(days=1)
+    while w1.weekday() >= 5 and w1 > w0:
+        w1 -= timedelta(days=1)
+    w0, w1 = w0.isoformat(), w1.isoformat()
+    for s in series:
+        tr = sorted((t for t in s["trades"] if d0 <= t["date"] <= d1), key=lambda t: (t["date"], t["time"]))
+        daily = {}
+        for t in tr:
+            a = daily.setdefault(t["date"], [0.0, 0.0])
+            a[0] += t["r"]
+            a[1] += t["pnl"]
+        dates.update(daily)
+        all_trades += tr
+        out.append({"run_id": s["run_id"], "label": s["label"], "variant": s.get("variant", ""),
+                    "trend_filter": s.get("trend_filter"), "shares": s.get("shares"),
+                    "trading_from": s.get("trading_from"), "trading_to": s.get("trading_to"),
+                    "covers": bool(s.get("trading_from") and s.get("trading_to")
+                                   and s["trading_from"] <= w0 and s["trading_to"] >= w1),
+                    "_daily": daily, "summary": orb.summarize(tr)})
+    dates = sorted(dates)
+    comb = {}
+    for s in out:
+        daily = s.pop("_daily")
+        cr = cu = 0.0
+        s["cum_r"], s["cum_usd"] = [], []
+        for d in dates:
+            a = daily.get(d)
+            if a:
+                cr += a[0]
+                cu += a[1]
+                c = comb.setdefault(d, [0.0, 0.0])
+                c[0] += a[0]
+                c[1] += a[1]
+            s["cum_r"].append(round(cr, 3))
+            s["cum_usd"].append(round(cu, 2))
+        s["days"] = len(daily)
+        s["green_days"] = sum(1 for a in daily.values() if a[0] > 0)
+    all_trades.sort(key=lambda t: (t["date"], t["time"]))
+    cr = cu = 0.0
+    c_r, c_usd = [], []
+    for d in dates:
+        a = comb.get(d, (0.0, 0.0))
+        cr += a[0]
+        cu += a[1]
+        c_r.append(round(cr, 3))
+        c_usd.append(round(cu, 2))
+    day_r = [a[0] for a in comb.values()]
+    combined = {"summary": orb.summarize(all_trades), "cum_r": c_r, "cum_usd": c_usd, "days": len(comb),
+                "green_days": sum(1 for v in day_r if v > 0),
+                "best_day_r": round(max(day_r), 3) if day_r else None,
+                "worst_day_r": round(min(day_r), 3) if day_r else None}
+    return {"from": d0, "to": d1, "dates": dates, "series": out, "combined": combined}
+
+
+@orb_replay_bp.route("/api/orb/portfolio/options")
+def api_portfolio_options():
+    _ensure_tables()
+    conn = _db()
+    try:
+        rows = conn.execute("SELECT id, created_at, params FROM orb_runs WHERE status='done'").fetchall()
+    finally:
+        conn.close()
+    return jsonify({"options": portfolio_options([tuple(r) for r in rows]), "max": MAX_PORTFOLIO})
+
+
+@orb_replay_bp.route("/api/orb/portfolio")
+def api_portfolio():
+    ids = list(dict.fromkeys(x.strip() for x in (request.args.get("runs") or "").split(",") if x.strip()))
+    if not ids:
+        return jsonify({"error": "pick at least one ticker"}), 400
+    if len(ids) > MAX_PORTFOLIO:
+        return jsonify({"error": f"up to {MAX_PORTFOLIO} tickers at a time"}), 400
+    try:
+        d0 = date.fromisoformat(request.args.get("from") or "")
+        d1 = date.fromisoformat(request.args.get("to") or "")
+    except ValueError:
+        return jsonify({"error": "from and to must be YYYY-MM-DD"}), 400
+    if d1 < d0:
+        return jsonify({"error": "to must be on or after from"}), 400
+    _ensure_tables()
+    series = []
+    for rid in ids:
+        e = _run_trades(rid)
+        if e is None:
+            return jsonify({"error": f"run {rid} isn't a finished run"}), 404
+        series.append({"run_id": rid, **e})
+    return jsonify(portfolio(series, d0.isoformat(), d1.isoformat()))

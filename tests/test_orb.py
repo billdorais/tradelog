@@ -285,3 +285,88 @@ def test_alpaca_1m_runs_allow_several_years(client_or_none=None):
     with pytest.raises(ValueError):
         r._validate_run({"source": "alpaca", "symbol": "QQQ", "resolution": "1m",
                          "from": "2015-01-01", "to": "2026-01-01"})
+
+
+# ── compare tickers (2026-11-15) ──────────────────────────────────────────────
+
+def _t(d, r, pnl, time="09:40"):
+    return {"date": d, "time": time, "r": r, "r_gross": r, "pnl": pnl, "side": "long"}
+
+
+def test_portfolio_sums_tickers_by_day_inside_the_range():
+    from routes.orb_replay import portfolio
+    a = {"run_id": "a", "label": "QQQ", "trading_from": "2026-01-01", "trading_to": "2026-12-31",
+         "trades": [_t("2026-09-30", 5.0, 500), _t("2026-10-01", 3.0, 300), _t("2026-10-03", -1.0, -100)]}
+    b = {"run_id": "b", "label": "GOOG", "trading_from": "2026-10-02", "trading_to": "2026-12-31",
+         "trades": [_t("2026-10-02", -1.0, -50), _t("2026-10-03", 2.0, 80), _t("2026-11-02", 9.0, 900)]}
+    out = portfolio([a, b], "2026-10-01", "2026-10-31")
+    assert out["dates"] == ["2026-10-01", "2026-10-02", "2026-10-03"]       # Sept 30 and Nov 2 left out
+    qqq, goog = out["series"]
+    assert qqq["cum_r"] == [3.0, 3.0, 2.0] and goog["cum_r"] == [0.0, -1.0, 1.0]
+    assert qqq["covers"] is True and goog["covers"] is False                # GOOG's data starts Oct 2
+    c = out["combined"]
+    assert c["cum_r"] == [3.0, 2.0, 3.0] and c["cum_usd"] == [300.0, 250.0, 230.0]
+    assert c["summary"]["trades"] == 4 and c["summary"]["total_r"] == 3.0
+    assert (c["days"], c["green_days"], c["best_day_r"], c["worst_day_r"]) == (3, 2, 3.0, -1.0)
+    assert (qqq["days"], qqq["green_days"]) == (2, 1)
+    # Data through Friday 2026-11-13 covers a range ending Sunday the 15th, but not Monday the 16th.
+    c = {"run_id": "c", "label": "SPY", "trading_from": "2021-11-15", "trading_to": "2026-11-13", "trades": []}
+    assert portfolio([c], "2026-11-01", "2026-11-15")["series"][0]["covers"] is True
+    assert portfolio([c], "2026-11-01", "2026-11-16")["series"][0]["covers"] is False
+
+
+def test_portfolio_with_no_trades_in_range():
+    from routes.orb_replay import portfolio
+    out = portfolio([{"run_id": "a", "label": "QQQ", "trades": [_t("2026-01-02", 1.0, 10)]}], "2026-10-01", "2026-10-31")
+    assert out["dates"] == [] and out["combined"]["summary"] == {"trades": 0} and out["combined"]["best_day_r"] is None
+
+
+def test_portfolio_options_keep_the_longest_run_per_ticker_filter_and_settings():
+    import json
+    from routes.orb_replay import portfolio_options
+    def cfg(sym, frm, to, **p):
+        return json.dumps({"source": "alpaca", "symbol": sym, "from": frm, "to": to,
+                           "params": orb.normalize_params({"contracts": 100, **p})})
+    rows = [("old5y", "2026-11-14T01:00", cfg("QQQ", "2021-11-15", "2026-11-13", trend_filter=False)),
+            ("new60d", "2026-11-15T01:00", cfg("QQQ", "2026-09-01", "2026-11-13", trend_filter=False)),
+            ("on", "2026-11-14T02:00", cfg("QQQ", "2021-11-15", "2026-11-13", trend_filter=True)),
+            ("t4", "2026-11-14T03:00", cfg("QQQ", "2021-11-15", "2026-11-13", trend_filter=False, target_r=4)),
+            ("goog", "2026-11-14T04:00", cfg("GOOG", "2021-11-15", "2026-11-13", trend_filter=False)),
+            ("fut", "2026-11-14T05:00", json.dumps({"source": "csv", "contract": "MNQ", "from": "2024-01-01",
+                                                    "to": "2024-06-30", "params": orb.normalize_params({})}))]
+    opts = {(o["label"], o["trend_filter"], o["variant"]): o["run_id"] for o in portfolio_options(rows)}
+    assert opts == {("GOOG", False, ""): "goog", ("MNQ (CSV)", True, ""): "fut", ("QQQ", False, ""): "old5y",
+                    ("QQQ", False, "4.0R target"): "t4", ("QQQ", True, ""): "on"}
+
+
+def test_portfolio_endpoint_reads_stored_runs(monkeypatch, tmp_path):
+    import json
+    import sqlite3
+    import app as kairos
+    from routes import orb_replay as r
+    db = str(tmp_path / "orb.db")
+    monkeypatch.setattr(r, "_db", lambda: sqlite3.connect(db))
+    monkeypatch.setattr(r, "_ph", lambda: "?")
+    monkeypatch.setattr(r, "_trades_cache", {})
+    r._ensure_tables()
+    res = {"trades": [{"date": "2026-10-06", "entry_time": "09:35", "r": 3.0, "r_gross": 3.0, "pnl": 150.0, "side": "long"},
+                      {"date": "2026-10-07", "entry_time": "09:40", "r": -1.0, "r_gross": -1.0, "pnl": -50.0, "side": "short"}],
+           "data": {"trading_from": "2021-11-15", "trading_to": "2026-11-13"}}
+    params = json.dumps({"source": "alpaca", "symbol": "QQQ", "from": "2021-11-15", "to": "2026-11-13",
+                         "params": orb.normalize_params({"trend_filter": False, "contracts": 100})})
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO orb_runs VALUES (?,?,?,?,?,?,?)", ("r1", "2026-11-15", params, "done", "done", json.dumps(res), "x"))
+    conn.execute("INSERT INTO orb_runs VALUES (?,?,?,?,?,?,?)", ("r2", "2026-11-15", params, "running", "", None, "x"))
+    conn.commit()
+    conn.close()
+    c = kairos.app.test_client()
+    opts = c.get("/api/orb/portfolio/options").get_json()["options"]
+    assert [o["run_id"] for o in opts] == ["r1"]
+    d = c.get("/api/orb/portfolio?runs=r1&from=2026-10-01&to=2026-10-31").get_json()
+    assert d["dates"] == ["2026-10-06", "2026-10-07"] and d["series"][0]["cum_r"] == [3.0, 2.0]
+    assert d["series"][0]["summary"]["net_pnl"] == 100.0
+    assert c.get("/api/orb/portfolio?runs=r2&from=2026-10-01&to=2026-10-31").status_code == 404
+    assert c.get("/api/orb/portfolio?runs=r1&from=2026-10-31&to=2026-10-01").status_code == 400
+    assert c.get("/api/orb/portfolio?runs=&from=2026-10-01&to=2026-10-31").status_code == 400
+    many = ",".join(f"x{i}" for i in range(8))
+    assert c.get(f"/api/orb/portfolio?runs={many}&from=2026-10-01&to=2026-10-31").status_code == 400
