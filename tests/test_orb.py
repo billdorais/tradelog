@@ -315,6 +315,42 @@ def test_portfolio_sums_tickers_by_day_inside_the_range():
     assert portfolio([c], "2026-11-01", "2026-11-16")["series"][0]["covers"] is False
 
 
+def _st(d, r, risk_pts, entry, time="09:40"):
+    """A trade from a 100-share run: $ per share = R × the stop distance."""
+    return {"date": d, "time": time, "r": r, "r_gross": r, "pnl": r * risk_pts * 100, "pps": r * risk_pts,
+            "risk_pts": risk_pts, "entry": entry, "side": "long"}
+
+
+def test_size_trade_whole_shares_under_the_risk_and_the_cap():
+    from routes.orb_replay import size_trade
+    t = _st("2026-10-01", 1.0, 1.48, 440.0)
+    assert size_trade(t, 50) == 33                     # 33 × $1.48 = $48.84 ≤ $50
+    assert size_trade(t, 1.47) == 0                    # one share already risks more
+    assert size_trade(t, 100, cap=10_000) == 22        # $10k buys 22 shares at $440 (67 by risk alone)
+    assert size_trade({**t, "risk_pts": 0.25}, 20) == 80   # exact fit counts despite float error
+    assert size_trade({**t, "risk_pts": 0}, 50) == 0
+
+
+def test_portfolio_sizes_every_trade_to_the_risk():
+    from routes.orb_replay import portfolio
+    a = {"run_id": "a", "label": "QQQ", "trades": [_st("2026-10-01", 3.0, 1.0, 400.0), _st("2026-10-02", -1.0, 2.0, 400.0),
+                                                    _st("2026-10-03", 2.0, 60.0, 400.0)]}
+    b = {"run_id": "b", "label": "GOOG", "trades": [_st("2026-10-02", -1.0, 0.5, 100.0)]}
+    out = portfolio([a, b], "2026-10-01", "2026-10-31", risk=50)
+    qqq, goog = out["series"]
+    # QQQ: 50 sh × +$3 = +150; 25 sh × −$2 = −50; a $60 stop can't fit $50 → skipped
+    assert qqq["cum_risk"] == [150.0, 100.0, 100.0]
+    assert qqq["sizing"] == {"risk": 50, "cap": None, "net": 100.0, "taken": 2, "skipped": 1, "capped": 0,
+                             "avg_risk": 50.0, "median_position": 20000.0, "max_position": 20000.0}
+    assert goog["cum_risk"] == [0.0, -50.0, -50.0]     # 100 sh × −$0.50
+    c = out["combined"]
+    assert c["cum_risk"] == [150.0, 50.0, 50.0] and c["sizing"]["net"] == 50.0
+    assert (c["sizing"]["best_day"], c["sizing"]["worst_day"], c["sizing"]["max_dd"]) == (150.0, -100.0, 100.0)
+    capped = portfolio([a], "2026-10-01", "2026-10-31", risk=50, cap=8_000)["series"][0]["sizing"]
+    assert capped["net"] == 20.0 and capped["capped"] == 2                   # 20 sh × $3 − 20 sh × $2
+    assert "cum_risk" not in portfolio([a], "2026-10-01", "2026-10-31")["series"][0]
+
+
 def test_portfolio_with_no_trades_in_range():
     from routes.orb_replay import portfolio
     out = portfolio([{"run_id": "a", "label": "QQQ", "trades": [_t("2026-01-02", 1.0, 10)]}], "2026-10-01", "2026-10-31")
@@ -349,8 +385,10 @@ def test_portfolio_endpoint_reads_stored_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(r, "_ph", lambda: "?")
     monkeypatch.setattr(r, "_trades_cache", {})
     r._ensure_tables()
-    res = {"trades": [{"date": "2026-10-06", "entry_time": "09:35", "r": 3.0, "r_gross": 3.0, "pnl": 150.0, "side": "long"},
-                      {"date": "2026-10-07", "entry_time": "09:40", "r": -1.0, "r_gross": -1.0, "pnl": -50.0, "side": "short"}],
+    res = {"trades": [{"date": "2026-10-06", "entry_time": "09:35", "r": 3.0, "r_gross": 3.0, "pnl": 150.0, "side": "long",
+                       "risk_pts": 0.5, "entry": 400.0},
+                      {"date": "2026-10-07", "entry_time": "09:40", "r": -1.0, "r_gross": -1.0, "pnl": -50.0, "side": "short",
+                       "risk_pts": 0.5, "entry": 400.0}],
            "data": {"trading_from": "2021-11-15", "trading_to": "2026-11-13"}}
     params = json.dumps({"source": "alpaca", "symbol": "QQQ", "from": "2021-11-15", "to": "2026-11-13",
                          "params": orb.normalize_params({"trend_filter": False, "contracts": 100})})
@@ -365,6 +403,10 @@ def test_portfolio_endpoint_reads_stored_runs(monkeypatch, tmp_path):
     d = c.get("/api/orb/portfolio?runs=r1&from=2026-10-01&to=2026-10-31").get_json()
     assert d["dates"] == ["2026-10-06", "2026-10-07"] and d["series"][0]["cum_r"] == [3.0, 2.0]
     assert d["series"][0]["summary"]["net_pnl"] == 100.0
+    s = c.get("/api/orb/portfolio?runs=r1&from=2026-10-01&to=2026-10-31&risk=50").get_json()["series"][0]
+    assert s["cum_risk"] == [150.0, 100.0] and s["sizing"]["taken"] == 2      # 100 sh: $50 ÷ $0.50 stop
+    assert c.get("/api/orb/portfolio?runs=r1&from=2026-10-01&to=2026-10-31&risk=abc").status_code == 400
+    assert c.get("/api/orb/portfolio?runs=r1&from=2026-10-01&to=2026-10-31&risk=0").status_code == 400
     assert c.get("/api/orb/portfolio?runs=r2&from=2026-10-01&to=2026-10-31").status_code == 404
     assert c.get("/api/orb/portfolio?runs=r1&from=2026-10-31&to=2026-10-01").status_code == 400
     assert c.get("/api/orb/portfolio?runs=&from=2026-10-01&to=2026-10-31").status_code == 400

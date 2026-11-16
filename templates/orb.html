@@ -103,8 +103,16 @@
         <div class="fld"><span class="lbl">Trend filter</span>
           <select class="f" id="pfFilter"><option value="0">Off</option><option value="1">On</option></select></div>
         <div class="fld"><span class="lbl">Show</span>
-          <select class="f" id="pfUnits"><option value="r">R (risk units)</option><option value="usd">$ (run's share size)</option></select></div>
+          <select class="f" id="pfUnits"><option value="r">R (risk units)</option><option value="risk">$ at a set risk per trade</option><option value="usd">$ at the run's share size</option></select></div>
         <span class="status" id="pfStatus"></span>
+      </div>
+      <div class="row" id="pfRiskRow" hidden>
+        <div class="fld"><span class="lbl">Risk per trade</span>
+          <div class="seg" id="pfRiskPresets"><button data-v="20">$20</button><button data-v="50">$50</button><button data-v="100">$100</button><button data-v="250">$250</button></div></div>
+        <div class="fld"><span class="lbl">Or type an amount ($)</span><input class="f" type="number" id="pfRisk" min="1" step="5" value="50" style="width:96px"></div>
+        <div class="fld"><span class="lbl">Max position ($, optional)</span><input class="f" type="number" id="pfCap" min="1" step="1000" placeholder="no limit" style="width:120px"></div>
+        <div class="note" style="flex-basis:100%">Each trade buys as many whole shares as fit the risk: shares = risk ÷ (entry to stop). A tight range means a big position;
+          set a max position to keep it within your buying power.</div>
       </div>
       <span class="lbl">Tickers (up to 7)</span>
       <div class="chips" id="pfChips"><div class="empty">Loading…</div></div>
@@ -461,7 +469,18 @@
   const pfFlt = () => $('pfFilter').value === '1';
   const pfAvail = () => PF.options.filter(o => o.trend_filter === pfFlt());
   const pfRuns = () => { const av = pfAvail(); return PF.sel.map(k => av.find(o => pfKey(o) === k)).filter(Boolean); };
-  const pfUsd = () => $('pfUnits').value === 'usd';
+  const pfUsd = () => $('pfUnits').value !== 'r';
+  const pfRiskMode = () => $('pfUnits').value === 'risk';
+  const pfCurve = () => ({ r: 'cum_r', usd: 'cum_usd', risk: 'cum_risk' })[$('pfUnits').value];
+  const pfRiskVal = () => { const v = parseFloat($('pfRisk').value); return v >= 1 ? v : null; };
+  const pfCapVal = () => { const v = parseFloat($('pfCap').value); return v >= 1 ? v : null; };
+  const _usd0 = v => v === null || v === undefined ? '—' : '$' + Math.round(v).toLocaleString('en-US');
+
+  function pfSyncRisk() {
+    $('pfRiskRow').hidden = !pfRiskMode();
+    const v = String(pfRiskVal());
+    document.querySelectorAll('#pfRiskPresets button').forEach(b => { b.classList.toggle('on', b.dataset.v === v); b.setAttribute('aria-pressed', b.dataset.v === v); });
+  }
   const pfFmt = (v, d = 1) => pfUsd() ? _usd(v) : _r(v, d);
 
   function pfColor(k) {
@@ -490,7 +509,8 @@
 
   function pfSave() {
     try { localStorage.setItem('orbCompare', JSON.stringify({ sel: PF.sel, filter: $('pfFilter').value, units: $('pfUnits').value,
-                                                             preset: PF.preset, from: $('pfFrom').value, to: $('pfTo').value })); } catch (e) {}
+                                                             preset: PF.preset, from: $('pfFrom').value, to: $('pfTo').value,
+                                                             risk: $('pfRisk').value, cap: $('pfCap').value })); } catch (e) {}
   }
 
   function pfChips() {
@@ -511,6 +531,11 @@
     if (!runs.length) { pfDestroy(); PF.data = null; $('pfOut').innerHTML = '<div class="empty">Pick one or more tickers above.</div>'; return; }
     $('pfStatus').textContent = 'Loading…';
     const qs = new URLSearchParams({ runs: runs.map(o => o.run_id).join(','), from: $('pfFrom').value, to: $('pfTo').value });
+    if (pfRiskMode()) {
+      if (!pfRiskVal()) { $('pfStatus').textContent = 'Type a risk per trade of at least $1.'; return; }
+      qs.set('risk', pfRiskVal());
+      if (pfCapVal()) qs.set('cap', pfCapVal());
+    }
     let r, d;
     try { r = await fetch('/api/orb/portfolio?' + qs); d = await r.json(); } catch (e) { r = { ok: false }; d = { error: 'request failed' }; }
     if (seq !== PF.seq) return;                              // a newer request is on its way
@@ -530,25 +555,48 @@
       short.map(s => `${_esc(pfKey(s))} (${_esc(s.trading_from)} → ${_esc(s.trading_to)})`).join(', ') + '; days outside it count as no trade.');
     let h = notes.length ? `<div class="warn">${notes.join('<br>')}</div>` : '';
     if (!cs.trades) { pfDestroy(); $('pfOut').innerHTML = h + '<div class="empty">No trades in this range.</div>'; return; }
-    const other = usd ? _r(cs.total_r, 1) : _usd(cs.net_pnl) + ' at the runs’ share size';
-    h += `<div class="tiles">
-      ${tile(multi ? 'All selected' : 'Total', usd ? _usd(cs.net_pnl) : _r(cs.total_r, 1), _cls(usd ? cs.net_pnl : cs.total_r), other)}
-      ${tile('Trades', cs.trades, '', _n(cs.win_rate, 1) + '% winners')}
-      ${tile('Avg per trade', _r(cs.expectancy_r, 3), _cls(cs.expectancy_r))}
-      ${tile('Green days', `${C.green_days} / ${C.days}`, '', 'of the days with a trade')}
-      ${tile('Best / worst day', `${_r(C.best_day_r, 1)} / ${_r(C.worst_day_r, 1)}`)}
-      ${tile('Max drawdown', Number(cs.max_dd_r).toFixed(1) + 'R', cs.max_dd_r > 0 ? 'neg' : '', 'trade by trade, in date order')}
-    </div>
-    <div class="chartbox" style="height:300px"><canvas id="pfChart" role="img" aria-label="Cumulative ORB result by ticker"></canvas></div>
-    <div class="note" style="margin-bottom:12px">Running total on each day a picked ticker traded, in ${usd ? 'dollars at each run’s share size (a $900 stock outweighs a $40 one)' : 'R: each trade’s result ÷ its own risk, so every ticker counts the same'}.${multi ? ' <strong>All selected</strong> adds them up.' : ''} Click a legend name to hide its line.</div>`;
+    const risk = pfRiskMode() && d.risk ? C.sizing : null;
+    if (pfRiskMode() && !risk) return;                       // the sized numbers are still on their way
+    const who = multi ? 'All selected' : 'Total';
+    if (risk) {
+      const days = (new Date(d.to) - new Date(d.from)) / 864e5 + 1, months = days / 30.44;
+      const rk = '$' + risk.risk.toLocaleString('en-US');
+      h += `<div class="tiles">
+        ${tile(`${who} at ${rk} risk`, _usd(risk.net), _cls(risk.net), `${_r(cs.total_r, 1)} × ${rk} = ${_usd(cs.total_r * risk.risk)} with fractional shares`)}
+        ${months >= 1.5 ? tile('Per month', _usd(risk.net / months), _cls(risk.net), `average over ${months.toFixed(1)} months`) : ''}
+        ${tile('Trades taken', risk.taken, '', risk.skipped ? `${risk.skipped} skipped: one share risked more than ${rk}` : _n(cs.win_rate, 1) + '% winners')}
+        ${tile('Avg $ risked', _usd0(risk.avg_risk), '', 'whole shares round the risk down')}
+        ${tile('Position size', _usd0(risk.median_position), '', `typical; largest ${_usd0(risk.max_position)}${risk.cap ? ` · ${risk.capped} held back by the cap` : ''}`)}
+        ${tile('Best / worst day', `${_usd(risk.best_day)} / ${_usd(risk.worst_day)}`)}
+        ${tile('Max drawdown', _usd(-risk.max_dd), risk.max_dd > 0 ? 'neg' : '', 'peak to trough, trade by trade')}
+        ${tile('Green days', `${C.green_days} / ${C.days}`, '', 'of the days with a trade')}
+      </div>`;
+    } else {
+      const other = usd ? _r(cs.total_r, 1) : _usd(cs.net_pnl) + ' at the runs’ share size';
+      h += `<div class="tiles">
+        ${tile(who, usd ? _usd(cs.net_pnl) : _r(cs.total_r, 1), _cls(usd ? cs.net_pnl : cs.total_r), other)}
+        ${tile('Trades', cs.trades, '', _n(cs.win_rate, 1) + '% winners')}
+        ${tile('Avg per trade', _r(cs.expectancy_r, 3), _cls(cs.expectancy_r))}
+        ${tile('Green days', `${C.green_days} / ${C.days}`, '', 'of the days with a trade')}
+        ${tile('Best / worst day', `${_r(C.best_day_r, 1)} / ${_r(C.worst_day_r, 1)}`)}
+        ${tile('Max drawdown', Number(cs.max_dd_r).toFixed(1) + 'R', cs.max_dd_r > 0 ? 'neg' : '', 'trade by trade, in date order')}
+      </div>`;
+    }
+    const unitNote = risk ? `dollars with every trade sized to risk $${risk.risk.toLocaleString('en-US')}${risk.cap ? ' (positions capped at ' + _usd0(risk.cap) + ')' : ''}, so every ticker counts about the same`
+      : usd ? 'dollars at each run’s share size (a $900 stock outweighs a $40 one)' : 'R: each trade’s result ÷ its own risk, so every ticker counts the same';
+    h += `<div class="chartbox" style="height:300px"><canvas id="pfChart" role="img" aria-label="Cumulative ORB result by ticker"></canvas></div>
+    <div class="note" style="margin-bottom:12px">Running total on each day a picked ticker traded, in ${unitNote}.${multi ? ' <strong>All selected</strong> adds them up.' : ''} Click a legend name to hide its line.</div>`;
     const rows = d.series.slice().sort((a, b) => (b.summary.total_r || 0) - (a.summary.total_r || 0));
-    const cells = (s, days, green) => `<td>${s.trades || 0}</td><td>${s.trades ? _n(s.win_rate, 1) : '—'}</td><td class="${_cls(s.expectancy_r)}">${s.trades ? _r(s.expectancy_r, 3) : '—'}</td>
-      <td class="${_cls(s.total_r)}">${s.trades ? _r(s.total_r, 1) : '—'}</td><td class="${_cls(s.net_pnl)}">${s.trades ? _usd(s.net_pnl) : '—'}</td>
-      <td>${s.trades ? Number(s.max_dd_r).toFixed(1) + 'R' : '—'}</td><td>${days ? green + ' / ' + days : '—'}</td>`;
-    h += `<div class="tbl"><table><thead><tr><th class="l">Ticker</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Net $</th><th>Max DD</th><th>Green days</th><th class="l">Backtest</th></tr></thead><tbody>
-      ${rows.map(s => `<tr><td class="l"><span class="sw" style="background:${pfColor(pfKey(s))}"></span>${_esc(pfKey(s))}</td>${cells(s.summary, s.days, s.green_days)}
+    const cells = (s, days, green, sz) => { const net = sz ? sz.net : s.net_pnl;
+      return `<td>${s.trades || 0}</td><td>${s.trades ? _n(s.win_rate, 1) : '—'}</td><td class="${_cls(s.expectancy_r)}">${s.trades ? _r(s.expectancy_r, 3) : '—'}</td>
+      <td class="${_cls(s.total_r)}">${s.trades ? _r(s.total_r, 1) : '—'}</td><td class="${_cls(net)}">${s.trades ? _usd(net) : '—'}</td>
+      ${risk ? `<td>${sz && sz.taken ? _usd0(sz.median_position) + ' / ' + _usd0(sz.max_position) : '—'}</td>` : ''}
+      <td>${s.trades ? Number(s.max_dd_r).toFixed(1) + 'R' : '—'}</td><td>${days ? green + ' / ' + days : '—'}</td>`; };
+    h += `<div class="tbl"><table><thead><tr><th class="l">Ticker</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th>
+      <th>${risk ? 'Net $ at $' + risk.risk.toLocaleString('en-US') + ' risk' : 'Net $'}</th>${risk ? '<th>Position typical / max</th>' : ''}<th>Max DD</th><th>Green days</th><th class="l">Backtest</th></tr></thead><tbody>
+      ${rows.map(s => `<tr><td class="l"><span class="sw" style="background:${pfColor(pfKey(s))}"></span>${_esc(pfKey(s))}</td>${cells(s.summary, s.days, s.green_days, risk && s.sizing)}
         <td class="l"><a class="dim" style="color:#9ab;cursor:pointer" onclick="openRun('${_esc(s.run_id)}')">${_esc(s.trading_from)} → ${_esc(s.trading_to)}</a></td></tr>`).join('')}
-      ${multi ? `<tr class="tot"><td class="l"><span class="sw" style="background:${PF_ALL}"></span>All selected</td>${cells(cs, C.days, C.green_days)}<td></td></tr>` : ''}
+      ${multi ? `<tr class="tot"><td class="l"><span class="sw" style="background:${PF_ALL}"></span>All selected</td>${cells(cs, C.days, C.green_days, risk)}<td></td></tr>` : ''}
     </tbody></table></div>`;
     $('pfOut').innerHTML = h;
     pfDraw();
@@ -565,7 +613,7 @@
 
   function pfDraw() {
     pfDestroy();
-    const d = PF.data, usd = pfUsd(), key = usd ? 'cum_usd' : 'cum_r';
+    const d = PF.data, usd = pfUsd(), key = pfCurve();
     const line = (label, data, color, w) => ({ label, data: [0, ...data], borderColor: color, backgroundColor: color, borderWidth: w,
                                                 pointRadius: 0, pointHoverRadius: 4, pointHoverBorderColor: '#13161f', pointHoverBorderWidth: 2, tension: 0 });
     const ds = d.series.map(s => line(pfKey(s), s[key], pfColor(pfKey(s)), 2));
@@ -600,7 +648,10 @@
     try { saved = JSON.parse(localStorage.getItem('orbCompare') || '{}') || {}; } catch (e) {}
     await pfOptions();
     if (saved.filter === '0' || saved.filter === '1') $('pfFilter').value = saved.filter;
-    if (saved.units === 'r' || saved.units === 'usd') $('pfUnits').value = saved.units;
+    if (['r', 'usd', 'risk'].includes(saved.units)) $('pfUnits').value = saved.units;
+    if (saved.risk) $('pfRisk').value = saved.risk;
+    if (saved.cap) $('pfCap').value = saved.cap;
+    pfSyncRisk();
     const keys = new Set(PF.options.map(pfKey));
     PF.sel = (Array.isArray(saved.sel) ? saved.sel : ['QQQ', 'GOOG', 'SPY']).filter(k => keys.has(k)).slice(0, PF.max);
     PF.sel.forEach(pfColor);
@@ -610,7 +661,9 @@
     $('pfPresets').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; pfSetPreset(b.dataset.p); pfLoadSoon(); });
     ['pfFrom', 'pfTo'].forEach(id => $(id).addEventListener('change', () => { pfSetPreset('custom'); pfLoadSoon(); }));
     $('pfFilter').addEventListener('change', () => { pfChips(); if (PF.preset === 'all') pfSetPreset('all'); pfLoadSoon(); });
-    $('pfUnits').addEventListener('change', () => { pfSave(); pfRender(); });
+    $('pfUnits').addEventListener('change', () => { pfSyncRisk(); pfLoadSoon(); });
+    $('pfRiskPresets').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; $('pfRisk').value = b.dataset.v; pfSyncRisk(); pfLoadSoon(); });
+    ['pfRisk', 'pfCap'].forEach(id => $(id).addEventListener('input', () => { pfSyncRisk(); clearTimeout(PF.t); PF.t = setTimeout(pfLoad, 400); }));
     $('pfChips').addEventListener('click', e => {
       const b = e.target.closest('.chip'); if (!b) return;
       const k = b.dataset.k, i = PF.sel.indexOf(k);

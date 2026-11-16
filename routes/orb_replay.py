@@ -440,12 +440,15 @@ def _run_trades(run_id: str):
         return None
     cfg, res = json.loads(r[0] or "{}"), json.loads(r[2])
     p, data = cfg.get("params") or {}, res.get("data") or {}
+    size = max(int(p.get("contracts") or 1), 1)
     entry = {"label": _run_label(cfg), "variant": _variant(p), "trend_filter": bool(p.get("trend_filter")),
              "shares": p.get("contracts"),
              "trading_from": data.get("trading_from") or cfg.get("from"),
              "trading_to": data.get("trading_to") or cfg.get("to"),
              "trades": [{"date": t["date"], "time": t.get("entry_time") or "", "r": float(t["r"]),
                          "r_gross": float(t.get("r_gross", t["r"])), "pnl": float(t.get("pnl") or 0.0),
+                         "pps": float(t.get("pnl") or 0.0) / size,          # net $ per share (or contract)
+                         "risk_pts": float(t.get("risk_pts") or 0.0), "entry": float(t.get("entry") or 0.0),
                          "side": t.get("side")} for t in (res.get("trades") or [])]}
     if len(_trades_cache) >= _TRADES_CACHE_MAX:
         _trades_cache.pop(next(iter(_trades_cache)))
@@ -453,11 +456,39 @@ def _run_trades(run_id: str):
     return entry
 
 
-def portfolio(series: list, d0: str, d1: str) -> dict:
+def size_trade(t: dict, risk: float, cap: float | None = None) -> int:
+    """Whole shares for a trade risking at most `risk` dollars (stop distance × shares), and costing at
+    most `cap` dollars to open when a cap is given. 0 = one share already risks more than `risk`."""
+    rp = t.get("risk_pts") or 0.0
+    if rp <= 0:
+        return 0
+    n = int(risk / rp + 1e-9)
+    if cap and t.get("entry"):
+        n = min(n, int(cap / t["entry"] + 1e-9))
+    return max(n, 0)
+
+
+def _sizing(rows: list, risk: float, cap: float | None) -> dict:
+    """rows: (trade, shares) → what sizing by `risk` did: net $, trades taken/skipped, $ risked, position sizes."""
+    taken = [(t, n) for t, n in rows if n > 0]
+    pos = sorted(n * t["entry"] for t, n in taken)
+    full = sum(1 for t, n in taken if t["risk_pts"] * (n + 1) <= risk + 1e-9)     # held back by the cap
+    return {"risk": risk, "cap": cap, "net": round(sum(t["pps"] * n for t, n in taken), 2),
+            "taken": len(taken), "skipped": len(rows) - len(taken), "capped": full,
+            "avg_risk": round(sum(t["risk_pts"] * n for t, n in taken) / len(taken), 2) if taken else None,
+            "median_position": round(pos[len(pos) // 2], 0) if pos else None,
+            "max_position": round(pos[-1], 0) if pos else None}
+
+
+def portfolio(series: list, d0: str, d1: str, risk: float | None = None, cap: float | None = None) -> dict:
     """series: [{"run_id", "label", "trades", ...}] → per-series and combined results over d0..d1 (ISO
     dates), with cumulative R and $ on every date any of them traded. Combined = each trade at 1R of its
-    own risk, so a $900 stock and a $40 one count the same in R (not in $)."""
+    own risk, so a $900 stock and a $40 one count the same in R (not in $).
+
+    risk: also size every trade to risk about that many dollars, in whole shares (cum_risk, sizing);
+    cap: and spend at most that many dollars on a position."""
     out, all_trades, dates = [], [], set()
+    all_sized = []
     # Coverage is judged on weekdays: a range ending on a Sunday is covered by data through Friday.
     w0, w1 = date.fromisoformat(d0), date.fromisoformat(d1)
     while w0.weekday() >= 5 and w0 < w1:
@@ -467,52 +498,70 @@ def portfolio(series: list, d0: str, d1: str) -> dict:
     w0, w1 = w0.isoformat(), w1.isoformat()
     for s in series:
         tr = sorted((t for t in s["trades"] if d0 <= t["date"] <= d1), key=lambda t: (t["date"], t["time"]))
+        sized = [(t, size_trade(t, risk, cap)) for t in tr] if risk else [(t, 0) for t in tr]
         daily = {}
-        for t in tr:
-            a = daily.setdefault(t["date"], [0.0, 0.0])
+        for t, n in sized:
+            a = daily.setdefault(t["date"], [0.0, 0.0, 0.0])      # R, $ at the run's size, $ at `risk`
             a[0] += t["r"]
             a[1] += t["pnl"]
+            a[2] += t.get("pps", 0.0) * n
         dates.update(daily)
         all_trades += tr
+        all_sized += sized
         out.append({"run_id": s["run_id"], "label": s["label"], "variant": s.get("variant", ""),
                     "trend_filter": s.get("trend_filter"), "shares": s.get("shares"),
                     "trading_from": s.get("trading_from"), "trading_to": s.get("trading_to"),
                     "covers": bool(s.get("trading_from") and s.get("trading_to")
                                    and s["trading_from"] <= w0 and s["trading_to"] >= w1),
-                    "_daily": daily, "summary": orb.summarize(tr)})
+                    "_daily": daily, "summary": orb.summarize(tr),
+                    **({"sizing": _sizing(sized, risk, cap)} if risk else {})})
     dates = sorted(dates)
-    comb = {}
-    for s in out:
-        daily = s.pop("_daily")
-        cr = cu = 0.0
-        s["cum_r"], s["cum_usd"] = [], []
+    keys = ("cum_r", "cum_usd", "cum_risk") if risk else ("cum_r", "cum_usd")
+    nd = (3, 2, 2)
+
+    def _curves(daily):
+        run, curves = [0.0, 0.0, 0.0], {k: [] for k in keys}
         for d in dates:
             a = daily.get(d)
             if a:
-                cr += a[0]
-                cu += a[1]
-                c = comb.setdefault(d, [0.0, 0.0])
-                c[0] += a[0]
-                c[1] += a[1]
-            s["cum_r"].append(round(cr, 3))
-            s["cum_usd"].append(round(cu, 2))
+                for i in range(3):
+                    run[i] += a[i]
+            for i, k in enumerate(keys):
+                curves[k].append(round(run[i], nd[i]))
+        return curves
+
+    comb = {}
+    for s in out:
+        daily = s.pop("_daily")
+        for d, a in daily.items():
+            c = comb.setdefault(d, [0.0, 0.0, 0.0])
+            for i in range(3):
+                c[i] += a[i]
+        s.update(_curves(daily))
         s["days"] = len(daily)
         s["green_days"] = sum(1 for a in daily.values() if a[0] > 0)
     all_trades.sort(key=lambda t: (t["date"], t["time"]))
-    cr = cu = 0.0
-    c_r, c_usd = [], []
-    for d in dates:
-        a = comb.get(d, (0.0, 0.0))
-        cr += a[0]
-        cu += a[1]
-        c_r.append(round(cr, 3))
-        c_usd.append(round(cu, 2))
     day_r = [a[0] for a in comb.values()]
-    combined = {"summary": orb.summarize(all_trades), "cum_r": c_r, "cum_usd": c_usd, "days": len(comb),
+    combined = {"summary": orb.summarize(all_trades), **_curves(comb), "days": len(comb),
                 "green_days": sum(1 for v in day_r if v > 0),
                 "best_day_r": round(max(day_r), 3) if day_r else None,
                 "worst_day_r": round(min(day_r), 3) if day_r else None}
-    return {"from": d0, "to": d1, "dates": dates, "series": out, "combined": combined}
+    if risk:
+        combined["sizing"] = _sizing(all_sized, risk, cap)
+        day_x = [a[2] for a in comb.values()]
+        combined["sizing"].update(best_day=round(max(day_x), 2) if day_x else None,
+                                  worst_day=round(min(day_x), 2) if day_x else None,
+                                  max_dd=round(_max_dd_usd(sorted(all_sized, key=lambda x: (x[0]["date"], x[0]["time"]))), 2))
+    return {"from": d0, "to": d1, "dates": dates, "series": out, "combined": combined, "risk": risk, "cap": cap}
+
+
+def _max_dd_usd(sized) -> float:
+    run = peak = dd = 0.0
+    for t, n in sized:
+        run += t.get("pps", 0.0) * n
+        peak = max(peak, run)
+        dd = max(dd, peak - run)
+    return dd
 
 
 @orb_replay_bp.route("/api/orb/portfolio/options")
@@ -540,6 +589,15 @@ def api_portfolio():
         return jsonify({"error": "from and to must be YYYY-MM-DD"}), 400
     if d1 < d0:
         return jsonify({"error": "to must be on or after from"}), 400
+    try:
+        risk = float(request.args["risk"]) if request.args.get("risk") else None
+        cap = float(request.args["cap"]) if request.args.get("cap") else None
+    except ValueError:
+        return jsonify({"error": "risk and cap must be dollar amounts"}), 400
+    if risk is not None and not 1 <= risk <= 1_000_000:
+        return jsonify({"error": "risk per trade must be between $1 and $1,000,000"}), 400
+    if cap is not None and not 1 <= cap <= 100_000_000:
+        return jsonify({"error": "max position must be between $1 and $100,000,000"}), 400
     _ensure_tables()
     series = []
     for rid in ids:
@@ -547,4 +605,4 @@ def api_portfolio():
         if e is None:
             return jsonify({"error": f"run {rid} isn't a finished run"}), 404
         series.append({"run_id": rid, **e})
-    return jsonify(portfolio(series, d0.isoformat(), d1.isoformat()))
+    return jsonify(portfolio(series, d0.isoformat(), d1.isoformat(), risk=risk, cap=cap if risk else None))
