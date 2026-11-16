@@ -246,13 +246,8 @@
       </button>
       <button class="btn" onclick="wireCrewToRouter()"
         style="background:transparent;border:1px solid #7FE098;color:#7FE098;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
-        title="Append the latest crew report's 'Next Month — Crew Paper' picks as routing rules targeting the Crew Paper account (alpaca-paper-4). Existing Crew Paper rules are kept; only new strategies are added.">
-        ⚡ Wire Crew Picks → Crew Paper
-      </button>
-      <button class="btn" onclick="mirrorCrewLive()"
-        style="background:transparent;border:1px solid #E8A0BF;color:#E8A0BF;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:0.85rem"
-        title="Give every Crew Paper rule a Crew Live (alpaca-live-6) twin — same strategy, side, entry source and exits, sized from LIVE_SIZE_DOLLARS instead of the paper band. Idempotent: re-run to re-sync. Creating rules does NOT arm live trading.">
-        ● Mirror → Crew Live
+        title="Sync the latest crew report's picks to Crew Live (alpaca-live-6, REAL MONEY) — the crew's only book since Crew Paper was retired. Picks are added or updated; Crew Live rules that left the report are removed. Writing rules does NOT arm live trading.">
+        ⚡ Wire Crew Picks → Crew Live
       </button>
       <span id="crewStatus" style="font-size:0.78rem;color:#666;align-self:center"></span>
       <button class="btn btn-primary" onclick="newPipeline()">+ New Pipeline</button>
@@ -334,10 +329,10 @@
     <!-- Row 2: Account-scoped + trailing stop cards -->
     <div class="rg-cards">
 
-      <!-- Curated Books (TV Refined · Kairos Refined · Crew Paper · Crew Live) -->
+      <!-- Curated Books (TV Refined · Kairos Refined · Crew Live) -->
       <div class="rg-card rg-card-refined">
         <div class="rg-card-title" style="color:#a78bfa">&#9670; Curated Books
-          <span style="color:#666;font-size:0.68rem;font-weight:400">TV Refined · Kairos Refined · Crew Paper · <b style="color:#E8A0BF">Crew Live</b> — same settings, all four. Farms run ungated.</span></div>
+          <span style="color:#666;font-size:0.68rem;font-weight:400">TV Refined · Kairos Refined · <b style="color:#E8A0BF">Crew Live</b> — same settings, all three. Farms run ungated.</span></div>
 
         <div class="risk-section" style="margin-bottom:10px">
           <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -386,7 +381,7 @@
             <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveRefinedHours()">Set</button>
             <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearRefinedHours()">Off</button>
           </div>
-          <div class="risk-hint">New entries are blocked outside these windows (ET) on all four curated books. Exits always go through. No windows = all day. Add multiple windows to trade the open and the afternoon but pause midday (e.g. 09:35–10:00 and 12:00–15:55). The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper &amp; Crew Live can override these windows in the Crew section below.</b></div>
+          <div class="risk-hint">New entries are blocked outside these windows (ET) on all three curated books. Exits always go through. No windows = all day. Add multiple windows to trade the open and the afternoon but pause midday (e.g. 09:35–10:00 and 12:00–15:55). The farms stay all-day — they're the audition pools. <b style="color:#7FE098">Crew Paper &amp; Crew Live can override these windows in the Crew section below.</b></div>
         </div>
       </div>
     </div>
@@ -685,7 +680,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpDollar()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpDollar()">Off</button>
         </div>
-        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount. Applies to the four curated books (TV Refined · Kairos Refined · Crew Paper · Crew Live); farms run ungated.</div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this dollar amount. Applies to the three curated books (TV Refined · Kairos Refined · Crew Live); farms run ungated.</div>
       </div>
       <div class="risk-section" style="margin-top:10px">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -701,7 +696,7 @@
           <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveTpPct()">Set</button>
           <button class="btn btn-ghost" style="padding:6px 14px;font-size:0.82rem" onclick="clearTpPct()">Off</button>
         </div>
-        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to all four curated books (TV Refined · Kairos Refined · Crew Paper · Crew Live), farms ungated.</div>
+        <div class="risk-hint">Closes any open position once its unrealized gain reaches this % of position value. If both $ and % are set, <strong>whichever hits first</strong> wins. Managed by the position monitor (~3s); applies to all four curated books (TV Refined · Kairos Refined · Crew Live), farms ungated.</div>
       </div>
       <div class="risk-section" style="margin-top:10px" id="tpByAccountSection">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">
@@ -713,13 +708,13 @@
       </div>
     </div>
 
-    <!-- Crew Paper — independent entry-gate overrides (day-type / strikes / hours) -->
+    <!-- Crew Live — independent entry-gate overrides (day-type / strikes / hours) -->
     <div class="rg-card" style="margin-top:10px;border-color:#3a7a4e">
-      <div class="rg-card-title" style="color:#7FE098">&#9670; Crew — Entry Gates <span style="color:#E8A0BF;font-size:0.7rem">(Paper + Live)</span>
-        <span style="color:#666;font-size:0.68rem;font-weight:400">acct4 only · overrides the shared settings above · blank = inherit</span></div>
+      <div class="rg-card-title" style="color:#7FE098">&#9670; Crew — Entry Gates <span style="color:#E8A0BF;font-size:0.7rem">(Crew Live)</span>
+        <span style="color:#666;font-size:0.68rem;font-weight:400">acct6 only · overrides the shared settings above · blank = inherit</span></div>
       <div class="risk-section">
         <div class="risk-label" style="display:flex;align-items:center;gap:8px">Day-type gate (breakouts)
-          <span style="color:#666;font-size:0.68rem">inherit the shared gate, or force on/off for both Crew books</span></div>
+          <span style="color:#666;font-size:0.68rem">inherit the shared gate, or force on/off for Crew Live</span></div>
         <div class="risk-input-row">
           <select class="risk-input" id="crewDaytypeSel" style="width:170px" onchange="_crewGatesDirty=true">
             <option value="inherit">Inherit (shared)</option>
@@ -770,10 +765,10 @@
           <div class="risk-hint" style="margin-top:6px">Liquidity is not uniform across the book: an index ETF is tradeable all session, while a thin name genuinely should be confined to the open. Blank = every ticker obeys the windows.</div>
         </div>
         <div class="risk-input-row" style="margin-top:12px">
-          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveCrewGates()">Save Crew gates (Paper + Live)</button>
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:0.82rem" onclick="saveCrewGates()">Save Crew Live gates</button>
           <span id="crewGatesStatus" style="color:#7FE098;font-size:0.76rem"></span>
         </div>
-        <div class="risk-hint">Saved against Crew Paper (acct4). <b style="color:#E8A0BF">Crew Live (acct6) inherits these automatically</b> — the two books mirror the same roster, so they must gate identically or a live-vs-paper comparison measures the gate gap instead of fills. Any field left blank / "inherit" uses the shared curated setting above, so this is non-destructive. RVOL already excludes Crew by default; exit/risk gates stay shared across all four curated books.</div>
+        <div class="risk-hint">Saved against <b style="color:#E8A0BF">Crew Live (acct6, real money)</b>, the crew's only book. These started as Crew Paper's settings, copied over when Crew Paper was retired. Any field left blank / "inherit" uses the shared curated setting above, so this is non-destructive. RVOL already excludes Crew by default; exit/risk gates stay shared across all four curated books.</div>
       </div>
     </div>
 
@@ -1517,10 +1512,10 @@
                                        : 'No books are gated';
       }
 
-      // Crew Paper (acct4) entry-gate overrides — populate the section's fields, but
+      // Crew Live (acct6) entry-gate overrides — populate the section's fields, but
       // never while the user is editing them (the 5s poll would wipe their input).
       if (!_crewGatesDirty) {
-      const cg = (data.gates_by_account || {}).alpaca4 || {};
+      const cg = (data.gates_by_account || {}).alpaca6 || {};
       const _cgSet = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
       // Read the PRESENCE of `enabled`, not the presence of the override. An
       // override holding only exempt_tickers is a per-ticker carve-out with no
@@ -2023,38 +2018,13 @@
     } catch(e) { alert('Error: ' + e.message); }
   }
 
-  // Crew Paper (acct4) entry-gate overrides — day-type / strikes / hours.
+  // Crew Live (acct6) entry-gate overrides — day-type / strikes / hours.
   // Twin RULES, not a second broker node on one rule: the two books cannot share a
   // quantity (paper trades the $25k Refined band, live trades LIVE_SIZE_DOLLARS).
-  async function mirrorCrewLive() {
-    const st = document.getElementById('crewStatus');
-    const _msg = 'Create/refresh a Crew Live (REAL MONEY, account 6) twin of every '
-              + 'Crew Paper rule? This writes routing rules only - live entries still '
-              + 'require LIVE_TRADING_ARMED=1.';
-    if (!confirm(_msg)) return;
-    if (st) { st.style.color = '#888'; st.textContent = 'Mirroring to Crew Live…'; }
-    try {
-      const r = await fetch('/api/crew/mirror_live', { method: 'POST' });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'mirror failed');
-      const bits = [`${d.created.length} created`, `${d.updated.length} re-synced`];
-      if (d.deleted.length)          bits.push(`${d.deleted.length} pruned`);
-      if (d.skipped_no_price.length) bits.push(`${d.skipped_no_price.length} skipped (no price)`);
-      if (st) {
-        st.style.color = '#E8A0BF';
-        st.textContent = `Crew Live: ${bits.join(' · ')} @ $${Math.round(d.size_dollars).toLocaleString()}/position`
-                       + (d.armed ? ' · ARMED' : ' · not armed');
-      }
-      await load();
-    } catch (e) {
-      if (st) { st.style.color = '#e08a8a'; st.textContent = 'Mirror failed: ' + e.message; }
-    }
-  }
-
   async function saveCrewGates() {
     const st = document.getElementById('crewGatesStatus');
     const body = {
-      account:       '4',
+      account:       '6',
       daytype:       document.getElementById('crewDaytypeSel').value,
       rvol:          document.getElementById('crewRvolSel').value,
       rvol_min:      document.getElementById('crewRvolMin').value,
@@ -2688,7 +2658,7 @@
           'alpaca': 'TV Farm', 'alpaca-paper': 'TV Farm', 'alpaca-live': 'TV Farm Live',
           'alpaca-paper-2': 'TV Refined', 'alpaca-live-2': 'TV Refined Live',
           'alpaca-paper-3': 'Kairos Refined', 'alpaca-live-3': 'Kairos Refined Live',
-          'alpaca-paper-4': 'Crew Paper', 'alpaca-live-4': 'Crew Paper Live',
+          'alpaca-paper-4': 'Crew Paper (retired)', 'alpaca-live-4': 'Crew Paper (retired)',
           'alpaca-paper-5': 'Kairos Farm', 'alpaca-live-5': 'Kairos Farm Live',
           'alpaca-paper-6': 'Crew Live (paper slot)', 'alpaca-live-6': 'Crew Live · REAL',
           'alpaca-paper-7': 'Kairos Select', 'alpaca-live-7': 'Kairos Select Live',
@@ -2800,17 +2770,17 @@
     if (!el) return;
     const n = (rules || []).filter(r =>
       (r.nodes || []).some(nd => nd.type === 'broker' &&
-        ['alpaca-paper-4', 'alpaca-live-4'].includes((nd.value || '').toLowerCase()))
+        ['alpaca-live-6', 'alpaca-paper-6'].includes((nd.value || '').toLowerCase()))
     ).length;
-    el.textContent = n ? `Crew Paper: ${n} rule${n === 1 ? '' : 's'} wired` : 'Crew Paper: none wired yet';
+    el.textContent = n ? `Crew Live: ${n} rule${n === 1 ? '' : 's'} wired` : 'Crew Live: none wired yet';
   }
 
   async function wireCrewToRouter() {
     if (!confirm(
-      'Sync the latest crew report\'s "Next Month — Crew Paper" picks to the\n' +
-      'Crew Paper account (acct 4)?\n\n' +
-      'New picks are added; existing Crew rules are updated to the card\'s entry,\n' +
-      'each strategy\'s tuned exits, and TOP-BAND sizing (matches Refined/Kairos).'
+      'Sync the latest crew report\'s picks to CREW LIVE (account 6, REAL MONEY)?\n\n' +
+      'New picks are added; existing Crew Live rules are updated to the card\'s entry,\n' +
+      'each strategy\'s tuned exits and LIVE_SIZE_DOLLARS sizing; rules for names\n' +
+      'that left the report are removed. Live entries still need LIVE_TRADING_ARMED.'
     )) return;
     try {
       const res  = await fetch('/api/crew/wire_to_router', {
@@ -2819,8 +2789,9 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'request failed');
       const c = (data.created || []).length, u = (data.updated || []).length;
-      const sizeTxt = data.size_dollars ? `~$${Math.round(data.size_dollars).toLocaleString()}/trade` : `qty ${data.qty}`;
-      alert(`Crew Paper synced: ${c} added, ${u} updated.\n` +
+      const d = (data.deleted || []).length, np = ((data.book || {}).skipped_no_price || []).length;
+      const sizeTxt = `~$${Math.round(data.size_dollars || 0).toLocaleString()}/trade`;
+      alert(`Crew Live synced: ${c} added, ${u} updated, ${d} removed${np ? `, ${np} skipped (no price)` : ''}.\n` +
             `Entries: ${data.entry_source} · ${sizeTxt}\n` +
             `Exits cloned from each strategy's own pipeline.`);
       await load();
@@ -3322,8 +3293,6 @@
               <option value="alpaca-live-2"  ${bv==='alpaca-live-2'  ? 'selected':''}>Alpaca Live — TV Refined (account 2)</option>
               <option value="alpaca-paper-3" ${bv==='alpaca-paper-3' ? 'selected':''}>Alpaca Paper — Kairos Refined (account 3)</option>
               <option value="alpaca-live-3"  ${bv==='alpaca-live-3'  ? 'selected':''}>Alpaca Live — Kairos Refined (account 3)</option>
-              <option value="alpaca-paper-4" ${bv==='alpaca-paper-4' ? 'selected':''}>Alpaca Paper — Crew Paper (account 4)</option>
-              <option value="alpaca-live-4"  ${bv==='alpaca-live-4'  ? 'selected':''}>Alpaca Live — Crew Paper (account 4)</option>
               <option value="alpaca-paper-5" ${bv==='alpaca-paper-5' ? 'selected':''}>Alpaca Paper — Kairos Farm (account 5)</option>
               <option value="alpaca-live-5"  ${bv==='alpaca-live-5'  ? 'selected':''}>Alpaca Live — Kairos Farm (account 5)</option>
               <option value="alpaca-live-6"  ${bv==='alpaca-live-6'  ? 'selected':''}>⚠ Alpaca LIVE — Crew Live · REAL MONEY (account 6)</option>

@@ -107,10 +107,12 @@ def test_the_exemption_is_per_book(monkeypatch, gated):
     assert _blocked("alpaca2", "AAPL") is True, "another book must not inherit it"
 
 
-def test_crew_live_inherits_it(monkeypatch, gated):
-    """Same roster on both books — a ticker that trades every day type on paper has
-    to do the same live, or the comparison measures the config gap."""
+def test_crew_live_no_longer_inherits_it(monkeypatch, gated):
+    """The acct6 -> acct4 mirror was removed with Crew Paper (2026-11-15): Crew Live
+    gates on its own overrides only."""
     _exempt(monkeypatch, ["AAPL"], tag="alpaca4")
+    assert _blocked("alpaca6", "AAPL") is True
+    _exempt(monkeypatch, ["AAPL"], tag="alpaca6")
     assert _blocked("alpaca6", "AAPL") is False
     assert _blocked("alpaca6", "NVDA") is True
 
@@ -185,7 +187,8 @@ def test_the_gated_book_list_comes_from_the_registry(monkeypatch):
     a.app.config["TESTING"] = True
     books = a.app.test_client().get("/api/risk/status").get_json()["gated_books"]["daytype"]
     assert "TV Farm" not in books and "Kairos Farm" not in books
-    assert "Crew Paper" in books and "Crew Live" in books
+    assert "Crew Live" in books
+    assert not any("Crew Paper" in b for b in books), "a retired slot is not a gated book"
 
 
 # ── the dropdown must survive a save ────────────────────────────────────────

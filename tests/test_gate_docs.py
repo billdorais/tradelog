@@ -95,12 +95,12 @@ def test_recap_gate_strip_agrees_with_the_override(monkeypatch):
     """The strip feeds the read-aloud script, so it must not narrate a gate as off
     while that gate is blocking trades."""
     monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {
-        "4": {"tag": "alpaca4", "label": "Crew Paper",
+        "6": {"tag": "alpaca6", "label": "Crew Live", "paper": False,
               "broker": object(), "fills_fn": lambda: []}})
     monkeypatch.setattr(a, "_pair_alpaca_fills_lifo", lambda *A, **K: {"closed_clean": []})
     monkeypatch.setattr(a, "RVOL_GATE_ENABLED", False)
     monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", {"alpaca2", "alpaca3"})
-    _override(monkeypatch, "alpaca4", {"rvol": {"enabled": True}})
+    _override(monkeypatch, "alpaca6", {"rvol": {"enabled": True}})
 
     gates = {g["gate"]: g for g in _client().get("/api/recap").get_json()["gates"]}
     assert gates["RVOL"]["on"] is True
@@ -160,8 +160,8 @@ def test_gates_without_a_control_group_say_so(monkeypatch):
 # ── endpoint ────────────────────────────────────────────────────────────────
 
 def test_endpoint_returns_docs_for_a_known_book():
-    d = _client().get("/api/gates/docs?account=alpaca4").get_json()
-    assert d["account"] == "alpaca4" and d["label"] == "Crew Paper"
+    d = _client().get("/api/gates/docs").get_json()          # default: the crew book
+    assert d["account"] == "alpaca6" and d["label"] == "Crew Live"
     assert set(d["gates"]) == set(a._GATE_RULES)
     assert d["gates"]["rvol"]["title"] == "RVOL (relative volume)"
 

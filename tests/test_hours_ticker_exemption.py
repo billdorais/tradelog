@@ -93,12 +93,14 @@ def test_the_exemption_is_per_book(monkeypatch):
     assert a._account_hours_ok("alpaca2", now_et=_et(19, 0), ticker="SPY") is False
 
 
-def test_crew_live_inherits_the_exemption(monkeypatch):
-    """acct6 mirrors acct4's gate overrides — the two books trade one roster, so a
-    ticker that runs all day on paper must run all day live or the comparison
-    measures the config gap."""
+def test_crew_live_no_longer_inherits_the_exemption(monkeypatch):
+    """acct6 used to mirror acct4's gate overrides. Crew Paper was retired on
+    2026-11-15 and its overrides were copied onto Crew Live once; an exemption left
+    on the retired slot must not open Crew Live's window."""
     monkeypatch.setattr(a, "_account_hours_windows", lambda tag: [("09:35", "15:55")])
     _exempt(monkeypatch, ["SPY"], tag="alpaca4")
+    assert a._account_hours_ok("alpaca6", now_et=_et(19, 0), ticker="SPY") is False
+    _exempt(monkeypatch, ["SPY"], tag="alpaca6")
     assert a._account_hours_ok("alpaca6", now_et=_et(19, 0), ticker="SPY") is True
 
 
@@ -200,8 +202,7 @@ def test_a_midday_pause_still_binds_for_everything_else(monkeypatch):
 # ── the UI must not misstate what a rule will do ────────────────────────────
 
 def test_the_risk_payload_carries_resolved_exemptions(monkeypatch):
-    """Resolved, not raw: the UI needs the answer AFTER the acct6 -> acct4 mirror,
-    or every card on the live book would render as if nothing were exempt."""
+    """Resolved per book. The acct6 -> acct4 mirror was removed with Crew Paper."""
     monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [
         {"num": "4", "tag": "alpaca4", "label": "Crew Paper"},
         {"num": "6", "tag": "alpaca6", "label": "Crew Live"},
@@ -211,9 +212,9 @@ def test_the_risk_payload_carries_resolved_exemptions(monkeypatch):
     d = a.app.test_client().get("/api/risk/status").get_json()
     ex = d["hours_exempt_by_account"]
     assert ex["alpaca4"] == ["SPY"]
-    assert ex["alpaca6"] == ["SPY"], "the mirror must be applied before sending"
+    assert "alpaca6" not in ex, "no mirror any more: Crew Live has its own overrides"
     assert "alpaca2" not in ex, "books with no exemptions are omitted, not empty"
-    assert d["gate_mirror"] == {"alpaca6": "alpaca4"}
+    assert d["gate_mirror"] == {}
 
 
 def test_the_hours_chip_reports_exemption_rather_than_the_window():

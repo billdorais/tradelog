@@ -522,7 +522,7 @@
              style="background:#0a0a0a;border:1px solid #2a2d3e;color:#e0e0e0;border-radius:6px;
                     padding:5px 10px;font-size:0.78rem;outline:none;width:240px">
       <button id="crewOnlyBtn" onclick="toggleCrewOnly()"
-              title="Show only the strategies wired to Crew Paper (alpaca-paper-4)"
+              title="Show only the strategies wired to Crew Live (alpaca-live-6)"
               style="background:transparent;border:1px solid #2a4a35;color:#7FE098;border-radius:6px;
                      padding:5px 12px;font-size:0.78rem;cursor:pointer;font-family:inherit;font-weight:600">Crew</button>
       <span id="stratFilterCount" style="font-size:0.72rem;color:#666"></span>
@@ -793,8 +793,8 @@
       <span>Performance Summary</span>
       <!-- Curated-account toggle — default Crew. Independent of the page tabs. -->
       <div style="display:inline-flex;gap:2px">
-        <button id="perfAcct4" onclick="setPerfAcct('4')"
-                style="border:1px solid #7FE098;background:rgba(127,224,152,0.12);color:#7FE098;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer">Crew Paper</button>
+        <button id="perfAcct6" onclick="setPerfAcct('6')"
+                style="border:1px solid #E8A0BF;background:rgba(232,160,191,0.12);color:#E8A0BF;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer">Crew Live</button>
         <button id="perfAcct2" onclick="setPerfAcct('2')"
                 style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;font-size:0.7rem;cursor:pointer">TV Refined</button>
         <button id="perfAcct3" onclick="setPerfAcct('3')"
@@ -937,9 +937,10 @@
   let analysisData = null;
   let sortState    = {};   // tableId → {col, dir}
   // Crew Live leads when configured — it is the only book with real money on it.
-  // Falls back to Crew Paper so a deploy without ALPACA_KEY6 opens on a real book.
+  // Without ALPACA_KEY6 it falls back to the first configured curated book (Crew Paper,
+  // the old fallback, was retired on 2026-11-15).
   const _CONFIGURED_SRC = new Set({{ accounts | map(attribute='tag') | list | tojson }});
-  let activeSource = _CONFIGURED_SRC.has('alpaca6') ? 'alpaca6' : 'alpaca4';
+  let activeSource = ['alpaca6', 'alpaca7', 'alpaca2', 'alpaca3'].find(t => _CONFIGURED_SRC.has(t)) || 'alpaca';
 
   // ── Source toggle ──────────────────────────────────────────────────────────
   function switchSource(src) {
@@ -1067,7 +1068,7 @@
   // Populated each time load() runs so renderStratTable can star "live" strategies.
   // Map value: 'refined' if rule routes to alpaca-paper-2, otherwise 'paper'.
   let _liveStrategies = new Map();
-  let _crewStrategies = new Set();   // upper-case strategies wired to Crew Paper (alpaca-paper-4/-live-4)
+  let _crewStrategies = new Set();   // upper-case strategies wired to Crew Live (alpaca-live-6)
   let _crewOnly       = false;       // when true, the strategy leaderboard shows only crew picks
 
   async function _refreshLiveStrategies() {
@@ -1087,7 +1088,7 @@
         );
         map.set(su, isRefined ? 'refined' : 'paper');
         if (nodes.some(n => n.type === 'broker' &&
-            (n.value === 'alpaca-paper-4' || n.value === 'alpaca-live-4'))) {
+            (n.value === 'alpaca-live-6' || n.value === 'alpaca-paper-6'))) {
           crew.add(su);
         }
       }
@@ -1180,7 +1181,7 @@
   // Farm. Kairos snapshot: Kairos Farm (5) / Kairos Refined (3), default Farm.
   let _refinedSnapAcct = '1';
   let _kairosSnapAcct  = '5';
-  const _SNAP_ACCT_LABEL = {'1':'TV Farm','2':'TV Refined','3':'Kairos Refined','4':'Crew Paper','5':'Kairos Farm'};
+  const _SNAP_ACCT_LABEL = {'1':'TV Farm','2':'TV Refined','3':'Kairos Refined','4':'Crew Paper','5':'Kairos Farm','6':'Crew Live','7':'Kairos Select'};
   // Cache of per-account per_strategy over the current date range (keyed by acct
   // + window so a date change invalidates it).
   const _snapAcctStatsCache = {};
@@ -1246,11 +1247,11 @@
 
   // Performance Summary account — its own toggle (Crew / TV Refined / Kairos
   // Refined), default Crew. Loads that account's daily/weekly independently.
-  let _perfSummaryAcct = '4';
-  const _PERF_ACCT_COLOR = {'4':'#7FE098','2':'#c4b5fd','3':'#F2C07A'};
+  let _perfSummaryAcct = '6';
+  const _PERF_ACCT_COLOR = {'6':'#E8A0BF','2':'#c4b5fd','3':'#F2C07A'};
   function setPerfAcct(acct) {
     _perfSummaryAcct = acct;
-    for (const a of ['4','2','3']) {
+    for (const a of ['6','2','3']) {
       const b = document.getElementById('perfAcct' + a);
       if (!b) continue;
       const on = a === acct, c = _PERF_ACCT_COLOR[a];
@@ -2815,7 +2816,7 @@
   function toggleCrewOnly() {
     _crewOnly = !_crewOnly;
     if (_crewOnly && _crewStrategies.size === 0) {
-      alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
+      alert('No Crew Live strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
       _crewOnly = false;
       return;
     }
@@ -3516,14 +3517,14 @@
     const base = document.getElementById('benchBase')?.value || '25000';
     try {
       meta.textContent = 'loading…';
-      const p = new URLSearchParams({ accounts: '4,2,3,7', benchmark: 'SPY', days, base });
+      const p = new URLSearchParams({ accounts: '6,2,3,7', benchmark: 'SPY', days, base });
       const d = await fetch('/api/perf/vs_benchmark?' + p).then(r => r.json());
       if (d.error || !d.dates || !d.dates.length) {
         meta.textContent = d.error ? ('— ' + d.error) : '— no data';
         if (_benchChartInstance) { _benchChartInstance.destroy(); _benchChartInstance = null; }
         return;
       }
-      const COLORS = { 'SPY': '#9aa4b8', '4': '#7FE098', '2': '#c4b5fd', '3': '#F2C07A', '7': '#3987e5' };
+      const COLORS = { 'SPY': '#9aa4b8', '4': '#7FE098', '6': '#E8A0BF', '2': '#c4b5fd', '3': '#F2C07A', '7': '#3987e5' };
       const datasets = d.series.map(s => {
         const color = COLORS[s.key] || '#888';
         return {

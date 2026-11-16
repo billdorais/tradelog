@@ -36,6 +36,13 @@ fills / endpoint sites individually any more; they all loop the registry.
      targets explicitly, so a new account only receives auto entries if you also add
      it to the snapshot target / `ENGINE_PILOT_ALL` / `ENGINE_PILOT_EXTRA`. Crew
      Paper (acct 4) is left out of all of them, so it trades only crew-wired rules.
+   - `self_managed` — the account's own engine owns every exit, so Kairos' position
+     stops, take-profit and max-hold recovery skip its positions (`_SELF_MANAGED_TAGS`).
+     The 15:58 EOD close still covers it. ORB Paper (acct 8, `routes/orb_live.py`) is
+     the one such account: the max-hold recovery matches open positions to rules by
+     ticker across accounts, and would otherwise close an ORB trade on a Kairos rule's
+     timer. All slots 1–8 are now taken, so a ninth account needs `MAX_ALPACA_ACCOUNTS`
+     raised.
 
    If `MAX_ALPACA_ACCOUNTS` (default 8) is smaller than N, raise it.
 

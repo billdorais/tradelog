@@ -30,7 +30,7 @@ def _st(trades, pnl, win_rate=50.0, pf=1.2):
 
 @pytest.fixture
 def book(monkeypatch):
-    """A readable Crew Paper book whose per_strategy the test controls."""
+    """A readable crew book (Crew Live) whose per_strategy the test controls."""
     state = {"per_strategy": {}, "unavailable": False}
 
     class _Client:
@@ -46,14 +46,14 @@ def book(monkeypatch):
 
     monkeypatch.setattr(a.app, "test_client", lambda *x, **k: _Client())
     monkeypatch.setattr(a, "ACCOUNTS_BY_NUM",
-                        {"4": {"tag": "alpaca4", "label": "Crew Paper", "broker": object()}})
+                        {"6": {"tag": "alpaca6", "label": "Crew Live", "broker": object()}})
     monkeypatch.setattr(C, "_selection_picks", lambda r: [])
     monkeypatch.setattr(a, "get_db",
                         lambda: (_ for _ in ()).throw(RuntimeError("no db in test")))
     return state
 
 
-def _get(roster=None, auditions=None, account="4"):
+def _get(roster=None, auditions=None, account="6"):
     q = f"/api/crew/roster_readiness?account={account}"
     if roster    is not None: q += f"&roster={roster}"
     if auditions is not None: q += f"&auditions={auditions}"

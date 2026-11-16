@@ -776,7 +776,7 @@
               <span onclick="selectAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">All</span>
               <span onclick="clearAllStrats()" style="font-size:0.75rem;color:#7FE098;cursor:pointer">None</span>
               <span onclick="selectIndices(event)" title="Select index/ETF strategies (SPY, QQQ, IWM, SMH)" style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Indices</span>
-              <span onclick="selectCrew(event)" title="Select the strategies wired to Crew Paper (alpaca-paper-4)" style="font-size:0.75rem;color:#7FE098;cursor:pointer;font-weight:600">Crew</span>
+              <span onclick="selectCrew(event)" title="Select the strategies wired to Crew Live (alpaca-live-6)" style="font-size:0.75rem;color:#7FE098;cursor:pointer;font-weight:600">Crew</span>
               <span onclick="selectCrewTv(event)" title="Crew picks that enter on TV alerts. On either farm this shows the same names with that farm's entry mechanism." style="font-size:0.75rem;color:#70a8f5;cursor:pointer">Crew TV</span>
               <span onclick="selectCrewKairos(event)" title="Crew picks that enter via the Kairos engine. On either farm this shows the same names with that farm's entry mechanism." style="font-size:0.75rem;color:#5FC8D4;cursor:pointer">Crew Kairos</span>
               <span onclick="narrowByPnl(1,event)" title="Narrow the CURRENT selection to strategies in profit over this range" style="font-size:0.75rem;color:#7FE098;cursor:pointer">Winners</span>
@@ -974,14 +974,14 @@
     <span>Performance Summary</span>
     <!-- Curated-account toggle — default Crew. Independent of the equity tabs. -->
     <div style="display:inline-flex;gap:2px">
-      <button id="dashPerfAcct4" onclick="setDashPerfAcct('4')"
-        style="border:1px solid #7FE098;background:#7FE09822;color:#7FE098;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer;font-family:inherit">Crew Paper</button>
+      <button id="dashPerfAcct6" onclick="setDashPerfAcct('6')"
+        style="border:1px solid #E8A0BF;background:#E8A0BF22;color:#E8A0BF;padding:3px 10px;border-radius:6px 0 0 6px;font-size:0.7rem;cursor:pointer;font-family:inherit">Crew Live</button>
       <button id="dashPerfAcct2" onclick="setDashPerfAcct('2')"
         style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;font-size:0.7rem;cursor:pointer;font-family:inherit">TV Refined</button>
       <button id="dashPerfAcct3" onclick="setDashPerfAcct('3')"
         style="border:1px solid #2a2d3e;background:transparent;color:#666;padding:3px 10px;border-radius:0 6px 6px 0;font-size:0.7rem;cursor:pointer;font-family:inherit">Kairos Refined</button>
     </div>
-    <span id="dashPerfLabel" style="font-size:0.7rem;font-weight:400;color:#7FE098">Crew Paper account</span>
+    <span id="dashPerfLabel" style="font-size:0.7rem;font-weight:400;color:#E8A0BF">Crew Live account</span>
     <div style="display:flex;gap:4px;margin-left:auto">
       <button id="dashTabBtnDaily"  onclick="dashShowTab('daily')"
         style="padding:3px 12px;font-size:0.75rem;border-radius:4px;cursor:pointer;border:1px solid #7FE098;background:rgba(127,224,152,0.15);color:#7FE098;font-family:inherit">Daily</button>
@@ -1022,6 +1022,7 @@
     let _fillsUnavailable = false, _fillsError = '';   // fetch failed vs genuinely empty
     let allAlpaca6Execs = [];      // Crew Live (alpaca-live-6) fills — REAL MONEY
     let allAlpaca7Execs = [];      // Kairos Select (alpaca-paper-7) fills — frozen 15-name roster
+    let allAlpaca8Execs = [];      // ORB Paper (alpaca-paper-8) fills — the opening-range breakout engine
     let allAlpacaPositions  = [];   // authoritative open positions from Alpaca account 1
     let allAlpaca2Positions = [];   // authoritative open positions from Alpaca account 2 (Refined)
     let allAlpaca3Positions = [];   // authoritative open positions from Alpaca account 3 (Kairos)
@@ -1029,24 +1030,25 @@
     let allAlpaca5Positions = [];   // authoritative open positions from Alpaca account 5 (Engine Farm)
     let allAlpaca6Positions = [];   // authoritative open positions from Alpaca account 6 (Crew Live — REAL MONEY)
     let allAlpaca7Positions = [];   // authoritative open positions from Alpaca account 7 (Kairos Select)
+    let allAlpaca8Positions = [];   // authoritative open positions from Alpaca account 8 (ORB Paper)
 
     // Keyed by account number so a new book needs no branch here — just the
     // allAlpacaN* pair and its _ACCT_TABS row.
     function _execsByAcct(n) {
       return ({ '2': allAlpaca2Execs, '3': allAlpaca3Execs, '4': allAlpaca4Execs,
                 '5': allAlpaca5Execs, '6': allAlpaca6Execs,
-                '7': allAlpaca7Execs })[n] || allAlpacaExecs;
+                '7': allAlpaca7Execs, '8': allAlpaca8Execs })[n] || allAlpacaExecs;
     }
     function _positionsByAcct(n) {
       return ({ '2': allAlpaca2Positions, '3': allAlpaca3Positions, '4': allAlpaca4Positions,
                 '5': allAlpaca5Positions, '6': allAlpaca6Positions,
-                '7': allAlpaca7Positions })[n] || allAlpacaPositions;
+                '7': allAlpaca7Positions, '8': allAlpaca8Positions })[n] || allAlpacaPositions;
     }
     function _currentAlpacaExecs()     { return _execsByAcct(_acctForTab(feedTab)); }
     function _currentAlpacaPositions() { return _positionsByAcct(_acctForTab(feedTab)); }
     let selectedStrategy   = '';
     // Per-tab strategy selections so Paper All and Paper Refined filter independently
-    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), crew: new Set(), farm: new Set(), select: new Set(), signals: new Set() };
+    const _tabSelections = { alpaca: new Set(), refined: new Set(), kairos: new Set(), crew: new Set(), farm: new Set(), select: new Set(), orb: new Set(), signals: new Set() };
     let selectedStrategies = _tabSelections['refined'];  // active set, points into _tabSelections
     let _allStrategyNames  = [];
     let _cachedFullStats   = null;
@@ -1070,11 +1072,13 @@
       {{ accounts | tojson }}.map(a => [a.tag, { num: Number(a.num), label: a.label, paper: a.paper }]));
     const _ACCT_TABS = {
       live:    { account: '6', label: 'Cumulative realized P&L from Crew Live fills (acct 6) — REAL MONEY',
-                 note:  'Crew Live (account 6) trades REAL MONEY. Same roster as Crew Paper.' },
+                 note:  'Crew Live (account 6) trades REAL MONEY. It is the crew\'s own book: the crew wires its picks straight to it.' },
       crew:    { account: '4', label: 'Cumulative realized P&L from Crew Paper fills (acct 4)',
                  note:  'Cumulative realized P&L from Crew Paper fills (paper account 4).' },
       select:  { account: '7', label: 'Cumulative realized P&L from Kairos Select fills (acct 7)',
                  note:  'Kairos Select (paper account 7) trades a FROZEN 15-name roster picked from the Kairos Farm on 2026-10-01. Ungated and all-day, matching the farm the names were measured on. The roster is deliberately not re-picked — re-selecting winners would make this a curve-fit instead of an out-of-sample test.' },
+      orb:     { account: '8', label: 'Cumulative realized P&L from ORB Paper fills (acct 8)',
+                 note:  'ORB Paper (paper account 8) is traded only by the opening-range breakout engine on the ORB page: bracket orders (range stop + 3R target), flat by 15:55. Kairos stops and max holds do not touch it.' },
       kairos:  { account: '3', label: 'Cumulative realized P&L from Kairos Refined fills (acct 3)',
                  note:  'Cumulative realized P&L from Kairos Refined fills (paper account 3).' },
       refined: { account: '2', label: 'Cumulative realized P&L from TV Refined fills',
@@ -1682,8 +1686,8 @@
       await applyEquityFilter();
     }
 
-    // Select exactly the strategies wired to Crew Paper (rules carrying the
-    // alpaca-paper-4/-live-4 broker), so you can isolate the crew book's picks.
+    // Select exactly the strategies wired to Crew Live (rules carrying the
+    // alpaca-live-6 broker), so you can isolate the crew book's picks.
     // Narrow WITHIN the current selection rather than reselecting from scratch, so
     // "Crew" then "Winners" gives the crew's winners — the sub-filter the picker was
     // missing. With nothing selected the whole list is the base.
@@ -1726,7 +1730,7 @@
     async function selectCrew(e) {
       if (e) e.stopPropagation();
       if (!_crewStrategies || _crewStrategies.size === 0) {
-        alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
+        alert('No Crew Live strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
         return;
       }
       // Scope to what is actually wired for the book being viewed. Kairos Refined
@@ -1758,7 +1762,7 @@
 
     async function _applyCrewSet(_crewSet, whatFor) {
       if (!_crewStrategies || _crewStrategies.size === 0) {
-        alert('No Crew Paper strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
+        alert('No Crew Live strategies wired yet — use "Wire Crew Picks" on the Signal Router.');
         return;
       }
       if (!_crewSet || !_crewSet.size) {
@@ -1923,7 +1927,7 @@
       // fetch when this account hasn't loaded yet.
       let execs;
       const _loaded = { '2': allAlpaca2Execs, '3': allAlpaca3Execs, '4': allAlpaca4Execs,
-                        '5': allAlpaca5Execs, '6': allAlpaca6Execs, '7': allAlpaca7Execs };
+                        '5': allAlpaca5Execs, '6': allAlpaca6Execs, '7': allAlpaca7Execs, '8': allAlpaca8Execs };
       if (account) {
         execs = _loaded[String(account)];
         if (!Array.isArray(execs) || !execs.length) {
@@ -3554,7 +3558,7 @@
     async function loadTrades() {
       document.getElementById('status').textContent = 'Refreshing…';
       try {
-        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpaca5ExecsRes, alpaca6ExecsRes, alpaca7ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, alpaca5PosRes, alpaca6PosRes, alpaca7PosRes, eodRes] = await Promise.all([
+        const [tradesRes, statsRes, brokerRes, ibExecsRes, alpacaExecsRes, alpaca2ExecsRes, alpaca3ExecsRes, alpaca4ExecsRes, alpaca5ExecsRes, alpaca6ExecsRes, alpaca7ExecsRes, alpaca8ExecsRes, alpacaPosRes, alpaca2PosRes, alpaca3PosRes, alpaca4PosRes, alpaca5PosRes, alpaca6PosRes, alpaca7PosRes, alpaca8PosRes, eodRes] = await Promise.all([
           fetch('/api/trades'),
           fetch('/api/stats'),
           fetch('/api/broker/status'),
@@ -3562,17 +3566,20 @@
           fetch('/api/alpaca/trades').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=2').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=3').then(r => r.json()).catch(() => []),
-          fetch('/api/alpaca/trades?account=4').then(r => r.json()).catch(() => []),
+          _CONFIGURED.has('crew') ? fetch('/api/alpaca/trades?account=4').then(r => r.json()).catch(() => []) : Promise.resolve([]),
           fetch('/api/alpaca/trades?account=5').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=6').then(r => r.json()).catch(() => []),
           fetch('/api/alpaca/trades?account=7').then(r => r.json()).catch(() => []),
+          // An unconfigured ?account= falls back to account 1, so only ask when ORB Paper exists.
+          _CONFIGURED.has('orb') ? fetch('/api/alpaca/trades?account=8').then(r => r.json()).catch(() => []) : Promise.resolve([]),
           fetch('/api/alpaca/positions').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=2').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=3').then(r => r.json()).catch(() => ({positions: []})),
-          fetch('/api/alpaca/positions?account=4').then(r => r.json()).catch(() => ({positions: []})),
+          _CONFIGURED.has('crew') ? fetch('/api/alpaca/positions?account=4').then(r => r.json()).catch(() => ({positions: []})) : Promise.resolve({positions: []}),
           fetch('/api/alpaca/positions?account=5').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=6').then(r => r.json()).catch(() => ({positions: []})),
           fetch('/api/alpaca/positions?account=7').then(r => r.json()).catch(() => ({positions: []})),
+          _CONFIGURED.has('orb') ? fetch('/api/alpaca/positions?account=8').then(r => r.json()).catch(() => ({positions: []})) : Promise.resolve({positions: []}),
           fetch('/api/broker/eod-close').then(r => r.json()).catch(() => ({eod_close_enabled: true})),
         ]);
         const trades  = await tradesRes.json();
@@ -3586,6 +3593,7 @@
         allAlpaca5Execs  = Array.isArray(alpaca5ExecsRes) ? alpaca5ExecsRes : [];
         allAlpaca6Execs  = Array.isArray(alpaca6ExecsRes) ? alpaca6ExecsRes : [];
         allAlpaca7Execs  = Array.isArray(alpaca7ExecsRes) ? alpaca7ExecsRes : [];
+        allAlpaca8Execs  = Array.isArray(alpaca8ExecsRes) ? alpaca8ExecsRes : [];
         allAlpacaPositions  = Array.isArray(alpacaPosRes)  ? alpacaPosRes  : (alpacaPosRes.positions  || []);
         allAlpaca2Positions = Array.isArray(alpaca2PosRes) ? alpaca2PosRes : (alpaca2PosRes.positions || []);
         allAlpaca3Positions = Array.isArray(alpaca3PosRes) ? alpaca3PosRes : (alpaca3PosRes.positions || []);
@@ -3593,6 +3601,7 @@
         allAlpaca5Positions = Array.isArray(alpaca5PosRes) ? alpaca5PosRes : (alpaca5PosRes.positions || []);
         allAlpaca6Positions = Array.isArray(alpaca6PosRes) ? alpaca6PosRes : (alpaca6PosRes.positions || []);
         allAlpaca7Positions = Array.isArray(alpaca7PosRes) ? alpaca7PosRes : (alpaca7PosRes.positions || []);
+        allAlpaca8Positions = Array.isArray(alpaca8PosRes) ? alpaca8PosRes : (alpaca8PosRes.positions || []);
         const eodData  = eodRes;
         updateEODBtn(eodData.eod_close_enabled);
 
@@ -4308,7 +4317,7 @@
     let _refinedTickers    = new Set();   // ticker has any refined strategy
     let _routedTickers     = new Set();   // ticker has any routing rule
     let _refinedStrategies = new Set();   // upper-case strategy names with alpaca-paper-2/-live-2 broker
-    let _crewStrategies    = new Set();   // upper-case strategy names wired to Crew Paper (alpaca-paper-4/-live-4)
+    let _crewStrategies    = new Set();   // upper-case strategy names wired to Crew Live (alpaca-live-6)
     let _pnlByStrategy = {};   // STRATEGY -> {pnl, trades} for the tab + range on screen
     let _crewStrategiesTv     = new Set();   // ...of those, the ones that enter on TV alerts
     let _crewStrategiesKairos = new Set();   // ...and the ones that enter via the Kairos engine
@@ -4332,7 +4341,7 @@
     })();
 
     function _rankEmoji(stratU) {
-      // White dove marks Crew Paper strategies (additive — shown alongside the band animal).
+      // White dove marks Crew Live strategies (additive — shown alongside the band animal).
       let out = '';
       const _rr = stratU && _rosterByStrategy.get(stratU);
       if (_rr) {
@@ -4340,7 +4349,7 @@
              + _rr.icon + '</span>';
       }
       if (stratU && _crewStrategies && _crewStrategies.has(stratU)) {
-        out += '<span title="Crew strategy — wired to Crew Paper" style="margin-right:3px">🕊️</span>';
+        out += '<span title="Crew strategy — wired to Crew Live" style="margin-right:3px">🕊️</span>';
       }
       // `stratU && _refinedRank[stratU]` yields '' for a blank strategy, and '' <= 5
       // coerces to 0 <= 5 -- so an open position with NO strategy attached rendered
@@ -4375,12 +4384,12 @@
     // ── Performance Summary (Refined account) ───────────────────────────────
     // Performance Summary account — its own toggle (Crew / TV Refined / Kairos
     // Refined), default Crew. Independent of the equity-chart tabs.
-    let _dashPerfAcct = '4';
-    const _DASH_PERF_COLOR = {'4':'#7FE098','2':'#c4b5fd','3':'#F2C07A'};
-    const _DASH_PERF_LABEL = {'4':'Crew Paper','2':'TV Refined','3':'Kairos Refined'};
+    let _dashPerfAcct = '6';
+    const _DASH_PERF_COLOR = {'6':'#E8A0BF','2':'#c4b5fd','3':'#F2C07A'};
+    const _DASH_PERF_LABEL = {'6':'Crew Live','2':'TV Refined','3':'Kairos Refined'};
     function setDashPerfAcct(acct) {
       _dashPerfAcct = acct;
-      for (const a of ['4','2','3']) {
+      for (const a of ['6','2','3']) {
         const b = document.getElementById('dashPerfAcct' + a);
         if (!b) continue;
         const on = a === acct, c = _DASH_PERF_COLOR[a];
@@ -4578,7 +4587,7 @@
               refinedS.add(stratUpper);
             }
             const hasCrewBroker = (r.nodes || []).some(n =>
-              n.type === 'broker' && (n.value === 'alpaca-paper-4' || n.value === 'alpaca-live-4')
+              n.type === 'broker' && (n.value === 'alpaca-live-6' || n.value === 'alpaca-paper-6')
             );
             if (hasCrewBroker) {
               crewS.add(stratUpper);
@@ -4789,7 +4798,7 @@
         if (typeof data.max_hold_enforcement === 'boolean') updateMaxHoldBtn(data.max_hold_enforcement);
         // Curated books (TV Refined, Kairos Refined, Crew) stacked ABOVE the farms
         // (TV Farm, Kairos Farm). Stable sort keeps each group's existing order.
-        const _acctRank = { alpaca6: 0, alpaca4: 1, alpaca7: 2, alpaca3: 3, alpaca2: 4, alpaca: 5, alpaca5: 6 };
+        const _acctRank = { alpaca6: 0, alpaca4: 1, alpaca7: 2, alpaca8: 3, alpaca3: 4, alpaca2: 5, alpaca: 6, alpaca5: 7 };
         const positions   = (data.positions || [])
           .map((p, i) => [p, i])
           .sort((a, b) => (_acctRank[a[0].broker] ?? 9) - (_acctRank[b[0].broker] ?? 9) || a[1] - b[1])
@@ -4857,7 +4866,7 @@
             }
           }
           const isKairos = p.broker === 'alpaca3';
-          const isCrew   = p.broker === 'alpaca4';
+          const isCrew   = p.broker === 'alpaca6';
           // Farms (alpaca / alpaca5) get no row tint; curated books tinted to the pairing.
           const rowCls = isKairos ? ' class="kairos-row"' : (isCrew ? ' class="crew-row"' : (p.broker === 'alpaca2' ? ' class="refined-row"' : ''));
           const kairosBolt = isKairos ? '<span style="color:#F2E7AC;margin-right:4px" title="Kairos engine entry (server-side)">⚡</span>' : '';

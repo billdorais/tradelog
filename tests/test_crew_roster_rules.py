@@ -69,7 +69,7 @@ def _report(path, created, picks):
     c.commit(); c.close()
 
 
-def _rule(path, ticker, entry, created, broker="alpaca-paper-4"):
+def _rule(path, ticker, entry, created, broker="alpaca-live-6"):
     nodes = [{"type": "strategy", "value": _s(ticker)}, {"type": "broker", "value": broker},
              {"type": "entry_source", "value": entry}]
     c = sqlite3.connect(path)
@@ -107,10 +107,10 @@ def test_entry_since_uses_the_record_then_report_history_then_the_wire_date(db):
 @pytest.fixture
 def fin(monkeypatch):
     state = {"rules": {}, "since": {}, "trades": {}}
-    monkeypatch.setattr(C, "_crew_rules_acct4", lambda app_obj: state["rules"])
+    monkeypatch.setattr(C, "_crew_rules", lambda app_obj: state["rules"])
     monkeypatch.setattr(C, "_entry_since_map", lambda app_obj, rules=None: state["since"])
     def _ts(app_obj, acct, since_by, slugs=None, takeable=False):
-        if acct != "4":                                   # a farm's forward record
+        if acct != "6":                                   # a farm's forward record
             return state.get("farm", {})
         return state.get("trades_fn", lambda sb: state["trades"])(since_by)
     monkeypatch.setattr(C, "_trades_since", _ts)
@@ -174,7 +174,6 @@ def test_crew_live_mirrors_every_pick_at_full_size(db, monkeypatch):
     _rule(path, "AMD", "kairos", "2026-10-31 09:00:00", broker="alpaca-live-6")  # dropped from the card
     _report(path, "2026-11-01T01:00:00Z", [("NVDA", "both", "Kairos", "core"),
                                            ("MU", "both", "Kairos", "audition")])
-    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca4", {"tag": "alpaca4", "broker": None})
     monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca6", {"tag": "alpaca6", "broker": None})
     monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000, raising=False)
     monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {t: 100.0 for t in tks}, raising=False)
@@ -314,7 +313,8 @@ def test_sizing_comes_from_the_live_settings(monkeypatch):
     monkeypatch.setattr(a, "_REFINED_SIZE_BANDS", [(0, 15000)])
     monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000, raising=False)
     txt = C._sizing_text()
-    assert "flat $15,000" in txt and "($7,500)" in txt and "full $1,000 per position" in txt
+    assert "flat $15,000" in txt and "full $1,000 per position" in txt
+    assert "Crew Paper" not in txt and "AUDITIONS trade" not in txt, "no paper book, no half-size auditions"
     assert "EVERY pick on the card" in txt, "matches the wire: every pick mirrors live"
     src = __import__("inspect").getsource(C._run_kairos_crew)
     assert "$5k/trade" not in src and '"__SIZING__", _sizing_text()' in src

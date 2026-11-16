@@ -1315,7 +1315,7 @@ def api_farm_select_exits_undo():
 
 # ── Select vs its farms: are the same trades being made? ──────────────────────
 
-PAIR_WINDOW_SECS = 15 * 60         # same rule as Crew Live vs Paper (_LVP_PAIR_WINDOW_SECS)
+PAIR_WINDOW_SECS = 15 * 60         # the rule the retired Crew Live-vs-Paper pairing used
 
 
 def _rt_pct(t):

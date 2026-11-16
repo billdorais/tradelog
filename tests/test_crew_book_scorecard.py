@@ -1,4 +1,4 @@
-"""The live Crew Paper book view (_crew_book_scorecard).
+"""The live crew book view (_crew_book_scorecard) — Crew Live since Crew Paper was retired.
 
 The pick scorecard grades one report's card text, so it only ever saw the last
 Top-N and missed strategies that accumulated across months. This view is sourced
@@ -25,7 +25,7 @@ def _slug(tkr):
     return f"{tkr}_CAM_BREAKOUT_R4S4_V02_5MIN"
 
 
-def _nodes(slug, broker="alpaca-paper-4"):
+def _nodes(slug, broker="alpaca-live-6"):
     return json.dumps([{"type": "strategy", "value": slug},
                        {"type": "broker", "value": broker}])
 
@@ -49,9 +49,9 @@ def book(tmp_path, monkeypatch):
     conn = sqlite3.connect(db)
     conn.execute("DELETE FROM routing_rules")
     seed = [
-        (_slug("AAA"), 1, "alpaca-paper-4", "2026-07-01 09:00:00"),
-        (_slug("BBB"), 1, "alpaca-paper-4", "2026-07-10 09:00:00"),
-        (_slug("CCC"), 0, "alpaca-paper-4", "2026-07-05 09:00:00"),   # disabled but wired
+        (_slug("AAA"), 1, "alpaca-live-6", "2026-07-01 09:00:00"),
+        (_slug("BBB"), 1, "alpaca-live-6", "2026-07-10 09:00:00"),
+        (_slug("CCC"), 0, "alpaca-live-6", "2026-07-05 09:00:00"),   # disabled but wired
         (_slug("DDD"), 1, "alpaca-paper-2", "2026-07-02 09:00:00"),   # NOT crew
     ]
     for slug, en, brk, created in seed:
@@ -85,17 +85,17 @@ def test_book_is_sourced_from_wired_rules(book):
     crew, captured = book
     bk = crew._crew_book_scorecard()
 
-    # DDD (acct2) is excluded; only the three acct4 strategies count.
+    # DDD (acct2) is excluded; only the three Crew Live strategies count.
     slugs = {r["strategy"] for r in bk["picks"]}
     assert slugs == {_slug("AAA"), _slug("BBB"), _slug("CCC")}
     assert bk["n_wired"] == 3
-    # Analysis was queried for acct4, each strategy from its OWN wire date (a
+    # Analysis was queried for acct6, each strategy from its OWN wire date (a
     # strategy's record must not include fills from before it was on the book).
-    book_calls = [c for c in captured["calls"] if c[0] == "4"]
+    book_calls = [c for c in captured["calls"] if c[0] == "6"]
     assert {c[1] for c in book_calls} == {"2026-07-01", "2026-07-10", "2026-07-05"}
     # The only other reads are each name's forward FARM record (TV Farm here: no
     # entry_source node means TV), from the same dates.
-    assert {c[0] for c in captured["calls"]} <= {"4", "1"}
+    assert {c[0] for c in captured["calls"]} <= {"6", "1"}
     assert {c[1] for c in captured["calls"] if c[0] == "1"} <= {"2026-07-01", "2026-07-10", "2026-07-05"}
 
 

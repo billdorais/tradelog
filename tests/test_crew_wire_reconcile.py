@@ -1,11 +1,14 @@
-"""Wiring crew picks reconciles Crew Paper instead of only appending.
+"""Wiring crew picks reconciles Crew Live instead of only appending.
 
 The wire button used to add/update but never remove, so every month's picks piled
-onto the last: "filter Crew in the Signal Router" grew without bound and the
-report reviewed only a fresh Top 10 while old, un-graded strategies kept trading.
-Wiring now deletes Crew rules whose strategy dropped out of the latest report, so
-Crew Paper mirrors that report. A prune is deferred for any strategy with a LIVE
-Crew Paper position, so an open trade keeps its tuned exit.
+onto the last. Wiring now deletes crew rules whose strategy dropped out of the
+latest report, so the book follows that report.
+
+Since Crew Paper was retired (2026-11-15) the crew's only book is Crew Live
+(acct6, REAL MONEY): the wire writes and prunes Crew Live rules directly. A dropped
+rule stops NEW entries at once; an open position keeps its broker-side exits, so
+there is no open-position deferral. Retired Crew Paper rules are never written,
+updated or used as a clone source.
 
 Pick history is unaffected — it lives in crew_reports, which these tests leave
 alone.
@@ -29,9 +32,10 @@ def _slug(tkr, kind="BREAKOUT", band="R4S4"):
     return f"{tkr}_CAM_{kind}_{band}_V02_5MIN"
 
 
-def _crew_rule_nodes(slug):
+def _live_rule_nodes(slug):
     return json.dumps([{"type": "strategy", "value": slug},
-                       {"type": "broker", "value": "alpaca-paper-4"}])
+                       {"type": "broker", "value": "alpaca-live-6"},
+                       {"type": "quantity", "amount": 3, "unit": "shares"}])
 
 
 def _report_picking(slugs):
@@ -44,19 +48,9 @@ def _report_picking(slugs):
             "| Sizing | Equal risk |\n")
 
 
-class _FakeBroker:
-    """Stands in for the acct4 Alpaca broker's open-position read."""
-    def __init__(self, open_symbols):
-        self._open = list(open_symbols)
-    def _invalidate_pos_cache(self):
-        pass
-    def get_positions(self, raise_on_error=False):
-        return [{"symbol": s} for s in self._open]
-
-
 @pytest.fixture()
 def wired(tmp_path, monkeypatch):
-    """DB pre-seeded with Crew rules for AAA,BBB,XXX,YYY,ZZZ and one stored report."""
+    """DB pre-seeded with Crew Live rules for AAA,BBB,XXX,YYY,ZZZ and one stored report."""
     import app as a
     import routes.crew as crew
 
@@ -67,7 +61,7 @@ def wired(tmp_path, monkeypatch):
     for tkr in ("AAA", "BBB", "XXX", "YYY", "ZZZ"):
         s = _slug(tkr)
         conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
-                     (f"{s} · Crew", _crew_rule_nodes(s)))
+                     (f"{s} · Crew Live", _live_rule_nodes(s)))
     conn.execute("DELETE FROM crew_reports")
     conn.commit()
     conn.close()
@@ -78,11 +72,11 @@ def wired(tmp_path, monkeypatch):
         return c
 
     monkeypatch.setattr(a, "get_db", _fake_db)
-    # acct4 must look configured, and price/size lookups must not hit the network.
-    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca4",
-                        {**a.ACCOUNTS_BY_TAG.get("alpaca4", {}), "tag": "alpaca4",
-                         "broker": _FakeBroker([])})
-    monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {}, raising=False)
+    # Crew Live must look configured and sized; prices must not hit the network.
+    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca6", {"tag": "alpaca6", "broker": None})
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000.0, raising=False)
+    monkeypatch.setattr(a, "_fetch_alpaca_last_prices",
+                        lambda tks: {t: 50.0 for t in tks}, raising=False)
     a.app.config["TESTING"] = True
 
     def _seed_report(slugs):
@@ -91,78 +85,85 @@ def wired(tmp_path, monkeypatch):
                   ("2026-W30", "2026-07-20 09:00:00", _report_picking(slugs)))
         c.commit(); c.close()
 
-    def _crew_slugs():
+    def _rules(broker):
         c = sqlite3.connect(db)
         rows = c.execute("SELECT nodes FROM routing_rules").fetchall()
         c.close()
         out = set()
         for (raw,) in rows:
             nodes = json.loads(raw)
-            if any(n.get("type") == "broker" and n.get("value") == "alpaca-paper-4" for n in nodes):
+            if any(n.get("type") == "broker" and n.get("value") == broker for n in nodes):
                 out |= {n["value"] for n in nodes if n.get("type") == "strategy"}
         return out
 
-    return a, crew, db, _seed_report, _crew_slugs
-
-
-def _set_open(a, symbols):
-    a.ACCOUNTS_BY_TAG["alpaca4"]["broker"] = _FakeBroker(symbols)
+    return a, crew, db, _seed_report, _rules
 
 
 def test_deselected_rules_are_deleted(wired):
-    a, crew, db, seed_report, crew_slugs = wired
-    # New report keeps AAA, BBB; adds CCC; drops XXX, YYY, ZZZ.
+    a, crew, db, seed_report, rules = wired
     keep = [_slug("AAA"), _slug("BBB"), _slug("CCC")]
     seed_report(keep)
-
     with a.app.test_client() as cl:
         d = cl.post("/api/crew/wire_to_router", json={}).get_json()
-
-    assert set(crew_slugs()) == set(keep)                    # exact mirror
+    assert rules("alpaca-live-6") == set(keep)
     assert set(d["deleted"]) == {_slug("XXX"), _slug("YYY"), _slug("ZZZ")}
     assert _slug("CCC") in d["created"]
     assert set(d["updated"]) == {_slug("AAA"), _slug("BBB")}
     assert d["deferred_open_position"] == []
+    assert d["live_mirror"]["deleted"] == d["deleted"], "the Crew page reads the same lists"
 
 
-def test_open_position_defers_the_prune(wired):
-    a, crew, db, seed_report, crew_slugs = wired
-    # XXX would be pruned, but it has a live Crew Paper position.
-    _set_open(a, ["XXX"])
-    seed_report([_slug("AAA")])
-
+def test_every_rule_is_sized_from_the_live_setting(wired):
+    a, crew, db, seed_report, rules = wired
+    seed_report([_slug("AAA"), _slug("CCC")])
     with a.app.test_client() as cl:
         d = cl.post("/api/crew/wire_to_router", json={}).get_json()
+    assert d["size_dollars"] == 1000.0
+    c = sqlite3.connect(db)
+    qty = {}
+    for (raw,) in c.execute("SELECT nodes FROM routing_rules").fetchall():
+        ns = json.loads(raw)
+        s = next(n["value"] for n in ns if n["type"] == "strategy")
+        qty[s] = next((n["amount"] for n in ns if n["type"] == "quantity"), None)
+    c.close()
+    assert qty == {_slug("AAA"): 20, _slug("CCC"): 20}            # $1,000 / $50
 
-    assert _slug("XXX") in d["deferred_open_position"]
-    assert _slug("XXX") in crew_slugs()                      # spared, still trading
-    assert set(d["deleted"]) == {_slug("BBB"), _slug("YYY"), _slug("ZZZ")}
-    assert _slug("XXX") not in d["deleted"]
 
-
-def test_positions_fetch_failure_still_prunes(wired):
-    """If the acct4 position read raises, prune anyway — the global position-loss
-    guard and per-position max-hold protect any open trade regardless."""
-    a, crew, db, seed_report, crew_slugs = wired
-
-    class _Boom:
-        def _invalidate_pos_cache(self): pass
-        def get_positions(self, raise_on_error=False): raise RuntimeError("alpaca down")
-    a.ACCOUNTS_BY_TAG["alpaca4"]["broker"] = _Boom()
-
-    seed_report([_slug("AAA")])
+def test_no_price_means_no_rule_not_a_guessed_size(wired, monkeypatch):
+    a, crew, db, seed_report, rules = wired
+    monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {"AAA": 50.0}, raising=False)
+    seed_report([_slug("AAA"), _slug("CCC")])
     with a.app.test_client() as cl:
         d = cl.post("/api/crew/wire_to_router", json={}).get_json()
+    assert d["book"]["skipped_no_price"] == [_slug("CCC")]
+    assert rules("alpaca-live-6") == {_slug("AAA")}
 
-    assert set(crew_slugs()) == {_slug("AAA")}
-    assert set(d["deleted"]) == {_slug("BBB"), _slug("XXX"), _slug("YYY"), _slug("ZZZ")}
-    assert d["deferred_open_position"] == []
+
+def test_the_wire_never_writes_a_crew_paper_rule(wired):
+    a, crew, db, seed_report, rules = wired
+    seed_report([_slug("AAA"), _slug("NEW")])
+    with a.app.test_client() as cl:
+        cl.post("/api/crew/wire_to_router", json={})
+    assert rules("alpaca-paper-4") == set() and rules("alpaca-live-4") == set()
+
+
+def test_refuses_without_a_sized_crew_live(wired, monkeypatch):
+    a, crew, db, seed_report, rules = wired
+    seed_report([_slug("AAA")])
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 0, raising=False)
+    with a.app.test_client() as cl:
+        r = cl.post("/api/crew/wire_to_router", json={})
+    assert r.status_code == 400 and "LIVE_SIZE_DOLLARS" in r.get_json()["error"]
+    monkeypatch.delitem(a.ACCOUNTS_BY_TAG, "alpaca6")
+    with a.app.test_client() as cl:
+        r = cl.post("/api/crew/wire_to_router", json={})
+    assert r.status_code == 400 and "Crew Live" in r.get_json()["error"]
+    assert len(rules("alpaca-live-6")) == 5, "nothing was changed"
 
 
 def test_non_crew_rules_are_never_touched(wired):
-    """Reconciliation must only ever delete acct4 (Crew) rules."""
-    a, crew, db, seed_report, crew_slugs = wired
-    # Add a TV Refined rule for a strategy that is NOT in the new picks.
+    """Reconciliation must only ever delete Crew Live rules."""
+    a, crew, db, seed_report, rules = wired
     conn = sqlite3.connect(db)
     conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?,1,?)",
                  (f"{_slug('XXX')} · Refined",

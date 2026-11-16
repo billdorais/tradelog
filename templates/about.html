@@ -136,7 +136,7 @@
       Kairos runs up to <strong>five parallel Alpaca paper accounts</strong>, a symmetric 2×2 by entry mechanism:
       <strong style="color:#9aa0b5">TV Farm</strong> → <strong style="color:#c4b5fd">TV Refined</strong> (TradingView
       entries) and <strong style="color:#5FC8D4">Kairos Farm</strong> → <strong style="color:#F2C07A">Kairos
-      Refined</strong> (server-side engine entries), plus <strong style="color:#7FE098">Crew Paper</strong> —
+      Refined</strong> (server-side engine entries), plus <strong style="color:#E8A0BF">Crew Live</strong> —
       each full-sample <em>farm</em> refines into its curated top-N account,
       with independent <a href="#gating" style="color:#70a8f5">per-account gating</a> (see below). The dashboard
       equity chart has a tab per account, each with a multi-select strategy visibility picker
@@ -201,9 +201,16 @@
           entry-mechanism A/B — same strategies, different fills.</td>
       </tr>
       <tr>
-        <td style="color:#7FE098">Crew Paper<br><span style="color:#888;font-size:0.78rem">alpaca4</span></td>
+        <td style="color:#E8A0BF">Crew Live<br><span style="color:#888;font-size:0.78rem">alpaca6 · real money</span></td>
         <td>Trades only the picks <strong>wired from the Crew advisor</strong> page — never the auto snapshot or
-          engine. A separate Alpaca login (Alpaca caps paper accounts at 3 per login).</td>
+          engine. The crew's only book since Crew Paper (alpaca4) was retired on 2026-11-15; live entries also need
+          LIVE_TRADING_ARMED.</td>
+      </tr>
+      <tr>
+        <td style="color:#F0A35E">ORB Paper<br><span style="color:#888;font-size:0.78rem">alpaca8</span></td>
+        <td>Traded only by the <a href="/orb" style="color:#70a8f5">ORB engine</a>: opening-range breakout bracket
+          orders, flat by 15:55. It runs on the Alpaca paper account that was Crew Live's. Kairos' own stops and
+          max holds leave it alone.</td>
       </tr>
     </table>
 
@@ -292,9 +299,9 @@
 
     <h2 id="crew-selection">How the Crew Picks Next Month</h2>
     <p>
-      <strong style="color:#7FE098">Crew Paper</strong> is the only account whose roster is chosen by the
+      <strong style="color:#E8A0BF">Crew Live</strong> is the only account whose roster is chosen by the
       <strong>Crew advisor</strong> — an LLM fed the platform's live data that produces a <strong>Top&nbsp;18</strong>
-      decision card each cycle. The card is <em>wired</em> to Crew Paper with one click; every other account
+      decision card each cycle. The card is <em>wired</em> to Crew Live with one click; every other account
       auto-selects mechanically. How the advisor builds that card:
     </p>
     <ul>
@@ -317,15 +324,15 @@
         <code style="font-size:0.82rem;color:#aaa">[TV]</code> or drops it instead, even if that misses the balance target.</li>
       <li><strong>Per-pick tags are real wiring.</strong> Each pick carries an entry tag
         (<code style="font-size:0.82rem;color:#aaa">[TV]</code> / <code style="font-size:0.82rem;color:#aaa">[Kairos]</code>)
-        and a side (long / short / both). The <strong>Wire</strong> button sets each Crew Paper rule's entry source
+        and a side (long / short / both). The <strong>Wire</strong> button sets each Crew Live rule's entry source
         and a long/short side-gate accordingly.</li>
       <li><strong>Scorecard closes the loop.</strong> Every report first grades the <em>previous</em> card's picks
-        against how they actually did on Crew Paper — the out-of-sample check on the selection method.</li>
+        against how they actually did on Crew Live — the out-of-sample check on the selection method.</li>
     </ul>
 
     <p style="margin-bottom:6px">The full flow, from the two audition farms through the curated books to the wired live account:</p>
     <div style="overflow-x:auto;background:#0d0f16;border:1px solid #2a2d3e;border-radius:10px;padding:14px 10px;margin-bottom:8px">
-      <svg viewBox="0 0 960 400" style="width:100%;height:auto;min-width:720px;max-width:960px;display:block;margin:0 auto;font-family:inherit" role="img" aria-label="System flow: two farms refine into two refined books, which the Crew advisor ranks (farms corroborate) into a Top 18 wired to Crew Paper">
+      <svg viewBox="0 0 960 400" style="width:100%;height:auto;min-width:720px;max-width:960px;display:block;margin:0 auto;font-family:inherit" role="img" aria-label="System flow: two farms refine into two refined books, which the Crew advisor ranks (farms corroborate) into a Top 18 wired to Crew Live">
         <defs>
           <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="#8a90a0"/>
@@ -367,7 +374,7 @@
         <text x="587" y="261" fill="#8b90a0" font-size="10" text-anchor="middle">scorecard feedback</text>
         <!-- CREW PAPER -->
         <rect x="784" y="150" width="152" height="56" rx="7" fill="rgba(127,224,152,0.11)" stroke="#7FE098"/>
-        <text x="860" y="175" fill="#7FE098" font-size="13" font-weight="700" text-anchor="middle">Crew Paper</text>
+        <text x="860" y="175" fill="#7FE098" font-size="13" font-weight="700" text-anchor="middle">Crew Live</text>
         <text x="860" y="193" fill="#8b90a0" font-size="10" text-anchor="middle">acct4 · live</text>
         <text x="860" y="230" fill="#aab" font-size="10" text-anchor="middle">Top 18 wired picks</text>
         <text x="860" y="247" fill="#8b90a0" font-size="9.5" text-anchor="middle">per-pick [TV]/[Kairos]</text>
@@ -386,7 +393,7 @@
     </div>
     <p style="font-size:0.82rem;color:#888;margin-top:0">
       Solid arrows = the mechanical pipeline (each farm's daily top-N leaderboard becomes its Refined book; the
-      advisor ranks the Refined books and wires the Top&nbsp;18 to Crew Paper). Dashed arc = the farms' full-sample
+      advisor ranks the Refined books and wires the Top&nbsp;18 to Crew Live). Dashed arc = the farms' full-sample
       records feeding the advisor as corroboration, not as the primary ranking.
     </p>
 
@@ -406,7 +413,7 @@
         <th style="color:#c4b5fd">TV Refined</th>
         <th style="color:#5FC8D4">Kairos Farm</th>
         <th style="color:#F2C07A">Kairos Refined</th>
-        <th style="color:#7FE098">Crew Paper</th>
+        <th style="color:#7FE098">Crew Live</th>
       </tr>
       <tr>
         <td style="font-family:inherit;white-space:normal">Day-type gate — <strong>breakouts</strong><br>
@@ -423,7 +430,7 @@
         <td style="font-family:inherit;white-space:normal">Reversal policy<br>
           <span style="color:#888;font-size:0.8rem">per book: one side only, <strong>off</strong> (no reversal
           entries), or free. TV Refined is OFF (Jul&nbsp;'26: 22 round-trips, one winner, −$394 — no edge left).
-          Kairos Refined and Crew Paper pause reversal SHORTS only (long-only): the short-filter backtest put
+          Kairos Refined and Crew Live pause reversal SHORTS only (long-only): the short-filter backtest put
           reversal shorts at breakeven-at-best on 309 setups even with a confirmation entry, while reversal
           longs stayed ~neutral-to-positive. The farms stay free, so they keep collecting the evidence for a
           comeback</span></td>
@@ -552,7 +559,7 @@
             <code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_REFINED</code></td>
         <td>
           A background thread polls all open positions every few seconds across all active brokers.
-          When a <strong>curated book</strong> (TV Refined, Kairos Refined, Crew Paper) position's
+          When a <strong>curated book</strong> (TV Refined, Kairos Refined, Crew Live) position's
           unrealized loss reaches the percent limit or the dollar cap, that position is closed
           immediately; the strategy stays active and is free to re-enter on the next signal. The
           farms run ungated. Set on the Routing "Curated Books" card. Default: disabled.
@@ -654,7 +661,7 @@
             <code style="font-size:0.82rem;color:#aaa">MAX_POSITION_LOSS_REFINED</code></td>
         <td>
           Percent stop and/or dollar cap on individual positions, checked in the position monitor.
-          Both apply to the <strong>three curated books</strong> (TV Refined, Kairos Refined, Crew Paper)
+          Both apply to the <strong>three curated books</strong> (TV Refined, Kairos Refined, Crew Live)
           with the same values — set once on the Routing "Curated Books" card. Whichever hits first
           closes the position. The farms (TV Farm, Kairos Farm) run ungated so the audition sample
           stays unbiased. The strategy remains free to re-enter on the next signal.
@@ -717,7 +724,7 @@
     <h2>Dashboard — Equity Chart &amp; Trade Feed</h2>
     <p>
       The equity chart has a tab per paper account — <strong>TV Farm</strong>, <strong>TV Refined</strong>,
-      <strong>Kairos Farm</strong>, <strong>Kairos Refined</strong>, and <strong>Crew Paper</strong> — paired by
+      <strong>Kairos Farm</strong>, <strong>Kairos Refined</strong>, and <strong>Crew Live</strong> — paired by
       entry mechanism (the TV pair highlights purple, the Kairos pair amber). Each shares a From/To date filter (persisted via
       <code style="font-size:0.82rem;color:#aaa">localStorage</code>) and support click-to-exclude on
       individual trades. The TV-Signals and IB-P&amp;L tabs are still wired up internally but hidden
@@ -879,7 +886,7 @@
         <td>
           The dashboard equity-chart and Analysis Source tabs show one tab per paper account —
           <strong>TV Farm</strong>, <strong>TV Refined</strong>, <strong>Kairos Farm</strong>,
-          <strong>Kairos Refined</strong>, and <strong>Crew Paper</strong> — paired by entry
+          <strong>Kairos Refined</strong>, and <strong>Crew Live</strong> — paired by entry
           mechanism (TV pair highlights purple, Kairos pair amber). The Signals and IB tabs are
           still wired up but hidden by default.
         </td>

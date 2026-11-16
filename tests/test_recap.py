@@ -1,10 +1,11 @@
-"""Weekly Crew Paper recap (/api/recap).
+"""Weekly crew-book recap (/api/recap) — Crew Live (acct6, real money) since Crew
+Paper was retired on 2026-11-15.
 
 Assembles a filmable episode outline: window, book totals, winners/losers, the
 trade of the week, which gates are ACTUALLY live, the crew's out-of-sample
 scorecard, and talking points with the numbers already substituted.
 
-The gate strip matters most. RVOL is not wired to Crew Paper at all
+The gate strip matters most. RVOL is not wired to the crew book at all
 (RVOL_GATE_ACCOUNTS is {alpaca2, alpaca3}), so toggling it globally changes
 nothing here — the strip exists so a script never narrates a gate that is not
 running on this book.
@@ -37,10 +38,10 @@ def _last_week_monday():
 
 @pytest.fixture
 def crew(monkeypatch):
-    """A configured Crew Paper book. monkeypatch, not assignment, so the registry
-    cannot leak into other test modules."""
+    """A configured Crew Live book (real money). monkeypatch, not assignment, so the
+    registry cannot leak into other test modules."""
     monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {
-        "4": {"tag": "alpaca4", "label": "Crew Paper",
+        "6": {"tag": "alpaca6", "label": "Crew Live", "paper": False,
               "broker": object(), "fills_fn": lambda: []},
     })
 
@@ -58,15 +59,16 @@ def test_unconfigured_book_is_refused_not_silently_empty():
     r = _client().get("/api/recap")
     assert r.status_code == 400
     # Recap now takes ?account= (the journal snapshots one per book), so the error
-    # names whichever book was asked for rather than always saying "acct4".
+    # names whichever book was asked for rather than a fixed one.
     err = r.get_json()["error"]
-    assert "not configured" in err and "4" in err
+    assert "not configured" in err and "6" in err
 
 
-def test_recap_defaults_to_crew_paper():
-    """Back-compat: /api/recap with no args is still the Crew Paper recap."""
+def test_recap_defaults_to_crew_live():
+    """/api/recap with no args is the crew book's recap — Crew Live since Crew Paper
+    was retired. A retired slot must not fall back to another account's fills."""
     r = _client().get("/api/recap")
-    assert "4" in r.get_json()["error"]      # asked for acct4 without being told to
+    assert "6" in r.get_json()["error"]      # asked for acct6 without being told to
 
 
 def test_defaults_to_this_month(monkeypatch, crew):
@@ -141,7 +143,7 @@ def test_book_winners_losers_and_trade_of_the_week(monkeypatch, crew):
 
 def test_gate_strip_reports_rvol_as_not_wired_to_crew(monkeypatch, crew):
     """The reason this panel exists: RVOL only ever gated acct2/acct3, so turning
-    it on globally must NOT show as live on Crew Paper."""
+    it on globally must NOT show as live on the crew book."""
     _with(monkeypatch, [])
     monkeypatch.setattr(a, "RVOL_GATE_ENABLED", True)
     monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", {"alpaca2", "alpaca3"})
@@ -153,22 +155,23 @@ def test_gate_strip_reports_rvol_as_not_wired_to_crew(monkeypatch, crew):
 def test_gate_strip_follows_live_config(monkeypatch, crew):
     _with(monkeypatch, [])
     monkeypatch.setattr(a, "DAYTYPE_GATE_ENABLED", True)
-    monkeypatch.setattr(a, "DAYTYPE_GATE_ACCOUNTS", {"alpaca4"})
+    monkeypatch.setattr(a, "DAYTYPE_GATE_ACCOUNTS", {"alpaca6"})
     monkeypatch.setattr(a, "STRIKES_ENABLED", False)
     gates = {g["gate"]: g for g in _client().get("/api/recap").get_json()["gates"]}
     assert gates["Day-type"]["on"] is True
     assert gates["Strikes"]["on"] is False
-    # reversal_side "long" on acct4 => the reversal-side gate is live
+    # reversal_side "long" on acct6 => the reversal-side gate is live
     assert gates["Reversal side"]["on"] is True
 
 
-def test_script_lines_are_readable_and_disclose_paper(monkeypatch, crew):
+def test_script_lines_are_readable_and_disclose_real_money(monkeypatch, crew):
     mon = _last_week_monday().isoformat()
     _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
     d = _client().get("/api/recap").get_json()
     segs = [x["segment"] for x in d["script"]]
     cold = next(x["line"] for x in d["script"] if x["segment"].startswith("0"))
-    assert "on paper" in cold, "the cold open must disclose paper trading"
+    assert "real money" in cold and "on paper" not in cold, "Crew Live is real money"
+    assert cold.startswith("Crew Live")
     assert "$40.00" in cold
     assert any(s.startswith("3") for s in segs)   # the Refusal segment is always present
     assert any(s.startswith("5") for s in segs)   # and the falsifiable claim
@@ -386,14 +389,26 @@ def _prose(monkeypatch, crew_fixture_applied=True):
     return _client().get("/api/recap").get_json()["script_prose"]
 
 
-def test_prose_always_discloses_paper_before_any_number(monkeypatch, crew):
+def test_prose_always_discloses_real_money_before_any_number(monkeypatch, crew):
     """The disclosure lives in paragraph one, not a footer — it must be said before
-    the P&L lands. Pinned so a future rewrite cannot quietly drop it."""
+    the P&L lands. Pinned so a future rewrite cannot quietly drop it. Crew Live is
+    real money, so saying "paper" here would be false."""
     mon = _last_week_monday().isoformat()
     _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
     paras = _prose(monkeypatch)
-    assert paras and "paper account" in paras[0]
-    assert "not real money" in paras[0] or "None of it is real money" in paras[0]
+    assert paras and "real-money account" in paras[0] and "paper" not in paras[0]
+    assert "The Crew Live book closed" in paras[0]
+
+
+def test_a_paper_book_still_discloses_paper(monkeypatch):
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {
+        "7": {"tag": "alpaca7", "label": "Kairos Select", "paper": True,
+              "broker": object(), "fills_fn": lambda: []}})
+    mon = _last_week_monday().isoformat()
+    _with(monkeypatch, [_rt("NVDA_CAM_BREAKOUT_R3S3_V02_5MIN", 40.0, mon)])
+    d = _client().get("/api/recap?account=7").get_json()
+    assert "paper account" in d["script_prose"][0] and "None of it is real money" in d["script_prose"][0]
+    assert d["script"][0]["line"].endswith("on paper.")
 
 
 def test_prose_handles_a_week_with_no_trades(monkeypatch, crew):
@@ -402,7 +417,7 @@ def test_prose_handles_a_week_with_no_trades(monkeypatch, crew):
     paras = _prose(monkeypatch)
     assert len(paras) == 1
     assert "didn't close a single trade" in paras[0]
-    assert "paper account" in paras[0]
+    assert "real-money account" in paras[0]
 
 
 def test_prose_calls_out_concentration(monkeypatch, crew, w32_scorecard):
@@ -423,7 +438,7 @@ def test_prose_reports_only_the_gates_that_are_live(monkeypatch, crew):
     monkeypatch.setattr(a, "RVOL_GATE_ACCOUNTS", {"alpaca2", "alpaca3"})
     refusal = next(p for p in _prose(monkeypatch) if "refused to take" in p)
     assert "switched off" in refusal
-    # RVOL is not wired to Crew Paper, so it must appear on the OFF side of the sentence.
+    # RVOL is not wired to the crew book, so it must appear on the OFF side of the sentence.
     live, off = refusal.split("switched off")[0], refusal
     assert "RVOL" not in live.split("right now")[-1].split(".")[0]
 

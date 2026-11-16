@@ -100,23 +100,22 @@ CCC_CAM_BREAKOUT_R4S4_V02_5MIN | both | Kairos
     assert got == {"AAA": "core", "BBB": "audition", "CCC": "core"}
 
 
-def test_auditions_are_wired_smaller_than_core():
-    """Otherwise the tier is a label the wire ignores, and an unproven name takes
-    the same risk as one with a live record."""
+def test_the_tier_no_longer_sizes_anything():
+    """Auditions traded at half size on Crew Paper. Crew Paper was retired
+    (2026-11-15) and Crew Live trades every pick at full size, so the tier only caps
+    how many unproven names the card may carry."""
     src = inspect.getsource(crew.api_crew_wire_to_router)
-    assert "_tier_mult" in src
-    assert "CREW_AUDITION_SIZE_PCT" in inspect.getsource(crew)
-    i = src.index("def _tier_mult")
-    assert 'get("tier") == "audition"' in src[i:i + 400]
+    assert "_tier_mult" not in src
+    assert not hasattr(crew, "CREW_AUDITION_SIZE_PCT")
 
 
-def test_the_live_mirror_trades_every_pick_at_full_size():
-    """2026-11-02, user's call: no core step on live -- every card pick mirrors to
-    Crew Live at full LIVE_SIZE_DOLLARS. The tier cut stays on Crew Paper only."""
+def test_crew_live_trades_every_pick_at_full_size():
+    """2026-11-02, user's call: no core step on live -- every card pick goes to Crew
+    Live at full LIVE_SIZE_DOLLARS."""
     src = inspect.getsource(crew.api_crew_wire_to_router)
     i = src.index("def _live_qty")
-    assert "_tier_mult" not in src[i:i + 300]
-    assert "live_picks = list(picks)" in src
+    assert "live_size / px" in src[i:i + 300] and "tier" not in src[i:i + 300]
+    assert "for pick in picks:" in src
 
 
 # ── 2. the mechanism quota ──────────────────────────────────────────────────────
@@ -243,7 +242,7 @@ def graded(monkeypatch):
                                                 "win_rate": 56}}
     kr   = {"PLOSS_CAM_BREAKOUT_R4S4_V02_5MIN": {"trades": 7, "total_pnl": -80.0,
                                                  "win_rate": 29}}
-    stub = _StubApp(by_url={"account=4": {"per_strategy": book},
+    stub = _StubApp(by_url={"account=6": {"per_strategy": book},
                             "account=1": {"per_strategy": tv},
                             "account=5": {"per_strategy": kr}})
     monkeypatch.setattr(kairos.app, "test_client", stub.test_client)

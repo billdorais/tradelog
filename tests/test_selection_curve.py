@@ -197,22 +197,23 @@ def test_per_pick_contribution_is_listed():
 
 @pytest.fixture
 def seeded_actual(monkeypatch, seeded):
-    """Crew Paper (acct4) holding real fills for picks of BOTH mechanisms."""
-    acct4 = [_fill("AAPL_CAM_BREAKOUT_R4S4_V02_5MIN", "LONG",   60.0, 3, "09:40", "10:05"),
+    """The crew book (Crew Live, acct6) holding real fills for picks of BOTH mechanisms;
+    TV Refined (acct2) holds the same fills so books can be combined."""
+    acct6 = [_fill("AAPL_CAM_BREAKOUT_R4S4_V02_5MIN", "LONG",   60.0, 3, "09:40", "10:05"),
              _fill("MSFT_CAM_BREAKOUT_R3S3_V02_5MIN", "LONG",  -25.0, 4, "09:40", "10:05"),
              _fill("NVDA_CAM_REVERSAL_R3S3_V02_5MIN", "SHORT",  15.0, 5, "07:10", "07:30"),
              _fill("UNPICKED_CAM_BREAKOUT_R3S3_V02_5MIN", "LONG", 900.0, 6, "09:40", "10:05")]
     monkeypatch.setattr(kairos, "_alpaca_account_ctx",
                         lambda a: (object(), f"alpaca{a}", f"Book {a}",
-                                   lambda: acct4 if str(a) in ("4", "6") else []))
+                                   lambda: acct6 if str(a) in ("2", "6") else []))
     return seeded
 
 
 def test_actual_reads_the_crew_book_not_the_farms(seeded_actual):
     _, d = _get(seeded_actual, "?source=actual")
-    assert d["source"] == "actual" and d["account"] == "4"
-    assert d["by_entry"]["tv"]["account"] == "4"
-    assert d["by_entry"]["kairos"]["account"] == "4"
+    assert d["source"] == "actual" and d["account"] == "6"
+    assert d["by_entry"]["tv"]["account"] == "6"
+    assert d["by_entry"]["kairos"]["account"] == "6"
 
 
 def test_actual_attributes_each_trade_to_its_picks_mechanism(seeded_actual):
@@ -264,17 +265,24 @@ def test_a_farm_cannot_be_read_as_an_actual_book(seeded_actual):
 
 def test_the_curated_books_are_readable_as_actual(seeded_actual):
     """The crew's picks trade in TV Refined and Kairos Refined too, usually with
-    more volume than Crew Paper — that is the bigger sample for judging them."""
-    for acct in ("2", "3", "4", "6"):
+    more volume than the crew book — that is the bigger sample for judging them."""
+    for acct in ("2", "3", "6"):
         code, _ = _get(seeded_actual, f"?source=actual&account={acct}")
         assert code == 200, acct
 
 
-def test_an_omitted_account_defaults_to_crew_paper(seeded_actual):
+def test_retired_crew_paper_is_not_readable(seeded_actual):
+    """Slot 4's Alpaca account now belongs to ORB Paper; reading it as the crew book
+    would put ORB trades on the crew's chart."""
+    code, d = _get(seeded_actual, "?source=actual&account=4")
+    assert code == 400 and "4" in d["error"]
+
+
+def test_an_omitted_account_defaults_to_crew_live(seeded_actual):
     """Unchanged contract: the crew's own book is the sensible default."""
     for qs in ("?source=actual", "?source=actual&account="):
         code, d = _get(seeded_actual, qs)
-        assert code == 200 and d["accounts"] == ["4"], qs
+        assert code == 200 and d["accounts"] == ["6"], qs
 
 
 def test_several_books_can_be_combined(seeded_actual):
@@ -296,10 +304,10 @@ def test_both_charts_share_one_window():
     assert "loadSelectionCurve();" in block and "loadBookCurve();" in block
 
 
-def test_book_chart_is_present_and_defaults_to_crew_paper():
+def test_book_chart_is_present_and_defaults_to_crew_live():
     html = _crewhtml()
     assert 'id="bookPerfSection"' in html
-    assert "let _bookAcct  = '4';" in html
+    assert "let _bookAcct  = '6';" in html
     assert "source=actual" in html
 
 
@@ -308,8 +316,8 @@ def test_book_chart_is_present_and_defaults_to_crew_paper():
 def test_combined_books_sum_and_stay_decomposable(seeded_actual):
     """"The picks made $X across two books" hides one book carrying the other, so a
     combined chart has to break back down."""
-    _, one = _get(seeded_actual, "?source=actual&account=4")
-    _, two = _get(seeded_actual, "?source=actual&account=4,6")
+    _, one = _get(seeded_actual, "?source=actual&account=6")
+    _, two = _get(seeded_actual, "?source=actual&account=2,6")
     assert two["trades"] >= one["trades"]
     assert "by_book" in two
     assert sum(b["trades"] for b in two["by_book"].values()) == two["trades"]
@@ -318,7 +326,7 @@ def test_combined_books_sum_and_stay_decomposable(seeded_actual):
 
 def test_each_trade_names_the_book_it_came_from(seeded_actual):
     """`trades` is the COUNT; the rows are the curve points."""
-    _, d = _get(seeded_actual, "?source=actual&account=4")
+    _, d = _get(seeded_actual, "?source=actual&account=6")
     assert d["curve"], "no trades to check"
     assert all(p.get("book") and p.get("account") for p in d["curve"])
 
@@ -332,7 +340,7 @@ def test_a_farm_in_a_combined_list_rejects_the_whole_request(seeded_actual):
 def test_the_mechanism_split_names_every_book_it_read(seeded_actual):
     """by_entry is keyed by MECHANISM, so with several books the label has to
     accumulate rather than be overwritten by whichever ran last."""
-    _, d = _get(seeded_actual, "?source=actual&account=4,6")
+    _, d = _get(seeded_actual, "?source=actual&account=2,6")
     labels = [v.get("label") for v in d["by_entry"].values() if v.get("label")]
     assert any(" + " in (l or "") for l in labels)
 

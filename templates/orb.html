@@ -87,6 +87,30 @@
   </header>
 
   <div class="content">
+    <div class="panel" id="livePanel">
+      <div class="band-q">Paper trading · ORB Paper (account 8)</div>
+      <div class="band-sub">
+        The engine trades these rules on the paper account only: a bracket order (stop at the far side of the range, 3R target)
+        when a 5-minute candle closes outside the range, flat at 15:55. After 16:05 each trade is checked against what the
+        backtest did the same day. <strong>Dry run</strong> logs the orders it would send and sends nothing.
+      </div>
+      <div id="liveAcct"></div>
+      <div class="row">
+        <div class="fld"><span class="lbl">Mode</span>
+          <div class="seg" id="liveMode"><button data-m="off">Off</button><button data-m="dry-run">Dry run</button><button data-m="paper">Paper</button></div></div>
+        <div class="fld"><span class="lbl">Core tickers</span><input class="f" id="liveCore" style="width:150px" placeholder="QQQ, GOOG"></div>
+        <div class="fld"><span class="lbl">Watch tickers</span><input class="f" id="liveWatch" style="width:170px" placeholder="MU, NVDA, SPCX"></div>
+        <div class="fld"><span class="lbl">Risk per trade ($)</span><input class="f" type="number" id="liveRisk" min="1" step="25" style="width:96px"></div>
+        <div class="fld"><span class="lbl">Max position ($)</span><input class="f" type="number" id="liveCap" min="100" step="1000" placeholder="no limit" style="width:110px"></div>
+        <div class="fld"><span class="lbl">Target (R)</span><input class="f" type="number" id="liveTarget" step="0.25" min="0.25" style="width:72px"></div>
+        <div class="fld"><span class="lbl">Last entry</span><input class="f" type="time" id="liveLast"></div>
+        <label class="chk"><input type="checkbox" id="liveTrend"> Trend filter</label>
+        <button class="btn go" id="liveSave">Save settings</button>
+        <span class="status" id="liveStatus"></span>
+      </div>
+      <div id="liveOut"><div class="empty">Loading…</div></div>
+    </div>
+
     <div class="panel" id="pfPanel">
       <div class="band-q">Compare tickers</div>
       <div class="band-sub">
@@ -458,6 +482,108 @@
     }
   }
 
+  // ── Paper trading (routes/orb_live.py) ───────────────────────────────────
+  const LIVE = { cfg: null, acct: null, timer: null };
+  const STATUS_TXT = { waiting: 'waiting', 'no-trade': 'no trade', 'dry-run': 'dry run', entered: 'order sent', filled: 'filled',
+                       exited: 'closed', missed: 'missed', skipped: 'skipped', blocked: 'blocked', rejected: 'rejected' };
+  const _tks = s => String(s || '').split(/[\s,]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
+  const _px = v => v === null || v === undefined ? '—' : Number(v).toFixed(2);
+  const _slip = v => v === null || v === undefined ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + '$' + Math.abs(v).toFixed(2);
+
+  function liveFill(cfg) {
+    $('liveCore').value = cfg.tickers.filter(t => t.group === 'core').map(t => t.symbol).join(', ');
+    $('liveWatch').value = cfg.tickers.filter(t => t.group === 'watch').map(t => t.symbol).join(', ');
+    $('liveRisk').value = cfg.risk; $('liveCap').value = cfg.cap ?? '';
+    $('liveTarget').value = cfg.params.target_r; $('liveLast').value = cfg.params.last_entry;
+    $('liveTrend').checked = !!cfg.params.trend_filter;
+  }
+
+  function liveModeButtons() {
+    const m = LIVE.cfg ? LIVE.cfg.mode : 'off', ok = LIVE.acct && LIVE.acct.ok;
+    document.querySelectorAll('#liveMode button').forEach(b => {
+      b.classList.toggle('on', b.dataset.m === m); b.setAttribute('aria-pressed', b.dataset.m === m);
+      b.disabled = b.dataset.m === 'paper' && !ok;
+      b.title = b.disabled ? (LIVE.acct && LIVE.acct.why || '') : '';
+    });
+  }
+
+  async function liveSend(body, msg) {
+    $('liveStatus').textContent = 'Saving…';
+    const r = await fetch('/api/orb/live/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({ error: 'request failed' }));
+    if (!r.ok) { $('liveStatus').textContent = d.error || 'failed'; return; }
+    LIVE.cfg = d.config; liveFill(d.config); liveModeButtons();
+    $('liveStatus').textContent = msg || 'Saved.';
+    liveLoad();
+  }
+
+  function liveSettings() {
+    const core = _tks($('liveCore').value), watch = _tks($('liveWatch').value).filter(s => !core.includes(s));
+    return { tickers: [...core.map(symbol => ({ symbol, group: 'core' })), ...watch.map(symbol => ({ symbol, group: 'watch' }))],
+             risk: $('liveRisk').value, cap: $('liveCap').value || null,
+             params: { target_r: $('liveTarget').value, last_entry: $('liveLast').value, trend_filter: $('liveTrend').checked } };
+  }
+
+  function liveRender(d) {
+    const A = d.account, S = d.summary || {};
+    $('liveAcct').innerHTML = A.ok ? '' : `<div class="warn">${_esc(A.why)}${d.config.mode === 'dry-run' ? ' Dry run works without it.' : ''}</div>`;
+    let h = `<div class="note" style="margin-bottom:8px">Server time ${_esc(d.now_et)} ET · mode <strong>${_esc(d.config.mode)}</strong>${d.config.mode === 'off' ? ' (nothing runs)' : ''}</div>`;
+    const today = d.today || [];
+    if (today.length) {
+      h += `<h3>Today</h3><div class="tbl"><table><thead><tr><th class="l">Ticker</th><th class="l">Group</th><th class="l">Status</th><th class="l">Signal</th>
+        <th>Range</th><th>Stop</th><th>Target</th><th>Shares</th><th>Fill</th><th>Exit</th><th>Live R</th><th>Backtest R</th><th class="l">Note</th></tr></thead><tbody>
+        ${today.map(r => `<tr><td class="l">${_esc(r.ticker)}</td><td class="l">${_esc(r.grp || '')}</td><td class="l">${_esc(STATUS_TXT[r.status] || r.status || '')}</td>
+          <td class="l">${r.side ? _esc(r.side) + ' · ' + _esc(r.signal_time) : '—'}</td><td>${r.or_low != null ? _px(r.or_low) + '–' + _px(r.or_high) : '—'}</td>
+          <td>${_px(r.stop)}</td><td>${_px(r.target)}</td><td>${r.qty ?? '—'}</td><td>${_px(r.fill_price)}</td>
+          <td>${r.exit_price != null ? _px(r.exit_price) + ' ' + _esc(r.exit_reason || '') : '—'}</td>
+          <td class="${_cls(r.live_r)}">${r.live_r != null ? _r(r.live_r) : '—'}</td><td class="${_cls(r.bt_r)}">${r.bt_r != null ? _r(r.bt_r) : '—'}</td>
+          <td class="l dim" style="white-space:normal;min-width:160px">${_esc(r.note || '')}</td></tr>`).join('')}</tbody></table></div>`;
+    } else if (d.config.mode !== 'off') {
+      h += '<div class="note">Nothing yet today. Signals are checked from 09:35 to the last entry time.</div>';
+    }
+    const grp = (k, label) => { const s = S[k] || {};
+      return `<tr><td class="l">${label}</td><td>${s.live_trades || 0}</td><td class="${_cls(s.live_avg_r)}">${s.live_avg_r != null ? _r(s.live_avg_r, 3) : '—'}</td>
+        <td class="${_cls(s.live_total_r)}">${s.live_trades ? _r(s.live_total_r, 1) : '—'}</td><td class="${_cls(s.live_pnl)}">${s.live_trades ? _usd(s.live_pnl) : '—'}</td>
+        <td>${s.bt_trades || 0}</td><td class="${_cls(s.bt_avg_r)}">${s.bt_avg_r != null ? _r(s.bt_avg_r, 3) : '—'}</td>
+        <td class="${_cls(s.avg_gap_r)}">${s.avg_gap_r != null ? _r(s.avg_gap_r, 3) : '—'}</td><td>${_slip(s.avg_slip_vs_bt)}</td></tr>`; };
+    h += `<h3 style="margin-top:14px">Live vs backtest (last 120 days)</h3><div class="tbl"><table><thead><tr><th class="l">Group</th><th>Live trades</th><th>Live avg R</th><th>Live total</th><th>Live $</th>
+      <th>Backtest trades</th><th>Backtest avg R</th><th>Live − backtest (same trades)</th><th>Entry slippage vs backtest</th></tr></thead><tbody>
+      ${grp('core', 'Core')}${grp('watch', 'Watch')}${grp('all', 'All')}</tbody></table></div>
+      <div class="note" style="margin:6px 0 12px">Slippage is the live fill minus the backtest's entry (next bar's open + 1 tick), per share; positive = worse than the backtest.</div>`;
+    const past = (d.trades || []).filter(r => r.status !== 'no-trade' || r.bt_side);
+    h += past.length ? `<h3>Log</h3><div class="tbl"><table><thead><tr><th class="l">Day</th><th class="l">Ticker</th><th class="l">Group</th><th class="l">Status</th><th class="l">Side</th>
+        <th>Shares</th><th>Fill</th><th>Exit</th><th>Live R</th><th>Live $</th><th class="l">Backtest</th><th>Backtest R</th><th>Slippage</th><th class="l">Note</th></tr></thead><tbody>
+        ${past.map(r => `<tr><td class="l">${_esc(r.day)}</td><td class="l">${_esc(r.ticker)}</td><td class="l">${_esc(r.grp || '')}</td><td class="l">${_esc(STATUS_TXT[r.status] || r.status || '')}</td>
+          <td class="l">${_esc(r.side || '—')}</td><td>${r.qty ?? '—'}</td><td>${_px(r.fill_price)}</td><td>${r.exit_price != null ? _px(r.exit_price) + ' ' + _esc(r.exit_reason || '') : '—'}</td>
+          <td class="${_cls(r.live_r)}">${r.live_r != null ? _r(r.live_r) : '—'}</td><td class="${_cls(r.live_pnl)}">${r.live_pnl != null ? _usd(r.live_pnl) : '—'}</td>
+          <td class="l">${r.bt_side ? _esc(r.bt_side) + ' · ' + _esc(r.bt_reason || '') : 'no trade'}</td><td class="${_cls(r.bt_r)}">${r.bt_r != null ? _r(r.bt_r) : '—'}</td>
+          <td>${_slip(r.slip_vs_bt)}</td><td class="l dim" style="white-space:normal;min-width:160px">${_esc(r.note || '')}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty" style="padding:8px 0">No finished days yet.</div>';
+    $('liveOut').innerHTML = h;
+  }
+
+  async function liveLoad() {
+    let d;
+    try { const r = await fetch('/api/orb/live/status'); d = await r.json(); if (!r.ok) throw new Error(d.error); }
+    catch (e) { $('liveOut').innerHTML = `<div class="warn">${_esc(e.message || 'status unavailable')}</div>`; return; }
+    const first = !LIVE.cfg;
+    LIVE.cfg = d.config; LIVE.acct = d.account;
+    if (first) liveFill(d.config);
+    liveModeButtons(); liveRender(d);
+  }
+
+  function liveInit() {
+    $('liveMode').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b || b.disabled || (LIVE.cfg && b.dataset.m === LIVE.cfg.mode)) return;
+      const m = b.dataset.m;
+      if (m === 'paper' && !confirm('Paper mode sends bracket orders to the ORB Paper account (paper money) for the tickers listed. Turn it on?')) return;
+      liveSend({ mode: m }, m === 'off' ? 'Engine off.' : m === 'dry-run' ? 'Dry run on: orders are logged, not sent.' : 'Paper trading on.');
+    });
+    $('liveSave').addEventListener('click', () => liveSend(liveSettings()));
+    liveLoad();
+    LIVE.timer = setInterval(liveLoad, 30000);
+  }
+
   // ── Compare tickers ──────────────────────────────────────────────────────
   // Colors follow the ticker, not its rank: each pick takes the first free color and keeps it
   // until it's unpicked. Okabe–Ito hues (colorblind-safe), the dark blue lifted for this background.
@@ -683,6 +809,7 @@
     $('source').value = DATASETS.length ? 'csv' : 'alpaca';
     syncSource();
     await loadRuns();
+    liveInit();
     pfInit();
     const q = new URLSearchParams(location.search).get('run');
     if (q) openRun(q);

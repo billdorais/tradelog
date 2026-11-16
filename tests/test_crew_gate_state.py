@@ -20,16 +20,16 @@ import app as a
 import routes.crew as crew
 
 
-def test_reports_daytype_gate_on_for_crew_paper():
+def test_reports_daytype_gate_on_for_crew_live():
     """The exact confabulation: the gate is ON for Crew Paper (acct4), and the
     block must say so and flag it as a pre-market filter."""
     gs = crew._gate_state()
     db = gs["daytype_breakout"]
     assert db["on"] is True
-    assert "Crew Paper" in db["accounts"]
+    assert "Crew Live" in db["accounts"]
     assert db["ok_days"] == ["Outside"]
     assert "pre-market" in db["note"].lower()          # kills "no CPR filter" claim
-    crew_book = next(b for b in gs["books"] if b["label"] == "Crew Paper")
+    crew_book = next(b for b in gs["books"] if b["label"] == "Crew Live")
     assert crew_book["breakout_daytype_gated"] is True
 
 
@@ -38,7 +38,7 @@ def test_reflects_reversal_policy_per_book():
     by = {b["label"]: b for b in gs["books"]}
     assert by["TV Refined"]["reversal_policy"] == "off"    # set earlier this session
     assert by["Kairos Refined"]["reversal_policy"] == "long"   # reversal shorts paused
-    assert by["Crew Paper"]["reversal_policy"] == "long"       # reversal shorts paused
+    assert by["Crew Live"]["reversal_policy"] == "long"       # reversal shorts paused
 
 
 def test_tracks_the_global_toggle(monkeypatch):
@@ -52,7 +52,7 @@ def test_tracks_the_global_toggle(monkeypatch):
 
 def test_covers_the_three_curated_books():
     gs = crew._gate_state()
-    assert [b["label"] for b in gs["books"]] == ["TV Refined", "Kairos Refined", "Crew Paper"]
+    assert [b["label"] for b in gs["books"]] == ["TV Refined", "Kairos Refined", "Crew Live"]
     for b in gs["books"]:
         # Every book reports each gate as a concrete value, never omitted/None.
         assert isinstance(b["profit_lock"], bool)

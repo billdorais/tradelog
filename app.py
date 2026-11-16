@@ -312,9 +312,11 @@ ACCOUNT_META = {
     # ~neutral-to-positive, so they stay. Kairos FARM (acct5) stays free (audition pool).
     "3": {"tag": "alpaca3", "label": "Kairos Refined", "color": "#F2C07A", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": True,  "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "rvol_gate": True, "open_loc_gate": True, "spy_align_gate": True},
-    # reversal_side "long": Crew Paper pauses reversal SHORTS too (same breakeven
-    # finding). A hard gate rather than relying on the crew to stop wiring them.
-    "4": {"tag": "alpaca4", "label": "Crew Paper",     "color": "#7FE098", "hours_key": "refined",
+    # Crew Paper — RETIRED 2026-11-15. The crew wires straight to Crew Live (acct6),
+    # _retire_crew_paper removed its rules, and its Alpaca keys moved to slot 8 (ORB
+    # Paper), so this slot is unconfigured and hidden. The row stays declared so the
+    # slot list and old reports still resolve the tag.
+    "4": {"tag": "alpaca4", "label": "Crew Paper (retired)", "color": "#7FE098", "hours_key": "refined", "retired": True,
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "open_loc_gate": True},
     # Kairos Farm — the engine-entry twin of TV Farm. Full-sample audition pool
     # fired by ENGINE_PILOT_ALL=alpaca5:$1000 (TV Farm gets TV via TV_PILOT_ALL), so
@@ -322,12 +324,11 @@ ACCOUNT_META = {
     # mirror TV Farm: no profit lock, no daily-loss guard, no reversal-side gate.
     "5": {"tag": "alpaca5", "label": "Kairos Farm",    "color": "#5FC8D4",
           "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": True,  "profit_lock": False, "reversal_side": None, "daily_loss_guard": False},
-    # Crew Live — REAL MONEY. Deliberately a byte-for-byte copy of Crew Paper's
-    # policy (acct4) apart from the label: it mirrors the same crew roster, so any
-    # divergence in gates would make the live-vs-paper comparison measure the
-    # config difference instead of the thing being tested (slippage and fills).
-    # Sizing does NOT come from _REFINED_SIZE_BANDS — see LIVE_SIZE_DOLLARS. This
-    # row alone trades nothing: the account must also be armed.
+    # Crew Live — REAL MONEY, and the crew's only book since Crew Paper was retired
+    # (2026-11-15): the crew wire writes its rules directly. Its gate policy is the one
+    # it had while it mirrored Crew Paper (acct4), unchanged. Sizing does NOT come from
+    # _REFINED_SIZE_BANDS — see LIVE_SIZE_DOLLARS. This row alone trades nothing: the
+    # account must also be armed.
     "6": {"tag": "alpaca6", "label": "Crew Live",      "color": "#E8A0BF", "hours_key": "refined",
           "daytype_gate": True,  "reversal_gate": True,  "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": "long", "daily_loss_guard": True, "open_loc_gate": True},
     # Kairos Select — the combined top-N of BOTH farms, wired by an explicit Apply
@@ -356,6 +357,16 @@ ACCOUNT_META = {
     # and short strike cap along with it would be a real gate change.
     "7": {"tag": "alpaca7", "label": "Kairos Select",  "color": "#B8A1E3", "glance": True, "curated": False,
           "daytype_gate": False, "reversal_gate": False, "retest": True,  "auto_source": False, "profit_lock": True,  "reversal_side": None, "daily_loss_guard": True},
+    # ORB Paper — the opening-range breakout engine (routes/orb_live.py) trades this
+    # paper account and nothing else does. self_managed: the engine owns every exit
+    # (broker-side bracket stop + target, flat at 15:55), so Kairos' own exit machinery
+    # must leave its positions alone — the max-hold recovery matches open positions to
+    # rules BY TICKER across accounts and would otherwise close an ORB GOOG trade on a
+    # Kairos GOOG rule's 10-minute timer. No gates, no profit lock, no loss guard: the
+    # point is to measure the strategy exactly as backtested.
+    "8": {"tag": "alpaca8", "label": "ORB Paper",      "color": "#F0A35E", "glance": True, "curated": False,
+          "daytype_gate": False, "reversal_gate": False, "retest": False, "auto_source": False, "profit_lock": False, "reversal_side": None, "daily_loss_guard": False,
+          "self_managed": True},
 }
 MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 
@@ -365,7 +376,7 @@ MAX_ALPACA_ACCOUNTS = 8   # how many ALPACA_KEY{N} slots to scan at startup
 #   account not in this list falls in after (stable by num).
 # Crew Live leads: it is the only book with real money on it, so it is the first
 # thing you should see. Its paper twin (4) sits next to it for the comparison.
-UI_ACCOUNT_ORDER = ["6", "4", "7", "3", "2", "5", "1"]
+UI_ACCOUNT_ORDER = ["6", "4", "7", "8", "3", "2", "5", "1"]
 _UI_ACCOUNT_RANK = {n: i for i, n in enumerate(UI_ACCOUNT_ORDER)}
 def _ui_account_rank(num):
     return (_UI_ACCOUNT_RANK.get(str(num), 99), str(num))
@@ -385,7 +396,7 @@ _NUM_BY_TAG = {_meta_tag(_n): _n for _n in ACCOUNT_META}
 # need one shared map — otherwise a new account gets a tab the JS cannot switch to.
 _TAB_KEY_BY_NUM = {"1": "alpaca", "2": "refined", "3": "kairos",
                    "4": "crew",   "5": "farm",    "6": "live",
-                   "7": "select"}
+                   "7": "select", "8": "orb"}
 
 
 def _ui_accounts():
@@ -438,6 +449,9 @@ ENGINE_RETEST_ACCOUNTS = ({t.strip() for t in os.environ["ENGINE_RETEST_ACCOUNTS
 # the curated stops.
 _CURATED_TAGS = {_meta_tag(n) for n, m in ACCOUNT_META.items()
                  if m.get("curated", m.get("profit_lock"))}
+# Books whose exits belong to their own engine (ORB Paper). Kairos' position stops,
+# take-profit and max-hold machinery skip them; the EOD close still backstops them.
+_SELF_MANAGED_TAGS = {_meta_tag(n) for n, m in ACCOUNT_META.items() if m.get("self_managed")}
 
 # RVOL entry gate — block low relative-volume BREAKOUT entries (and short blow-offs)
 # on the gated books. The Replay RVOL sweep (Jun–Jul '26) showed the edge lives in
@@ -758,8 +772,10 @@ _gates_acct_cache = {}
 _gates_acct_ts    = 0.0
 
 # Books that follow another book's per-account gate overrides. Keyed mirrored-tag
-# -> source-tag. Crew Live mirrors Crew Paper's roster, so it must mirror its gates.
-_GATE_MIRROR = {"alpaca6": "alpaca4"}
+# -> source-tag. Empty since 2026-11-15: Crew Live used to mirror Crew Paper's gates,
+# but Crew Paper was retired and _retire_crew_paper copied its overrides onto Crew
+# Live, which now owns them (Risk Guard → Crew — Entry Gates writes alpaca6).
+_GATE_MIRROR = {}
 
 
 def _account_gate_overrides(account_tag=None):
@@ -1479,6 +1495,7 @@ def _account_meta_fields(num, meta):
         # and is still watched daily.
         "glance":           meta.get("glance", meta.get("profit_lock", True)),
         "daily_loss_guard": meta.get("daily_loss_guard", True),
+        "self_managed":     bool(meta.get("self_managed", False)),
     }
 
 
@@ -2393,6 +2410,8 @@ def _check_position_stops():
         symbol = pos["symbol"]
         broker = pos["broker"]
         sym_u  = symbol.upper()
+        if broker in _SELF_MANAGED_TAGS:
+            continue   # its own engine owns the exits (ORB Paper: bracket + 15:55 flat)
 
         # Always track peak unrealized P&L — keyed by (broker, symbol) so paired
         # trades in different accounts track their peaks independently.
@@ -3487,6 +3506,8 @@ def _recover_max_hold_positions():
     failed_brokers = set()
     for _acct in ALPACA_ACCOUNTS:
         _tag, _inst = _acct["tag"], _acct["broker"]
+        if _tag in _SELF_MANAGED_TAGS:
+            continue   # matching by ticker would hang a Kairos rule's max hold on an ORB trade
         try:
             # raise_on_error so a failed fetch lands in failed_brokers below
             # instead of looking like a flat account (which drops timers).
@@ -3745,6 +3766,11 @@ app.register_blueprint(entry_replay_bp)
 # ORB replay: Nasdaq opening-range breakout backtest. Replay only, no order routing.
 from routes.orb_replay import orb_replay_bp
 app.register_blueprint(orb_replay_bp)
+# ORB paper engine: trades the same ORB on paper account 8 only (bracket orders, flat
+# by 15:55). Mode off by default; switched on from the ORB page. ORB_LIVE=0 disables it.
+from routes.orb_live import orb_live_bp, start_engine as _start_orb_live
+app.register_blueprint(orb_live_bp)
+_start_orb_live()
 
 
 @app.route("/api/trades")
@@ -4371,13 +4397,17 @@ def risk_status():
         # Which books each gate actually covers. The day-type label was hardcoded as
         # "TV Farm, TV Refined, Kairos Refined, Kairos Farm" — naming both farms,
         # which are NOT gated, and omitting both Crew books, which are.
+        # A retired slot (Crew Paper) keeps its meta row but is not a book any more.
         "gated_books": {
             "daytype":  sorted((_META_BY_TAG.get(t) or {}).get("label", t)
-                               for t in DAYTYPE_GATE_ACCOUNTS),
+                               for t in DAYTYPE_GATE_ACCOUNTS
+                               if not (_META_BY_TAG.get(t) or {}).get("retired")),
             "daytype_reversal": sorted((_META_BY_TAG.get(t) or {}).get("label", t)
-                                       for t in DAYTYPE_REVERSAL_GATE_ACCOUNTS),
+                                       for t in DAYTYPE_REVERSAL_GATE_ACCOUNTS
+                                       if not (_META_BY_TAG.get(t) or {}).get("retired")),
             "rvol":     sorted((_META_BY_TAG.get(t) or {}).get("label", t)
-                               for t in RVOL_GATE_ACCOUNTS),
+                               for t in RVOL_GATE_ACCOUNTS
+                               if not (_META_BY_TAG.get(t) or {}).get("retired")),
         },
         # Effective per-ticker hours exemptions, mirror already applied — the UI
         # needs the RESOLVED answer, not the raw override map.
@@ -9028,12 +9058,12 @@ def simulate_stop_sweep():
     and report the net P&L delta vs the real book. Directly answers 'how often
     would a -$100 stop have cut a trade that turned around?'. Split by side because
     the short book is the one under scrutiny. Body: accounts (list of nums, default
-    curated 2/3/4) or account (single), from_date, to_date, stops (list of positive
+    curated 2/3/6) or account (single), from_date, to_date, stops (list of positive
     dollars, default [50,75,100,125,150,200])."""
     import datetime as _dt
     import concurrent.futures as _cf
     body      = request.get_json() or {}
-    accounts  = body.get("accounts") or ([str(body["account"])] if body.get("account") else ["2", "3", "4"])
+    accounts  = body.get("accounts") or ([str(body["account"])] if body.get("account") else ["2", "3", "6"])
     accounts  = [str(a) for a in accounts]
     from_date = body.get("from_date", "")
     to_date   = body.get("to_date",   "")
@@ -9163,12 +9193,12 @@ def simulate_rvol_breakdown():
     rate, win% / P&L). Validates a low-volume entry gate before it's built, and
     surfaces the chronically-thin tickers (the ASTS problem). Persists each row to
     trade_rvol as it goes, so running this also backfills the DB for the window.
-    Body: accounts (default curated 2/3/4) or account, from_date, to_date,
+    Body: accounts (default curated 2/3/6) or account, from_date, to_date,
     lookback (baseline bars, default 20), breakouts_only (default false)."""
     import datetime as _dt
     import concurrent.futures as _cf
     body       = request.get_json() or {}
-    accounts   = body.get("accounts") or ([str(body["account"])] if body.get("account") else ["2", "3", "4"])
+    accounts   = body.get("accounts") or ([str(body["account"])] if body.get("account") else ["2", "3", "6"])
     accounts   = [str(a) for a in accounts]
     from_date  = body.get("from_date", "")
     to_date    = body.get("to_date",   "")
@@ -9528,15 +9558,16 @@ def _orb_spec(ticker):
 
 
 def _crew_default_nodes(name, entry_source="tv", qty=10, unit="shares", side_gate=None):
-    """Routing-rule nodes for a crew-wired Crew Paper (acct4) pipeline. Mirrors
-    _progress_default_nodes but targets alpaca-paper-4 and pins the entry source
-    (tv = fan the existing TV alert out to acct4; kairos = server-side engine).
+    """Routing-rule nodes for a crew-wired Crew Live (acct6, REAL MONEY) pipeline — the
+    crew's only book since Crew Paper was retired. Mirrors _progress_default_nodes but
+    targets alpaca-live-6 and pins the entry source (tv = fan the existing TV alert
+    out to acct6; kairos = server-side engine).
     `side_gate` ('long'|'short') restricts the rule to that side; None/'both' = no gate."""
     nodes = [
         {"type": "strategy",      "value": name},
         {"type": "quantity",      "amount": qty, "unit": unit},
         {"type": "instrument",    "value": "STK"},
-        {"type": "broker",        "value": "alpaca-paper-4"},
+        {"type": "broker",        "value": "alpaca-live-6"},
         {"type": "entry_source",  "value": ("kairos" if entry_source == "kairos" else "tv")},
         {"type": "trading_hours", "start": "09:30", "end": "15:55", "tz": "America/New_York"},
         {"type": "exit_params",   "stop_loss": None, "trail_trigger": None, "trail_offset": 0.15, "mode": "percent"},
@@ -14414,10 +14445,10 @@ def api_crew_strategies():
     curves at once (spaghetti), so it needs them all anyway, and 18 crew picks is
     a small payload.
 
-    ?account=4&days=30
+    ?account=6&days=30
     """
     import datetime as _dt
-    acct = str(request.args.get("account") or "4")
+    acct = str(request.args.get("account") or "6")
     try:    days = max(1, min(365, int(request.args.get("days") or 30)))
     except (TypeError, ValueError): days = 30
     rec = ACCOUNTS_BY_NUM.get(acct)
@@ -14465,7 +14496,7 @@ def api_perf_vs_benchmark():
     over a date range, every series starting at 0% on the first date so they line
     up on one axis.
 
-      accounts=4,2,3   which accounts to include (default Crew, TV Refined, Kairos Refined)
+      accounts=6,2,3   which accounts to include (default Crew Live, TV Refined, Kairos Refined)
       benchmark=SPY    ticker to rebase as the market line
       days=90          lookback if from_date is omitted
       from_date/to_date  explicit range (override days)
@@ -14474,7 +14505,7 @@ def api_perf_vs_benchmark():
     """
     import datetime as _dt
     try:
-        accounts  = [a.strip() for a in (request.args.get("accounts") or "4,2,3").split(",") if a.strip()]
+        accounts  = [a.strip() for a in (request.args.get("accounts") or "6,2,3").split(",") if a.strip()]
         benchmark = (request.args.get("benchmark") or "SPY").upper()
         base      = (request.args.get("base") or "25000").strip()
         from_date = request.args.get("from_date") or ""
@@ -15467,7 +15498,7 @@ def api_strategy_day_charts():
     strategy = (request.args.get("strategy") or "").strip().upper()
     if not strategy:
         return jsonify({"error": "strategy is required"}), 400
-    acct = str(request.args.get("account") or "4")
+    acct = str(request.args.get("account") or "6")
     rec  = ACCOUNTS_BY_NUM.get(acct)
     if not rec or rec.get("broker") is None:
         return jsonify({"error": f"account {acct} not configured"}), 400
@@ -17091,7 +17122,7 @@ def api_gate_docs():
     book (RVOL alone differs three ways), so a shared description would be wrong
     somewhere.
     """
-    tag = (request.args.get("account") or "alpaca4").strip()
+    tag = (request.args.get("account") or "alpaca6").strip()
     if tag not in _META_BY_TAG:
         return jsonify({"error": f"unknown account {tag}"}), 400
     return jsonify({"account": tag, "label": (_META_BY_TAG[tag] or {}).get("label", tag),
@@ -17127,14 +17158,16 @@ def _book_position_notional(tag, from_date, to_date, fills_fn=None):
         return None, 0
 
 
-def _recap_prose(week_label, book, winners, losers, best, gates, scorecard):
+def _recap_prose(week_label, book, winners, losers, best, gates, scorecard,
+                 label="Crew Paper", paper=True):
     """The script notes as flowing narration — paragraphs to read aloud, rather
     than the bullet lines above them.
 
     Written in a plain spoken register on purpose: contractions, short sentences,
     numbers said once. It also hard-codes the two things that must never be left to
-    memory on camera — that this is a paper account, and that a headline number
-    carried by one name gets called out as such."""
+    memory on camera — whether this is a paper or a REAL-MONEY account (Crew Live,
+    the crew's book since Crew Paper was retired, is real money), and that a
+    headline number carried by one name gets called out as such."""
     def _m(v):
         v = float(v or 0)
         return ("minus $" if v < 0 else "$") + f"{abs(v):,.2f}"
@@ -17147,20 +17180,24 @@ def _recap_prose(week_label, book, winners, losers, best, gates, scorecard):
     # 1 — cold open + the disclosure, said before any number lands.
     if not n:
         paras.append(
-            f"Alright — Kairos recap for {period}. Quiet one: the Crew Paper book "
+            f"Alright — Kairos recap for {period}. Quiet one: the {label} book "
             f"didn't close a single trade, so there's no P&L to talk about. Quick "
-            f"reminder anyway, this is a paper account, nothing here is real money "
-            f"and none of it is advice. Let me show you why it stayed flat."
+            + (f"reminder anyway, this is a paper account, nothing here is real money "
+               f"and none of it is advice. " if paper else
+               f"reminder anyway, this is a real-money account, and none of it is advice. ")
+            + "Let me show you why it stayed flat."
         )
         return paras
 
     verb = "finished up" if (b.get("pnl") or 0) >= 0 else "gave back"
     paras.append(
-        f"Alright — Kairos recap for {period}. The Crew Paper book closed {n} "
+        f"Alright — Kairos recap for {period}. The {label} book closed {n} "
         f"trade{'' if n == 1 else 's'} and {verb} {_m(abs(b.get('pnl') or 0))}. "
-        f"Straight up front: this is a paper account. None of it is real money, none "
-        f"of it is advice — it's a systematic trading lab, and every week I audit what "
-        f"the machine decided."
+        + (f"Straight up front: this is a paper account. None of it is real money, none "
+           f"of it is advice — it's a systematic trading lab, and every week I audit what "
+           f"the machine decided." if paper else
+           f"Straight up front: this is a real-money account, and none of it is advice — "
+           f"it's a systematic trading lab, and every week I audit what the machine decided.")
     )
 
     # 2 — the shape of the result, not just the total.
@@ -17289,7 +17326,7 @@ def _entry_source_by_strategy(account_tag=None):
     return out
 
 
-def _build_recap(account="4", frm="", to="", period=""):
+def _build_recap(account="6", frm="", to="", period=""):
     """Everything a recap episode needs for ONE book, as a plain dict.
 
     Split out of the /api/recap route so the weekly JOURNAL can snapshot the same
@@ -17308,7 +17345,7 @@ def _build_recap(account="4", frm="", to="", period=""):
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZI
 
-    ACCT = str(account or "4")
+    ACCT = str(account or "6")
     rec  = ACCOUNTS_BY_NUM.get(ACCT)
     if not rec or rec.get("broker") is None:
         return {"error": f"Account {ACCT} is not configured"}
@@ -17541,7 +17578,8 @@ def _build_recap(account="4", frm="", to="", period=""):
     # other book it would be an unrelated table sitting in that book's recap, so it
     # is left empty rather than shown as if it applied.
     scorecard = {}
-    if ACCT == "4":
+    from routes.crew import CREW_NUM as _CREW_NUM
+    if ACCT == _CREW_NUM:
         try:
             from routes.crew import _pick_scorecard
             scorecard = _pick_scorecard() or {}
@@ -17582,15 +17620,15 @@ def _build_recap(account="4", frm="", to="", period=""):
         }
 
     # Talking points with the numbers already filled in — the teleprompter. Written
-    # so they can be read aloud as-is; "on paper" is in the cold open by design.
+    # so they can be read aloud as-is; "on paper" / "real money" is in the cold open by design.
     def _m(v):
         v = float(v or 0)
         return ("-$" if v < 0 else "$") + f"{abs(v):,.2f}"
     head = week_label.split(" (")[0].lower()
     script = [{"segment": "0 - Cold open",
-               "line": (f"Crew Paper {'made' if book['pnl'] >= 0 else 'lost'} "
+               "line": (f"{rec.get('label')} {'made' if book['pnl'] >= 0 else 'lost'} "
                         f"{_m(abs(book['pnl']))} over {book['trades']} trades "
-                        f"{head} - on paper.")}]
+                        f"{head} - {'on paper' if rec.get('paper', True) else 'real money'}.")}]
     if winners:
         w = winners[0]
         script.append({"segment": "1 - The book",
@@ -17628,15 +17666,17 @@ def _build_recap(account="4", frm="", to="", period=""):
         "best_trade": best, "worst_trade": worst,
         "gates": gates, "scorecard": scorecard, "entry_split": entry_split,
         "script": script,
-        "script_prose": _recap_prose(week_label, book, winners, losers, best, gates, scorecard),
+        "script_prose": _recap_prose(week_label, book, winners, losers, best, gates, scorecard,
+                                     label=rec.get("label") or "this", paper=rec.get("paper", True)),
     }
 
 
 @app.route("/api/recap")
 def api_recap():
-    """Recap payload for one book. Defaults to Crew Paper for back-compat.
+    """Recap payload for one book. Defaults to the crew's book, Crew Live (it was Crew
+    Paper until that book was retired on 2026-11-15).
 
-      ?account=4   which book (default 4)
+      ?account=6   which book (default 6)
       ?from=&to=   explicit ET dates
       ?period=this_week|last_week|this_month|last_month|inception
       ?week=this   legacy alias for period=this_week
@@ -17645,220 +17685,24 @@ def api_recap():
     if not period:
         _wk = (request.args.get("week") or "").strip().lower()
         period = {"this": "this_week", "last": "last_week"}.get(_wk, "this_month")
-    out = _build_recap(account=(request.args.get("account") or "4"),
+    out = _build_recap(account=(request.args.get("account") or "6"),
                        frm=request.args.get("from") or "",
                        to=request.args.get("to") or "",
                        period=period)
     return (jsonify(out), 400) if out.get("error") else jsonify(out)
 
 
-# ── Live vs Paper ───────────────────────────────────────────────────────────
-# Crew Live and Crew Paper trade the SAME roster under the SAME gates, so any
-# difference between them is execution: fill timing, fill price, and the knock-on
-# effects of one book being in a position the other is not.
-#
-# Comparing their dollars would measure position size instead — Paper runs the
-# Refined band while Live runs LIVE_SIZE_DOLLARS. So the comparable unit is
-# RETURN ON NOTIONAL per trade, with dollars reported alongside but never used to
-# rank. Slippage is signed against the side, so "worse" always means worse.
-_LVP_PAIR_WINDOW_SECS = 15 * 60      # entries this far apart can still be one setup
-
-
-def _lvp_pct(t):
-    """Round-trip return on its own notional, in percent."""
-    try:
-        notional = abs(float(t.get("entry_price") or 0)) * abs(float(t.get("qty") or 0))
-        return round(float(t.get("pnl") or 0) / notional * 100, 4) if notional else None
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
-
-
-def _lvp_epoch(ts):
-    import datetime as _d
-    if not ts:
-        return None
-    try:
-        return _d.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return None
-
-
-def _lvp_slippage_bps(live, paper):
-    """Signed entry-price difference in basis points, from LIVE's point of view.
-
-    Positive = Live got the worse price. A long paying more and a short receiving
-    less are both worse, so the sign flips with the side — otherwise the average
-    over a mixed book cancels itself out and reads as zero slippage.
-    """
-    try:
-        lp, pp = float(live.get("entry_price") or 0), float(paper.get("entry_price") or 0)
-    except (TypeError, ValueError):
-        return None
-    if lp <= 0 or pp <= 0:
-        return None
-    raw = (lp - pp) / pp * 10_000
-    return round(raw if (live.get("side") or "").upper() == "LONG" else -raw, 1)
-
-
-def _lvp_trade(t):
-    return {
-        "strategy":    t.get("strategy"), "ticker": t.get("ticker"),
-        "side":        t.get("side"),     "date":   t.get("date"),
-        "entry_time":  t.get("entry_time"), "exit_time": t.get("exit_time"),
-        "entry_price": t.get("entry_price"), "exit_price": t.get("exit_price"),
-        "qty":         t.get("qty"),
-        "pnl":         round(float(t.get("pnl") or 0), 2),
-        "pct":         _lvp_pct(t),
-        "exit_reason": t.get("exit_reason"),
-    }
-
-
-def _lvp_blocks(from_date, to_date):
-    """Recorded gate blocks in the window, keyed (account, ticker, date).
-
-    Lets an unmatched trade say WHY the other book stood aside instead of leaving
-    it as an unexplained gap. Only gates that call _record_block appear — the
-    position gate does not, which is itself worth knowing when nothing is found.
-    """
-    out = {}
-    try:
-        conn = get_db(); cur = conn.cursor(); p = placeholder()
-        cur.execute(
-            f"SELECT ts, account, ticker, strategy, gate, reason FROM blocked_targets "
-            f"WHERE ts >= {p} AND ts <= {p}", (from_date, to_date + "T23:59:59"))
-        for r in cur.fetchall():
-            ts, acct, tk, strat, gate, reason = (
-                (r[0], r[1], r[2], r[3], r[4], r[5]) if DATABASE_URL else
-                (r["ts"], r["account"], r["ticker"], r["strategy"], r["gate"], r["reason"]))
-            out.setdefault((acct, (tk or "").upper(), str(ts)[:10]), []).append(
-                {"gate": gate, "reason": reason, "strategy": strat})
-        conn.close()
-    except Exception as e:
-        log.debug("live_vs_paper blocks lookup failed: %s", e)
-    return out
-
-
+# ── Live vs Paper (retired) ─────────────────────────────────────────────────
+# Paired Crew Live's round-trips with Crew Paper's to isolate execution. Retired
+# with Crew Paper on 2026-11-15; the endpoint stays so old links get a clear 410.
 @app.route("/api/live_vs_paper")
 def api_live_vs_paper():
-    """Pair Crew Live's round-trips with Crew Paper's, trade by trade.
-
-    Same roster, same gates — so this isolates execution. Three buckets:
-      paired      both books took the setup: entry lag, slippage, return delta
-      live_only   Live traded it, Paper did not
-      paper_only  Paper traded it, Live did not
-
-    Ranking is on RETURN, never dollars: the books run different position sizes,
-    so a dollar comparison would mostly measure LIVE_SIZE_DOLLARS.
-    """
-    import datetime as _d
-
-    live_num, paper_num = "6", "4"
-    _lb, live_tag, live_label, live_fills   = _alpaca_account_ctx(live_num)
-    _pb, paper_tag, paper_label, paper_fills = _alpaca_account_ctx(paper_num)
-    if _lb is None or live_tag != "alpaca6":
-        return jsonify({"error": "Crew Live (acct6) is not configured"}), 400
-    if _pb is None or paper_tag != "alpaca4":
-        return jsonify({"error": "Crew Paper (acct4) is not configured"}), 400
-
-    today = _et_today_iso()
-    frm = (request.args.get("from") or "").strip() or today
-    to  = (request.args.get("to")   or "").strip() or today
-
-    lookup = _build_signal_lookup_for_alpaca()
-    live_rts  = _pair_alpaca_fills_lifo(live_fills(),  from_date=frm, to_date=to,
-                                        signal_lookup=lookup)["closed_clean"]
-    paper_rts = _pair_alpaca_fills_lifo(paper_fills(), from_date=frm, to_date=to,
-                                        signal_lookup=lookup)["closed_clean"]
-
-    # Pair on strategy + side + day, nearest entry first, one-to-one. Greedy by
-    # smallest lag so a repeated setup pairs like with like rather than pairing the
-    # first Live trade against a Paper trade three hours later.
-    unpaired_paper = list(paper_rts)
-    pairs, live_only = [], []
-    for lt in sorted(live_rts, key=lambda t: t.get("entry_time") or ""):
-        key = ((lt.get("strategy") or "").upper(), (lt.get("side") or "").upper(),
-               lt.get("date"))
-        le  = _lvp_epoch(lt.get("entry_time"))
-        best, best_lag = None, None
-        for pt in unpaired_paper:
-            if ((pt.get("strategy") or "").upper(), (pt.get("side") or "").upper(),
-                    pt.get("date")) != key:
-                continue
-            pe = _lvp_epoch(pt.get("entry_time"))
-            lag = abs(le - pe) if (le and pe) else None
-            if lag is None or lag > _LVP_PAIR_WINDOW_SECS:
-                continue
-            if best_lag is None or lag < best_lag:
-                best, best_lag = pt, lag
-        if best is None:
-            live_only.append(lt)
-            continue
-        unpaired_paper.remove(best)
-        _lp, _pp = _lvp_pct(lt), _lvp_pct(best)
-        pairs.append({
-            "strategy": lt.get("strategy"), "ticker": lt.get("ticker"),
-            "side": lt.get("side"), "date": lt.get("date"),
-            "live": _lvp_trade(lt), "paper": _lvp_trade(best),
-            # Signed so Live is always the subject: negative lag = Live entered first.
-            "entry_lag_secs": (None if (le is None or _lvp_epoch(best.get("entry_time")) is None)
-                               else round(le - _lvp_epoch(best.get("entry_time")))),
-            "slippage_bps": _lvp_slippage_bps(lt, best),
-            "pct_delta": (None if (_lp is None or _pp is None) else round(_lp - _pp, 4)),
-        })
-
-    blocks = _lvp_blocks(frm, to)
-
-    def _why(tag, t):
-        hits = blocks.get((tag, (t.get("ticker") or "").upper(), t.get("date"))) or []
-        exact = [h for h in hits if (h.get("strategy") or "").upper()
-                 == (t.get("strategy") or "").upper()]
-        h = (exact or hits or [None])[0]
-        return {"gate": h["gate"], "reason": h["reason"]} if h else None
-
-    live_only_out  = [{"trade": _lvp_trade(t), "other_book_blocked": _why(paper_tag, t)}
-                      for t in live_only]
-    paper_only_out = [{"trade": _lvp_trade(t), "other_book_blocked": _why(live_tag, t)}
-                      for t in unpaired_paper]
-
-    def _book(rts, label, tag):
-        pcts = [p for p in (_lvp_pct(t) for t in rts) if p is not None]
-        return {"tag": tag, "label": label, "trades": len(rts),
-                "pnl": round(sum(float(t.get("pnl") or 0) for t in rts), 2),
-                "avg_pct": round(sum(pcts) / len(pcts), 4) if pcts else None}
-
-    lags  = [p["entry_lag_secs"] for p in pairs if p["entry_lag_secs"] is not None]
-    slips = [p["slippage_bps"]   for p in pairs if p["slippage_bps"]   is not None]
-    dels  = [p["pct_delta"]      for p in pairs if p["pct_delta"]      is not None]
-
-    def _median(xs):
-        if not xs:
-            return None
-        s = sorted(xs); n = len(s)
-        return round(s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2, 2)
-
-    return jsonify({
-        "from": frm, "to": to,
-        "live":  _book(live_rts,  live_label,  live_tag),
-        "paper": _book(paper_rts, paper_label, paper_tag),
-        "pairs": sorted(pairs, key=lambda p: p.get("pct_delta") if p.get("pct_delta") is not None else 0),
-        "live_only": live_only_out, "paper_only": paper_only_out,
-        "summary": {
-            "paired": len(pairs), "live_only": len(live_only_out),
-            "paper_only": len(paper_only_out),
-            "median_entry_lag_secs": _median(lags),
-            "median_slippage_bps":   _median(slips),
-            "mean_pct_delta": (round(sum(dels) / len(dels), 4) if dels else None),
-            "live_better":  sum(1 for d in dels if d > 0),
-            "paper_better": sum(1 for d in dels if d < 0),
-        },
-        "caveats": [
-            "Ranked on return, not dollars — the books run different position sizes.",
-            "Slippage is signed from Live's side: positive means Live got the worse price.",
-            "An unmatched trade shows the other book's recorded gate block when there is "
-            "one. The position gate is not recorded, so a blank reason often means that "
-            "book was already holding the ticker.",
-        ],
-    })
+    """RETIRED with Crew Paper (2026-11-15). It paired Crew Live's round-trips with
+    Crew Paper's; there is no paper twin any more, and slot 4's Alpaca account now
+    belongs to ORB Paper, so pairing against it would compare Crew Live with the ORB
+    engine."""
+    return jsonify({"error": "Crew Paper was retired on 2026-11-15, so Crew Live has no paper "
+                             "twin to compare against.", "retired": True}), 410
 
 
 @app.route("/api/signals/gate_opportunity")
@@ -24582,6 +24426,73 @@ def _restore_risk_settings():
             log.info("Migrated %s to %d (one-time)", _key, REFINED_WINDOW_DAYS)
 
 _restore_risk_settings()
+
+
+_CREW_PAPER_BROKERS = ("alpaca-paper-4", "alpaca-live-4")
+
+
+def _retire_crew_paper():
+    """One-time (2026-11-15): Crew Paper (acct4) is retired and Crew Live (acct6) is the
+    crew's own book. Each part is flag-guarded, so it runs once and a later manual
+    change sticks.
+
+    1) Gates. Crew Live used to inherit Crew Paper's per-account gate overrides through
+       _GATE_MIRROR. Copy them onto alpaca6 (only when it has none of its own), so Crew
+       Live gates exactly as it did before the mirror was removed.
+    2) Rules. Delete routing rules that only target Crew Paper, and strip the Crew Paper
+       broker from any rule that also targets another book. Crew Live's rules and the
+       crew reports are untouched. Slot 4's Alpaca keys move to slot 8 (ORB Paper), so
+       a leftover rule would otherwise route to nothing — or, if the keys were not
+       moved, keep trading the account the ORB engine now owns."""
+    global _gates_acct_ts
+    if not _load_setting("CREW_PAPER_GATES_MOVED"):
+        try:
+            raw   = _load_setting("GATES_BY_ACCOUNT")
+            gates = json.loads(raw) if raw else {}
+            if gates.get("alpaca4") and not gates.get("alpaca6"):
+                gates["alpaca6"] = gates["alpaca4"]
+                _save_setting("GATES_BY_ACCOUNT", json.dumps(gates))
+                if json.loads(_load_setting("GATES_BY_ACCOUNT") or "{}").get("alpaca6") != gates["alpaca4"]:
+                    raise RuntimeError("GATES_BY_ACCOUNT did not save")
+                log.info("Crew Paper retired: copied its gate overrides to Crew Live (alpaca6): %s",
+                         sorted(gates["alpaca6"]))
+            _save_setting("CREW_PAPER_GATES_MOVED", "1")
+            _gates_acct_ts = 0.0                 # reload the override cache
+        except Exception as e:
+            log.error("Crew Paper retirement: gate copy failed, will retry next start: %s", e)
+    if not _load_setting("CREW_PAPER_RULES_RETIRED"):
+        try:
+            p = placeholder()
+            conn = get_db()
+            cur  = conn.cursor()
+            cur.execute("SELECT id, name, nodes FROM routing_rules")
+            deleted, stripped = [], []
+            for r in cur.fetchall():
+                rid, name, raw = (r[0], r[1], r[2])
+                try:    nodes = json.loads(raw) if isinstance(raw, str) else (raw or [])
+                except Exception: continue
+                brokers = [(n.get("value") or "").lower() for n in nodes if n.get("type") == "broker"]
+                if not any(b in _CREW_PAPER_BROKERS for b in brokers):
+                    continue
+                if all(b in _CREW_PAPER_BROKERS for b in brokers):
+                    cur.execute(f"DELETE FROM routing_rules WHERE id={p}", (rid,))
+                    deleted.append(name)
+                else:
+                    keep = [n for n in nodes if not (n.get("type") == "broker"
+                                                     and (n.get("value") or "").lower() in _CREW_PAPER_BROKERS)]
+                    cur.execute(f"UPDATE routing_rules SET nodes={p} WHERE id={p}", (json.dumps(keep), rid))
+                    stripped.append(name)
+            conn.commit()
+            conn.close()
+            _save_setting("CREW_PAPER_RULES_RETIRED", "1")
+            log.info("Crew Paper retired: deleted %d rule(s) %s; removed the Crew Paper broker from %d rule(s) %s",
+                     len(deleted), deleted, len(stripped), stripped)
+        except Exception as e:
+            log.error("Crew Paper retirement: rule cleanup failed, will retry next start: %s", e)
+
+
+if "pytest" not in sys.modules:      # tests call it on their own database
+    _retire_crew_paper()
 
 # Reload persisted refined snapshot so the routing page shows the last
 # run immediately after a deploy or server restart.

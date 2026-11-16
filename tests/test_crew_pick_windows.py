@@ -86,7 +86,9 @@ def farms(monkeypatch):
                           "accounts": ["alpaca2", "alpaca4"]}}}
     monkeypatch.setattr(a, "_strategy_stop_times", lambda: store["m"])
     monkeypatch.setattr(a, "_save_strategy_stop_times", lambda m: store.update(m=m))
-    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 0, raising=False)
+    # Crew Live is the crew's only book (Crew Paper retired 2026-11-15): configured and sized.
+    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca6", {"tag": "alpaca6", "broker": None})
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 500, raising=False)
     return store
 
 
@@ -112,16 +114,17 @@ def test_apply_sets_crew_windows_and_keeps_yours(farms):
                                            MINE: {"start": "09:35", "stop": "10:30"}})
     m = farms["m"]
     assert res["set"] == [f"{TV} 09:35-10:30"] and res["kept_yours"] == [MINE]
-    assert m[TV]["source"] == "crew" and m[TV]["accounts"] == ["alpaca4"]
+    assert m[TV]["source"] == "crew" and m[TV]["accounts"] == ["alpaca6"]
     assert m[TV]["mode"] == "within" and m[TV]["basis"]["book"] == "TV Farm"
     assert m[MINE]["stop"] == "14:00", "the trader's own window is untouched"
 
 
-def test_crew_live_gets_the_window_when_the_wire_mirrors_to_it(farms, monkeypatch):
-    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca6", {"tag": "alpaca6"})
-    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 500, raising=False)
+def test_no_book_gets_a_window_when_crew_live_cannot_be_wired(farms, monkeypatch):
+    """Without a sized Crew Live there is no crew book; the window must not land on
+    the retired Crew Paper slot."""
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 0, raising=False)
     C._apply_pick_windows(a, PICKS, {TV: {"start": "09:35", "stop": "10:30"}})
-    assert farms["m"][TV]["accounts"] == ["alpaca4", "alpaca6"]
+    assert farms["m"][TV]["accounts"] == []
 
 
 def test_unticked_and_dropped_picks_lose_their_crew_window(farms):
@@ -156,7 +159,6 @@ def wire(tmp_path, monkeypatch, farms):
         k = sqlite3.connect(db); k.row_factory = sqlite3.Row
         return k
     monkeypatch.setattr(a, "get_db", _db)
-    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca4", {"tag": "alpaca4", "broker": None})
     monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {}, raising=False)
     a.app.config["TESTING"] = True
     return farms
@@ -166,7 +168,7 @@ def test_preview_shows_each_picks_window(wire):
     with a.app.test_client() as cl:
         d = cl.get("/api/crew/wire_preview").get_json()
     pw = d["pick_windows"]
-    assert pw["books"] == ["alpaca4"] and pw["days"] == C.CREW_WINDOW_DAYS
+    assert pw["books"] == ["alpaca6"] and pw["days"] == C.CREW_WINDOW_DAYS
     assert pw["windows"][TV]["default"] is True and pw["windows"][MINE]["locked"] is True
 
 

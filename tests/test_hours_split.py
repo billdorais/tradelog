@@ -187,7 +187,7 @@ def test_the_hours_block_reaches_the_prompt():
 
 # ── the real entry-source map (every test above stubs it) ────────────────────
 
-def test_entry_source_map_reads_the_crew_paper_rules(monkeypatch, tmp_path):
+def test_entry_source_map_reads_the_crew_live_rules(monkeypatch, tmp_path):
     """It used to call an un-imported `_json`; the NameError was swallowed per row,
     so the map was always empty and every name in the hours split was measured on
     the Kairos Farm — TV-wired picks included."""
@@ -199,10 +199,10 @@ def test_entry_source_map_reads_the_crew_paper_rules(monkeypatch, tmp_path):
     for name, nodes in (
         ("T", [{"type": "strategy", "value": "TTT_CAM_BREAKOUT_R3S3"},
                {"type": "entry_source", "value": "tv"},
-               {"type": "broker", "value": "alpaca-paper-4"}]),
+               {"type": "broker", "value": "alpaca-live-6"}]),
         ("K", [{"type": "strategy", "value": "KKK_CAM_BREAKOUT_R3S3"},
                {"type": "entry_source", "value": "kairos"},
-               {"type": "broker", "value": "alpaca-paper-4"}]),
+               {"type": "broker", "value": "alpaca-live-6"}]),
         ("other book", [{"type": "strategy", "value": "OOO_CAM_BREAKOUT_R3S3"},
                         {"type": "entry_source", "value": "kairos"},
                         {"type": "broker", "value": "alpaca-paper-7"}]),

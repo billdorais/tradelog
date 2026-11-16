@@ -84,4 +84,4 @@ def test_unconfigured_account_is_skipped_not_shown_as_account_1(_closes, monkeyp
 
 def test_analysis_chart_includes_kairos_select():
     html = open("templates/analysis.html", encoding="utf-8").read()
-    assert "accounts: '4,2,3,7'" in html and "'7': '#3987e5'" in html
+    assert "accounts: '6,2,3,7'" in html and "'7': '#3987e5'" in html

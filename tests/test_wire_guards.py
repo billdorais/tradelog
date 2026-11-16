@@ -142,9 +142,10 @@ def _wire_with(tmp_path, monkeypatch, report):
         k = sqlite3.connect(db); k.row_factory = sqlite3.Row
         return k
     monkeypatch.setattr(a, "get_db", _db)
-    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca4", {"tag": "alpaca4", "broker": None})
+    # The crew's book is Crew Live (Crew Paper retired 2026-11-15): configured and sized.
+    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca6", {"tag": "alpaca6", "broker": None})
     monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {}, raising=False)
-    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 0, raising=False)
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000, raising=False)
     a.app.config["TESTING"] = True
     with a.app.test_client() as cl:
         return cl.post("/api/crew/wire_to_router", json={})

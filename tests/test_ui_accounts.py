@@ -98,7 +98,7 @@ def test_the_dashboard_falls_back_when_the_live_book_is_absent(no_live):
 
 def test_analysis_defaults_to_the_live_book(all_books):
     html = all_books.get("/analysis").get_data(as_text=True)
-    assert "_CONFIGURED_SRC.has('alpaca6') ? 'alpaca6' : 'alpaca4'" in html
+    assert "['alpaca6', 'alpaca7', 'alpaca2', 'alpaca3'].find(t => _CONFIGURED_SRC.has(t))" in html
 
 
 def test_the_dashboard_feed_tab_tracks_the_pnl_tab(all_books):

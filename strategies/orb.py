@@ -283,6 +283,97 @@ def ready_date(m: Market, params: dict) -> date | None:
     return None
 
 
+def _signal_ctx(m: Market, p: dict) -> dict:
+    """Per-run arrays day_signal reads (candles, SMAs, times). p must be normalized."""
+    or0, or1 = _hm(p["or_start"]), _hm(p["or_end"])
+    return {"bk": m.candles(p["breakout_tf"]), "tr": m.candles(p["trend_tf"]),
+            "fast": m.sma(p["trend_tf"], p["fast_sma"]), "slow": m.sma(p["trend_tf"], p["slow_sma"]),
+            "or0": or0, "or1": or1, "last_entry": _hm(p["last_entry"]),
+            "min_or_bars": max(1, math.ceil(0.5 * (or1 - or0) / m.base_min))}
+
+
+def _day_ns(d: date, minutes: int) -> int:
+    """Epoch ns of `minutes` after midnight ET on d."""
+    return int(pd.Timestamp(datetime.combine(d, time()), tz=ET).value + minutes * 60_000_000_000)
+
+
+def day_signal(m: Market, d: date, p: dict, ctx: dict | None = None,
+               after_ns: int | None = None, asof_ns: int | None = None) -> dict:
+    """The day's next breakout decision. ONE code path for the backtest (simulate) and the
+    live paper engine (routes/orb_live), so they can't drift apart.
+
+    p must be normalized. after_ns: only candles starting at/after it (a later trade the
+    same day). asof_ns: only candles that had CLOSED by then — live passes the end of the
+    newest 1-minute bar received; None = the whole day (backtest).
+
+    Returns one of
+      {"status": "signal", "side": ±1, "hi", "lo", "close", "decide_ns", "candle_start_ns", "trend"}
+      {"status": "skip", "reason": one of SKIP_REASONS[:6], ...}
+      {"status": "waiting", ...}    asof_ns only: the range or the last entry time isn't reached yet
+    """
+    ctx = ctx or _signal_ctx(m, p)
+    if asof_ns is not None and asof_ns < _day_ns(d, ctx["or1"]):
+        return {"status": "waiting", "reason": "range still forming"}
+    if d not in m._day_rng:
+        return {"status": "skip", "reason": "no_range_data"}
+    i0, i1 = m._day_rng[d]
+    t, h, l, mins = m._t, m._h, m._l, m._mins
+    dm = mins[i0:i1]
+    in_or = np.nonzero((dm >= ctx["or0"]) & (dm < ctx["or1"]))[0]
+    if len(in_or) < ctx["min_or_bars"]:
+        return {"status": "skip", "reason": "no_range_data"}
+    hi, lo = float(h[i0 + in_or].max()), float(l[i0 + in_or].min())
+    if hi <= lo:
+        return {"status": "skip", "reason": "flat_range", "hi": hi, "lo": lo}
+    bk, tr, fast, slow = ctx["bk"], ctx["tr"], ctx["fast"], ctx["slow"]
+    tf = p["breakout_tf"]
+    # Breakout candles: start at/after the range end, CLOSE no later than last_entry.
+    ca = np.searchsorted(bk["start"], t[i0])
+    cb = np.searchsorted(bk["start"], t[i1 - 1], side="right")
+    reason = "no_breakout"
+    for k in range(ca, cb):
+        if not (bk["mins"][k] >= ctx["or1"] and bk["mins"][k] + tf <= ctx["last_entry"]):
+            continue
+        if after_ns is not None and bk["start"][k] < after_ns:
+            continue
+        if asof_ns is not None and bk["end"][k] > asof_ns:
+            break                                   # not closed yet: decided below
+        cl = float(bk["close"][k])
+        side = 1 if cl > hi else -1 if cl < lo else 0
+        if not side:
+            continue
+        decide = int(bk["end"][k])
+        # Last trend candle COMPLETED by the decision time (its end <= decide).
+        j = np.searchsorted(tr["end"], decide, side="right") - 1
+        f_, s_ = (fast[j], slow[j]) if j >= 0 else (np.nan, np.nan)
+        trend = None if (np.isnan(f_) or np.isnan(s_)) else (1 if f_ > s_ else -1 if f_ < s_ else 0)
+        if p["trend_filter"]:
+            if trend is None:
+                return {"status": "skip", "reason": "trend_warmup", "hi": hi, "lo": lo}
+            if trend != side:
+                reason = "trend_equal" if trend == 0 else "trend_filter"
+                if p["retry_after_filter"]:
+                    continue
+                return {"status": "skip", "reason": reason, "hi": hi, "lo": lo, "side": side,
+                        "close": cl, "decide_ns": decide}
+        return {"status": "signal", "side": side, "hi": hi, "lo": lo, "close": cl, "decide_ns": decide,
+                "candle_start_ns": int(bk["start"][k]), "trend": trend}
+    if asof_ns is not None and asof_ns < _day_ns(d, ctx["last_entry"]):
+        return {"status": "waiting", "reason": "no breakout yet", "hi": hi, "lo": lo}
+    return {"status": "skip", "reason": reason, "hi": hi, "lo": lo}
+
+
+def shares_for_risk(risk_per_share: float, entry: float, risk: float, cap: float | None = None) -> int:
+    """Whole shares so that shares × risk_per_share <= risk dollars, and (with a cap) shares × entry
+    <= cap. 0 = one share already risks more than `risk`. Used by Compare tickers and the live engine."""
+    if not risk_per_share or risk_per_share <= 0 or not risk or risk <= 0:
+        return 0
+    n = int(risk / risk_per_share + 1e-9)
+    if cap and entry and entry > 0:
+        n = min(n, int(cap / entry + 1e-9))
+    return max(n, 0)
+
+
 def simulate(m: Market, params: dict, contract: str = "NQ",
              start: date | None = None, end: date | None = None) -> dict:
     """Run the rules over every trading day in [start, end]. Returns {trades, skipped}
@@ -293,12 +384,8 @@ def simulate(m: Market, params: dict, contract: str = "NQ",
     comm = spec["commission"] if p["commission"] is None else p["commission"]
     slip = p["slippage_ticks"] * tick
     qty = p["contracts"]
-    or0, or1 = _hm(p["or_start"]), _hm(p["or_end"])
-    last_entry, fexit = _hm(p["last_entry"]), _hm(p["forced_exit"])
-    bk = m.candles(p["breakout_tf"])
-    tr = m.candles(p["trend_tf"])
-    fast, slow = m.sma(p["trend_tf"], p["fast_sma"]), m.sma(p["trend_tf"], p["slow_sma"])
-    min_or_bars = max(1, math.ceil(0.5 * (or1 - or0) / m.base_min))
+    fexit = _hm(p["forced_exit"])
+    ctx = _signal_ctx(m, p)
     NS = 60_000_000_000
     trades, skipped = [], {k: 0 for k in SKIP_REASONS}
     t, o, h, l, c, mins = m._t, m._o, m._h, m._l, m._c, m._mins
@@ -307,42 +394,13 @@ def simulate(m: Market, params: dict, contract: str = "NQ",
         if (start and d < start) or (end and d > end) or d.weekday() >= 5:
             continue
         i0, i1 = m._day_rng[d]
-        dm = mins[i0:i1]
-        in_or = np.nonzero((dm >= or0) & (dm < or1))[0]
-        if len(in_or) < min_or_bars:
-            skipped["no_range_data"] += 1
-            continue
-        hi, lo = float(h[i0 + in_or].max()), float(l[i0 + in_or].min())
-        if hi <= lo:
-            skipped["flat_range"] += 1
-            continue
-        # Breakout candles: start at/after the range end, CLOSE no later than last_entry.
-        ca = np.searchsorted(bk["start"], t[i0])
-        cb = np.searchsorted(bk["start"], t[i1 - 1], side="right")
-        cand = [k for k in range(ca, cb)
-                if bk["mins"][k] >= or1 and bk["mins"][k] + p["breakout_tf"] <= last_entry]
         n_today, after_ns, outcome = 0, None, "no_breakout"
-        for k in cand:
-            if after_ns is not None and bk["start"][k] < after_ns:
-                continue
-            cl = bk["close"][k]
-            side = 1 if cl > hi else -1 if cl < lo else 0
-            if not side:
-                continue
-            decide = int(bk["end"][k])
-            # Last trend candle COMPLETED by the decision time (its end <= decide).
-            j = np.searchsorted(tr["end"], decide, side="right") - 1
-            f_, s_ = (fast[j], slow[j]) if j >= 0 else (np.nan, np.nan)
-            trend = None if (np.isnan(f_) or np.isnan(s_)) else (1 if f_ > s_ else -1 if f_ < s_ else 0)
-            if p["trend_filter"]:
-                if trend is None:
-                    outcome = "trend_warmup"
-                    break
-                if trend != side:
-                    outcome = "trend_equal" if trend == 0 else "trend_filter"
-                    if p["retry_after_filter"]:
-                        continue
-                    break
+        while True:
+            sig = day_signal(m, d, p, ctx, after_ns=after_ns)
+            if sig["status"] != "signal":
+                outcome = sig["reason"]
+                break
+            side, hi, lo, decide, trend = sig["side"], sig["hi"], sig["lo"], sig["decide_ns"], sig["trend"]
             # Entry: first base bar starting at/after the candle close, before the forced exit.
             e = i0 + int(np.searchsorted(t[i0:i1], decide))
             if e >= i1 or mins[e] >= fexit:

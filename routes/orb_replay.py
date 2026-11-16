@@ -459,13 +459,7 @@ def _run_trades(run_id: str):
 def size_trade(t: dict, risk: float, cap: float | None = None) -> int:
     """Whole shares for a trade risking at most `risk` dollars (stop distance × shares), and costing at
     most `cap` dollars to open when a cap is given. 0 = one share already risks more than `risk`."""
-    rp = t.get("risk_pts") or 0.0
-    if rp <= 0:
-        return 0
-    n = int(risk / rp + 1e-9)
-    if cap and t.get("entry"):
-        n = min(n, int(cap / t["entry"] + 1e-9))
-    return max(n, 0)
+    return orb.shares_for_risk(t.get("risk_pts") or 0.0, t.get("entry") or 0.0, risk, cap)
 
 
 def _sizing(rows: list, risk: float, cap: float | None) -> dict:

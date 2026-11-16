@@ -65,15 +65,15 @@ def test_the_block_lists_positive_names_and_every_wired_one():
     assert "PRIMARY RANKING" in txt
     assert f"#1 {A} [WIRED NOW]" in txt and "better: TV" in txt
     assert f"#2 {B}" in txt and "better: KAIROS" in txt
-    assert C not in txt.split("Wired to Crew Paper now")[0], "negative names are not candidates"
-    i = txt.index("Wired to Crew Paper now")
+    assert C not in txt.split("Wired to Crew Live now")[0], "negative names are not candidates"
+    i = txt.index("Wired to Crew Live now")
     assert W in txt[i:], "a wired loser still shows its farm record"
 
 
 def test_a_wired_name_below_the_cutoff_is_not_called_a_loser():
     """B is positive but cut by the limit; W genuinely loses. Only W is 'NOT positive'."""
     txt = crew._fmt_farm_candidates(crew._farm_side_by_side(TV, KA), wired=[B, W], limit=1)
-    i = txt.index("Wired to Crew Paper now")
+    i = txt.index("Wired to Crew Live now")
     assert f"{B} (positive, rank #2 of 2)" in txt[i:]
     assert f"{W} (NOT positive on its better farm)" in txt[i:]
 
