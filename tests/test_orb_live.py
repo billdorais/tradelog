@@ -403,3 +403,34 @@ def test_day_signal_waits_until_the_range_is_complete():
     m = orb.Market.from_frame(_bars())
     p = orb.normalize_params({})
     assert orb.day_signal(m, DAY, p, asof_ns=pd.Timestamp(_at(9, 20)).value)["status"] == "waiting"
+
+
+# ── the main page's Open Positions table ──────────────────────────────────────
+
+def test_open_positions_show_the_orb_bracket_not_a_trail_estimate(env, monkeypatch):
+    """ORB orders are not kairos-* orders, so the trail estimate had nothing to work
+    from; the row now shows the bracket the engine logged."""
+    from datetime import datetime as _dt
+    cfg = _cfg()
+    L.scan(_at(9, 45, 5), cfg)                       # logs QQQ long: stop 120, target 128
+    L.upsert(DAY.isoformat(), "QQQ", fill_time="2026-11-16T14:45:06+00:00")
+
+    class _Now(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt(2026, 11, 16, 10, 0, tzinfo=tz)
+    monkeypatch.setattr(a, "datetime", _Now)
+    monkeypatch.setattr(a, "_latest_positions", [
+        {"symbol": "QQQ", "broker": "alpaca8", "qty": 125, "avg_entry_price": 122.05,
+         "current_price": 123.0, "unrealized_pnl": 118.75, "market_value": 15375.0}])
+    a.app.config["TESTING"] = True
+    pos = a.app.test_client().get("/api/risk/status").get_json()["positions"]
+    p = next(x for x in pos if x["broker"] == "alpaca8")
+    assert (p["strategy"], p["est_stop_price"], p["target_price"], p["stop_kind"]) == ("ORB long", 120.0, 128.0, "bracket")
+    assert p["trail_pct"] is None and p["entry_time"] == "2026-11-16T14:45:06+00:00"
+
+
+def test_the_dashboard_draws_the_orb_bracket_and_tints_its_rows():
+    html = open("templates/index.html", encoding="utf-8").read()
+    assert "price-meter-tick-tgt" in html and "p.stop_kind === 'bracket'" in html
+    assert 'class="orb-row"' in html and "tr.orb-row" in html

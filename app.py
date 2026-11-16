@@ -4245,11 +4245,32 @@ def risk_status():
                     return rv
         return None
 
+    # ORB Paper's positions carry a fixed bracket (range stop + target) that the ORB
+    # engine logged when it entered; there is no Kairos trail to estimate from.
+    _orb_today = {}
+    if any(p.get("broker") in _SELF_MANAGED_TAGS for p in positions):
+        try:
+            from routes.orb_live import rows as _orb_rows
+            _orb_day = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+            _orb_today = {r["ticker"]: r for r in _orb_rows(day=_orb_day)}
+        except Exception as _oe:
+            log.debug("risk status: ORB rows unavailable: %s", _oe)
+
     for p in positions:
+        sym_u = (p.get("symbol") or "").upper()
+        if p.get("broker") in _SELF_MANAGED_TAGS:
+            o = _orb_today.get(sym_u) or {}
+            p["strategy"]            = f"ORB {o['side']}" if o.get("side") else "ORB"
+            p["entry_time"]          = o.get("fill_time")
+            p["peak_unrealized_pnl"] = round(p.get("unrealized_pnl") or 0, 2)
+            p["est_stop_price"]      = o.get("stop")      # the bracket's stop leg, not an estimate
+            p["target_price"]        = o.get("target")    # the bracket's limit leg
+            p["stop_kind"]           = "bracket"
+            p["trail_pct"]           = None
+            continue
         strat, entry_t = _resolve_position_entry(p.get("symbol", ""), p.get("broker", ""))
         p["strategy"]   = strat
         p["entry_time"] = entry_t
-        sym_u = (p.get("symbol") or "").upper()
         p["peak_unrealized_pnl"] = round(peaks_snap.get((p.get("broker",""), sym_u), p.get("unrealized_pnl") or 0), 2)
         # Estimate trailing stop price from the effective trail % and peak price.
         # A manual Pull-Stop (BE / ½) override wins over the rule's trail — same
