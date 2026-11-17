@@ -496,3 +496,21 @@ def test_the_dashboard_draws_the_orb_bracket_and_tints_its_rows():
     html = open("templates/index.html", encoding="utf-8").read()
     assert "price-meter-tick-tgt" in html and "p.stop_kind === 'bracket'" in html
     assert 'class="orb-row"' in html and "tr.orb-row" in html
+
+
+def test_the_trades_list_labels_orb_fills_too(monkeypatch):
+    """/api/alpaca/trades (the dashboard's fills list) annotates fills in its own
+    loop; it kept the Camarilla labels after the resolvers were fixed."""
+    import time as _t
+    fills = [{"symbol": "QQQ", "side": "SLD", "time": "2026-11-16T14:36:07Z", "order_id": "orb-20261116-QQQ"},
+             {"symbol": "QQQ", "side": "BOT", "time": "2026-11-16T14:43:59Z", "order_id": "leg-1"}]
+    cache = {"data": [], "ts": _t.time()}
+    monkeypatch.setitem(a._alpaca_caches, "8", cache)
+    monkeypatch.setattr(a, "_alpaca_account_ctx", lambda acct: (object(), "alpaca8", "ORB Paper", lambda: [dict(f) for f in fills]))
+    monkeypatch.setattr(a, "_signal_lookup", lambda: {
+        ("QQQ", "SLD"): [(pd.Timestamp("2026-11-16T14:36:00Z").timestamp(), "QQQ_CAM_REVERSAL_R4S4_V02_5MIN", "bearish")]})
+    a.app.config["TESTING"] = True
+    got = a.app.test_client().get("/api/alpaca/trades?account=8").get_json()
+    rows = got if isinstance(got, list) else got.get("trades") or got.get("fills") or []
+    by = {f["order_id"]: f.get("strategy") for f in rows}
+    assert by["orb-20261116-QQQ"] == "QQQ_ORB"

@@ -14679,6 +14679,10 @@ def alpaca_trades():
                     try:
                         sig_lookup = _signal_lookup()
                         for f in new_fills:
+                            _orb = _orb_fill_strategy(f.get("order_id"), f.get("symbol"))
+                            if _orb:                 # ORB engine entry: never a nearby TV signal
+                                f["strategy"] = _orb
+                                continue
                             sym  = (f.get("symbol") or "").upper().replace("/", "").replace("USD", "")
                             side = f.get("side", "")
                             fill_time = f.get("time") or ""
@@ -14717,6 +14721,10 @@ def alpaca_trades():
             sig_lookup = _signal_lookup()
             # Annotate each fill with the closest matching strategy
             for f in fills:
+                _orb = _orb_fill_strategy(f.get("order_id"), f.get("symbol"))
+                if _orb:                             # ORB engine entry: never a nearby TV signal
+                    f["strategy"] = _orb
+                    continue
                 sym  = (f.get("symbol") or "").upper().replace("/", "").replace("USD", "")
                 side = f.get("side", "")
                 fill_time = f.get("time") or ""
