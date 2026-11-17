@@ -49,6 +49,7 @@ SCAN_EVERY_S = 10          # bar fetches per worker while a candle may just have
 SCAN_WINDOW_S = 150        # how long after a candle boundary to keep looking for its bars
 STALE_DATA_S = 180         # newest bar older than this → don't decide
 LATE_SIGNAL_S = 150        # a signal older than this (engine was down) is logged, not traded
+FLATTEN_RESEND_S = 45      # a sent close may take this long to fill on paper before it is re-sent
 RECONCILE_AFTER = (16, 5)
 LIVE_PARAMS = ("trend_filter", "target_r", "last_entry", "forced_exit")
 
@@ -70,7 +71,7 @@ COLUMNS = ("grp", "mode", "status", "note", "side", "or_high", "or_low", "signal
 ENTERED = ("entered", "filled")
 
 _state = {"day": None, "decided": set(), "last_scan": 0.0, "warm": {}, "reconciled": None,
-          "flattened": None, "flatten_claim": None, "cfg": None, "cfg_ts": 0.0}
+          "flattened": None, "flatten_claim": None, "flatten_sent": {}, "cfg": None, "cfg_ts": 0.0}
 _state_lock = threading.Lock()
 _started = False
 
@@ -451,17 +452,39 @@ def flatten(now: datetime, cfg: dict):
     except Exception as e:
         log.warning("ORB live: flatten could not read positions: %s", e)
         return
-    for pos in positions:
-        sym = str(pos.get("symbol") or "").upper()
-        try:
-            res = br.close_position(sym)
-            log.info("ORB live: flatten %s at %s: %s", sym, now.strftime("%H:%M"), res)
-            upsert(day.isoformat(), sym, flatten_at=now.astimezone(timezone.utc).isoformat())
-        except Exception as e:
-            log.warning("ORB live: flatten %s failed: %s", sym, e)
-            return                                   # retry next tick
+    open_syms = [str(p.get("symbol") or "").upper() for p in positions
+                 if abs(float(p.get("qty") or 0)) > 0 and p.get("symbol")]
+    # Done only when the broker reports the account flat — not when the closes were
+    # merely sent. On 2026-11-16 MU's close did not take and the 15:58 EOD backstop
+    # closed it; the engine had already marked the day flat.
+    if not open_syms:
+        with _state_lock:
+            _state["flattened"] = day
+        log.info("ORB live: account 8 flat at %s", now.strftime("%H:%M:%S"))
+        return
     with _state_lock:
-        _state["flattened"] = day
+        sent = _state.setdefault("flatten_sent", {})
+        if sent.get("_day") != day:
+            sent.clear()
+            sent["_day"] = day
+    stamp = now.astimezone(timezone.utc).isoformat()
+    for sym in open_syms:
+        last = sent.get(sym)
+        if last is not None and (now - last).total_seconds() < FLATTEN_RESEND_S:
+            continue                                 # a close is in flight (paper fills can lag)
+        try:
+            res = br.close_position(sym) or {}
+        except Exception as e:
+            res = {"success": False, "error": str(e)}
+        if res.get("success"):
+            if last is None:
+                upsert(day.isoformat(), sym, flatten_at=stamp)
+            sent[sym] = now
+            log.info("ORB live: flatten %s at %s: %s", sym, now.strftime("%H:%M:%S"), res)
+        else:
+            err = str(res.get("error") or res)[:200]
+            upsert(day.isoformat(), sym, note=f"3:55 close failed at {now:%H:%M:%S} ET, retrying: {err}")
+            log.warning("ORB live: flatten %s failed at %s (will retry): %s", sym, now.strftime("%H:%M:%S"), err)
 
 
 # ── reconcile ────────────────────────────────────────────────────────────────

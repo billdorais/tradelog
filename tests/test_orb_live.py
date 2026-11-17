@@ -82,7 +82,7 @@ def env(monkeypatch, tmp_path):
     conn.close()
     L.ensure_table()
     L._state.update(day=None, decided=set(), last_scan=0.0, warm={}, reconciled=None, flattened=None,
-                    flatten_claim=None, cfg=None, cfg_ts=0.0)
+                    flatten_claim=None, flatten_sent={}, cfg=None, cfg_ts=0.0)
     broker = FakeBroker()
     rec = {"num": "8", "tag": "alpaca8", "label": "ORB Paper", "paper": True, "self_managed": True, "broker": broker}
     monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {**a.ACCOUNTS_BY_NUM, "8": rec})
@@ -119,7 +119,8 @@ def _row(t):
 
 def _new_worker():
     """Another gunicorn worker: same database, empty memory."""
-    L._state.update(day=None, decided=set(), last_scan=0.0, warm={}, flattened=None, flatten_claim=None)
+    L._state.update(day=None, decided=set(), last_scan=0.0, warm={}, flattened=None, flatten_claim=None,
+                    flatten_sent={})
 
 
 # ── signals and entries ───────────────────────────────────────────────────────
@@ -278,6 +279,67 @@ def test_flatten_closes_account_8_positions_once_across_workers(env):
     _new_worker()
     L.flatten(_at(15, 55, 7), cfg)                   # the other worker lost the claim
     assert env.broker.closed == ["QQQ"]
+
+
+def test_a_failed_close_is_logged_and_retried_until_flat(env):
+    """2026-11-16: MU's 3:55 close did not take and the 15:58 EOD backstop closed it,
+    while the engine had already marked the day flat. Now the day is flat only when
+    the broker says so, a failed close is noted on the row, and it is retried."""
+    cfg = _cfg()
+    L.scan(_at(9, 45, 5), cfg)                                   # a QQQ row to note on
+    env.broker.positions = [{"symbol": "QQQ", "qty": 125}, {"symbol": "MU", "qty": -2}]
+    results = {"QQQ": [{"success": True}], "MU": [{"success": False, "error": "held_for_orders"},
+                                                  {"success": True}]}
+    def close(sym):
+        env.broker.closed.append(sym)
+        r = results[sym].pop(0) if results[sym] else {"success": True}
+        if r["success"]:
+            env.broker.positions = [p for p in env.broker.positions if p["symbol"] != sym]
+        return r
+    env.broker.close_position = close
+
+    L.flatten(_at(15, 55, 2), cfg)
+    assert env.broker.closed == ["QQQ", "MU"] and L._state["flattened"] is None
+    assert _row("MU")["note"].startswith("3:55 close failed at 15:55:02 ET") and "held_for_orders" in _row("MU")["note"]
+    assert _row("QQQ")["flatten_at"]
+
+    L.flatten(_at(15, 55, 7), cfg)                               # retried on the next tick
+    assert env.broker.closed == ["QQQ", "MU", "MU"]
+    L.flatten(_at(15, 55, 12), cfg)                              # broker reports flat
+    assert L._state["flattened"] == DAY and env.broker.closed == ["QQQ", "MU", "MU"]
+
+
+def test_a_close_in_flight_is_not_sent_twice(env):
+    """Paper fills lagged up to a minute at the open; a close that is still filling
+    must not be re-sent every 5 seconds."""
+    cfg = _cfg()
+    env.broker.positions = [{"symbol": "QQQ", "qty": 125}]       # the fake never fills it
+    L.flatten(_at(15, 55, 2), cfg)
+    L.flatten(_at(15, 55, 7), cfg)
+    L.flatten(_at(15, 55, 40), cfg)
+    assert env.broker.closed == ["QQQ"]
+    L.flatten(_at(15, 55, 50), cfg)                              # 48 s later: send again
+    assert env.broker.closed == ["QQQ", "QQQ"]
+
+
+def test_orb_fills_are_labelled_orb_not_a_nearby_tv_signal():
+    """2026-11-16: the QQQ and GOOG ORB entries were labelled with Camarilla strategies
+    that happened to signal within 5 minutes."""
+    lookup = {("QQQ", "SLD"): [(pd.Timestamp("2026-11-16T14:36:00Z").timestamp(),
+                               "QQQ_CAM_REVERSAL_R4S4_V02_5MIN", "bearish")]}
+    got = a._resolve_signal_for_fill(lookup, "QQQ", "SLD", "2026-11-16T14:36:07Z", "orb-20261116-QQQ")
+    assert got == ("QQQ_ORB", "")
+    # Everything else is untouched: a Kairos id still wins, an unknown id still matches.
+    assert a._resolve_signal_for_fill(lookup, "QQQ", "SLD", "2026-11-16T14:36:07Z",
+                                      "kairos-QQQ_CAM_BREAKOUT_R3S3-1")[0] == "QQQ_CAM_BREAKOUT_R3S3"
+    assert a._resolve_signal_for_fill(lookup, "QQQ", "SLD", "2026-11-16T14:36:07Z", "abc")[0] \
+        == "QQQ_CAM_REVERSAL_R4S4_V02_5MIN"
+    assert a._orb_fill_strategy("orb-20261116-BRK.B", "BRK.B") == "BRK.B_ORB"
+    import inspect
+    src = inspect.getsource(a)
+    # Used by all three resolvers: the journal's (sym), and the main one and the weekly
+    # report's (symbol) — plus the helper's own def line.
+    assert src.count("_orb_fill_strategy(order_id, sym)") == 1 and src.count("_orb_fill_strategy(order_id, symbol)") == 3
 
 
 def test_tick_runs_only_in_its_windows(env, monkeypatch):

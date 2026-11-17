@@ -6534,6 +6534,9 @@ def api_journal_generate():
                 _j_sig_lkp.setdefault((tk, sd), []).append((ts, stg, snt))
 
             def _j_resolve(sym, side, ftime, order_id=""):
+                _orb = _orb_fill_strategy(order_id, sym)
+                if _orb:
+                    return _orb, ""
                 try:
                     fts = _dt2.fromisoformat(ftime.replace("Z", "+00:00")).timestamp()
                 except Exception:
@@ -9874,6 +9877,20 @@ def _build_signal_lookup_for_alpaca(trades_db=None):
     return lookup
 
 
+def _orb_fill_strategy(order_id, symbol):
+    """'QQQ_ORB' for an ORB engine entry (client_order_id orb-YYYYMMDD-TICKER), else None.
+
+    The ORB engine (routes/orb_live.py) places these on ORB Paper. Without this they
+    fell through to the ±5-minute TradingView proximity match: on 2026-11-16 the QQQ
+    and GOOG ORB entries came back as QQQ_CAM_REVERSAL_R4S4 and GOOG_CAM_BREAKOUT_R4S4
+    because those signals happened to fire nearby."""
+    oid = order_id or ""
+    if oid.startswith("orb-"):
+        tk = (oid.rsplit("-", 1)[-1] or symbol or "").upper()
+        return f"{tk}_ORB" if tk else "ORB"
+    return None
+
+
 def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_id=""):
     """Return (strategy, sentiment) for a fill.
 
@@ -9891,8 +9908,12 @@ def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_i
     two of its four trades.
 
     Exit orders (kairos-trail-/kairos-hard-) carry no strategy and still fall
-    through to the lookup, as do fills placed outside this app.
+    through to the lookup, as do fills placed outside this app. ORB engine entries
+    (orb-*) are labelled TICKER_ORB before any lookup.
     """
+    _orb = _orb_fill_strategy(order_id, symbol)
+    if _orb:
+        return _orb, ""
     from datetime import datetime as _dt
     try:
         fill_ts = _dt.fromisoformat(fill_time_str.replace("Z", "+00:00")).timestamp()
@@ -23983,6 +24004,9 @@ def api_debug_reconcile():
             sig_lkp.setdefault((tk, sd), []).append((ts, stg, snt))
 
         def _rsig(symbol, side, ftime, order_id=""):
+            _orb = _orb_fill_strategy(order_id, symbol)
+            if _orb:
+                return _orb, ""
             try:
                 fts = _dt.fromisoformat(ftime.replace("Z", "+00:00")).timestamp()
             except Exception:
