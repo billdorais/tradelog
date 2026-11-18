@@ -390,7 +390,7 @@
       ${tile('t-stat', _n(s.t_stat), '', 'mean R ÷ its standard error; ~2+ is the usual bar')}
       ${tile('Net $', _usd(s.net_pnl), _cls(s.net_pnl), `${P.contracts} × ${_esc(R.contract)}; $ and R can disagree because risk per trade varies`)}
     </div><div class="chartbox"><canvas id="eqChart"></canvas></div>
-    <div class="note">Cumulative R after each trade.</div></div>`;
+    <div class="note">Cumulative R after each trade. <span style="color:#FFD166">●</span> = the trade reached its target.</div></div>`;
 
     h += `<div class="grid2"><div class="panel"><h3>Long vs short</h3><div class="tbl"><table><thead><tr><th class="l">Side</th>${sumHead}</tr></thead><tbody>
       ${['long','short'].map(k => `<tr><td class="l">${k}</td>${sumCells(R.by_side[k] || {})}</tr>`).join('')}</tbody></table></div>
@@ -488,11 +488,16 @@
     for (const c of Object.values(_charts)) c.destroy();
     _charts = {};
     const eq = R.equity || [];
+    // equity[i] is the running total after trades[i]; a gold dot marks a trade that hit its target.
+    const hit = (R.trades || []).map(t => String(t.reason || '').startsWith('target'));
     _charts.eq = new Chart($('eqChart'), {
       type: 'line',
-      data: { labels: eq.map(p => p.date), datasets: [{ data: eq.map(p => p.r), borderColor: '#7FE098', borderWidth: 2, pointRadius: 0, tension: 0 }] },
+      data: { labels: eq.map(p => p.date), datasets: [{ data: eq.map(p => p.r), borderColor: '#7FE098', borderWidth: 2, tension: 0,
+        pointRadius: hit.map(h => h ? 3 : 0), pointHoverRadius: hit.map(h => h ? 6 : 3),
+        pointBackgroundColor: hit.map(h => h ? PF_TARGET : '#7FE098'), pointBorderColor: '#13161f', pointBorderWidth: hit.map(h => h ? 1 : 0) }] },
       options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-        plugins: { legend: { display: false }, tooltip: { callbacks: { title: i => 'Trade ' + (i[0].dataIndex + 1) + ' · ' + i[0].label, label: c => ' ' + _r(c.raw) + ' cumulative' } } },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { title: i => 'Trade ' + (i[0].dataIndex + 1) + ' · ' + i[0].label,
+          label: c => ' ' + _r(c.raw) + ' cumulative' + (hit[c.dataIndex] ? '  ● hit the target' : '') } } },
         scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0 } },
                   y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' }, ticks: { color: '#666', font: { size: 10 }, callback: v => v + 'R' } } } },
     });
@@ -616,6 +621,7 @@
   // until it's unpicked. Okabe–Ito hues (colorblind-safe), the dark blue lifted for this background.
   const PF_COLORS = ['#56B4E9', '#E69F00', '#CC79A7', '#F0E442', '#009E73', '#D55E00', '#8DA6FF'];
   const PF_ALL = '#e8eaf0';
+  const PF_TARGET = '#FFD166';   // gold dot with a dark ring: a trade reached its R target that day
   const PF = { options: [], sel: [], color: {}, preset: 'lastmonth', max: 7, data: null, missing: [], chart: null, t: null, seq: 0 };
   const pfKey = o => o.label + (o.variant ? ' · ' + o.variant : '');
   const _ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -738,7 +744,7 @@
     const unitNote = risk ? `dollars with every trade sized to risk $${risk.risk.toLocaleString('en-US')}${risk.cap ? ' (positions capped at ' + _usd0(risk.cap) + ')' : ''}, so every ticker counts about the same`
       : usd ? 'dollars at each run’s share size (a $900 stock outweighs a $40 one)' : 'R: each trade’s result ÷ its own risk, so every ticker counts the same';
     h += `<div class="chartbox" style="height:300px"><canvas id="pfChart" role="img" aria-label="Cumulative ORB result by ticker"></canvas></div>
-    <div class="note" style="margin-bottom:12px">Running total on each day a picked ticker traded, in ${unitNote}.${multi ? ' <strong>All selected</strong> adds them up.' : ''} Click a legend name to hide its line.</div>`;
+    <div class="note" style="margin-bottom:12px">Running total on each day a picked ticker traded, in ${unitNote}.${multi ? ' <strong>All selected</strong> adds them up.' : ''} <span style="color:#FFD166">●</span> = a trade reached its target (3R) that day. Click a legend name to hide its line.</div>`;
     const rows = d.series.slice().sort((a, b) => (b.summary.total_r || 0) - (a.summary.total_r || 0));
     const cells = (s, days, green, sz) => { const net = sz ? sz.net : s.net_pnl;
       return `<td>${s.trades || 0}</td><td>${s.trades ? _n(s.win_rate, 1) : '—'}</td><td class="${_cls(s.expectancy_r)}">${s.trades ? _r(s.expectancy_r, 3) : '—'}</td>
@@ -767,10 +773,16 @@
   function pfDraw() {
     pfDestroy();
     const d = PF.data, usd = pfUsd(), key = pfCurve();
-    const line = (label, data, color, w) => ({ label, data: [0, ...data], borderColor: color, backgroundColor: color, borderWidth: w,
-                                                pointRadius: 0, pointHoverRadius: 4, pointHoverBorderColor: '#13161f', pointHoverBorderWidth: 2, tension: 0 });
-    const ds = d.series.map(s => line(pfKey(s), s[key], pfColor(pfKey(s)), 2));
-    if (d.series.length > 1) ds.push(line('All selected', d.combined[key], PF_ALL, 3));
+    // A gold dot marks each day the line had a trade reach its R target (3R).
+    const line = (label, data, color, w, hits) => {
+      const h = [0, ...(hits || [])];
+      return { label, data: [0, ...data], borderColor: color, backgroundColor: color, borderWidth: w, tension: 0, hits: h,
+               pointRadius: h.map(k => k ? 5 : 0), pointHoverRadius: h.map(k => k ? 7 : 4),
+               pointBackgroundColor: h.map(k => k ? PF_TARGET : color), pointBorderColor: '#13161f',
+               pointBorderWidth: h.map(k => k ? 1.5 : 0), pointHoverBorderColor: '#13161f', pointHoverBorderWidth: 2 };
+    };
+    const ds = d.series.map(s => line(pfKey(s), s[key], pfColor(pfKey(s)), 2, s.target_hits));
+    if (d.series.length > 1) ds.push(line('All selected', d.combined[key], PF_ALL, 3, d.combined.target_hits));
     PF.chart = new Chart($('pfChart'), {
       type: 'line', plugins: [pfCrosshair],
       data: { labels: ['Start', ...d.dates], datasets: ds },
@@ -780,7 +792,9 @@
           tooltip: { itemSort: (a, b) => b.raw - a.raw, callbacks: {
             title: i => i[0].label === 'Start' ? 'Start (' + d.from + ')' : i[0].label,
             label: c => { const day = c.raw - (c.dataIndex ? c.dataset.data[c.dataIndex - 1] : 0);
-                          return ` ${c.dataset.label}: ${pfFmt(c.raw, 2)}${Math.abs(day) > 1e-9 ? '  (day ' + pfFmt(day, 2) + ')' : ''}`; } } } },
+                          const k = (c.dataset.hits || [])[c.dataIndex] || 0;
+                          return ` ${c.dataset.label}: ${pfFmt(c.raw, 2)}${Math.abs(day) > 1e-9 ? '  (day ' + pfFmt(day, 2) + ')' : ''}`
+                            + (k ? `  ● ${k > 1 ? k + ' trades hit' : 'hit'} the target` : ''); } } } },
         scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0 } },
                   y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
                        ticks: { color: '#666', font: { size: 10 }, callback: v => usd ? (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString() : v + 'R' } } } },

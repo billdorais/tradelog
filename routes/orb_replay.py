@@ -454,7 +454,8 @@ def _run_trades(run_id: str):
                          "r_gross": float(t.get("r_gross", t["r"])), "pnl": float(t.get("pnl") or 0.0),
                          "pps": float(t.get("pnl") or 0.0) / size,          # net $ per share (or contract)
                          "risk_pts": float(t.get("risk_pts") or 0.0), "entry": float(t.get("entry") or 0.0),
-                         "side": t.get("side")} for t in (res.get("trades") or [])]}
+                         "side": t.get("side"), "reason": t.get("reason") or ""}
+                        for t in (res.get("trades") or [])]}
     if len(_trades_cache) >= _TRADES_CACHE_MAX:
         _trades_cache.pop(next(iter(_trades_cache)))
     _trades_cache[run_id] = entry
@@ -498,12 +499,14 @@ def portfolio(series: list, d0: str, d1: str, risk: float | None = None, cap: fl
     for s in series:
         tr = sorted((t for t in s["trades"] if d0 <= t["date"] <= d1), key=lambda t: (t["date"], t["time"]))
         sized = [(t, size_trade(t, risk, cap)) for t in tr] if risk else [(t, 0) for t in tr]
-        daily = {}
+        daily, hits = {}, {}
         for t, n in sized:
             a = daily.setdefault(t["date"], [0.0, 0.0, 0.0])      # R, $ at the run's size, $ at `risk`
             a[0] += t["r"]
             a[1] += t["pnl"]
             a[2] += t.get("pps", 0.0) * n
+            if str(t.get("reason") or "").startswith("target"):
+                hits[t["date"]] = hits.get(t["date"], 0) + 1      # trades that reached the R target
         dates.update(daily)
         all_trades += tr
         all_sized += sized
@@ -512,7 +515,7 @@ def portfolio(series: list, d0: str, d1: str, risk: float | None = None, cap: fl
                     "trading_from": s.get("trading_from"), "trading_to": s.get("trading_to"),
                     "covers": bool(s.get("trading_from") and s.get("trading_to")
                                    and s["trading_from"] <= w0 and s["trading_to"] >= w1),
-                    "_daily": daily, "summary": orb.summarize(tr),
+                    "_daily": daily, "_hits": hits, "summary": orb.summarize(tr),
                     **({"sizing": _sizing(sized, risk, cap)} if risk else {})})
     dates = sorted(dates)
     keys = ("cum_r", "cum_usd", "cum_risk") if risk else ("cum_r", "cum_usd")
@@ -529,19 +532,23 @@ def portfolio(series: list, d0: str, d1: str, risk: float | None = None, cap: fl
                 curves[k].append(round(run[i], nd[i]))
         return curves
 
-    comb = {}
+    comb, comb_hits = {}, {}
     for s in out:
-        daily = s.pop("_daily")
+        daily, hits = s.pop("_daily"), s.pop("_hits")
         for d, a in daily.items():
             c = comb.setdefault(d, [0.0, 0.0, 0.0])
             for i in range(3):
                 c[i] += a[i]
+        for d, k in hits.items():
+            comb_hits[d] = comb_hits.get(d, 0) + k
         s.update(_curves(daily))
+        s["target_hits"] = [hits.get(d, 0) for d in dates]     # per date: trades that hit the target
         s["days"] = len(daily)
         s["green_days"] = sum(1 for a in daily.values() if a[0] > 0)
     all_trades.sort(key=lambda t: (t["date"], t["time"]))
     day_r = [a[0] for a in comb.values()]
     combined = {"summary": orb.summarize(all_trades), **_curves(comb), "days": len(comb),
+                "target_hits": [comb_hits.get(d, 0) for d in dates],
                 "green_days": sum(1 for v in day_r if v > 0),
                 "best_day_r": round(max(day_r), 3) if day_r else None,
                 "worst_day_r": round(min(day_r), 3) if day_r else None}

@@ -482,3 +482,16 @@ def test_exit_variants_rerun_the_same_entries():
     assert {v["summary"]["trades"] for v in vs} == {1}, "every variant takes the same entry"
     by = {v["label"]: v["summary"]["total_r"] for v in vs}
     assert by["BE at 1R, trail 1R"] == pytest.approx(1.0) and by["Breakeven at 1R"] == pytest.approx(0.0)
+
+
+def test_portfolio_marks_the_days_a_trade_hit_its_target():
+    from routes.orb_replay import portfolio
+    def tr(d, r, reason):
+        return {"date": d, "time": "09:40", "r": r, "r_gross": r, "pnl": r * 100, "side": "long", "reason": reason}
+    a = {"run_id": "a", "label": "QQQ", "trades": [tr("2026-10-01", 3.0, "target"), tr("2026-10-02", -1.0, "stop")]}
+    b = {"run_id": "b", "label": "GOOG", "trades": [tr("2026-10-01", 2.97, "target (same bar as stop)"),
+                                                    tr("2026-10-03", 0.4, "time")]}
+    out = portfolio([a, b], "2026-10-01", "2026-10-31")
+    assert out["dates"] == ["2026-10-01", "2026-10-02", "2026-10-03"]
+    assert out["series"][0]["target_hits"] == [1, 0, 0] and out["series"][1]["target_hits"] == [1, 0, 0]
+    assert out["combined"]["target_hits"] == [2, 0, 0]
