@@ -138,7 +138,11 @@
         <div class="note" style="flex-basis:100%">Each trade buys as many whole shares as fit the risk: shares = risk ÷ (entry to stop). A tight range means a big position;
           set a max position to keep it within your buying power.</div>
       </div>
-      <span class="lbl">Tickers (up to 7)</span>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:3px">
+        <span class="lbl" style="margin:0">Tickers (up to 7)</span>
+        <label class="chk" style="padding:0;font-size:0.72rem;color:#888" title="Also list runs made with non-default settings (other targets, exit times, …).">
+          <input type="checkbox" id="pfVariants"> Show test settings</label>
+      </div>
       <div class="chips" id="pfChips"><div class="empty">Loading…</div></div>
       <div id="pfOut"></div>
     </div>
@@ -626,7 +630,9 @@
   const pfKey = o => o.label + (o.variant ? ' · ' + o.variant : '');
   const _ymd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   const pfFlt = () => $('pfFilter').value === '1';
-  const pfAvail = () => PF.options.filter(o => o.trend_filter === pfFlt());
+  // Runs with non-default settings (other targets, exit times, …) are test runs: hidden
+  // unless "Show test settings" is ticked, so the chips are one per ticker.
+  const pfAvail = () => PF.options.filter(o => o.trend_filter === pfFlt() && (!o.variant || $('pfVariants').checked));
   const pfRuns = () => { const av = pfAvail(); return PF.sel.map(k => av.find(o => pfKey(o) === k)).filter(Boolean); };
   const pfUsd = () => $('pfUnits').value !== 'r';
   const pfRiskMode = () => $('pfUnits').value === 'risk';
@@ -669,7 +675,8 @@
   function pfSave() {
     try { localStorage.setItem('orbCompare', JSON.stringify({ sel: PF.sel, filter: $('pfFilter').value, units: $('pfUnits').value,
                                                              preset: PF.preset, from: $('pfFrom').value, to: $('pfTo').value,
-                                                             risk: $('pfRisk').value, cap: $('pfCap').value })); } catch (e) {}
+                                                             risk: $('pfRisk').value, cap: $('pfCap').value,
+                                                             variants: $('pfVariants').checked })); } catch (e) {}
   }
 
   function pfChips() {
@@ -818,8 +825,9 @@
     if (['r', 'usd', 'risk'].includes(saved.units)) $('pfUnits').value = saved.units;
     if (saved.risk) $('pfRisk').value = saved.risk;
     if (saved.cap) $('pfCap').value = saved.cap;
+    $('pfVariants').checked = !!saved.variants;
     pfSyncRisk();
-    const keys = new Set(PF.options.map(pfKey));
+    const keys = new Set(PF.options.filter(o => !o.variant || $('pfVariants').checked).map(pfKey));
     PF.sel = (Array.isArray(saved.sel) ? saved.sel : ['QQQ', 'GOOG', 'SPY']).filter(k => keys.has(k)).slice(0, PF.max);
     PF.sel.forEach(pfColor);
     pfSetPreset(saved.preset || 'lastmonth', saved);
@@ -829,6 +837,14 @@
     ['pfFrom', 'pfTo'].forEach(id => $(id).addEventListener('change', () => { pfSetPreset('custom'); pfLoadSoon(); }));
     $('pfFilter').addEventListener('change', () => { pfChips(); if (PF.preset === 'all') pfSetPreset('all'); pfLoadSoon(); });
     $('pfUnits').addEventListener('change', () => { pfSyncRisk(); pfLoadSoon(); });
+    $('pfVariants').addEventListener('change', () => {
+      if (!$('pfVariants').checked) {                      // drop hidden test runs from the selection
+        const plain = new Set(PF.options.filter(o => !o.variant).map(pfKey));
+        PF.sel.filter(k => !plain.has(k)).forEach(k => delete PF.color[k]);
+        PF.sel = PF.sel.filter(k => plain.has(k));
+      }
+      pfChips(); if (PF.preset === 'all') pfSetPreset('all'); pfLoadSoon();
+    });
     $('pfRiskPresets').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; $('pfRisk').value = b.dataset.v; pfSyncRisk(); pfLoadSoon(); });
     ['pfRisk', 'pfCap'].forEach(id => $(id).addEventListener('input', () => { pfSyncRisk(); clearTimeout(PF.t); PF.t = setTimeout(pfLoad, 400); }));
     $('pfChips').addEventListener('click', e => {
