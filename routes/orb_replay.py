@@ -147,7 +147,9 @@ def _validate_run(body: dict) -> dict:
         raise ValueError("to must be on or after from")
     params = orb.normalize_params(body.get("params") or {})
     out = {"source": src, "from": d0.isoformat(), "to": d1.isoformat(), "params": params,
-           "validate": bool(body.get("validate", True))}
+           "validate": bool(body.get("validate", True)),
+           # Also test the breakeven / trailing exit grid (orb.EXIT_GRID) on the same entries.
+           "exits": bool(body.get("exit_variants", False))}
     if src == "alpaca":
         sym = (body.get("symbol") or "QQQ").strip().upper()
         if not sym.isalnum() or len(sym) > 6:
@@ -211,7 +213,10 @@ def _execute(run_id: str, cfg: dict):
         if m.base_min == 5:
             notes.append("5-minute bars: a stop and target touched inside the same 5 minutes are scored as "
                          "the stop (conservative). 1-minute bars settle more of those.")
-        rep = orb.full_report(m, cfg["params"], cfg["contract"], start, d1, validate=cfg["validate"])
+        if cfg.get("exits"):
+            _save_run(run_id, progress=f"testing {len(orb.EXIT_GRID)} exit variants")
+        rep = orb.full_report(m, cfg["params"], cfg["contract"], start, d1, validate=cfg["validate"],
+                              exits=bool(cfg.get("exits")))
         days = [d for d in m.days if start <= d <= d1 and d.weekday() < 5]
         rep["data"] = {"label": data_label, "bars": len(m.base), "base_min": m.base_min,
                        "first_bar": m.base.index[0].isoformat(), "last_bar": m.base.index[-1].isoformat(),

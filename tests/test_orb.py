@@ -412,3 +412,73 @@ def test_portfolio_endpoint_reads_stored_runs(monkeypatch, tmp_path):
     assert c.get("/api/orb/portfolio?runs=&from=2026-10-01&to=2026-10-31").status_code == 400
     many = ",".join(f"x{i}" for i in range(8))
     assert c.get(f"/api/orb/portfolio?runs={many}&from=2026-10-01&to=2026-10-31").status_code == 400
+
+
+# ── breakeven and trailing exits (2026-11-17) ────────────────────────────────
+# Entry 121.5, stop 120 → 1R = 1.5 points, 3R target 126.
+
+_BREAK = ("09:30", "09:35", 120.75, 121.5)
+
+
+def _flat(after):
+    return after + [("10:30", "17:00", after[-1][3], after[-1][3])]
+
+
+def test_breakeven_turns_a_round_trip_into_a_scratch():
+    m = _market(WARM, _range_day(after=_flat([_BREAK, ("09:35", "09:45", 121.5, 123.0),
+                                              ("09:45", "10:30", 123.0, 119.0)])))
+    base = _run(m)["trades"][0]
+    be = _run(m, be_at_r=1.0)["trades"][0]
+    assert base["reason"] == "stop" and base["r"] == pytest.approx(-1.0)
+    assert be["reason"] == "breakeven" and be["exit"] == 121.5 and be["r"] == pytest.approx(0.0)
+
+
+def test_a_trail_from_breakeven_locks_in_profit():
+    m = _market(WARM, _range_day(after=_flat([_BREAK, ("09:35", "09:45", 121.5, 124.5),
+                                              ("09:45", "10:30", 124.5, 119.0)])))
+    t = _run(m, be_at_r=1.0, trail_r=1.0)["trades"][0]
+    assert t["reason"] == "trail" and t["exit"] == 123.0 and t["r"] == pytest.approx(1.0)   # peak 124.5 − 1.5
+    assert _run(m)["trades"][0]["r"] == pytest.approx(-1.0)
+
+
+def test_a_one_minute_spike_cannot_move_the_stop_in_that_minute():
+    """1-minute bars hide the order inside the bar: a bar that reached +1R and the
+    stop must be read as stopped at the ORIGINAL stop, not saved by breakeven."""
+    m = _market(WARM, _range_day(after=_flat([_BREAK, ("09:35", "10:30", 121.5, 121.5)]),
+                                 overrides={"09:36": (121.5, 123.25, 119.5, 119.75)}))
+    t = _run(m, be_at_r=1.0, trail_r=1.0)["trades"][0]
+    assert t["reason"] == "stop" and t["r"] == pytest.approx(-1.0)
+
+
+def test_no_target_lets_a_trail_run_past_3r():
+    m = _market(WARM, _range_day(after=_flat([_BREAK, ("09:35", "10:00", 121.5, 130.0),
+                                              ("10:00", "10:30", 130.0, 127.0)])))
+    capped = _run(m, be_at_r=1.0, trail_r=1.0)["trades"][0]
+    free = _run(m, be_at_r=1.0, trail_r=1.0, target_r=20)["trades"][0]
+    assert capped["reason"] == "target" and capped["r"] == pytest.approx(3.0)
+    assert free["reason"] == "trail" and free["exit"] == 128.5 and free["r"] == pytest.approx(7 / 1.5, abs=1e-4)
+
+
+def test_breakeven_never_sits_below_the_entry_for_a_short():
+    m = _market(WARM, _range_day(after=_flat([("09:30", "09:35", 120.25, 119.5), ("09:35", "09:45", 119.5, 118.0),
+                                              ("09:45", "10:30", 118.0, 122.0)])))
+    # WARM is an uptrend, so the filter must be off for a short.
+    t = _run(m, be_at_r=1.0, trend_filter=False)["trades"][0]   # short: entry 119.5, stop 121, 1R = 1.5
+    assert t["side"] == "short" and t["reason"] == "breakeven" and t["exit"] == 119.5
+
+
+def test_a_trail_needs_breakeven_and_the_bracket_is_unchanged_by_default():
+    with pytest.raises(ValueError):
+        orb.normalize_params({"trail_r": 1.0})
+    assert orb.normalize_params({})["be_at_r"] == 0.0 and orb.normalize_params({})["trail_r"] == 0.0
+
+
+def test_exit_variants_rerun_the_same_entries():
+    m = _market(WARM, _range_day(after=_flat([_BREAK, ("09:35", "09:45", 121.5, 124.5),
+                                              ("09:45", "10:30", 124.5, 119.0)])))
+    vs = orb.exit_variants(m, {**FREE}, "NQ", date(2026, 3, 3), date(2026, 3, 31))
+    assert len(vs) == len(orb.EXIT_GRID) and vs[0]["be_at_r"] == 0
+    assert vs[0]["summary"] == orb.summarize(_run(m)["trades"])
+    assert {v["summary"]["trades"] for v in vs} == {1}, "every variant takes the same entry"
+    by = {v["label"]: v["summary"]["total_r"] for v in vs}
+    assert by["BE at 1R, trail 1R"] == pytest.approx(1.0) and by["Breakeven at 1R"] == pytest.approx(0.0)

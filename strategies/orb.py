@@ -65,6 +65,11 @@ DEFAULTS = {
     "contracts": 1,
     "slippage_ticks": 1.0,       # per market fill (entry, stop, time exit); targets are limits
     "commission": None,          # per side per contract; None = the contract's default
+    # Exit management (0 = off). Once the trade is be_at_r R in profit, the stop moves
+    # to the entry price; with trail_r > 0 it then trails trail_r R behind the best
+    # price reached, never below the entry. trail_r == be_at_r = "trail from breakeven".
+    "be_at_r": 0.0,
+    "trail_r": 0.0,
 }
 
 TARGET_GRID = (2.5, 3.0, 3.5, 4.0)
@@ -95,7 +100,7 @@ def normalize_params(p: dict | None) -> dict:
             out[k] = _fmt_hm(_hm(out[k]))
         for k in ("breakout_tf", "trend_tf", "fast_sma", "slow_sma", "max_trades_per_day", "contracts"):
             out[k] = int(out[k])
-        for k in ("target_r", "slippage_ticks"):
+        for k in ("target_r", "slippage_ticks", "be_at_r", "trail_r"):
             out[k] = float(out[k])
         if out["commission"] is not None:
             out["commission"] = float(out["commission"])
@@ -112,6 +117,10 @@ def normalize_params(p: dict | None) -> dict:
         raise ValueError("need 1 <= fast_sma < slow_sma <= 1000")
     if not 0.25 <= out["target_r"] <= 20:
         raise ValueError("target_r must be between 0.25 and 20")
+    if not 0 <= out["be_at_r"] <= 10 or not 0 <= out["trail_r"] <= 10:
+        raise ValueError("be_at_r and trail_r must be between 0 and 10 R (0 = off)")
+    if out["trail_r"] > 0 and out["be_at_r"] <= 0:
+        raise ValueError("trail_r needs be_at_r: the trail starts when breakeven arms")
     if out["stop"] not in ("opposite", "midpoint"):
         raise ValueError("stop must be opposite or midpoint")
     if out["same_bar"] not in ("stop_first", "target_first"):
@@ -374,6 +383,60 @@ def shares_for_risk(risk_per_share: float, entry: float, risk: float, cap: float
     return max(n, 0)
 
 
+def _walk_fixed(side, stop, target, hh, ll, oo, same_bar, slip, tick):
+    """First bar that touches the fixed stop or target -> (bar index, exit price, reason), else None."""
+    if side > 0:
+        hit_s, hit_t = ll <= stop, hh >= target
+    else:
+        hit_s, hit_t = hh >= stop, ll <= target
+    any_hit = np.nonzero(hit_s | hit_t)[0]
+    if not len(any_hit):
+        return None
+    q = int(any_hit[0])
+    both = bool(hit_s[q] and hit_t[q])
+    if hit_s[q] and (not hit_t[q] or same_bar == "stop_first"):
+        gapped = q > 0 and (oo[q] - stop) * side <= 0
+        base_px = oo[q] if gapped else stop
+        reason = "stop (gap)" if gapped else ("stop (same bar as target)" if both else "stop")
+        return q, _round_tick(base_px - side * slip, tick, up=side < 0), reason
+    return q, target, ("target (same bar as stop)" if both else "target")
+
+
+def _walk_managed(side, entry, stop0, target, risk, be_at, trail, hh, ll, oo, same_bar, slip, tick):
+    """Bar-by-bar exit with a move to breakeven and an optional trail.
+
+    1-minute bars hide the order of prices inside a bar, so the reading is the
+    conservative one: the stop that applies to a bar is the one set by EARLIER bars.
+    A bar's own high (low, for a short) can arm breakeven or raise the trail only from
+    the NEXT bar on, never "it reached +1R, moved to breakeven and came back in the
+    same minute". Returns (bar index, exit price, reason) or None."""
+    stop, armed, peak = stop0, False, entry
+    for q in range(len(hh)):
+        hs = ll[q] <= stop if side > 0 else hh[q] >= stop
+        ht = hh[q] >= target if side > 0 else ll[q] <= target
+        if hs or ht:
+            both = hs and ht
+            if hs and (not ht or same_bar == "stop_first"):
+                gapped = q > 0 and (oo[q] - stop) * side <= 0
+                base_px = oo[q] if gapped else stop
+                kind = "stop" if stop == stop0 else ("breakeven" if stop == entry else "trail")
+                reason = f"{kind} (gap)" if gapped else (f"{kind} (same bar as target)" if both else kind)
+                return q, _round_tick(base_px - side * slip, tick, up=side < 0), reason
+            return q, target, ("target (same bar as stop)" if both else "target")
+        fav = hh[q] if side > 0 else ll[q]
+        if (fav - peak) * side > 0:
+            peak = fav
+        if not armed and (peak - entry) * side >= be_at * risk - 1e-9:
+            armed = True
+        if armed:
+            new = entry if trail <= 0 else _round_tick(peak - side * trail * risk, tick, up=side < 0)
+            if (new - entry) * side < 0:
+                new = entry                                   # never give back past breakeven
+            if (new - stop) * side > 0:
+                stop = new
+    return None
+
+
 def simulate(m: Market, params: dict, contract: str = "NQ",
              start: date | None = None, end: date | None = None) -> dict:
     """Run the rules over every trading day in [start, end]. Returns {trades, skipped}
@@ -420,25 +483,14 @@ def simulate(m: Market, params: dict, contract: str = "NQ",
             x_end = i0 + int(np.searchsorted(mins[i0:i1], fexit))
             x_end = max(x_end, e)
             hh, ll, oo = h[e:x_end], l[e:x_end], o[e:x_end]
-            if side > 0:
-                hit_s, hit_t = ll <= stop, hh >= target
+            if p["be_at_r"] > 0:
+                hit = _walk_managed(side, entry, stop, target, risk, p["be_at_r"], p["trail_r"],
+                                    hh, ll, oo, p["same_bar"], slip, tick)
             else:
-                hit_s, hit_t = hh >= stop, ll <= target
-            any_hit = np.nonzero(hit_s | hit_t)[0]
-            if len(any_hit):
-                q = int(any_hit[0])
-                xi = e + q
-                both = bool(hit_s[q] and hit_t[q])
-                stop_wins = hit_s[q] and (not hit_t[q] or p["same_bar"] == "stop_first")
-                if stop_wins:
-                    gapped = q > 0 and (oo[q] - stop) * side <= 0
-                    base_px = oo[q] if gapped else stop
-                    exit_px = _round_tick(base_px - side * slip, tick, up=side < 0)
-                    reason = "stop (gap)" if gapped else ("stop (same bar as target)" if both else "stop")
-                else:
-                    exit_px = target
-                    reason = "target (same bar as stop)" if both else "target"
-                exit_ns = int(t[xi])
+                hit = _walk_fixed(side, stop, target, hh, ll, oo, p["same_bar"], slip, tick)
+            if hit is not None:
+                q, exit_px, reason = hit
+                exit_ns = int(t[e + q])
             else:
                 fx = i0 + int(np.searchsorted(mins[i0:i1], fexit))
                 if fx < i1 and mins[fx] < fexit + max(5, m.base_min):
@@ -663,7 +715,50 @@ def compare(m: Market, params: dict, contract: str, start: date, end: date) -> l
     return rows
 
 
-def full_report(m: Market, params: dict, contract: str, start: date, end: date, validate: bool = True) -> dict:
+# Breakeven / trailing grid tested by exit_variants. Each entry overrides the run's own
+# exits; the first row is the plain bracket so every other row reads against it.
+EXIT_GRID = [
+    {"label": "Bracket only (stop / 3R / 15:55)", "be_at_r": 0, "trail_r": 0},
+    {"label": "Breakeven at 0.5R", "be_at_r": 0.5, "trail_r": 0},
+    {"label": "Breakeven at 1R", "be_at_r": 1.0, "trail_r": 0},
+    {"label": "Breakeven at 1.5R", "be_at_r": 1.5, "trail_r": 0},
+    {"label": "Breakeven at 2R", "be_at_r": 2.0, "trail_r": 0},
+    {"label": "BE at 0.5R, trail 0.5R", "be_at_r": 0.5, "trail_r": 0.5},
+    {"label": "BE at 1R, trail 1R", "be_at_r": 1.0, "trail_r": 1.0},
+    {"label": "BE at 1.5R, trail 1.5R", "be_at_r": 1.5, "trail_r": 1.5},
+    {"label": "BE at 2R, trail 2R", "be_at_r": 2.0, "trail_r": 2.0},
+    {"label": "BE at 1R, trail 0.5R", "be_at_r": 1.0, "trail_r": 0.5},
+    {"label": "BE at 1R, trail 1.5R", "be_at_r": 1.0, "trail_r": 1.5},
+    {"label": "BE at 1R, trail 1R, no target", "be_at_r": 1.0, "trail_r": 1.0, "target_r": 20},
+    {"label": "BE at 1.5R, trail 1.5R, no target", "be_at_r": 1.5, "trail_r": 1.5, "target_r": 20},
+    {"label": "BE at 2R, trail 2R, no target", "be_at_r": 2.0, "trail_r": 2.0, "target_r": 20},
+]
+
+
+def exit_variants(m: Market, params: dict, contract: str, start: date, end: date,
+                  grid: list | None = None, frac: float = 0.7) -> list:
+    """The same entries under different exits: per variant the summary, the in/out-of-
+    sample split (same cut as in_out_sample), R by year, and how trades ended."""
+    days = [d for d in m.days if start <= d <= end and d.weekday() < 5]
+    cut = days[int(len(days) * frac)].isoformat() if len(days) >= 20 else None
+    out = []
+    for v in (grid or EXIT_GRID):
+        q = normalize_params({**params, **{k: v[k] for k in ("be_at_r", "trail_r", "target_r") if k in v}})
+        tr = simulate(m, q, contract, start, end)["trades"]
+        years = {}
+        for t in tr:
+            years[t["date"][:4]] = round(years.get(t["date"][:4], 0.0) + t["r"], 2)
+        out.append({"label": v.get("label") or f"BE {q['be_at_r']}R / trail {q['trail_r']}R",
+                    "be_at_r": q["be_at_r"], "trail_r": q["trail_r"], "target_r": q["target_r"],
+                    "summary": summarize(tr), "by_reason": by_reason(tr), "by_year": years,
+                    "split_date": cut,
+                    "in_sample": summarize([t for t in tr if cut and t["date"] < cut]),
+                    "out_of_sample": summarize([t for t in tr if cut and t["date"] >= cut])})
+    return out
+
+
+def full_report(m: Market, params: dict, contract: str, start: date, end: date, validate: bool = True,
+                exits: bool = False) -> dict:
     p = normalize_params(params)
     run = simulate(m, p, contract, start, end)
     tr = run["trades"]
@@ -677,6 +772,8 @@ def full_report(m: Market, params: dict, contract: str, start: date, end: date, 
         out["in_out_sample"] = in_out_sample(m, p, contract, start, end)
         out["monte_carlo"] = monte_carlo([t["r"] for t in tr])
         out["sensitivity"] = sensitivity(m, p, contract, start, end)
+    if exits:
+        out["exit_variants"] = exit_variants(m, p, contract, start, end)
     return out
 
 

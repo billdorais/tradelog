@@ -203,6 +203,7 @@
         <label class="chk"><input type="checkbox" id="trend_filter"> Trend filter</label>
         <label class="chk" title="Off: if the filter rejects the first breakout, the day is skipped. On: keep watching for a later breakout that agrees."><input type="checkbox" id="retry_after_filter"> Retry after a filtered breakout</label>
         <label class="chk"><input type="checkbox" id="validate" checked> Validation</label>
+        <label class="chk" title="Re-run the same entries with breakeven and trailing-stop exits (14 variants) and compare them with the plain bracket."><input type="checkbox" id="exitVariants"> Test breakeven / trailing exits</label>
       </div>
       <div class="row" style="margin-bottom:0">
         <button class="btn go" id="runBtn" onclick="run()">Run backtest</button>
@@ -312,7 +313,8 @@
   async function run() {
     const body = { source: $('source').value, from: $('from').value, to: $('to').value, params: _params(),
                    contract: $('contract').value, dataset_id: $('dataset').value, symbol: $('symbol').value,
-                   resolution: $('resolution').value, validate: $('validate').checked };
+                   resolution: $('resolution').value, validate: $('validate').checked,
+                   exit_variants: $('exitVariants').checked };
     $('runBtn').disabled = true; $('runStatus').textContent = 'Starting…';
     const r = await fetch('/api/orb/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const d = await r.json().catch(() => ({ error: 'request failed' }));
@@ -401,6 +403,7 @@
       <div class="tbl"><table><thead><tr><th class="l">Filter</th><th>Target</th>${sumHead}</tr></thead><tbody>
       ${(R.compare || []).map(c => `<tr class="${c.trend_filter === P.trend_filter && c.target_r === P.target_r ? 'cur' : ''}"><td class="l">${c.trend_filter ? 'on' : 'off'}</td><td>${c.target_r}R</td>${sumCells(c)}</tr>`).join('')}</tbody></table></div></div>`;
 
+    if (R.exit_variants && R.exit_variants.length) h += renderExitVariants(R.exit_variants);
     if (R.in_out_sample || R.monte_carlo || R.sensitivity) h += renderValidation(R);
 
     h += `<div class="panel"><h3>By month</h3><div class="tbl"><table><thead><tr><th class="l">Month</th>${sumHead}</tr></thead><tbody>
@@ -414,6 +417,30 @@
 
     $('results').innerHTML = h;
     drawCharts(R);
+  }
+
+  function renderExitVariants(vs) {
+    // First row is the plain bracket; every other row reads against it.
+    const base = vs[0].summary || {}, baseO = vs[0].out_of_sample || {};
+    const d = (v, b) => v == null || b == null ? '' : ` <span class="dim">(${v - b >= 0 ? '+' : ''}${(v - b).toFixed(3)})</span>`;
+    const years = [...new Set(vs.flatMap(v => Object.keys(v.by_year || {})))].sort();
+    return `<div class="panel"><div class="band-q">Breakeven &amp; trailing exits — same entries, different exits</div>
+      <div class="band-sub">Each row re-runs the identical trades with a different exit. Breakeven moves the stop to the entry once the trade is that many R
+        in profit; a trail then follows the best price by that many R, never below the entry. Read conservatively on 1-minute bars: a bar can only move
+        the stop for the NEXT bar. Split date ${_esc(vs[0].split_date || '—')}; out-of-sample is the later 30%.</div>
+      <div class="tbl"><table><thead><tr><th class="l">Exit</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Max DD</th><th>PF</th><th>t</th>
+        <th>Out-of-sample avg R</th>${years.map(y => `<th>${y}</th>`).join('')}<th class="l">How trades ended</th></tr></thead><tbody>
+      ${vs.map((v, i) => { const s = v.summary || {}, o = v.out_of_sample || {};
+        const ends = Object.entries(v.by_reason || {}).map(([k, x]) => `${_esc(k)} ${x.trades}`).join(' · ');
+        return `<tr class="${i === 0 ? 'cur' : ''}"><td class="l">${_esc(v.label)}</td><td>${s.trades || 0}</td><td>${_n(s.win_rate, 1)}</td>
+          <td class="${_cls(s.expectancy_r)}">${_r(s.expectancy_r, 3)}${i ? d(s.expectancy_r, base.expectancy_r) : ''}</td>
+          <td class="${_cls(s.total_r)}">${_r(s.total_r, 1)}</td><td>${s.max_dd_r != null ? Number(s.max_dd_r).toFixed(1) + 'R' : '—'}</td>
+          <td>${_n(s.profit_factor)}</td><td>${_n(s.t_stat)}</td>
+          <td class="${_cls(o.expectancy_r)}">${_r(o.expectancy_r, 3)}${i ? d(o.expectancy_r, baseO.expectancy_r) : ''}</td>
+          ${years.map(y => { const r = (v.by_year || {})[y]; return `<td class="${_cls(r)}">${r == null ? '—' : _r(r, 1)}</td>`; }).join('')}
+          <td class="l dim" style="white-space:normal;min-width:200px">${ends}</td></tr>`; }).join('')}
+      </tbody></table></div>
+      <div class="note" style="margin-top:6px">Gray numbers are the change from the plain bracket. Trust a change that holds out-of-sample and in most years, not a better total alone.</div></div>`;
   }
 
   function renderValidation(R) {
