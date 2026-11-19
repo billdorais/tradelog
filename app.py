@@ -453,6 +453,19 @@ _CURATED_TAGS = {_meta_tag(n) for n, m in ACCOUNT_META.items()
 # take-profit and max-hold machinery skip them; the EOD close still backstops them.
 _SELF_MANAGED_TAGS = {_meta_tag(n) for n, m in ACCOUNT_META.items() if m.get("self_managed")}
 
+
+def _orb_owned_positions():
+    """(tag, SYMBOL) pairs the ORB engine owns on an account it shares with Kairos — Crew Live,
+    where the live ORB book trades its own tickers beside the crew's rules (routes/orb_live.py).
+    Kairos' trailing stops, take-profit and max holds skip these exactly as they skip a
+    self-managed account; the profit lock, daily loss guard and 15:58 EOD close still apply."""
+    try:
+        from routes.orb_live import owned_positions
+        return owned_positions()
+    except Exception as _e:
+        log.debug("ORB owned positions unavailable: %s", _e)
+        return frozenset()
+
 # RVOL entry gate — block low relative-volume BREAKOUT entries (and short blow-offs)
 # on the gated books. The Replay RVOL sweep (Jun–Jul '26) showed the edge lives in
 # the 1.5–3.0x band: sub-1.5x breakouts bled on both TV Refined (-$70 -> +$484 at
@@ -2405,13 +2418,14 @@ def _check_position_stops():
     if stale_holds:
         log.info("Position stop: cleared max-hold timers for %s (no longer open on broker)", stale_holds)
 
+    _orb_owned = _orb_owned_positions() if all_positions else frozenset()
     for pos in all_positions:
         upnl   = float(pos.get("unrealized_pnl") or 0)
         symbol = pos["symbol"]
         broker = pos["broker"]
         sym_u  = symbol.upper()
-        if broker in _SELF_MANAGED_TAGS:
-            continue   # its own engine owns the exits (ORB Paper: bracket + 15:55 flat)
+        if broker in _SELF_MANAGED_TAGS or (broker, sym_u) in _orb_owned:
+            continue   # its own engine owns the exits (ORB: bracket + 15:55 flat)
 
         # Always track peak unrealized P&L — keyed by (broker, symbol) so paired
         # trades in different accounts track their peaks independently.
@@ -2659,7 +2673,10 @@ def _check_max_hold_exits():
         return
 
     now_utc = datetime.now(timezone.utc)
+    _orb_owned = _orb_owned_positions()
     for (broker_tag, symbol), info in snapshot.items():
+        if (broker_tag, symbol.upper()) in _orb_owned:
+            continue   # an ORB bracket on Crew Live: no Kairos max hold
         # A NEGATIVE limit means the timer was released for this position — let it
         # run and exit on the trailing stop instead. The magnitude is kept so the
         # original limit can be restored if it's re-armed. The entry stays in the
@@ -3518,6 +3535,11 @@ def _recover_max_hold_positions():
             log.warning("Max hold recovery: get_positions failed [%s]: %s", _tag, _e)
             failed_brokers.add(_tag)
 
+    # ORB positions on Crew Live: matching by ticker would hang a crew rule's (or the
+    # global) max hold on an ORB bracket, so they are not candidates in either pass.
+    _orb_owned = _orb_owned_positions()
+    for _k in [k for k in open_positions if k in _orb_owned]:
+        open_positions.pop(_k, None)
     open_keys = set(open_positions.keys())
     recovered = 0
 
@@ -3526,6 +3548,8 @@ def _recover_max_hold_positions():
         key = (broker_tag, symbol.upper())
         if broker_tag in failed_brokers:
             continue  # can't verify — leave DB row for next startup
+        if key in _orb_owned:
+            continue  # an ORB position: never armed with a Kairos max hold
         if key not in open_keys:
             _clear_max_hold_db(broker_tag, symbol)
             continue
@@ -4247,19 +4271,25 @@ def risk_status():
 
     # ORB Paper's positions carry a fixed bracket (range stop + target) that the ORB
     # engine logged when it entered; there is no Kairos trail to estimate from.
-    _orb_today = {}
-    if any(p.get("broker") in _SELF_MANAGED_TAGS for p in positions):
+    # Crew Live's ORB positions (the live ORB book) are shown the same way.
+    _orb_today = {}                 # broker tag -> {ticker: today's ORB row}
+    _orb_owned = _orb_owned_positions() if positions else frozenset()
+    _orb_books = {"alpaca8": "8", "alpaca6": "6"}
+    _orb_need = {p.get("broker") for p in positions
+                 if p.get("broker") in _SELF_MANAGED_TAGS
+                 or (p.get("broker"), (p.get("symbol") or "").upper()) in _orb_owned}
+    for _tg in _orb_need:
         try:
             from routes.orb_live import rows as _orb_rows
             _orb_day = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-            _orb_today = {r["ticker"]: r for r in _orb_rows(day=_orb_day)}
+            _orb_today[_tg] = {r["ticker"]: r for r in _orb_rows(day=_orb_day, book=_orb_books.get(_tg, "8"))}
         except Exception as _oe:
-            log.debug("risk status: ORB rows unavailable: %s", _oe)
+            log.debug("risk status: ORB rows unavailable for %s: %s", _tg, _oe)
 
     for p in positions:
         sym_u = (p.get("symbol") or "").upper()
-        if p.get("broker") in _SELF_MANAGED_TAGS:
-            o = _orb_today.get(sym_u) or {}
+        if p.get("broker") in _SELF_MANAGED_TAGS or (p.get("broker"), sym_u) in _orb_owned:
+            o = (_orb_today.get(p.get("broker")) or {}).get(sym_u) or {}
             p["strategy"]            = f"ORB {o['side']}" if o.get("side") else "ORB"
             p["entry_time"]          = o.get("fill_time")
             p["peak_unrealized_pnl"] = round(p.get("unrealized_pnl") or 0, 2)

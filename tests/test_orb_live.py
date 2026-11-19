@@ -83,6 +83,9 @@ def env(monkeypatch, tmp_path):
     L.ensure_table()
     L._state.update(day=None, decided=set(), last_scan=0.0, warm={}, reconciled=None, flattened=None,
                     flatten_claim=None, flatten_sent={}, cfg=None, cfg_ts=0.0)
+    L._states["6"].update(L._fresh_state())
+    L._owned.update(ts=0.0, val=frozenset())
+    L._preflight.update(ts=0.0, val=None)
     broker = FakeBroker()
     rec = {"num": "8", "tag": "alpaca8", "label": "ORB Paper", "paper": True, "self_managed": True, "broker": broker}
     monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {**a.ACCOUNTS_BY_NUM, "8": rec})
@@ -344,9 +347,9 @@ def test_orb_fills_are_labelled_orb_not_a_nearby_tv_signal():
 
 def test_tick_runs_only_in_its_windows(env, monkeypatch):
     calls = []
-    monkeypatch.setattr(L, "scan", lambda now, cfg: calls.append(("scan", now.strftime("%H:%M:%S"))))
-    monkeypatch.setattr(L, "flatten", lambda now, cfg: calls.append(("flatten", now.strftime("%H:%M"))))
-    monkeypatch.setattr(L, "reconcile", lambda day, cfg: calls.append(("reconcile", day.isoformat())))
+    monkeypatch.setattr(L, "scan", lambda now, cfg, book="8": calls.append(("scan", now.strftime("%H:%M:%S"))))
+    monkeypatch.setattr(L, "flatten", lambda now, cfg, book="8": calls.append(("flatten", now.strftime("%H:%M"))))
+    monkeypatch.setattr(L, "reconcile", lambda day, cfg, book="8": calls.append(("reconcile", day.isoformat())))
     _cfg()
     for t in (_at(9, 20), _at(9, 35, 10), _at(9, 38, 0), _at(12, 0), _at(15, 55, 1), _at(16, 6), _at(16, 7)):
         L._state["last_scan"] = 0.0
@@ -514,3 +517,278 @@ def test_the_trades_list_labels_orb_fills_too(monkeypatch):
     rows = got if isinstance(got, list) else got.get("trades") or got.get("fills") or []
     by = {f["order_id"]: f.get("strategy") for f in rows}
     assert by["orb-20261116-QQQ"] == "QQQ_ORB"
+
+
+# ── the live book: Crew Live (account 6), real money ──────────────────────────
+# Same engine, second book. The account also trades the crew's Camarilla rules, so the
+# book owns only its own tickers there, and every entry passes the live-money guards.
+
+@pytest.fixture
+def live(env, monkeypatch):
+    br = FakeBroker(paper=False)
+    br._trading.get_account = lambda: SimpleNamespace(equity=6764.55, buying_power=27058.0, shorting_enabled=True,
+                                                      trading_blocked=False, account_blocked=False)
+    rec = {"num": "6", "tag": "alpaca6", "label": "Crew Live", "paper": False, "broker": br}
+    monkeypatch.setattr(a, "ACCOUNTS_BY_NUM", {**a.ACCOUNTS_BY_NUM, "6": rec})
+    monkeypatch.setattr(a, "ACCOUNTS_BY_TAG", {**a.ACCOUNTS_BY_TAG, "alpaca6": rec})
+    monkeypatch.setattr(a, "LIVE_TRADING_ARMED", True)
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000.0)
+    monkeypatch.setattr(a, "LIVE_MAX_POSITION_PCT", 120.0)
+    monkeypatch.setattr(a, "LIVE_MAX_ENTRIES_PER_DAY", 0)
+    monkeypatch.setattr(a, "_live_snap_cache", {})
+    for fn in ("_profit_lock_halted_for", "_daily_loss_halted_for", "_manual_halted_for"):
+        monkeypatch.setattr(a, fn, lambda tag: False)
+    conn = sqlite3.connect(env.db)
+    conn.execute("CREATE TABLE routing_rules (id INTEGER PRIMARY KEY, name TEXT, enabled INTEGER, nodes TEXT)")
+    conn.commit()
+    conn.close()
+    return SimpleNamespace(broker=br, rec=rec, db=env.db)
+
+
+def _crew_rule(db, slug, enabled=1):
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO routing_rules (name, enabled, nodes) VALUES (?, ?, ?)",
+                 (f"{slug} · Crew Live", enabled, json.dumps([{"type": "strategy", "value": slug},
+                                                              {"type": "broker", "value": "alpaca-live-6"}])))
+    conn.commit()
+    conn.close()
+
+
+def _cfg6(mode="live", **kw):
+    cfg = L.validate_config({"mode": mode, "tickers": [{"symbol": "QQQ", "group": "core"},
+                                                       {"symbol": "GOOG", "group": "watch"}], **kw}, book="6")
+    L.save_config(cfg, book="6")
+    return cfg
+
+
+def _row6(t):
+    return {r["ticker"]: r for r in L.rows(day=DAY.isoformat(), book="6")}.get(t)
+
+
+def test_live_book_defaults_are_qqq_and_spcx_at_20_risk_7000_cap_and_off():
+    c = L.validate_config({}, book="6")
+    assert [t["symbol"] for t in c["tickers"]] == ["QQQ", "SPCX"]
+    assert (c["mode"], c["risk"], c["cap"], c["params"]["target_r"], c["params"]["forced_exit"]) == \
+        ("off", 20.0, 7000.0, 3.0, "15:55")
+    with pytest.raises(ValueError):
+        L.validate_config({"mode": "paper"}, book="6")          # the live book has no paper mode
+    with pytest.raises(ValueError):
+        L.validate_config({"mode": "live"})                     # and the paper book no live mode
+    with pytest.raises(ValueError):
+        L.validate_config({"risk": 501}, book="6")              # real-money ceilings
+    with pytest.raises(ValueError):
+        L.validate_config({"cap": 60000}, book="6")
+
+
+def test_live_book_sends_a_real_money_bracket_at_20_risk(live, monkeypatch):
+    noted = []
+    monkeypatch.setattr(a, "_note_live_entry", lambda tag: noted.append(tag))
+    cfg = _cfg6(risk=20, cap=7000)
+    L.scan(_at(9, 45, 5), cfg, book="6")
+    assert len(live.broker._trading.submitted) == 1
+    req = live.broker._trading.submitted[0]
+    assert req.symbol == "QQQ" and req.qty == 10                  # $20 / ($122 - $120)
+    assert req.stop_loss.stop_price == 120.0 and req.take_profit.limit_price == 128.0
+    assert req.client_order_id == "orb-20261116-QQQ" and noted == ["alpaca6"]
+    assert _row6("QQQ")["status"] == "entered" and _row6("QQQ")["mode"] == "live"
+    assert L.rows(day=DAY.isoformat()) == []                      # ORB Paper's log is untouched
+
+
+def test_live_book_caps_the_position_at_the_max_position(live):
+    L.scan(_at(9, 45, 5), _cfg6(risk=500, cap=7000), book="6")
+    assert live.broker._trading.submitted[0].qty == 57            # min($500 / $2, $7,000 / $122)
+
+
+def test_live_book_sizes_down_to_the_live_position_limit(live, monkeypatch):
+    monkeypatch.setattr(a, "LIVE_MAX_POSITION_PCT", 20.0)          # 20% of $6,764.55 = $1,352.91
+    L.scan(_at(9, 45, 5), _cfg6(risk=500, cap=7000), book="6")
+    assert live.broker._trading.submitted[0].qty == 11            # $1,352.91 / $122
+    r = _row6("QQQ")
+    assert r["qty"] == 11 and "sized down from 57 to 11" in r["note"]
+
+
+def test_live_book_refuses_when_not_armed(live, monkeypatch):
+    monkeypatch.setattr(a, "LIVE_TRADING_ARMED", False)
+    L.scan(_at(9, 45, 5), _cfg6(), book="6")
+    assert live.broker._trading.submitted == []
+    assert _row6("QQQ")["status"] == "blocked" and "not armed" in _row6("QQQ")["note"]
+    r = a.app.test_client().post("/api/orb/live/config", json={"book": "6", "mode": "live"})
+    assert r.status_code == 400 and "not armed" in r.get_json()["error"]
+
+
+def test_live_book_refuses_a_paper_account_6(live):
+    live.rec["paper"] = True
+    _, ok, why = L.account_check("6")
+    assert not ok and "not a live account" in why
+
+
+def test_live_book_refuses_when_the_live_money_guard_says_no(live, monkeypatch):
+    seen = []
+    monkeypatch.setattr(a, "_live_entry_allowed",
+                        lambda tag, notional=None, side=None: (seen.append((tag, notional, side)) or (False, "nope")))
+    L.scan(_at(9, 45, 5), _cfg6(risk=20), book="6")
+    assert live.broker._trading.submitted == [] and _row6("QQQ")["note"] == "nope"
+    assert seen == [("alpaca6", 1220.0, "LONG")]                  # 10 shares x $122
+
+
+def test_live_book_never_trades_a_ticker_the_crew_trades(live):
+    _crew_rule(live.db, "QQQ_CAM_BREAKOUT_R3S3_V02_5MIN")
+    _crew_rule(live.db, "GOOG_CAM_BREAKOUT_R3S3_V02_5MIN", enabled=0)   # a disabled rule doesn't count
+    assert L.crew_live_tickers() == {"QQQ": ["QQQ_CAM_BREAKOUT_R3S3_V02_5MIN"]}
+    r = a.app.test_client().post("/api/orb/live/config", json={"book": "6", "mode": "live"})
+    assert r.status_code == 400 and "already trade QQQ" in r.get_json()["error"]
+    L.scan(_at(9, 45, 5), _cfg6(), book="6")                      # saved directly: the entry check still holds
+    assert live.broker._trading.submitted == []
+    assert _row6("QQQ")["status"] == "blocked" and "through the crew" in _row6("QQQ")["note"]
+
+
+def test_live_book_never_adds_to_a_position_it_did_not_open(live):
+    live.broker.positions = [{"symbol": "QQQ", "qty": 3}]
+    L.scan(_at(9, 45, 5), _cfg6(), book="6")
+    assert live.broker._trading.submitted == [] and "already holds QQQ" in _row6("QQQ")["note"]
+
+
+def test_live_book_stops_entering_when_crew_live_is_halted(live, monkeypatch):
+    monkeypatch.setattr(a, "_daily_loss_halted_for", lambda tag: tag == "alpaca6")
+    L.scan(_at(9, 45, 5), _cfg6(), book="6")
+    assert live.broker._trading.submitted == [] and "daily loss guard" in _row6("QQQ")["note"]
+
+
+def test_live_flatten_closes_only_the_orb_positions(live):
+    """At 15:55 the live book closes what it opened; a crew position on the same account stays."""
+    cfg = _cfg6()
+    L.scan(_at(9, 45, 5), cfg, book="6")
+    live.broker.positions = [{"symbol": "QQQ", "qty": 10}, {"symbol": "NVDA", "qty": 5}]
+
+    def close(sym):
+        live.broker.closed.append(sym)
+        live.broker.positions = [p for p in live.broker.positions if p["symbol"] != sym]
+        return {"success": True}
+    live.broker.close_position = close
+    L.flatten(_at(15, 55, 2), cfg, book="6")
+    assert live.broker.closed == ["QQQ"]
+    L.flatten(_at(15, 55, 7), cfg, book="6")
+    assert live.broker.closed == ["QQQ"] and L._states["6"]["flattened"] == DAY
+    assert live.broker.positions == [{"symbol": "NVDA", "qty": 5}]
+    assert L._state["flattened"] is None                         # ORB Paper's flatten is its own
+
+
+def test_live_flatten_still_closes_after_disarming_or_switching_off(live, monkeypatch):
+    L.scan(_at(9, 45, 5), _cfg6(), book="6")
+    monkeypatch.setattr(a, "LIVE_TRADING_ARMED", False)
+    _cfg6(mode="off")
+    live.broker.positions = [{"symbol": "QQQ", "qty": 10}]
+    L.tick(_at(15, 55, 2))
+    assert live.broker.closed == ["QQQ"]
+
+
+def test_tick_runs_the_live_book_only_when_it_is_on(live, monkeypatch):
+    calls = []
+    monkeypatch.setattr(L, "scan", lambda now, cfg, book="8": calls.append(("scan", book)))
+    _cfg(mode="off")
+    _cfg6(mode="off")
+    L.tick(_at(9, 35, 10))
+    assert calls == []
+    _cfg6(mode="live")
+    L.tick(_at(9, 35, 10))
+    assert calls == [("scan", "6")]
+
+
+def test_kairos_stops_and_max_holds_skip_the_orb_positions_on_crew_live(live, monkeypatch):
+    """Owned: the live book's tickers while it is live, and any it ordered today. Kairos'
+    exits skip those and still act on the crew's positions on the same account."""
+    _cfg6()
+    assert ("alpaca6", "QQQ") in L.owned_positions() and ("alpaca6", "NVDA") not in L.owned_positions()
+
+    live.broker.positions = [
+        {"symbol": s, "qty": 100, "unrealized_pnl": -5000.0, "market_value": 10000.0,
+         "avg_entry_price": 150.0, "current_price": 100.0, "side": "long"} for s in ("QQQ", "NVDA")]
+    monkeypatch.setattr(a, "ALPACA_ACCOUNTS", [{"tag": "alpaca6", "num": "6", "label": "Crew Live", "broker": live.broker}])
+    monkeypatch.setattr(a, "_CURATED_TAGS", {"alpaca6"})
+    monkeypatch.setattr(a, "MAX_POSITION_LOSS_PCT", -1.0)
+    monkeypatch.setattr(a, "_auto_closed_symbols", set())
+    monkeypatch.setattr(a, "_resolve_position_entry", lambda sym, broker: (None, None))
+    a._check_position_stops()
+    assert live.broker.closed == ["NVDA"]
+
+    live.broker.closed.clear()
+    from datetime import timedelta, timezone
+    old = datetime.now(timezone.utc) - timedelta(hours=1)
+    monkeypatch.setattr(a, "_max_hold_positions", {("alpaca6", "QQQ"): {"entry_time": old, "max_hold_mins": 15.0},
+                                                   ("alpaca6", "NVDA"): {"entry_time": old, "max_hold_mins": 15.0}})
+    monkeypatch.setattr(a, "_max_hold_close_sent", {})
+    monkeypatch.setattr(a, "_max_hold_fail_ticks", {})
+    monkeypatch.setattr(a, "MAX_HOLD_ENFORCEMENT", True)
+    a._check_max_hold_exits()
+    assert live.broker.closed == ["NVDA"]
+
+
+def test_risk_status_shows_the_bracket_for_orb_rows_on_crew_live(live, monkeypatch):
+    from datetime import datetime as _dt
+    L.scan(_at(9, 45, 5), _cfg6(), book="6")
+
+    class _Now(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt(2026, 11, 16, 10, 0, tzinfo=tz)
+    monkeypatch.setattr(a, "datetime", _Now)
+    monkeypatch.setattr(a, "_latest_positions", [
+        {"symbol": "QQQ", "broker": "alpaca6", "qty": 10, "avg_entry_price": 122.05,
+         "current_price": 123.0, "unrealized_pnl": 9.5, "market_value": 1230.0}])
+    a.app.config["TESTING"] = True
+    pos = a.app.test_client().get("/api/risk/status").get_json()["positions"]
+    p = next(x for x in pos if x["broker"] == "alpaca6")
+    assert (p["strategy"], p["est_stop_price"], p["target_price"], p["stop_kind"]) == ("ORB long", 120.0, 128.0, "bracket")
+
+
+def test_live_status_reports_the_preflight_and_warns_when_the_limit_is_below_the_cap(live, monkeypatch):
+    monkeypatch.setattr(a, "LIVE_MAX_POSITION_PCT", 20.0)
+    _cfg6(mode="dry-run")
+    s = a.app.test_client().get("/api/orb/live/status?book=6").get_json()
+    assert s["book"] == "6" and s["real_money"] is True and s["modes"] == ["off", "dry-run", "live"]
+    P = s["preflight"]
+    assert P["armed"] is True and P["equity"] == 6764.55 and P["position_limit"] == 1352.91
+    assert any("sized down" in w and "LIVE_MAX_POSITION_PCT" in w for w in P["warnings"])
+    assert "preflight" not in a.app.test_client().get("/api/orb/live/status").get_json()
+
+
+def test_the_orb_page_has_a_real_money_panel():
+    html = open("templates/orb.html", encoding="utf-8").read()
+    assert 'id="l6Panel"' in html and "REAL MONEY" in html and 'data-m="live"' in html
+    assert "/api/orb/live/status?book=" in html and "book: B.book" in html
+
+
+def test_the_crew_wire_skips_picks_on_the_live_orb_tickers(tmp_path, monkeypatch):
+    import shutil
+    import routes.crew as crew
+    db = tmp_path / "wire.db"
+    shutil.copy("trades.db", db)
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM routing_rules")
+    conn.execute("DELETE FROM crew_reports")
+    conn.execute("DELETE FROM app_settings WHERE key LIKE 'ORB_LIVE_CONFIG%'")
+    conn.commit()
+    conn.close()
+
+    def _fake_db():
+        c = sqlite3.connect(db)
+        c.row_factory = sqlite3.Row
+        return c
+    monkeypatch.setattr(a, "get_db", _fake_db)
+    monkeypatch.setitem(a.ACCOUNTS_BY_TAG, "alpaca6", {"tag": "alpaca6", "broker": None})
+    monkeypatch.setattr(a, "LIVE_SIZE_DOLLARS", 1000.0, raising=False)
+    monkeypatch.setattr(a, "_fetch_alpaca_last_prices", lambda tks: {t: 50.0 for t in tks}, raising=False)
+    slugs = ["QQQ_CAM_BREAKOUT_R4S4_V02_5MIN", "AAA_CAM_BREAKOUT_R4S4_V02_5MIN"]
+    monkeypatch.setattr(crew, "_snapshot_top_picks",
+                        lambda app_obj, n=9: ([{"strategy": s, "side": "both", "entry": "tv", "tier": "core"}
+                                               for s in slugs], None))
+    L._states["6"].update(L._fresh_state())
+    try:
+        L.save_config(L.validate_config({"mode": "live"}, book="6"), book="6")      # QQQ + SPCX
+        a.app.config["TESTING"] = True
+        r = a.app.test_client().post("/api/crew/wire_to_router", json={"source": "snapshot"})
+        d = r.get_json()
+        assert r.status_code == 200, d
+        assert d["book"]["skipped_orb"] == [slugs[0]] and d["created"] == [slugs[1]]
+    finally:
+        L._states["6"].update(L._fresh_state())

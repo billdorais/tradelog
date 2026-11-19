@@ -45,6 +45,9 @@
     .empty { color: #666; font-size: 0.85rem; padding: 20px 0; text-align: center; }
     .warn { background: rgba(224,138,138,0.08); border: 1px solid #5a3535; color: #e08a8a; font-size: 0.76rem; border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; }
     .note { font-size: 0.72rem; color: #888; line-height: 1.55; }
+    .panel.real { border-color: #5a3535; }
+    .band-q.real { color: #e08a8a; }
+    .ok-txt { color: #7FE098; } .bad-txt { color: #e08a8a; }
     .note li { margin-left: 18px; }
     .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; }
     .runs a { color: #9ab; cursor: pointer; text-decoration: none; }
@@ -87,6 +90,34 @@
   </header>
 
   <div class="content">
+    <div class="panel real" id="l6Panel">
+      <div class="band-q real">Live trading · Crew Live (account 6) — REAL MONEY</div>
+      <div class="band-sub">
+        The same rules with real money on Crew Live, beside the crew's Camarilla rules: a bracket order (range stop, 3R target)
+        when a 5-minute candle closes outside the range, flat at 15:55. It only trades tickers no crew rule trades, and at 15:55
+        it closes only its own positions. Each trade is sized to the risk below, then sized down if needed to fit the live
+        position limit (LIVE_MAX_POSITION_PCT of equity, and the buying power). Kairos' trailing stops and max holds leave these
+        trades alone; Crew Live's profit lock, daily loss guard and 15:58 close still apply.
+        <strong>Dry run</strong> logs the orders it would send and sends nothing.
+      </div>
+      <div id="l6Acct"></div>
+      <div id="l6Pre"></div>
+      <div class="row">
+        <div class="fld"><span class="lbl">Mode</span>
+          <div class="seg" id="l6Mode"><button data-m="off">Off</button><button data-m="dry-run">Dry run</button><button data-m="live">Live</button></div></div>
+        <div class="fld"><span class="lbl">Core tickers</span><input class="f" id="l6Core" style="width:150px" placeholder="QQQ"></div>
+        <div class="fld"><span class="lbl">Watch tickers</span><input class="f" id="l6Watch" style="width:170px" placeholder="SPCX"></div>
+        <div class="fld"><span class="lbl">Risk per trade ($)</span><input class="f" type="number" id="l6Risk" min="1" max="500" step="5" style="width:96px"></div>
+        <div class="fld"><span class="lbl">Max position ($)</span><input class="f" type="number" id="l6Cap" min="100" max="50000" step="500" placeholder="no limit" style="width:110px"></div>
+        <div class="fld"><span class="lbl">Target (R)</span><input class="f" type="number" id="l6Target" step="0.25" min="0.25" style="width:72px"></div>
+        <div class="fld"><span class="lbl">Last entry</span><input class="f" type="time" id="l6Last"></div>
+        <label class="chk"><input type="checkbox" id="l6Trend"> Trend filter</label>
+        <button class="btn go" id="l6Save">Save settings</button>
+        <span class="status" id="l6Status"></span>
+      </div>
+      <div id="l6Out"><div class="empty">Loading…</div></div>
+    </div>
+
     <div class="panel" id="livePanel">
       <div class="band-q">Paper trading · ORB Paper (account 8)</div>
       <div class="band-sub">
@@ -518,51 +549,77 @@
     }
   }
 
-  // ── Paper trading (routes/orb_live.py) ───────────────────────────────────
-  const LIVE = { cfg: null, acct: null, timer: null };
+  // ── ORB engine books (routes/orb_live.py) ─────────────────────────────────
+  // Two panels, one code path: ORB Paper (book 8, element ids "live…") and the real-money
+  // Crew Live book (book 6, ids "l6…").
   const STATUS_TXT = { waiting: 'waiting', 'no-trade': 'no trade', 'dry-run': 'dry run', entered: 'order sent', filled: 'filled',
                        exited: 'closed', missed: 'missed', skipped: 'skipped', blocked: 'blocked', rejected: 'rejected' };
   const _tks = s => String(s || '').split(/[\s,]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
   const _px = v => v === null || v === undefined ? '—' : Number(v).toFixed(2);
   const _slip = v => v === null || v === undefined ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + '$' + Math.abs(v).toFixed(2);
+  const _dol = v => v === null || v === undefined ? '—' : '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const LIVE_BOOKS = [
+    { book: '8', pre: 'live', send: 'paper', cfg: null, acct: null, onMsg: 'Paper trading on.',
+      ask: B => 'Paper mode sends bracket orders to the ORB Paper account (paper money) for the tickers listed. Turn it on?' },
+    { book: '6', pre: 'l6', send: 'live', cfg: null, acct: null, onMsg: 'Live trading on: real-money orders.',
+      ask: B => `LIVE mode sends REAL-MONEY bracket orders to Crew Live (account 6) for ${B.cfg.tickers.map(t => t.symbol).join(', ')}: `
+        + `$${B.cfg.risk} risk per trade, ${B.cfg.cap ? 'up to ' + _dol(B.cfg.cap) + ' per position' : 'no max position'}, `
+        + `flat at ${B.cfg.params.forced_exit}. Save any setting changes first. Turn live trading on?` },
+  ];
+  const bq = (B, id) => $(B.pre + id);
 
-  function liveFill(cfg) {
-    $('liveCore').value = cfg.tickers.filter(t => t.group === 'core').map(t => t.symbol).join(', ');
-    $('liveWatch').value = cfg.tickers.filter(t => t.group === 'watch').map(t => t.symbol).join(', ');
-    $('liveRisk').value = cfg.risk; $('liveCap').value = cfg.cap ?? '';
-    $('liveTarget').value = cfg.params.target_r; $('liveLast').value = cfg.params.last_entry;
-    $('liveTrend').checked = !!cfg.params.trend_filter;
+  function liveFill(B, cfg) {
+    bq(B, 'Core').value = cfg.tickers.filter(t => t.group === 'core').map(t => t.symbol).join(', ');
+    bq(B, 'Watch').value = cfg.tickers.filter(t => t.group === 'watch').map(t => t.symbol).join(', ');
+    bq(B, 'Risk').value = cfg.risk; bq(B, 'Cap').value = cfg.cap ?? '';
+    bq(B, 'Target').value = cfg.params.target_r; bq(B, 'Last').value = cfg.params.last_entry;
+    bq(B, 'Trend').checked = !!cfg.params.trend_filter;
   }
 
-  function liveModeButtons() {
-    const m = LIVE.cfg ? LIVE.cfg.mode : 'off', ok = LIVE.acct && LIVE.acct.ok;
-    document.querySelectorAll('#liveMode button').forEach(b => {
+  function liveModeButtons(B) {
+    const m = B.cfg ? B.cfg.mode : 'off', ok = B.acct && B.acct.ok;
+    bq(B, 'Mode').querySelectorAll('button').forEach(b => {
       b.classList.toggle('on', b.dataset.m === m); b.setAttribute('aria-pressed', b.dataset.m === m);
-      b.disabled = b.dataset.m === 'paper' && !ok;
-      b.title = b.disabled ? (LIVE.acct && LIVE.acct.why || '') : '';
+      b.disabled = b.dataset.m === B.send && !ok;
+      b.title = b.disabled ? (B.acct && B.acct.why || '') : '';
     });
   }
 
-  async function liveSend(body, msg) {
-    $('liveStatus').textContent = 'Saving…';
-    const r = await fetch('/api/orb/live/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  async function liveSend(B, body, msg) {
+    bq(B, 'Status').textContent = 'Saving…';
+    const r = await fetch('/api/orb/live/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ book: B.book, ...body }) });
     const d = await r.json().catch(() => ({ error: 'request failed' }));
-    if (!r.ok) { $('liveStatus').textContent = d.error || 'failed'; return; }
-    LIVE.cfg = d.config; liveFill(d.config); liveModeButtons();
-    $('liveStatus').textContent = msg || 'Saved.';
-    liveLoad();
+    if (!r.ok) { bq(B, 'Status').textContent = d.error || 'failed'; return; }
+    B.cfg = d.config; liveFill(B, d.config); liveModeButtons(B);
+    bq(B, 'Status').textContent = msg || 'Saved.';
+    liveLoad(B);
   }
 
-  function liveSettings() {
-    const core = _tks($('liveCore').value), watch = _tks($('liveWatch').value).filter(s => !core.includes(s));
+  function liveSettings(B) {
+    const core = _tks(bq(B, 'Core').value), watch = _tks(bq(B, 'Watch').value).filter(s => !core.includes(s));
     return { tickers: [...core.map(symbol => ({ symbol, group: 'core' })), ...watch.map(symbol => ({ symbol, group: 'watch' }))],
-             risk: $('liveRisk').value, cap: $('liveCap').value || null,
-             params: { target_r: $('liveTarget').value, last_entry: $('liveLast').value, trend_filter: $('liveTrend').checked } };
+             risk: bq(B, 'Risk').value, cap: bq(B, 'Cap').value || null,
+             params: { target_r: bq(B, 'Target').value, last_entry: bq(B, 'Last').value, trend_filter: bq(B, 'Trend').checked } };
   }
 
-  function liveRender(d) {
+  function livePreflight(d) {
+    const P = d.preflight; if (!P) return '';
+    const yes = (v, t, f) => v ? `<span class="ok-txt">${t}</span>` : `<span class="bad-txt">${f}</span>`;
+    let h = `<div class="tiles">
+      <div class="tile"><div class="k">Armed</div><div class="v">${yes(P.armed, 'Yes', 'No')}</div><div class="s">LIVE_TRADING_ARMED</div></div>
+      <div class="tile"><div class="k">Equity</div><div class="v">${_dol(P.equity)}</div><div class="s">buying power ${_dol(P.buying_power)}</div></div>
+      <div class="tile"><div class="k">Live position limit</div><div class="v">${_dol(P.position_limit)}</div><div class="s">${P.max_position_pct ?? '—'}% of equity (LIVE_MAX_POSITION_PCT)</div></div>
+      <div class="tile"><div class="k">Shorting</div><div class="v">${P.shorting_enabled == null ? '—' : yes(P.shorting_enabled, 'On', 'Off')}</div><div class="s">short breakouts need it</div></div>
+    </div>`;
+    if ((P.warnings || []).length) h += `<div class="warn">${P.warnings.map(_esc).join('<br>')}</div>`;
+    return h;
+  }
+
+  function liveRender(B, d) {
     const A = d.account, S = d.summary || {};
-    $('liveAcct').innerHTML = A.ok ? '' : `<div class="warn">${_esc(A.why)}${d.config.mode === 'dry-run' ? ' Dry run works without it.' : ''}</div>`;
+    bq(B, 'Acct').innerHTML = A.ok ? '' : `<div class="warn">${_esc(A.why)}${d.config.mode === 'dry-run' ? ' Dry run works without it.' : ''}</div>`;
+    if (bq(B, 'Pre')) bq(B, 'Pre').innerHTML = livePreflight(d);
     let h = `<div class="note" style="margin-bottom:8px">Server time ${_esc(d.now_et)} ET · mode <strong>${_esc(d.config.mode)}</strong>${d.config.mode === 'off' ? ' (nothing runs)' : ''}</div>`;
     const today = d.today || [];
     if (today.length) {
@@ -595,29 +652,32 @@
           <td class="l">${r.bt_side ? _esc(r.bt_side) + ' · ' + _esc(r.bt_reason || '') : 'no trade'}</td><td class="${_cls(r.bt_r)}">${r.bt_r != null ? _r(r.bt_r) : '—'}</td>
           <td>${_slip(r.slip_vs_bt)}</td><td class="l dim" style="white-space:normal;min-width:160px">${_esc(r.note || '')}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty" style="padding:8px 0">No finished days yet.</div>';
-    $('liveOut').innerHTML = h;
+    bq(B, 'Out').innerHTML = h;
   }
 
-  async function liveLoad() {
+  async function liveLoad(B) {
     let d;
-    try { const r = await fetch('/api/orb/live/status'); d = await r.json(); if (!r.ok) throw new Error(d.error); }
-    catch (e) { $('liveOut').innerHTML = `<div class="warn">${_esc(e.message || 'status unavailable')}</div>`; return; }
-    const first = !LIVE.cfg;
-    LIVE.cfg = d.config; LIVE.acct = d.account;
-    if (first) liveFill(d.config);
-    liveModeButtons(); liveRender(d);
+    try { const r = await fetch('/api/orb/live/status?book=' + B.book); d = await r.json(); if (!r.ok) throw new Error(d.error); }
+    catch (e) { bq(B, 'Out').innerHTML = `<div class="warn">${_esc(e.message || 'status unavailable')}</div>`; return; }
+    const first = !B.cfg;
+    B.cfg = d.config; B.acct = d.account;
+    if (first) liveFill(B, d.config);
+    liveModeButtons(B); liveRender(B, d);
   }
 
   function liveInit() {
-    $('liveMode').addEventListener('click', e => {
-      const b = e.target.closest('button'); if (!b || b.disabled || (LIVE.cfg && b.dataset.m === LIVE.cfg.mode)) return;
-      const m = b.dataset.m;
-      if (m === 'paper' && !confirm('Paper mode sends bracket orders to the ORB Paper account (paper money) for the tickers listed. Turn it on?')) return;
-      liveSend({ mode: m }, m === 'off' ? 'Engine off.' : m === 'dry-run' ? 'Dry run on: orders are logged, not sent.' : 'Paper trading on.');
+    LIVE_BOOKS.forEach(B => {
+      if (!bq(B, 'Mode')) return;
+      bq(B, 'Mode').addEventListener('click', e => {
+        const b = e.target.closest('button'); if (!b || b.disabled || (B.cfg && b.dataset.m === B.cfg.mode)) return;
+        const m = b.dataset.m;
+        if (m === B.send && !confirm(B.ask(B))) return;
+        liveSend(B, { mode: m }, m === 'off' ? 'Engine off.' : m === 'dry-run' ? 'Dry run on: orders are logged, not sent.' : B.onMsg);
+      });
+      bq(B, 'Save').addEventListener('click', () => liveSend(B, liveSettings(B)));
+      liveLoad(B);
+      B.timer = setInterval(() => liveLoad(B), 30000);
     });
-    $('liveSave').addEventListener('click', () => liveSend(liveSettings()));
-    liveLoad();
-    LIVE.timer = setInterval(liveLoad, 30000);
   }
 
   // ── Compare tickers ──────────────────────────────────────────────────────

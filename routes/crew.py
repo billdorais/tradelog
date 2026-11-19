@@ -3469,6 +3469,25 @@ def api_crew_wire_to_router():
         picks, roster_rules, entry_since = _finalize_report_picks(_kairos, picks)
         parsed["picks"] = picks
 
+    # 1b) The live ORB book trades its own tickers on Crew Live (routes/orb_live.py). One
+    # account holds one position per ticker, so a crew pick on one of them is skipped while
+    # that book is on, and an existing crew rule for it is pruned below like any dropped pick.
+    orb_skipped = []
+    try:
+        from routes import orb_live as _orb_live
+        _orb_cfg = _orb_live.load_config(fresh=True, book="6")
+        _orb_syms = ({t["symbol"] for t in _orb_cfg["tickers"]}
+                     if _orb_cfg["mode"] != "off" else set())
+    except Exception as _oe:
+        conn.close()
+        return jsonify({"error": f"Could not read the live ORB book's tickers ({_oe}), so the "
+                        "wire can't tell whether a pick would collide with it. Nothing was changed."}), 500
+    if _orb_syms:
+        orb_skipped = [pk["strategy"] for pk in picks
+                       if pk["strategy"].split("_", 1)[0].upper() in _orb_syms]
+        picks = [pk for pk in picks if pk["strategy"] not in orb_skipped]
+        parsed["picks"] = picks
+
     # 2) Inventory existing rules: source pipelines (to clone each pick's tuned
     #    exit_params / hours / instrument) and existing Crew Live rules (to update in
     #    place on re-run instead of duplicating).
@@ -3653,7 +3672,8 @@ def api_crew_wire_to_router():
         "sizing_conflict": parsed.get("sizing_conflict"),
         "book": {"tag": CREW_TAG, "label": "Crew Live",
                  "armed": bool(getattr(_kairos, "LIVE_TRADING_ARMED", False)),
-                 "size_dollars": live_size, "skipped_no_price": no_price},
+                 "size_dollars": live_size, "skipped_no_price": no_price,
+                 "skipped_orb": orb_skipped},
         # Same lists as created/updated/deleted, under the key the Crew page already reads.
         "live_mirror": {"enabled": True,
                         "armed": bool(getattr(_kairos, "LIVE_TRADING_ARMED", False)),
