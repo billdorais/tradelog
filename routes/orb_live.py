@@ -278,6 +278,7 @@ def _live_gate(rec, sym: str, plan: dict):
     if held:
         return f"Crew Live already holds {sym}; the ORB only trades a ticker it opens itself", 0, ""
     try:
+        rec["broker"]._ensure_client()                  # the snapshot reads _trading directly
         snap = a._live_account_snapshot(tag)
     except Exception as e:
         return f"could not read the live account ({e})", 0, ""
@@ -885,6 +886,7 @@ def live_preflight(cfg: dict) -> dict:
                "size_dollars": float(getattr(a, "LIVE_SIZE_DOLLARS", 0) or 0)}
         if rec:
             try:
+                rec["broker"]._ensure_client()          # the Alpaca client is created lazily
                 acct = rec["broker"]._trading.get_account()
                 for k in ("equity", "buying_power"):
                     hit[k] = float(getattr(acct, k, 0) or 0)

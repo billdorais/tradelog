@@ -752,6 +752,20 @@ def test_live_status_reports_the_preflight_and_warns_when_the_limit_is_below_the
     assert "preflight" not in a.app.test_client().get("/api/orb/live/status").get_json()
 
 
+def test_preflight_opens_the_alpaca_client_before_reading_the_account(live):
+    """Deploy of 2026-11-18: the client is created lazily, and the first status read found
+    _trading still None ("'NoneType' object has no attribute 'get_account'")."""
+    acct = live.broker._trading
+    live.broker._trading = None
+
+    def ensure():
+        live.broker._trading = acct
+    live.broker._ensure_client = ensure
+    _cfg6(mode="dry-run")
+    P = a.app.test_client().get("/api/orb/live/status?book=6").get_json()["preflight"]
+    assert "error" not in P and P["equity"] == 6764.55
+
+
 def test_the_orb_page_has_a_real_money_panel():
     html = open("templates/orb.html", encoding="utf-8").read()
     assert 'id="l6Panel"' in html and "REAL MONEY" in html and 'data-m="live"' in html
