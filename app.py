@@ -9921,6 +9921,49 @@ def _orb_fill_strategy(order_id, symbol):
     return None
 
 
+def _label_orb_exits(fills):
+    """Give an ORB bracket's exit fills the ORB entry's label, in place.
+
+    The stop and target legs (and any close) are separate orders with plain UUID ids,
+    so only the entry carries orb-YYYYMMDD-TICKER. On 2026-11-19 SPCX's stop exit on
+    Crew Live was matched to a nearby SPCX_CAM_REVERSAL signal and QQQ's had no label.
+    An opposite-side, non-Kairos fill on a symbol with ORB shares still open is that
+    position's exit; it is labelled up to the ORB entry's quantity."""
+    open_ = {}                                    # SYMBOL -> [entry side, shares open, label]
+    for f in sorted(fills, key=lambda x: x.get("time") or ""):
+        sym = (f.get("symbol") or "").upper()
+        try:
+            q = abs(float(f.get("shares") or f.get("qty") or 0))
+        except (TypeError, ValueError):
+            q = 0.0
+        lab = _orb_fill_strategy(f.get("order_id"), sym)
+        o = open_.get(sym)
+        if lab:
+            if o and o[0] == f.get("side"):
+                o[1] += q
+            else:
+                open_[sym] = [f.get("side"), q, lab]
+            continue
+        if o and o[1] > 1e-9 and f.get("side") != o[0] and not str(f.get("order_id") or "").startswith("kairos-"):
+            f["strategy"] = o[2]
+            o[1] -= q
+            if o[1] <= 1e-9:
+                open_.pop(sym, None)
+
+
+def _orb_exit_reason(pnl, exit_time):
+    """'ORB 3:55 close' at or after 15:55 ET, else the bracket leg that filled: 'ORB target'
+    for a gain, 'ORB stop' for a loss. (A profit-lock or loss-guard liquidation mid-day
+    reads as target/stop too; the ORB page's log has the exact exit.)"""
+    try:
+        et = datetime.fromisoformat((exit_time or "").replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+        if (et.hour, et.minute) >= (15, 55):
+            return "ORB 3:55 close"
+    except Exception:
+        pass
+    return "ORB target" if (pnl or 0) > 0 else "ORB stop"
+
+
 def _resolve_signal_for_fill(signal_lookup, symbol, side, fill_time_str, order_id=""):
     """Return (strategy, sentiment) for a fill.
 
@@ -10105,6 +10148,11 @@ def _pair_alpaca_fills_lifo(fills, from_date="", to_date="", signal_lookup=None)
                     q.append((ep, eq - m, et, es))
             if qty > 0:
                 open_shorts.setdefault(sym, []).append((price, qty, fill_ts, strat))
+
+    for c in closed:
+        if str(c.get("entry_strategy") or "").endswith("_ORB"):
+            c["strategy"] = c["exit_strategy"] = c["entry_strategy"]
+            c["exit_reason"] = _orb_exit_reason(c["pnl"], c["exit_time"])
 
     orphans, closed_clean = [], []
     for c in closed:
@@ -14725,6 +14773,7 @@ def alpaca_trades():
                                 best = min(candidates, key=lambda x: abs(x[0] - fill_ts))
                                 if abs(best[0] - fill_ts) <= 300:
                                     f["strategy"] = best[1]
+                        _label_orb_exits(new_fills)
                     except Exception as _ae:
                         log.debug("Trades SWR annotate [%s] failed: %s", account, _ae)
                     _cache["data"]  = new_fills
@@ -14769,6 +14818,7 @@ def alpaca_trades():
                     # Only assign if signal is within 5 minutes of the fill
                     if abs(best[0] - fill_ts) <= 300:
                         f["strategy"] = best[1]
+            _label_orb_exits(fills)
         except Exception as _e:
             log.debug("alpaca_trades strategy resolution error: %s", _e)
         # Write annotated data back into the cache (keeps ts from _get_cached_fills).

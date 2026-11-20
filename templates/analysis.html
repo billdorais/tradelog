@@ -2012,6 +2012,10 @@
     const cfg = {
       'Trail':    { bg: 'rgba(196,181,253,0.15)', color: '#c4b5fd', label: 'Trail' },
       'Max Hold': { bg: 'rgba(242,231,172,0.15)', color: '#F2E7AC', label: 'Max Hold' },
+      // ORB bracket exits (app._orb_exit_reason), in the ORB orange
+      'ORB stop':       { bg: 'rgba(240,163,94,0.15)', color: '#F0A35E', label: 'ORB stop' },
+      'ORB target':     { bg: 'rgba(240,163,94,0.15)', color: '#F0A35E', label: 'ORB target' },
+      'ORB 3:55 close': { bg: 'rgba(240,163,94,0.15)', color: '#F0A35E', label: 'ORB 3:55 close' },
     };
     const s = cfg[reason] || { bg: 'rgba(100,100,120,0.15)', color: '#888', label: reason };
     return `<span style="background:${s.bg};color:${s.color};border-radius:4px;padding:1px 8px;font-size:0.7rem;font-weight:600;white-space:nowrap">${s.label}</span>`;

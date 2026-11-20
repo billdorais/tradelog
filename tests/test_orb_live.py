@@ -806,3 +806,72 @@ def test_the_crew_wire_skips_picks_on_the_live_orb_tickers(tmp_path, monkeypatch
         assert d["book"]["skipped_orb"] == [slugs[0]] and d["created"] == [slugs[1]]
     finally:
         L._states["6"].update(L._fresh_state())
+
+
+# ── ORB exits are labelled ORB (2026-11-19, first live day) ───────────────────
+# The stop leg is its own order with a UUID id: SPCX's stop exit came back labelled
+# SPCX_CAM_REVERSAL_R3S3 (a nearby TV signal) and QQQ's had no label.
+
+def _day_19_fills():
+    return [
+        {"symbol": "QQQ", "side": "BOT", "shares": 5.0, "price": 674.45, "time": "2026-11-19T14:35:04Z",
+         "order_id": "orb-20261119-QQQ"},
+        {"symbol": "SPCX", "side": "BOT", "shares": 7.0, "price": 146.865, "time": "2026-11-19T14:35:05Z",
+         "order_id": "orb-20261119-SPCX"},
+        {"symbol": "QQQ", "side": "SLD", "shares": 5.0, "price": 670.884, "time": "2026-11-19T14:40:07Z",
+         "order_id": "ccee0e7e-3db8-49be-8597-6cd109d14181"},
+        {"symbol": "SPCX", "side": "SLD", "shares": 7.0, "price": 144.6132, "time": "2026-11-19T14:45:51Z",
+         "order_id": "e5f58af5-ad82-41c4-a201-cebb18c5f498"},
+        {"symbol": "PLTR", "side": "SLD", "shares": 5.0, "price": 155.1535, "time": "2026-11-19T18:15:06Z",
+         "order_id": "kairos-PLTR_CAM_BREAKOUT_R3S3_V02_5MIN-1795112106"},
+        {"symbol": "PLTR", "side": "BOT", "shares": 5.0, "price": 155.56, "time": "2026-11-19T18:25:11Z",
+         "order_id": "b2809330-3233-42fe-be99-ea7c407359f5"},
+    ]
+
+
+def test_orb_exit_fills_take_the_orb_entry_label():
+    fills = _day_19_fills()
+    fills[3]["strategy"] = "SPCX_CAM_REVERSAL_R3S3_V02_5MIN"          # what the proximity match said
+    a._label_orb_exits(fills)
+    by = {f["order_id"]: f.get("strategy") for f in fills}
+    assert by["ccee0e7e-3db8-49be-8597-6cd109d14181"] == "QQQ_ORB"
+    assert by["e5f58af5-ad82-41c4-a201-cebb18c5f498"] == "SPCX_ORB"
+    assert by["b2809330-3233-42fe-be99-ea7c407359f5"] is None          # a Camarilla exit is left alone
+
+
+def test_only_the_orb_shares_are_labelled():
+    """A later trade on the same ticker after the ORB position is flat keeps its own label."""
+    fills = _day_19_fills()[:3] + [
+        {"symbol": "QQQ", "side": "SLD", "shares": 2.0, "price": 671.0, "time": "2026-11-19T17:00:00Z",
+         "order_id": "kairos-QQQ_CAM_BREAKOUT_R3S3_V02_5MIN-1", "strategy": "QQQ_CAM_BREAKOUT_R3S3_V02_5MIN"},
+        {"symbol": "QQQ", "side": "BOT", "shares": 2.0, "price": 670.0, "time": "2026-11-19T17:05:00Z",
+         "order_id": "uuid-later", "strategy": "X"}]
+    a._label_orb_exits(fills)
+    assert fills[2]["strategy"] == "QQQ_ORB" and fills[3]["strategy"] == "QQQ_CAM_BREAKOUT_R3S3_V02_5MIN"
+    assert fills[4]["strategy"] == "X"
+
+
+def test_orb_round_trips_carry_the_bracket_exit_reason():
+    out = a._pair_alpaca_fills_lifo(_day_19_fills(), signal_lookup={
+        ("SPCX", "SLD"): [(pd.Timestamp("2026-11-19T14:45:00Z").timestamp(), "SPCX_CAM_REVERSAL_R3S3_V02_5MIN", "bearish")]})
+    rt = {c["ticker"]: c for c in out["closed"]}
+    assert (rt["QQQ"]["strategy"], rt["QQQ"]["exit_strategy"], rt["QQQ"]["exit_reason"]) == ("QQQ_ORB", "QQQ_ORB", "ORB stop")
+    assert (rt["SPCX"]["exit_strategy"], rt["SPCX"]["exit_reason"]) == ("SPCX_ORB", "ORB stop")
+    assert rt["PLTR"]["exit_reason"] in ("Trail", "Max Hold")              # Camarilla trades unchanged
+    assert a._orb_exit_reason(60.0, "2026-11-19T16:30:00Z") == "ORB target"
+    assert a._orb_exit_reason(-4.0, "2026-11-19T20:55:03Z") == "ORB 3:55 close"
+
+
+def test_the_trades_list_labels_orb_exits(monkeypatch):
+    import time as _t
+    cache = {"data": [], "ts": _t.time()}
+    monkeypatch.setitem(a._alpaca_caches, "6", cache)
+    monkeypatch.setattr(a, "_alpaca_account_ctx", lambda acct: (object(), "alpaca6", "Crew Live",
+                                                                lambda: [dict(f) for f in _day_19_fills()]))
+    monkeypatch.setattr(a, "_signal_lookup", lambda: {
+        ("SPCX", "SLD"): [(pd.Timestamp("2026-11-19T14:45:00Z").timestamp(), "SPCX_CAM_REVERSAL_R3S3_V02_5MIN", "bearish")]})
+    a.app.config["TESTING"] = True
+    got = a.app.test_client().get("/api/alpaca/trades?account=6").get_json()
+    rows = got if isinstance(got, list) else got.get("trades") or got.get("fills") or []
+    by = {f["order_id"]: f.get("strategy") for f in rows}
+    assert by["e5f58af5-ad82-41c4-a201-cebb18c5f498"] == "SPCX_ORB" and by["ccee0e7e-3db8-49be-8597-6cd109d14181"] == "QQQ_ORB"
