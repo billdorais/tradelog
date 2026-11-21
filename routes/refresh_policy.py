@@ -33,7 +33,12 @@ POLICIES = (
     ("weekly_top",    "Weekly, top N",         True,  False),
     ("weekly_buffer", "Weekly, rank buffer",   True,  True),    # the proposal
     ("daily_buffer",  "Daily, rank buffer",    False, True),
+    ("daily_stable",  "Daily, both halves +",  False, False),   # stricter entry, test only
 )
+# Policies that admit only names whose farm net P&L is positive in BOTH halves of
+# the ranking window (a margin of safety against names hovering at $0). Test-only:
+# the live snapshot has no such rule.
+STABLE_POLICIES = {"daily_stable"}
 WARMUP_DAYS = 28          # don't judge rosters ranked on less than four weeks of farm
 RECENCY_DAYS = 10         # the snapshot's recency-blend window
 _CACHE_TTL = 10 * 60
@@ -106,7 +111,23 @@ def simulate(rts, rank, pick_top, pick_buffer, n, window_days, entry_rank, exit_
             scored_cache[p] = rank(rts[bisect_left(dates, lo):hi], rts[bisect_left(dates, rlo):hi])
         return scored_cache[p]
 
-    state = {k: {"roster": None, "rows": [], "adds": 0, "refreshes": 0, "sizes": [],
+    stable_cache = {}
+
+    def _stable(p):
+        """Names with net P&L > 0 in both the older and the newer half of the
+        window ending at P (same window the ranking used)."""
+        if p not in stable_cache:
+            pd_ = date.fromisoformat(p)
+            lo = (pd_ - timedelta(days=window_days)).isoformat()
+            mid = (pd_ - timedelta(days=window_days // 2)).isoformat()
+            older, newer = {}, {}
+            for t in rts[bisect_left(dates, lo):bisect_right(dates, p)]:
+                half = older if t["date"] < mid else newer
+                half[t["strategy"]] = half.get(t["strategy"], 0.0) + float(t.get("pnl") or 0)
+            stable_cache[p] = {s for s, v in older.items() if v > 0 and newer.get(s, 0.0) > 0}
+        return stable_cache[p]
+
+    state ={k: {"roster": None, "rows": [], "adds": 0, "refreshes": 0, "sizes": [],
                  "by_day": {}, "by_week": {}} for k, *_ in POLICIES}
     farm_rows = []
     for i in eval_idx:
@@ -118,6 +139,9 @@ def simulate(rts, rank, pick_top, pick_buffer, n, window_days, entry_rank, exit_
             st = state[key]
             if st["roster"] is None or not weekly or week_end:
                 sc = _scored(p)
+                if key in STABLE_POLICIES:
+                    ok = _stable(p)
+                    sc = [r for r in sc if r[0] in ok]
                 if buffered:
                     rows = pick_buffer(sc, n, st["roster"] or [], entry_rank, exit_rank)
                 else:

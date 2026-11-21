@@ -168,6 +168,45 @@ def test_replay_buffer_cuts_churn_on_noise():
     assert pol["weekly_buffer"]["adds"] <= pol["weekly_top"]["adds"]
 
 
+def test_stable_policy_admits_only_names_positive_in_both_halves():
+    days = _days("2026-09-01", 40)
+    rts = []
+    for i, d in enumerate(days):
+        rts.append(_rt("STEADY", d, 1))                       # small, positive throughout
+        rts.append(_rt("LUCKY", d, 20 if i % 10 == 0 else -1))  # one big win per 10 days
+    # An 8-day window: LUCKY's two halves are never both positive; STEADY's always are.
+    out = rp.simulate(rts, _rank_by_window_pnl, _top, _buf, n=2, window_days=8,
+                      entry_rank=2, exit_rank=2, warmup_days=7)
+    pol = {p["key"]: p for p in out["policies"]}
+    assert pol["daily_stable"]["avg_roster"] < pol["daily_top"]["avg_roster"]
+    assert pol["daily_stable"]["trades"] < pol["daily_top"]["trades"]
+    assert pol["daily_stable"]["avg_roster"] >= 1.0          # STEADY is always held
+
+
+def test_roster_tenure_counts_the_current_stay():
+    runs = [   # newest first, as the refresh reads them
+        ("2026-11-19 21:15:00 UTC", {"A": 1, "B": 2}),
+        ("2026-11-18 21:15:00 UTC", {"A": 1}),
+        ("2026-11-17 21:15:00 UTC", {"A": 1, "B": 2}),
+        ("2026-11-14 21:15:00 UTC", {"A": 1, "B": 2}),   # Friday; weekend doesn't break A
+    ]
+    stay, first = a._roster_tenure(runs, ["A", "B", "C"], "2026-11-20 21:16:00 UTC")
+    assert stay == {"A": 7, "B": 2, "C": 1}       # B was dropped on the 18th, back on the 19th
+    assert first == {"A": 7, "B": 7, "C": 1}
+
+
+def test_roster_tenure_judges_a_day_by_its_last_run():
+    runs = [
+        ("2026-11-19 22:00:00 UTC", {"A": 1}),     # manual re-run put A back the same day
+        ("2026-11-19 21:15:00 UTC", {"B": 1}),
+        ("2026-11-18 21:15:00 UTC", {"A": 1}),
+        ("2026-11-20 15:00:00 UTC", {"Z": 1}),     # an earlier run today is superseded
+    ]
+    runs.sort(key=lambda r: r[0], reverse=True)
+    stay, _ = a._roster_tenure(runs, ["A", "Z"], "2026-11-20 21:16:00 UTC")
+    assert stay == {"A": 3, "Z": 1}
+
+
 def test_replay_reports_short_history():
     out = rp.simulate([_rt("A", "2026-09-01", 1), _rt("A", "2026-09-02", 1)],
                       _rank_by_window_pnl, _top, _buf, 1, 5, 1, 1, warmup_days=28)
@@ -185,7 +224,8 @@ def test_endpoint_uses_the_live_ranking(monkeypatch, settings):
     rp._cache.clear()
     out = a.app.test_client().get("/api/refined/refresh_test?book=kairos&n=2").get_json()
     assert out["label"] == "Kairos Refined" and out["entry_rank"] == 2 and out["exit_rank"] == 3
-    assert [p["key"] for p in out["policies"]] == ["daily_top", "weekly_top", "weekly_buffer", "daily_buffer"]
+    assert [p["key"] for p in out["policies"]] == ["daily_top", "weekly_top", "weekly_buffer",
+                                                   "daily_buffer", "daily_stable"]
     assert all(p["trades"] > 0 for p in out["policies"])
 
 

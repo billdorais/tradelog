@@ -441,6 +441,8 @@
       deciding each day's roster only from trades before that day. <strong style="color:#cfd3e0">Daily, top N</strong> is today's rule.
       <strong style="color:#3987e5">Weekly, rank buffer</strong> re-ranks on Fridays: an incumbent stays while it ranks inside
       <span class="rp-exit">30</span>, and an open slot goes only to a name ranked inside <span class="rp-entry">15</span>.
+      <strong style="color:#e0b341">Daily, both halves +</strong> is a test-only stricter entry: a name must have made money in both
+      the older and the newer half of the window, not just over the whole window. No live setting uses it.
       Scored on the farm's own trades ($1k, ungated), so this tests the selection rule, not the book's gates or fills.
     </div>
     <div id="rpMode" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:0.74rem;color:#9aa0b5;margin-bottom:10px"></div>
@@ -1408,11 +1410,13 @@
         const price  = (r.last_price != null)
           ? `$${Number(r.last_price).toFixed(2)}`
           : '<span style="color:#666">—</span>';
-        // Tenure: 1 run = NEW (first time in top-N), N>1 = consecutive daily runs.
+        // Tenure: calendar days in the CURRENT unbroken stay on the roster (1 = NEW).
         const tn = tenureMap[r.name] || 1;
+        const tf = (d.tenure_first || {})[r.name];
+        const tfNote = (tf && tf > tn) ? ` First on the roster ${tf} days ago; it has been dropped and re-added since.` : '';
         const tenureCell = tn === 1
-          ? `<span style="color:#7FE098;font-weight:600" title="Newly added in this run">NEW</span>`
-          : `<span style="color:#888" title="${tn} consecutive daily runs in the top-N">${tn}d</span>`;
+          ? `<span style="color:#7FE098;font-weight:600" title="Added in this run.${tfNote}">NEW</span>`
+          : `<span style="color:#888" title="On the roster for the last ${tn} calendar days without a break.${tfNote}">${tn}d</span>`;
         // Dim the cells when overlay is active but this strategy hasn't traded in the current view.
         const dim = noTabTrades ? 'color:#444' : '';
         // The TRADES column is an OVERLAY: raw stats for the account toggle + the
@@ -1739,7 +1743,11 @@
       };
       rows.innerHTML = scored.map((s, i) => {
         const t   = tenureMap[s.name];
-        const ten = (t == null) ? '<span style="color:#F2C07A;font-weight:600" title="First run">NEW</span>' : (t + 'd');
+        const tf  = (d.tenure_first || {})[s.name];
+        const tfNote = (tf && t && tf > t) ? ` First on the roster ${tf} days ago; it has been dropped and re-added since.` : '';
+        const ten = (t == null || t === 1)
+          ? `<span style="color:#F2C07A;font-weight:600" title="Added in this run.${tfNote}">NEW</span>`
+          : `<span title="On the roster for the last ${t} calendar days without a break.${tfNote}">${t}d</span>`;
         // Overlay the stat columns from the selected Kairos account; dim if the
         // strategy hasn't traded there in the current window.
         const _ps = _overlayPs[s.name];
@@ -3592,7 +3600,7 @@
 </style>
 <script>
 (function () {
-  const COLORS = { daily_top: '#d95926', weekly_top: '#9085e9', weekly_buffer: '#3987e5', daily_buffer: '#199e70' };
+  const COLORS = { daily_top: '#d95926', weekly_top: '#9085e9', weekly_buffer: '#3987e5', daily_buffer: '#199e70', daily_stable: '#e0b341' };
   let book = 'kairos', modes = {}, chart = null, armed = null;
   try { book = localStorage.getItem('rp_book') === 'tv' ? 'tv' : 'kairos'; } catch (_) {}
   const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

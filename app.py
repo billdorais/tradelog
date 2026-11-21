@@ -10633,6 +10633,47 @@ def _refined_scored(stats_map, stats_map_10d, min_trades, rule_ok=None, excluded
     return scored, _blended_score
 
 
+def _roster_tenure(runs, current, now_run_at):
+    """Tenure for each name in `current` (this run's roster).
+
+    runs: the roster history [(run_at, {name: rank})] newest-first, read before
+    this run was written; run_at like "2026-11-20 21:16:10 UTC".
+
+    Returns (stay, first):
+      stay[name]  calendar days in the name's CURRENT unbroken stay (1 = added now)
+      first[name] calendar days since it was first ever on the roster
+    Each past calendar day is judged by its LAST run, and earlier runs today are
+    superseded by this one, so an intraday manual refresh neither resets nor
+    stretches a stay. Days with no run (weekends, holidays, a weekly roster's
+    off days) don't break a stay. A name dropped and re-added starts over at 1."""
+    import datetime as _dt
+
+    def _day(s):
+        return _dt.date.fromisoformat(str(s)[:10])
+
+    now = _day(now_run_at)
+    by_day = {}                          # newest-first, so the first run seen per day is its last
+    for run_at, names in runs:
+        try:
+            d = _day(run_at)
+        except (TypeError, ValueError):
+            continue
+        if d < now and d not in by_day:
+            by_day[d] = set(names)
+    past = sorted(by_day, reverse=True)
+    stay, first = {}, {}
+    for s in current:
+        start = now
+        for d in past:
+            if s not in by_day[d]:
+                break
+            start = d
+        stay[s] = (now - start).days + 1
+        seen = [d for d in past if s in by_day[d]]
+        first[s] = (now - min(seen)).days + 1 if seen else 1
+    return stay, first
+
+
 REFINED_MODE_KEYS = {"tv": "REFINED_REFRESH_MODE", "kairos": "KAIROS_REFINED_REFRESH_MODE"}
 REFINED_MODES     = ("daily", "weekly_buffer")
 _REFINED_SNAP_KEYS = {"tv": "REFINED_LAST_RESULT", "kairos": "KAIROS_REFINED_LAST_RESULT"}
@@ -11076,12 +11117,12 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
     _refined_last_run = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Refined history: persist this run's top, derive added/removed/tenure vs prior runs.
-    # Tenure = calendar days since the strategy was first inducted into the top-N.
-    # Using first-induction date rather than consecutive run count so manual refreshes
-    # (done to fix issues) don't artificially inflate or reset tenure.
+    # Tenure = calendar days in the strategy's CURRENT unbroken stay on the roster
+    # (see _roster_tenure); tenure_first keeps days since it was first ever on it.
     added_strategies   = []
     removed_strategies = []
-    tenure_runs        = {}   # strategy_name -> days since first induction
+    tenure_runs        = {}   # strategy_name -> days in the current stay
+    tenure_first       = {}   # strategy_name -> days since first ever on the roster
     rank_deltas        = {}   # strategy_name -> prev_rank - cur_rank (positive = moved up); None for new
     try:
         hconn = get_db(); hcur = hconn.cursor(); hp = placeholder()
@@ -11140,27 +11181,8 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
                 )
         hconn.commit()
 
-        # Compute first-induction date for each strategy in this run's top.
-        # Walk ALL history runs (oldest-first) to find the earliest appearance.
-        first_seen = {}  # strategy_name -> earliest run_at string
-        for run_at, names in reversed(runs):  # reversed = oldest first
-            for s in names:
-                if s not in first_seen:
-                    first_seen[s] = run_at
-        # Also credit this run for newly added strategies
-        for s in added_strategies:
-            if s not in first_seen:
-                first_seen[s] = _refined_last_run
-
-        now_date = _dt.datetime.now(_dt.timezone.utc).date()
-        for s in new_top:
-            first_str = first_seen.get(s, _refined_last_run)
-            try:
-                # run_at format: "YYYY-MM-DD HH:MM:SS UTC"
-                first_date = _dt.datetime.strptime(first_str[:10], "%Y-%m-%d").date()
-                tenure_runs[s] = max(1, (now_date - first_date).days + 1)
-            except Exception:
-                tenure_runs[s] = 1
+        # Tenure = the current unbroken stay; tenure_first = since first ever on it.
+        tenure_runs, tenure_first = _roster_tenure(runs, top, _refined_last_run)
         hconn.close()
     except Exception as _he:
         log.warning("Refined history tracking failed: %s", _he)
@@ -11173,6 +11195,7 @@ def _do_refresh_refined(n=20, broker_val="alpaca-paper-2", days=REFINED_WINDOW_D
         "added_strategies":   added_strategies,
         "removed_strategies": removed_strategies,
         "tenure_runs":        tenure_runs,
+        "tenure_first":       tenure_first,
         "rank_deltas":        rank_deltas,
         "top_scored": [
             {
@@ -11352,6 +11375,7 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
 
     # Kairos history: parallel to refined_history so tenure/rank-delta arrows work.
     added_strategies, removed_strategies, tenure_runs, rank_deltas = [], [], {}, {}
+    tenure_first = {}
     try:
         hconn = get_db(); hcur = hconn.cursor(); hp = placeholder()
         hcur.execute("SELECT run_at, strategy_name, rank FROM kairos_refined_history ORDER BY run_at DESC")
@@ -11391,20 +11415,8 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
                     (_kairos_refined_last_run, name, i + 1),
                 )
         hconn.commit()
-        first_seen = {}
-        for run_at, names in reversed(runs):
-            for s in names:
-                if s not in first_seen: first_seen[s] = run_at
-        for s in added_strategies:
-            if s not in first_seen: first_seen[s] = _kairos_refined_last_run
-        now_date = _dt.datetime.now(_dt.timezone.utc).date()
-        for s in new_top:
-            first_str = first_seen.get(s, _kairos_refined_last_run)
-            try:
-                first_date = _dt.datetime.strptime(first_str[:10], "%Y-%m-%d").date()
-                tenure_runs[s] = max(1, (now_date - first_date).days + 1)
-            except Exception:
-                tenure_runs[s] = 1
+        # Tenure = the current unbroken stay; tenure_first = since first ever on it.
+        tenure_runs, tenure_first = _roster_tenure(runs, top, _kairos_refined_last_run)
         hconn.close()
     except Exception as _he:
         log.warning("Kairos Refined history tracking failed: %s", _he)
@@ -11417,6 +11429,7 @@ def _do_refresh_kairos_refined(n=20, days=REFINED_WINDOW_DAYS, from_date=None):
         "added_strategies":   added_strategies,
         "removed_strategies": removed_strategies,
         "tenure_runs":        tenure_runs,
+        "tenure_first":       tenure_first,
         "rank_deltas":        rank_deltas,
         "top_scored": [
             {
