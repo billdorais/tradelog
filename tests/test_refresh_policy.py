@@ -207,6 +207,19 @@ def test_roster_tenure_judges_a_day_by_its_last_run():
     assert stay == {"A": 3, "Z": 1}
 
 
+def test_roster_tenure_counts_eastern_days():
+    # 4:15 PM ET run on the 20th, then a 9:29 PM ET manual refresh (02:29 UTC on the
+    # 21st): same trading day, so a name added at 4:15 PM is still NEW.
+    runs = [("2026-11-20 21:16:10 UTC", {"A": 1, "P": 2}),
+            ("2026-11-19 21:15:00 UTC", {"A": 1})]
+    stay, first = a._roster_tenure(runs, ["A", "P"], "2026-11-21 02:29:06 UTC")
+    assert stay == {"A": 2, "P": 1} and first == {"A": 2, "P": 1}
+    # The next afternoon's run counts the evening refresh's day as one day.
+    runs = [("2026-11-21 02:29:06 UTC", {"A": 1, "P": 2})] + runs
+    stay, _ = a._roster_tenure(runs, ["A", "P"], "2026-11-23 21:15:00 UTC")
+    assert stay == {"A": 5, "P": 4}
+
+
 def test_replay_reports_short_history():
     out = rp.simulate([_rt("A", "2026-09-01", 1), _rt("A", "2026-09-02", 1)],
                       _rank_by_window_pnl, _top, _buf, 1, 5, 1, 1, warmup_days=28)

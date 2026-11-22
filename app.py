@@ -10642,14 +10642,23 @@ def _roster_tenure(runs, current, now_run_at):
     Returns (stay, first):
       stay[name]  calendar days in the name's CURRENT unbroken stay (1 = added now)
       first[name] calendar days since it was first ever on the roster
-    Each past calendar day is judged by its LAST run, and earlier runs today are
-    superseded by this one, so an intraday manual refresh neither resets nor
-    stretches a stay. Days with no run (weekends, holidays, a weekly roster's
-    off days) don't break a stay. A name dropped and re-added starts over at 1."""
+    Days are Eastern-time trading days, so a manual refresh in the evening (past
+    midnight UTC) still counts as that day. Each past day is judged by its LAST
+    run, and earlier runs today are superseded by this one, so a same-day manual
+    refresh neither resets nor stretches a stay. Days with no run (weekends,
+    holidays, a weekly roster's off days) don't break a stay. A name dropped and
+    re-added starts over at 1."""
     import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    _et = _ZI("America/New_York")
 
     def _day(s):
-        return _dt.date.fromisoformat(str(s)[:10])
+        s = str(s).strip()
+        try:
+            ts = _dt.datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return _dt.date.fromisoformat(s[:10])      # date only: take it as given
+        return ts.replace(tzinfo=_dt.timezone.utc).astimezone(_et).date()
 
     now = _day(now_run_at)
     by_day = {}                          # newest-first, so the first run seen per day is its last
