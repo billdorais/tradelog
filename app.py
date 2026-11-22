@@ -3795,6 +3795,10 @@ app.register_blueprint(orb_replay_bp)
 from routes.orb_live import orb_live_bp, start_engine as _start_orb_live
 app.register_blueprint(orb_live_bp)
 _start_orb_live()
+# Manual-close log: positions closed by hand, with an optional reason, reviewed
+# against what the strategy's own exit would have made (routes/manual_closes.py).
+from routes.manual_closes import manual_closes_bp
+app.register_blueprint(manual_closes_bp)
 
 
 @app.route("/api/trades")
@@ -5274,9 +5278,21 @@ def alpaca_close_position(symbol):
     if broker is None:
         return jsonify({"success": False, "error": f"Alpaca {_label} not configured"}), 400
     symbol = symbol.upper()
+    # Snapshot the position before it goes, for the manual-close log. Best effort:
+    # a failed read just logs the close without the price/P&L detail.
+    _pos = None
+    try:
+        _pos = next((p for p in broker.get_positions()
+                     if str(p.get("symbol") or "").upper() == symbol), None)
+    except Exception as _pe:
+        log.debug("Manual close: position snapshot for %s failed: %s", symbol, _pe)
     result = broker.close_position(symbol)
     if result.get("success"):
         log.info("Manual close: %s position closed via UI [%s]", symbol, broker_tag)
+        from routes.manual_closes import record as _record_manual_close
+        _reason = request.args.get("reason") or (request.get_json(silent=True) or {}).get("reason")
+        result = {**result, "manual_close_id": _record_manual_close(
+            account, broker_tag, symbol, _pos, reason=_reason)}
         # Invalidate that account's fills cache (mutate in place — never rebind).
         _rec = ACCOUNTS_BY_TAG.get(broker_tag)
         if _rec is not None:

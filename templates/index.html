@@ -3925,6 +3925,21 @@
       }
     }
 
+    // Manual-close log: ask why only AFTER the close has gone out, so logging never
+    // slows a close. Cancel or an empty answer keeps the close logged without a reason.
+    function _askManualCloseReason(symbol, id) {
+      if (!id) return;
+      setTimeout(async () => {
+        const reason = prompt(`Closed ${symbol}. Why? (optional, saved to the manual-close log)`, '');
+        if (!reason || !reason.trim()) return;
+        try {
+          await fetch(`/api/manual_closes/${encodeURIComponent(id)}/reason?token=${encodeURIComponent(_getWebhookToken())}`,
+                      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ reason: reason.trim() }) });
+        } catch (e) { console.warn('Could not save the close reason:', e); }
+      }, 300);
+    }
+
     async function closeRowPosition(symbol, account, btn) {
       const token = _getWebhookToken();
       if (!token) return;
@@ -3950,6 +3965,7 @@
         }
         _flash('✓', '#7FE098', false);   // stays until the row re-renders
         loadOpenPositionsTable();
+        _askManualCloseReason(symbol, d.manual_close_id);
       } catch (e) {
         _flash('✕', '#ef5350', true);
         console.warn('Close error:', e.message);
@@ -3982,6 +3998,7 @@
           btn.style.borderColor = '#7FE098';
           btn.style.color = '#7FE098';
           setTimeout(loadTrades, 4000);  // wait for market order fill to land on Alpaca
+          _askManualCloseReason(symbol, data.manual_close_id);
         } else {
           const errMsg = data.error || 'Unknown error';
           // Position already gone on Alpaca — auto-dismiss the stale row
