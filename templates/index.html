@@ -1106,11 +1106,13 @@
     async function switchTab(tab) {
       try {
         activeTab = tab;
-        // Switch to the per-tab selection set so each tab filters independently
-        selectedStrategies = _tabSelections[tab] || (_tabSelections[tab] = new Set());
-        // A pinned roster re-narrows for the new tab: on the farm tabs it is only
-        // the roster's TV (TV Farm) or engine (Kairos Farm) picks.
-        _reapplyRoster();
+        // Reset selection and roster on every account switch so the new tab
+        // starts clean (no filters carried over from the previous account).
+        selectedStrategies = new Set();
+        _tabSelections[tab] = selectedStrategies;
+        _unpinRoster();
+        _updateStratPickerBtn();
+        _populateStratPicker();
 
         // Tab button highlighting — driven off the rendered buttons, so a tab the
         // server did not render simply is not here to light up.
