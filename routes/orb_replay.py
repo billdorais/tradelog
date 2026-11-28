@@ -159,7 +159,8 @@ def _validate_run(body: dict) -> dict:
             raise ValueError("resolution must be 5m or 1m")
         if (d1 - d0).days > ALPACA_MAX_DAYS[res]:
             raise ValueError(f"{res} Alpaca runs are capped at {ALPACA_MAX_DAYS[res]} days")
-        out.update(symbol=sym, resolution=res, contract="QQQ")
+        # The data feed is stored with the run, so an IEX run never reads as the SIP one.
+        out.update(symbol=sym, resolution=res, contract="QQQ", feed=orb.feed_name(body.get("feed")))
     else:
         con = (body.get("contract") or "NQ").strip().upper()
         if con not in ("NQ", "MNQ"):
@@ -189,17 +190,18 @@ def _execute(run_id: str, cfg: dict):
             data_label = f"Yahoo {cfg['symbol']} 5-minute bars (continuous front month)"
             notes.append("Yahoo keeps only about 60 days of 5-minute bars, so this is a small sample.")
         else:
-            key = (cfg["symbol"], cfg["resolution"], fetch0.isoformat(), d1.isoformat())
+            feed = cfg.get("feed") or orb.feed_name()
+            key = (cfg["symbol"], cfg["resolution"], fetch0.isoformat(), d1.isoformat(), feed)
             if _alpaca_cache["key"] == key:
                 df = _alpaca_cache["df"]
                 notes.append("Bars reused from the previous run on the same range.")
             else:
                 _alpaca_cache.update(key=None, df=None)          # free the old download first
                 df = orb.load_alpaca(cfg["symbol"], fetch0, d1, cfg["resolution"],
-                                     progress=lambda msg: _save_run(run_id, progress=msg))
+                                     progress=lambda msg: _save_run(run_id, progress=msg), feed=feed)
                 _alpaca_cache.update(key=key, df=df)
-            feed = orb._alpaca_feed().value.upper()
-            data_label = f"Alpaca {cfg['symbol']} {cfg['resolution']} bars ({feed} feed), pre-market included"
+            data_label = (f"Alpaca {cfg['symbol']} {cfg['resolution']} bars ({feed.upper()} feed), "
+                          f"pre-market included")
             notes.append(f"{cfg['symbol']} stands in for NQ. R-multiples carry over; dollars are per share "
                          f"and the 09:00–09:30 range is built from thin pre-market trading.")
         m = orb.Market.from_frame(df)
@@ -403,6 +405,16 @@ def _variant(params: dict) -> str:
     return ", ".join(out)
 
 
+def _run_variant(cfg: dict) -> str:
+    """_variant of the run's settings, plus "IEX feed" for a run on the free IEX feed, so an IEX test
+    run sits beside the ticker's SIP run in Compare tickers instead of replacing it. Runs saved before
+    the feed was recorded are SIP runs (the app's feed then)."""
+    v = _variant(cfg.get("params") or {})
+    if cfg.get("source") == "alpaca" and cfg.get("feed") == "iex":
+        v = ", ".join(x for x in (v, "IEX feed") if x)
+    return v
+
+
 def _neg(iso):
     """Sort key that ranks an EARLIER start date higher (the longer run wins a tie on end date)."""
     try:
@@ -420,7 +432,7 @@ def portfolio_options(rows) -> list:
         except ValueError:
             continue
         p = cfg.get("params") or {}
-        opt = {"run_id": rid, "label": _run_label(cfg), "variant": _variant(p),
+        opt = {"run_id": rid, "label": _run_label(cfg), "variant": _run_variant(cfg),
                "trend_filter": bool(p.get("trend_filter")), "from": cfg.get("from"), "to": cfg.get("to"),
                "created_at": created, "shares": p.get("contracts"), "source": cfg.get("source")}
         key = (opt["label"], opt["trend_filter"], opt["variant"])
@@ -446,7 +458,7 @@ def _run_trades(run_id: str):
     cfg, res = json.loads(r[0] or "{}"), json.loads(r[2])
     p, data = cfg.get("params") or {}, res.get("data") or {}
     size = max(int(p.get("contracts") or 1), 1)
-    entry = {"label": _run_label(cfg), "variant": _variant(p), "trend_filter": bool(p.get("trend_filter")),
+    entry = {"label": _run_label(cfg), "variant": _run_variant(cfg), "trend_filter": bool(p.get("trend_filter")),
              "shares": p.get("contracts"),
              "trading_from": data.get("trading_from") or cfg.get("from"),
              "trading_to": data.get("trading_to") or cfg.get("to"),

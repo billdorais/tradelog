@@ -192,7 +192,7 @@
           <select class="f" id="source" onchange="syncSource()">
             <option value="csv">Uploaded futures bars (CSV)</option>
             <option value="yahoo">Yahoo NQ / MNQ — last ~58 days</option>
-            <option value="alpaca">Alpaca QQQ (SIP) — stand-in, years</option>
+            <option value="alpaca">Alpaca stocks / ETFs — years</option>
           </select></div>
         <div class="fld src-csv"><span class="lbl">Dataset</span>
           <select class="f" id="dataset" onchange="syncDatasetDates()"></select></div>
@@ -201,6 +201,9 @@
         <div class="fld src-alp"><span class="lbl">Symbol</span><input class="f" id="symbol" value="QQQ" style="width:80px"></div>
         <div class="fld src-alp"><span class="lbl">Bars</span>
           <select class="f" id="resolution" onchange="syncSource()"><option value="1m">1-minute (up to 6 years)</option><option value="5m">5-minute (up to 10 years)</option></select></div>
+        <div class="fld src-alp"><span class="lbl">Feed</span>
+          <select class="f" id="feed" title="SIP is every exchange (the paid plan). IEX is one exchange, the free plan's real-time feed; IEX runs show as a test setting in Compare tickers.">
+            <option value="sip">SIP (all exchanges)</option><option value="iex">IEX (free feed)</option></select></div>
         <div class="fld"><span class="lbl">From</span><input class="f" type="date" id="from"></div>
         <div class="fld"><span class="lbl">To</span><input class="f" type="date" id="to"></div>
       </div>
@@ -349,7 +352,7 @@
   async function run() {
     const body = { source: $('source').value, from: $('from').value, to: $('to').value, params: _params(),
                    contract: $('contract').value, dataset_id: $('dataset').value, symbol: $('symbol').value,
-                   resolution: $('resolution').value, validate: $('validate').checked,
+                   resolution: $('resolution').value, feed: $('feed').value, validate: $('validate').checked,
                    exit_variants: $('exitVariants').checked };
     $('runBtn').disabled = true; $('runStatus').textContent = 'Starting…';
     const r = await fetch('/api/orb/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
