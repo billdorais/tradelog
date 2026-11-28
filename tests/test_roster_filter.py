@@ -166,8 +166,13 @@ def test_farm_tabs_narrow_a_pinned_roster_to_their_own_kind(monkeypatch):
     assert "const _FARM_SOURCE = { alpaca: 'tv', farm: 'kairos' };" in html
     i = html.index("function toggleRoster")
     assert "_rosterList(tab)" in html[i:i + 900]
+    # Switching accounts starts clean (013ce93): no carried-over strategy filter and
+    # no pinned roster, so the narrowing above only applies once the roster is
+    # pinned on the farm tab itself.
     i = html.index("async function switchTab")
-    assert "_reapplyRoster();" in html[i:i + 600]                 # re-narrows on a tab switch
+    body = html[i:i + 600]
+    assert "selectedStrategies = new Set();" in body and "_unpinRoster();" in body
+    assert "_reapplyRoster();" not in body
 
 
 def test_kairos_refined_chip_comes_from_its_snapshot(monkeypatch):
