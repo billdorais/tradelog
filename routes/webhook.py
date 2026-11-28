@@ -862,13 +862,14 @@ def _webhook_locked(data, received_at, broker_name, ticker):
         if len(_in_hours) != len(alpaca_targets):
             _dropped = {_alpaca_broker_name(bt[0]) for bt in alpaca_targets} \
                        - {_alpaca_broker_name(bt[0]) for bt in _in_hours}
-            app.log.info("Account-hours gate: %s %s — skipped %s (outside trading window)",
-                         order_action, ticker, ",".join(sorted(_dropped)))
+            _why = app._early_close_block_reason() or "outside the account's trading window"
+            app.log.info("Account-hours gate: %s %s — skipped %s (%s)",
+                         order_action, ticker, ",".join(sorted(_dropped)), _why)
             app._record_blocks(sorted(_dropped), ticker, strategy_name, _gate_entry_side,
-                               "hours", "outside the account's trading window")
+                               "hours", _why)
             if not _in_hours and conn:
                 app._update_exec(cur, trade_id, "skipped",
-                                 f"Outside trading hours for {', '.join(sorted(_dropped))}")
+                                 f"{_why[0].upper() + _why[1:]} for {', '.join(sorted(_dropped))}")
                 conn.commit()
         alpaca_targets = _in_hours
 

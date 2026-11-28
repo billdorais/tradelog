@@ -1597,7 +1597,111 @@ if os.environ.get("COINBASE_KEY"):
     log.info("Coinbase broker initialised")
 
 # ---------------------------------------------------------------------------
-# EOD close scheduler — closes all broker positions at 3:58 PM ET on weekdays.
+# Session close — 16:00 ET, or 13:00 on an NYSE early close (the day after
+# Thanksgiving, Christmas Eve, July 3). Everything that times itself to the
+# close reads it from here: the entry gate, the EOD flatten, the ORB exit.
+# Treating 2026-11-27 as a 16:00 day let the engine enter at 12:59 and left the
+# max-hold closes (13:04+) and ORB's 15:55 exit unfillable over a weekend.
+# ---------------------------------------------------------------------------
+
+# Backup for Alpaca's calendar, which is asked first. Update with the holidays.
+_US_EARLY_CLOSES = {
+    "2025-07-03": "13:00", "2025-11-28": "13:00", "2025-12-24": "13:00",
+    "2026-11-27": "13:00", "2026-12-24": "13:00",
+    "2027-11-26": "13:00",
+}
+SESSION_CLOSE_MIN = 16 * 60
+EARLY_CLOSE_ENTRY_STOP_MINS = int(os.environ.get("EARLY_CLOSE_ENTRY_STOP_MINS", "30"))
+_session_close_cache = {}          # "YYYY-MM-DD" → (close minute, cached_at)
+_SESSION_CLOSE_RETRY_S = 600       # an unreadable calendar is asked again after this
+
+
+def _alpaca_session_close(day_str):
+    """The day's regular-session close from Alpaca's market calendar, in minutes
+    after midnight ET, or None when Alpaca has no answer."""
+    if not ALPACA_ACCOUNTS:
+        return None
+    from alpaca.trading.requests import GetCalendarRequest
+    br = ALPACA_ACCOUNTS[0]["broker"]
+    br._ensure_client()
+    d = datetime.strptime(day_str, "%Y-%m-%d").date()
+    for c in br._trading.get_calendar(GetCalendarRequest(start=d, end=d)) or []:
+        if str(getattr(c, "date", ""))[:10] != day_str:
+            continue
+        cl = getattr(c, "close", None)
+        if hasattr(cl, "hour"):
+            return cl.hour * 60 + cl.minute
+        if isinstance(cl, str) and ":" in cl:
+            h, m = cl.split(":")[:2]
+            return int(h) * 60 + int(m)
+    return None
+
+
+def _session_close_min(day=None):
+    """Minutes after midnight ET when the regular session ends on `day` (a date,
+    datetime or "YYYY-MM-DD"; default today ET): 960 normally, 780 on an early
+    close. The earlier of Alpaca's calendar and _US_EARLY_CLOSES wins. Never raises."""
+    try:
+        if day is None:
+            day = datetime.now(ZoneInfo("America/New_York")).date()
+        ds = day if isinstance(day, str) else day.strftime("%Y-%m-%d")
+        hit = _session_close_cache.get(ds)
+        if hit and (hit[1] is None or time.time() - hit[1] < _SESSION_CLOSE_RETRY_S):
+            return hit[0]
+        known = _US_EARLY_CLOSES.get(ds)
+        close = SESSION_CLOSE_MIN
+        if known:
+            h, m = known.split(":")
+            close = int(h) * 60 + int(m)
+        fetched = True
+        try:
+            a = _alpaca_session_close(ds)
+            if a is not None and 10 * 60 <= a < close:
+                close = a
+            elif a is None and ALPACA_ACCOUNTS:
+                fetched = False
+        except Exception as _e:
+            fetched = False
+            log.debug("Session close: Alpaca calendar for %s unreadable: %s", ds, _e)
+        _session_close_cache[ds] = (close, None if fetched else time.time())
+        return close
+    except Exception:
+        return SESSION_CLOSE_MIN
+
+
+def _hm_str(minutes):
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _early_close_block_reason(now_et=None):
+    """On an early-close day, why a new entry is refused once it is within
+    EARLY_CLOSE_ENTRY_STOP_MINS of the close (so max holds expire while the market
+    can still fill the exit). None on a normal day or before the cutoff."""
+    try:
+        now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
+        close = _session_close_min(now_et.date())
+        if close >= SESSION_CLOSE_MIN:
+            return None
+        cut = close - EARLY_CLOSE_ENTRY_STOP_MINS
+        if now_et.hour * 60 + now_et.minute >= cut:
+            return (f"early close today ({_hm_str(close)} ET): "
+                    f"no new entries after {_hm_str(cut)}")
+    except Exception:
+        pass
+    return None
+
+
+def _eod_flatten_due(now_et):
+    """True in the 2 minutes before the session close (15:58–16:00 on a normal day,
+    12:58–13:00 on an early close)."""
+    close = _session_close_min(now_et.date())
+    t = now_et.hour * 60 + now_et.minute
+    return close - 2 <= t <= close
+
+
+# ---------------------------------------------------------------------------
+# EOD close scheduler — closes all broker positions at 3:58 PM ET on weekdays
+# (12:58 on an early close: 2 minutes before the day's real close).
 # Runs regardless of which brokers are configured (IB, Alpaca, Coinbase).
 # Fires any time in the 3:58–4:00 PM window so a mid-window restart still
 # catches the close.
@@ -1609,8 +1713,11 @@ def _eod_close_scheduler():
     while True:
         now = datetime.now(ET)
         today = now.date()
-        t = (now.hour, now.minute)
-        in_window = (15, 58) <= t <= (16, 0)   # 3:58 PM – 4:00 PM ET
+        try:
+            in_window = _eod_flatten_due(now)  # 3:58–4:00 PM ET, or 12:58–1:00 on an early close
+        except Exception as _e:
+            log.warning("EOD scheduler: close-time check failed, using 15:58: %s", _e)
+            in_window = (15, 58) <= (now.hour, now.minute) <= (16, 0)
         if (eod_close_enabled
                 and now.weekday() < 5            # Mon–Fri
                 and in_window
@@ -15332,8 +15439,13 @@ def _account_hours_ok(account: str, now_et=None, ticker: str = None, strategy: s
     `strategy` lets an OVERRIDE stop time replace the book's windows for that one
     strategy: it may enter from the book's opening time onward (the 10-12 gap
     included), and the stop-time gate ends it at the stop.
+
+    An early close beats all of that: within EARLY_CLOSE_ENTRY_STOP_MINS of a
+    13:00 close nothing enters, exempt tickers and override stop times included.
     """
     import datetime as _dt
+    if _early_close_block_reason(now_et):
+        return False
     if strategy and _strategy_stop_mode(strategy, account) == "override":
         try:
             now_et = now_et or _dt.datetime.now(ZoneInfo("America/New_York"))
@@ -21187,7 +21299,8 @@ def _engine_pilot_tick(now_et, today):
             # window would have silently muted every other book the engine feeds.
             if not _account_hours_ok(broker_tag, now_et=now_et, ticker=tk, strategy=strat):
                 _record_block(broker_tag, tk, strat, side, "hours",
-                          "outside the account's trading window", source="engine", once_per_day=True)
+                              _early_close_block_reason(now_et) or "outside the account's trading window",
+                              source="engine", once_per_day=True)
                 continue
             _st_block, _st_reason = _strategy_stop_block(strat, broker_tag, now_et=now_et)
             if _st_block:

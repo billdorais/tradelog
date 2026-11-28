@@ -11,8 +11,9 @@ trade logged beside what the backtest did on the same day.
     limit target at signal close ± target_r × risk. client_order_id = orb-YYYYMMDD-TICKER,
     which Alpaca keeps unique per account: one entry per ticker per day even with two
     gunicorn workers running this loop, and across restarts.
-  - The engine's positions are closed at forced_exit (15:55 ET). The 15:58 EOD close in
-    app.py is the backstop. Kairos' own stops and max holds skip them: all of account 8
+  - The engine's positions are closed at forced_exit (15:55 ET), or 5 minutes before an
+    early close (12:55 on a 13:00 day). The EOD close in app.py (2 minutes before the
+    close) is the backstop. Kairos' own stops and max holds skip them: all of account 8
     (ACCOUNT_META "self_managed"), and on account 6 the pairs owned_positions() returns.
   - After 16:05 ET each trade is reconciled: real fill and exit, live R, and the
     backtest's trade for the same day, so slippage and drift are measured, not guessed.
@@ -798,7 +799,13 @@ def _tick_book(now: datetime, book: str):
     p = engine_params(cfg)
     hm = now.hour * 60 + now.minute
     or1, last, fexit = orb._hm(p["or_end"]), orb._hm(p["last_entry"]), orb._hm(p["forced_exit"])
-    in_flatten = fexit <= hm < 16 * 60
+    # The day's real close (13:00 on an early close): exit 5 minutes before it, and
+    # take no entry inside the app's early-close cutoff.
+    close = _app()._session_close_min(day)
+    fexit = min(fexit, close - 5)
+    if close < 16 * 60:
+        last = min(last, close - _app().EARLY_CLOSE_ENTRY_STOP_MINS)
+    in_flatten = fexit <= hm < close
     if cfg["mode"] != B["send"]:
         # Switched off or to dry run after entering: the positions it opened still close at 15:55.
         if in_flatten and _ordered_today(day, book):

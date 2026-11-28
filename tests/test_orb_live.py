@@ -274,6 +274,27 @@ def test_status_and_config_endpoints(env):
 
 # ── flatten and reconcile ─────────────────────────────────────────────────────
 
+def test_an_early_close_moves_the_forced_exit_to_12_55(env):
+    """2026-11-27 closed at 13:00. The 15:55 exit never came and GOOG/NVDA sat open
+    over the weekend; the exit is now 5 minutes before the day's real close."""
+    _cfg()
+    env.broker.positions = [{"symbol": "GOOG", "qty": -4}]
+    early = lambda h, m: datetime(2026, 11, 27, h, m, 2, tzinfo=ET)
+    L.tick(early(12, 54))
+    assert env.broker.closed == []
+    L.tick(early(12, 55))
+    assert env.broker.closed == ["GOOG"]
+
+
+def test_a_normal_day_still_exits_at_15_55(env):
+    _cfg()
+    env.broker.positions = [{"symbol": "GOOG", "qty": -4}]
+    L.tick(_at(12, 55, 2))
+    assert env.broker.closed == []
+    L.tick(_at(15, 55, 2))
+    assert env.broker.closed == ["GOOG"]
+
+
 def test_flatten_closes_account_8_positions_once_across_workers(env):
     cfg = _cfg()
     env.broker.positions = [{"symbol": "QQQ", "qty": 125}]

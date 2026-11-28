@@ -12,6 +12,18 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_market_calendar_calls(monkeypatch):
+    """Tests never ask Alpaca for the market calendar; the hard-coded early closes
+    (app._US_EARLY_CLOSES) stand in, and no test sees another's cached answer."""
+    import sys
+    a = sys.modules.get("app")
+    if a is not None and hasattr(a, "_alpaca_session_close"):
+        monkeypatch.setattr(a, "_alpaca_session_close", lambda ds: None)
+        a._session_close_cache.clear()
+    yield
+
+
 @pytest.fixture(scope="session")
 def intraday_5m_ohlc() -> pd.DataFrame:
     """Five trading days of 5-minute bars, RTH only (09:30–16:00 ET).
