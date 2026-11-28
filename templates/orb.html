@@ -115,6 +115,7 @@
         <button class="btn go" id="l6Save">Save settings</button>
         <span class="status" id="l6Status"></span>
       </div>
+      <div id="l6Perf"></div>
       <div id="l6Out"><div class="empty">Loading…</div></div>
     </div>
 
@@ -663,6 +664,110 @@
     B.cfg = d.config; B.acct = d.account;
     if (first) liveFill(B, d.config);
     liveModeButtons(B); liveRender(B, d);
+    if (d.real_money) l6Perf(d);
+  }
+
+  // ── Crew Live: what the real-money trades have made ──────────────────────
+  // The compare chart's look, from the live book's own fills: real shares, real dollars.
+  // Lives in its own container and redraws only when a trade changes, so the 30 s
+  // status refresh neither flickers it nor brings back a line hidden from the legend.
+  const L6 = { sig: null, chart: null, color: {} };
+  const _r2 = v => Math.round(v * 100) / 100;
+  const _median = a => { const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  function l6Color(tk) {
+    if (!(tk in L6.color)) { const used = new Set(Object.values(L6.color)); L6.color[tk] = PF_COLORS.find(c => !used.has(c)) || PF_COLORS[0]; }
+    return L6.color[tk];
+  }
+
+  function l6Stats(T) {
+    const n = T.length, days = {};
+    let run = 0, peak = 0, dd = 0, totR = 0, nR = 0;
+    for (const r of T) {
+      run += r.live_pnl; peak = Math.max(peak, run); dd = Math.max(dd, peak - run);
+      days[r.day] = (days[r.day] || 0) + r.live_pnl;
+      if (r.live_r != null) { totR += r.live_r; nR++; }
+    }
+    const dv = Object.values(days), risk = T.map(r => r.qty * Math.abs(r.fill_price - r.stop)), pos = T.map(r => r.qty * r.fill_price);
+    return { trades: n, wins: T.filter(r => r.live_pnl > 0).length, net: _r2(run), max_dd: _r2(dd), total_r: totR, avg_r: nR ? totR / nR : null,
+             days: dv.length, green: dv.filter(v => v > 0).length, best: Math.max(...dv), worst: Math.min(...dv),
+             avg_risk: risk.reduce((a, v) => a + v, 0) / n, pos_med: _median(pos), pos_max: Math.max(...pos) };
+  }
+
+  function l6Perf(d) {
+    const byKey = new Map();
+    for (const r of [...(d.trades || []), ...(d.today || [])])
+      if (r.status === 'exited' && r.live_pnl != null && r.qty && r.fill_price != null && r.stop != null) byKey.set(r.day + '|' + r.ticker, r);
+    const T = [...byKey.values()].sort((a, b) => (a.day + (a.fill_time || '')).localeCompare(b.day + (b.fill_time || '')));
+    const sig = JSON.stringify(T.map(r => [r.day, r.ticker, r.live_pnl, r.exit_reason]));
+    if (sig === L6.sig) return;
+    L6.sig = sig;
+    if (L6.chart) { L6.chart.destroy(); L6.chart = null; }
+    if (!T.length) { $('l6Perf').innerHTML = '<div class="empty" style="padding:8px 0">No finished real-money trades yet.</div>'; return; }
+
+    const tks = [...new Set(T.map(r => r.ticker))].sort(), dates = [...new Set(T.map(r => r.day))].sort();
+    tks.forEach(l6Color);
+    const run = Object.fromEntries(tks.map(t => [t, 0])), series = tks.map(tk => ({ tk, cum: [], hits: [] })), all = { cum: [], hits: [] };
+    let runAll = 0;
+    for (const day of dates) {
+      const rs = T.filter(r => r.day === day);
+      for (const s of series) {
+        const mine = rs.filter(r => r.ticker === s.tk);
+        run[s.tk] += mine.reduce((a, r) => a + r.live_pnl, 0);
+        s.cum.push(_r2(run[s.tk])); s.hits.push(mine.filter(r => r.exit_reason === 'target').length);
+      }
+      runAll += rs.reduce((a, r) => a + r.live_pnl, 0);
+      all.cum.push(_r2(runAll)); all.hits.push(rs.filter(r => r.exit_reason === 'target').length);
+    }
+    const S = l6Stats(T), multi = tks.length > 1;
+    let h = `<h3 style="margin-top:6px">Real-money results · ${_esc(dates[0])} → ${_esc(dates[dates.length - 1])}</h3><div class="tiles">
+      ${tile('Crew Live ORB, real $', _usd(S.net), _cls(S.net), `${_r(S.total_r, 1)} over ${S.trades} trades, before regulatory fees`)}
+      ${tile('Trades taken', S.trades, '', _n(100 * S.wins / S.trades, 1) + '% winners')}
+      ${tile('Avg $ risked', _usd0(S.avg_risk), '', `shares × (fill − stop); set to ${_dol(d.config.risk)}`)}
+      ${tile('Position size', _usd0(S.pos_med), '', `typical; largest ${_usd0(S.pos_max)}`)}
+      ${tile('Best / worst day', `${_usd(S.best)} / ${_usd(S.worst)}`)}
+      ${tile('Max drawdown', _usd(-S.max_dd), S.max_dd > 0 ? 'neg' : '', 'peak to trough, trade by trade')}
+      ${tile('Green days', `${S.green} / ${S.days}`, '', 'of the days with a trade')}
+    </div>
+    <div class="chartbox" style="height:300px"><canvas id="l6Chart" role="img" aria-label="Cumulative real-money ORB result by ticker"></canvas></div>
+    <div class="note" style="margin-bottom:12px">Running total of real dollars on each day the live book traded, from Alpaca's fills
+      (exit − fill × shares).${multi ? ' <strong>All</strong> adds the tickers up.' : ''} <span style="color:#FFD166">●</span> = a trade
+      reached its target (3R) that day. Click a legend name to hide its line.</div>`;
+    const cells = s => `<td>${s.trades}</td><td>${_n(100 * s.wins / s.trades, 1)}</td><td class="${_cls(s.avg_r)}">${s.avg_r != null ? _r(s.avg_r, 3) : '—'}</td>
+      <td class="${_cls(s.total_r)}">${_r(s.total_r, 1)}</td><td class="${_cls(s.net)}">${_usd(s.net)}</td>
+      <td>${_usd0(s.pos_med)} / ${_usd0(s.pos_max)}</td><td>${_usd(-s.max_dd)}</td><td>${s.green} / ${s.days}</td>`;
+    const per = tks.map(tk => ({ tk, s: l6Stats(T.filter(r => r.ticker === tk)) })).sort((a, b) => b.s.net - a.s.net);
+    h += `<div class="tbl" style="margin-bottom:14px"><table><thead><tr><th class="l">Ticker</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th>
+      <th>Net $</th><th>Position typical / max</th><th>Max DD</th><th>Green days</th></tr></thead><tbody>
+      ${per.map(p => `<tr><td class="l"><span class="sw" style="background:${l6Color(p.tk)}"></span>${_esc(p.tk)}</td>${cells(p.s)}</tr>`).join('')}
+      ${multi ? `<tr class="tot"><td class="l"><span class="sw" style="background:${PF_ALL}"></span>All</td>${cells(S)}</tr>` : ''}
+    </tbody></table></div>`;
+    $('l6Perf').innerHTML = h;
+
+    const line = (label, data, color, w, hits) => {
+      const k = [0, ...hits];
+      return { label, data: [0, ...data], borderColor: color, backgroundColor: color, borderWidth: w, tension: 0, hits: k,
+               pointRadius: k.map(x => x ? 5 : 0), pointHoverRadius: k.map(x => x ? 7 : 4),
+               pointBackgroundColor: k.map(x => x ? PF_TARGET : color), pointBorderColor: '#13161f',
+               pointBorderWidth: k.map(x => x ? 1.5 : 0), pointHoverBorderColor: '#13161f', pointHoverBorderWidth: 2 };
+    };
+    const ds = series.map(s => line(s.tk, s.cum, l6Color(s.tk), 2, s.hits));
+    if (multi) ds.push(line('All', all.cum, PF_ALL, 3, all.hits));
+    L6.chart = new Chart($('l6Chart'), {
+      type: 'line', plugins: [pfCrosshair],
+      data: { labels: ['Start', ...dates], datasets: ds },
+      options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: true, position: 'top', align: 'start', labels: { color: '#aaa', boxWidth: 14, boxHeight: 3, font: { size: 11 } } },
+          tooltip: { itemSort: (a, b) => b.raw - a.raw, callbacks: {
+            title: i => i[0].label === 'Start' ? 'Start (before ' + dates[0] + ')' : i[0].label,
+            label: c => { const day = c.raw - (c.dataIndex ? c.dataset.data[c.dataIndex - 1] : 0);
+                          const k = (c.dataset.hits || [])[c.dataIndex] || 0;
+                          return ` ${c.dataset.label}: ${_usd(c.raw)}${Math.abs(day) > 1e-9 ? '  (day ' + _usd(day) + ')' : ''}`
+                            + (k ? `  ● ${k > 1 ? k + ' trades hit' : 'hit'} the target` : ''); } } } },
+        scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10, maxRotation: 0 } },
+                  y: { grid: { color: c => c.tick.value === 0 ? '#3a3f52' : '#1e2130' },
+                       ticks: { color: '#666', font: { size: 10 }, callback: v => (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString() } } } },
+    });
   }
 
   function liveInit() {

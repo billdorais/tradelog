@@ -272,6 +272,17 @@ def test_status_and_config_endpoints(env):
     assert set(s["summary"]) == {"core", "watch", "all"}
 
 
+def test_the_real_money_panel_charts_its_own_trades():
+    """The Crew Live panel draws its live trades (real shares, real $) like the compare
+    chart, in its own container so the 30 s status refresh doesn't redraw it."""
+    html = a.app.test_client().get("/orb").get_data(as_text=True)
+    i = html.index('id="l6Panel"')
+    assert html.index('id="l6Perf"', i) < html.index('id="l6Out"', i)
+    assert "if (d.real_money) l6Perf(d);" in html
+    assert "if (sig === L6.sig) return;" in html
+    assert "r.qty * Math.abs(r.fill_price - r.stop)" in html     # $ actually risked, from the fill
+
+
 # ── flatten and reconcile ─────────────────────────────────────────────────────
 
 def test_an_early_close_moves_the_forced_exit_to_12_55(env):
